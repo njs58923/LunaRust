@@ -15,5 +15,10 @@ bevy = { version = "0.14.0", default-features = false, features = [
 	"bevy_core_pipeline",
 	"bevy_winit",
 	"bevy_pbr",
+	"bevy_asset",
+	"bevy_gltf",
+	"bevy_scene",
+	"multi_threaded",
 	"x11",
+	"jpeg"
 ] }
