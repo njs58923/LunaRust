@@ -1,31 +1,78 @@
 use bevy::prelude::*;
-use std::collections::HashMap;
-use futures::executor::block_on;
+use std::{collections::HashMap, rc::Rc, sync::Arc};
 use tokio::runtime::Runtime;
 
 mod utils;
 use utils::shapes;
 
-use virtual_dom::{load_xml_from_url, parse_xml, VirtualNode};
+use virtual_dom::{
+    dom::hsml::{hsml::HSMLElement, HSMLEnum, ProxyElement},
+    load_xml_from_url,
+    parse_xml,
+    serialize_xml,
+};
 
 /// Recurso que guarda el DOM virtual como un HashMap de nodos.
 #[derive(Resource, Default)]
 struct VirtualDomData {
-    pub nodes: HashMap<usize, VirtualNode<Entity>>,
+    pub nodes: HashMap<usize, HSMLEnum<Entity>>,
 }
 
-/// Recurso que guarda los IDs de los nodos que necesitan actualizarse en el siguiente frame.
+/// Recurso que guarda los IDs de los nodos que necesitan actualizarse en el siguiente frame,
+/// en el orden en el que deben procesarse (padre antes que hijo).
 #[derive(Resource, Default)]
-struct DirtyNodes(HashMap<usize, bool>);
+struct DirtyNodes(Vec<usize>);
 
 /// Recurso que mapea el id de un nodo a su entidad en la escena.
 #[derive(Resource, Default)]
 struct EntityMap(HashMap<usize, Entity>);
 
+/// Recurso para el modo debug que fuerza la recarga del XML cada segundo.
+#[derive(Resource)]
+struct DebugTimer(Timer);
+
 /// Componente que identifica a la entidad que representa un nodo del DOM, mediante su id.
 #[derive(Component)]
 struct DomEntity {
     pub id: usize,
+}
+
+/// Función auxiliar para cargar el XML, parsearlo y aplanar el DOM.
+/// Retorna un tuple con:
+/// - Un HashMap con los nodos, y
+/// - Un Vec con los IDs de los nodos en el orden en que se deben procesar (padre antes que hijo).
+fn load_and_flatten_xml(url: &str) -> (HashMap<usize, HSMLEnum<Entity>>, Vec<usize>) {
+    let rt = Runtime::new().expect("No se pudo crear el runtime de Tokio");
+    let xml_content = rt
+        .block_on(load_xml_from_url(url))
+        .expect("Error al cargar XML");
+    println!("XML cargado: {:?}", xml_content);
+    
+    let root_node: HSMLEnum<Entity> = parse_xml(&xml_content)
+        .expect("Error al parsear el XML");
+    
+    let demo_hsml = serialize_xml(&root_node);
+    println!("PREVIEW: {:?}", demo_hsml);
+    
+    let mut map = HashMap::new();
+    let mut dirty = Vec::new();
+    
+    fn flatten_dom(
+        node: HSMLEnum<Entity>,
+        map: &mut HashMap<usize, HSMLEnum<Entity>>,
+        dirty: &mut Vec<usize>,
+    ) {
+        dirty.push(node.id());
+        map.insert(node.id(), node.clone());
+        if let Some(element) = node.get_element() {
+            for child in &element.children {
+                flatten_dom(child.clone(), map, dirty);
+            }
+        }
+    }
+    
+    flatten_dom(root_node, &mut map, &mut dirty);
+    (map, dirty)
 }
 
 fn main() {
@@ -34,14 +81,19 @@ fn main() {
         .insert_resource(VirtualDomData::default())
         .insert_resource(DirtyNodes::default())
         .insert_resource(EntityMap::default())
+        // Timer para el modo debug: recarga cada segundo.
+        .insert_resource(DebugTimer(Timer::from_seconds(1.0, TimerMode::Repeating)))
         .add_systems(Startup, setup)
+        // Sistema que recarga el XML cada segundo y actualiza el DOM virtual.
+        .add_systems(Update, reload_xml_system)
+        // Sistema que sincroniza el DOM virtual con las entidades en la escena.
         .add_systems(Update, dom_sync_system)
         .run();
 }
 
 /// Sistema de setup:
 /// - Configura cámara y luz.
-/// - Carga y parsea el XML, aplanando el árbol en el recurso VirtualDomData.
+/// - Carga el XML inicial y actualiza los recursos VirtualDomData y DirtyNodes.
 fn setup(
     mut commands: Commands, 
     mut dom_data: ResMut<VirtualDomData>,
@@ -59,33 +111,43 @@ fn setup(
         ..default()
     });
 
-    let rt = Runtime::new().expect("No se pudo crear el runtime de Tokio");
-    // Cargar el XML usando block_on para esperar la operación asíncrona.
-    let xml_content = rt.block_on(load_xml_from_url("http://localhost:2052/static/main.hsml"))
-        .expect("Error al cargar XML");
-    
-    // Parsea el XML. Se usa Entity como tipo para Native.
-    let root_node: VirtualNode<Entity> = parse_xml(&xml_content)
-        .expect("Error al parsear el XML");
-    
-    // Función auxiliar para insertar recursivamente cada nodo en el HashMap.
-    fn flatten_dom(
-        node: VirtualNode<Entity>,
-        map: &mut HashMap<usize, VirtualNode<Entity>>,
-        dirty: &mut HashMap<usize, bool>,
-    ) {
-        dirty.insert(node.id, true);
-        map.insert(node.id, node.clone());
-        for child in node.children {
-            flatten_dom(child, map, dirty);
+    let (nodes, dirty) = load_and_flatten_xml("http://localhost:2052/static/main.hsml");
+    dom_data.nodes = nodes;
+    dirty_nodes.0 = dirty;
+}
+
+/// Sistema que recarga el XML cada segundo, actualiza el DOM virtual y elimina las entidades obsoletas.
+fn reload_xml_system(
+    time: Res<Time>,
+    mut debug_timer: ResMut<DebugTimer>,
+    mut dom_data: ResMut<VirtualDomData>,
+    mut dirty_nodes: ResMut<DirtyNodes>,
+    mut commands: Commands,
+    mut entity_map: ResMut<EntityMap>,
+) {
+    debug_timer.0.tick(time.delta());
+    if debug_timer.0.finished() {
+        let (new_nodes, new_dirty) = load_and_flatten_xml("http://localhost:2052/static/main.hsml");
+
+        // Eliminar las entidades cuyos nodos ya no existen en el nuevo XML.
+        let old_ids: Vec<usize> = entity_map.0.keys().cloned().collect();
+        for id in old_ids {
+            if !new_nodes.contains_key(&id) {
+                if let Some(entity) = entity_map.0.remove(&id) {
+                    commands.entity(entity).despawn_recursive();
+                }
+            }
         }
+        
+        // Actualizar el recurso con los nuevos nodos y el nuevo orden de dirty.
+        dom_data.nodes = new_nodes;
+        dirty_nodes.0 = new_dirty;
     }
-    
-    flatten_dom(root_node, &mut dom_data.nodes, &mut dirty_nodes.0);
 }
 
 /// Sistema que sincroniza el DOM virtual con las entidades en la escena.
-/// Si el nodo ya tiene entidad, actualiza su transformación; si no, la crea y asigna su referencia a `native`.
+/// Se procesan los nodos en el orden definido en el array para asegurar que
+/// los padres se creen antes que los hijos.
 fn dom_sync_system(
     mut commands: Commands,
     mut dom_data: ResMut<VirtualDomData>,
@@ -95,67 +157,69 @@ fn dom_sync_system(
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut query: Query<&mut Transform>,
 ) {
-    for (&node_id, &dirty) in dirty_nodes.0.iter() {
-        if !dirty {
-            continue;
-        }
-        if let Some(node) = dom_data.nodes.get_mut(&node_id) {
-            // Si la entidad ya existe, se actualiza el transform.
-            if let Some(&entity) = entity_map.0.get(&node_id) {
-                if let Ok(mut transform) = query.get_mut(entity) {
-                    transform.translation = Vec3::new(node.x, node.y, node.z);
-                    transform.rotation =
-                        Quat::from_euler(EulerRot::XYZ, node.rx, node.ry, node.rz);
-                }
-            } else {
-                println!("AÑADIDO!! {:?}", node.tag);
-                // Crear la entidad para el nodo.
-                let cube_handle = meshes.add(shapes::create_cube());
-                let material_handle = materials.add(StandardMaterial {
-                    base_color: Color::rgb(0.5, 0.8, 0.8),
-                    ..Default::default()
-                });
-                let entity = commands
-                    .spawn((
-                        PbrBundle {
-                            mesh: cube_handle,
-                            material: material_handle,
-                            transform: Transform::from_xyz(node.x, node.y, node.z)
-                                .with_rotation(Quat::from_euler(
-                                    EulerRot::XYZ,
-                                    node.rx,
-                                    node.ry,
-                                    node.rz,
-                                )),
-                            ..Default::default()
-                        },
-                        DomEntity { id: node.id },
-                    ))
-                    .id();
-                // Si el nodo tiene un padre, se añade como hijo de la entidad padre.
-                if let Some(parent_id) = node.parent {
-                    if let Some(&parent_entity) = entity_map.0.get(&parent_id) {
-                        commands.entity(parent_entity).push_children(&[entity]);
+    // Se recorre el array en el orden definido (padre -> hijo).
+    for node_id in dirty_nodes.0.iter() {
+        if let Some(node) = dom_data.nodes.get_mut(node_id) {
+            // Si la entidad ya existe, se actualiza su transformación.
+            if let Some(&entity) = entity_map.0.get(node_id) {
+                if let Some(hsml) = node.get_hsml_element() {
+                    if let Ok(mut transform) = query.get_mut(entity) {
+                        transform.translation = Vec3::new(hsml.x, hsml.y, hsml.z);
+                        transform.rotation =
+                            Quat::from_euler(EulerRot::XYZ, hsml.rx, hsml.ry, hsml.rz);
                     }
                 }
-                entity_map.0.insert(node_id, entity);
-                // Almacenamos la referencia a la entidad en el campo `native`.
-                node.native = Some(entity);
-            }
-        } else {
-            // Si el nodo fue eliminado, se despawnea la entidad y se elimina del mapeo.
-            if let Some(&entity) = entity_map.0.get(&node_id) {
-                commands.entity(entity).despawn_recursive();
-                entity_map.0.remove(&node_id);
+            } else {
+                let tag_id = String::from(node.tag());
+                println!("Creando entidad para: {:?}", tag_id);
+
+                let node_id = node.id().clone();
+                let parent_id = node.parent();
+                if let Some(hsml) = node.get_hsml_element_mut() {
+                    // Crear la entidad para el nodo.
+                    let cube_handle = meshes.add(shapes::create_cube());
+                    let material_handle = materials.add(StandardMaterial {
+                        base_color: Color::rgb(0.5, 0.8, 0.8),
+                        ..Default::default()
+                    });
+                    let entity = commands
+                        .spawn((
+                            PbrBundle {
+                                mesh: cube_handle,
+                                material: material_handle,
+                                transform: Transform::from_xyz(hsml.x, hsml.y, hsml.z)
+                                    .with_rotation(Quat::from_euler(
+                                        EulerRot::XYZ,
+                                        hsml.rx,
+                                        hsml.ry,
+                                        hsml.rz,
+                                    ))
+                                    .with_scale(Vec3::new(0.3, 0.3, 0.3)),
+                                ..Default::default()
+                            },
+                            DomEntity { id: node_id },
+                        ))
+                        .id();
+                    // Si el nodo tiene un padre, se añade como hijo de la entidad padre.
+                    if let Some(parent_id) = parent_id {
+                        if let Some(&parent_entity) = entity_map.0.get(&parent_id) {
+                            commands.entity(parent_entity).push_children(&[entity]);
+                        }
+                    }
+                    entity_map.0.insert(node_id, entity);
+                    hsml.native = Some(entity);
+                }
             }
         }
+        // No se intenta despawnear aquí, ya que reload_xml_system se encarga de eliminar los nodos obsoletos.
     }
     dirty_nodes.0.clear();
 }
 
-/// Sistema que simula cambios en el DOM virtual:
-/// Se actualiza la rotación de todos los nodos y se marca cada uno como "dirty".
-/// Cada 5 segundos se añade o se elimina un nodo (en este ejemplo, sin alterar la jerarquía).
+
+
+// /// Sistema que simula cambios en el DOM virtual:
+// /// Se actualiza la rotación de todos los nodos y se marca cada uno como "dirty".
 // fn fake_update_dom_system(
 //     time: Res<Time>,
 //     mut state: Local<FakeUpdateState>,
