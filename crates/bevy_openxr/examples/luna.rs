@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use render::{apply_hsml_element, apply_model_element};
 use std::{collections::HashMap, rc::Rc, sync::Arc};
 use tokio::runtime::Runtime;
 
@@ -36,6 +37,11 @@ struct DebugTimer(Timer);
 /// Componente que identifica a la entidad que representa un nodo del DOM, mediante su id.
 #[derive(Component)]
 struct DomEntity {
+    pub id: usize,
+}
+/// Componente que identifica a la entidad que representa un nodo del DOM, mediante su id.
+#[derive(Component)]
+struct SystemEntity {
     pub id: usize,
 }
 
@@ -77,19 +83,33 @@ fn load_and_flatten_xml(url: &str) -> (HashMap<usize, HSMLEnum<Entity>>, Vec<usi
     (map, dirty)
 }
 
+/// Nuevo recurso para el contador de FPS
+#[derive(Resource)]
+struct FpsCounter {
+    timer: Timer,
+    frame_count: u32,
+    fps: f32,
+}
+
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .insert_resource(VirtualDomData::default())
         .insert_resource(DirtyNodes::default())
         .insert_resource(EntityMap::default())
-        // Timer para el modo debug: recarga cada segundo.
-        .insert_resource(DebugTimer(Timer::from_seconds(1.0, TimerMode::Repeating)))
+        .insert_resource(DebugTimer(Timer::from_seconds(10.0, TimerMode::Repeating)))
+        // Añadimos el recurso del contador de FPS
+        // .insert_resource(FpsCounter {
+        //     timer: Timer::from_seconds(1.0, TimerMode::Once),
+        //     frame_count: 0,
+        //     fps: 0.0,
+        // })
         .add_systems(Startup, setup)
-        // Sistema que recarga el XML cada segundo y actualiza el DOM virtual.
         .add_systems(Update, reload_xml_system)
-        // Sistema que sincroniza el DOM virtual con las entidades en la escena.
         .add_systems(Update, dom_sync_system)
+        // Añadimos el sistema para el contador de FPS
+        // .add_systems(Update, fps_counter_system)
         .run();
 }
 
@@ -100,6 +120,7 @@ fn setup(
     mut commands: Commands, 
     mut dom_data: ResMut<VirtualDomData>,
     mut dirty_nodes: ResMut<DirtyNodes>,
+    asset_server: Res<AssetServer>,
 ) {
     // Cámara 3D.
     commands.spawn(Camera3dBundle {
@@ -112,6 +133,24 @@ fn setup(
         transform: Transform::from_xyz(3.0, 8.0, 3.0),
         ..default()
     });
+
+    // Texto FPS como un elemento 2D en el espacio 3D
+    commands.spawn((
+        TextBundle {
+            text: Text::from_section(
+                "FPS: 0",
+                TextStyle {
+                    font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                    font_size: 0.2, // Tamaño ajustado para espacio 3D
+                    color: Color::WHITE,
+                },
+            ),
+            transform: Transform::from_xyz(-2.0, 8.0, 0.0), // Posición en espacio 3D
+            ..default()
+        },
+        // Marcamos esta entidad como UI para identificarla después
+        SystemEntity{id: 0 }
+    ));
 
     let (nodes, dirty) = load_and_flatten_xml("http://localhost:2052/static/main.hsml");
     dom_data.nodes = nodes;
@@ -158,6 +197,7 @@ fn dom_sync_system(
     mut entity_map: ResMut<EntityMap>,
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut query: Query<&mut Transform>,
+    asset_server: Res<AssetServer>,
 ) {
     // Se recorre el array en el orden definido (padre -> hijo).
     for node_id in dirty_nodes.0.iter() {
@@ -165,51 +205,65 @@ fn dom_sync_system(
             // Si la entidad ya existe, se actualiza su transformación.
             if let Some(&entity) = entity_map.0.get(node_id) {
                 if let Some(hsml) = node.get_hsml_element() {
+
                     if let Ok(mut transform) = query.get_mut(entity) {
-                        transform.translation = Vec3::new(hsml.x, hsml.y, hsml.z);
-                        transform.rotation = Quat::from_euler(EulerRot::XYZ, hsml.rx, hsml.ry, hsml.rz);
+                        apply_hsml_element(&hsml, &mut transform );
                     }
                 }
             } else {
                 let tag_id = String::from(node.tag());
-                println!("Creando entidad para: {:?}", tag_id);
 
                 let node_id = node.id().clone();
-                let parent_id = node.parent();
-                if let Some(hsml) = node.get_hsml_element_mut() {
+                let parent_id = node.parent().clone();
+                let mut node_clone = node.clone();
+                if let Some(hsml) = node_clone.get_hsml_element_mut() {
                     // Crear la entidad para el nodo.
                     let cube_handle = meshes.add(shapes::create_cube());
                     let material_handle = materials.add(StandardMaterial {
                         base_color: Color::rgb(0.5, 0.8, 0.8),
                         ..Default::default()
                     });
-                    let entity = commands
-                        .spawn((
-                            PbrBundle {
-                                mesh: cube_handle,
-                                material: material_handle,
-                                transform: Transform::from_xyz(hsml.x, hsml.y, hsml.z)
-                                    .with_rotation(Quat::from_euler(
-                                        EulerRot::XYZ,
-                                        hsml.rx,
-                                        hsml.ry,
-                                        hsml.rz,
-                                    ))
-                                    .with_scale(Vec3::new(0.3, 0.3, 0.3)),
-                                ..Default::default()
-                            },
-                            DomEntity { id: node_id },
-                        ))
-                        .id();
+                    let mut transform = Transform::default();
+                    
+                    apply_hsml_element(&hsml, &mut transform );
+
+                    let mut entity = commands.spawn_empty()
+                    .insert(TransformBundle::from_transform(transform))
+                    .insert(VisibilityBundle::default()).id();
+
+                    let mut node_clone = node.clone();
+                    match &mut node_clone {
+                        HSMLEnum::MODELElement(e)=> {
+                                                apply_model_element(e, &asset_server, &mut commands, &mut entity);
+                                            }
+                        _=> {
+                            let entity_emply = commands
+                            .spawn((
+                                PbrBundle {
+                                    mesh: cube_handle,
+                                    material: material_handle,
+                                    transform: transform,
+                                    ..Default::default()
+                                },
+                                DomEntity { id: node_id },
+                            ))
+                            .id();
+                            commands.entity(entity).push_children(&[entity_emply]);
+                        }
+                    }
+
                     // Si el nodo tiene un padre, se añade como hijo de la entidad padre.
                     if let Some(parent_id) = parent_id {
                         if let Some(&parent_entity) = entity_map.0.get(&parent_id) {
                             commands.entity(parent_entity).push_children(&[entity]);
                         }
                     }
+
                     entity_map.0.insert(node_id, entity);
                     hsml.native = Some(entity);
+
                 }
+
             }
         }
         // No se intenta despawnear aquí, ya que reload_xml_system se encarga de eliminar los nodos obsoletos.
@@ -217,7 +271,29 @@ fn dom_sync_system(
     dirty_nodes.0.clear();
 }
 
+/// Nuevo sistema para actualizar el contador de FPS
+fn fps_counter_system(
+    time: Res<Time>,
+    mut fps_counter: ResMut<FpsCounter>,
+    mut query: Query<&mut Text>,
+) {
+    fps_counter.frame_count += 1;
+    fps_counter.timer.tick(time.delta());
 
+    if fps_counter.timer.finished() {
+        // Calcular FPS
+        fps_counter.fps = fps_counter.frame_count as f32 / fps_counter.timer.duration().as_secs_f32();
+        
+        // Actualizar el texto
+        for mut text in query.iter_mut() {
+            text.sections[0].value = format!("FPS: {:.1}", fps_counter.fps);
+        }
+
+        // Reiniciar el contador
+        fps_counter.frame_count = 0;
+        fps_counter.timer.reset();
+    }
+}
 
 // /// Sistema que simula cambios en el DOM virtual:
 // /// Se actualiza la rotación de todos los nodos y se marca cada uno como "dirty".

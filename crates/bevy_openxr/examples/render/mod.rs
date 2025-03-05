@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use virtual_dom::dom::{element::Element, hsml::hsml::HSMLElement};
+use virtual_dom::dom::{element::Element, hsml::hsml::HSMLElement, hsml::hsml::MODELElement};
 
 
 // #[derive(Debug, Clone)]
@@ -20,10 +20,23 @@ use virtual_dom::dom::{element::Element, hsml::hsml::HSMLElement};
 //     src: String
 // } 
 
-pub fn  ApplyElement<N>(node:Element<N>, mut transform: Transform) {
-}
-
-pub fn  ApplyHSMLElement<N>(node:HSMLElement<N>, mut transform: Transform) {
+pub fn  apply_hsml_element<N>(node:&HSMLElement<N>, transform: &mut Transform) {
     transform.translation = Vec3::new(node.x, node.y, node.z);
     transform.rotation = Quat::from_euler(EulerRot::XYZ, node.rx, node.ry, node.rz);
+    transform.scale = Vec3::new(node.sx, node.sy, node.sz);
+}
+
+pub fn apply_model_element<N>(node:&MODELElement<N>,  asset_server: &Res<AssetServer>, commands:&mut Commands, entity: &mut Entity) {
+    println!("SRC: {:?}", node.src.clone().unwrap());
+    let model_handle: Handle<Scene> = asset_server.load(GltfAssetLabel::Scene(0).from_asset(node.src.clone().unwrap()));
+
+    let child_entity = commands
+    .spawn(SceneBundle {
+        scene: model_handle,
+        transform: Transform::default(),
+        ..default()
+    }, )
+    .id();
+
+    commands.entity(*entity).push_children(&[child_entity]);    
 }
