@@ -5,6 +5,8 @@ use tokio::runtime::Runtime;
 mod utils;
 use utils::shapes;
 
+mod render;
+
 use virtual_dom::{
     dom::hsml::{hsml::HSMLElement, HSMLEnum, ProxyElement},
     load_xml_from_url,
@@ -165,8 +167,7 @@ fn dom_sync_system(
                 if let Some(hsml) = node.get_hsml_element() {
                     if let Ok(mut transform) = query.get_mut(entity) {
                         transform.translation = Vec3::new(hsml.x, hsml.y, hsml.z);
-                        transform.rotation =
-                            Quat::from_euler(EulerRot::XYZ, hsml.rx, hsml.ry, hsml.rz);
+                        transform.rotation = Quat::from_euler(EulerRot::XYZ, hsml.rx, hsml.ry, hsml.rz);
                     }
                 }
             } else {
