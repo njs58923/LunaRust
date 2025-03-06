@@ -98,7 +98,7 @@ fn main() {
         .insert_resource(VirtualDomData::default())
         .insert_resource(DirtyNodes::default())
         .insert_resource(EntityMap::default())
-        .insert_resource(DebugTimer(Timer::from_seconds(1, TimerMode::Repeating)))
+        .insert_resource(DebugTimer(Timer::from_seconds(1.0, TimerMode::Repeating)))
         // Añadimos el recurso del contador de FPS
         .insert_resource(FpsCounter {
             timer: Timer::from_seconds(1.0, TimerMode::Once),
