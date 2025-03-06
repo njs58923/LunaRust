@@ -1,34 +1,34 @@
 use bevy::prelude::*;
-use render::{apply_hsml_element, apply_model_element};
-use std::{collections::HashMap, rc::Rc, sync::Arc};
+use render::{apply_model, apply_transform};
+use std::{collections::HashMap};
 use tokio::runtime::Runtime;
-
 mod utils;
 use utils::shapes;
-
+use specs::{Entity as SpecEntity, ReadStorage, World as SpecWorld, WorldExt};
 mod render;
 
 use virtual_dom::{
-    dom::hsml::{hsml::HSMLElement, HSMLEnum, ProxyElement},
-    load_xml_from_url,
-    parse_xml,
-    serialize_xml,
+    dom::{element::{build_world, Hierarchy, Tag, Transform2}, hsml::Model}, load_xml_from_url, parse_xml,
 };
 
 /// Recurso que guarda el DOM virtual como un HashMap de nodos.
 #[derive(Resource, Default)]
 struct VirtualDomData {
-    pub nodes: HashMap<usize, HSMLEnum<Entity>>,
+    pub nodes: HashMap<u32, SpecEntity>,
 }
 
 /// Recurso que guarda los IDs de los nodos que necesitan actualizarse en el siguiente frame,
 /// en el orden en el que deben procesarse (padre antes que hijo).
 #[derive(Resource, Default)]
-struct DirtyNodes(Vec<usize>);
+struct DirtyNodes(Vec<u32>);
+/// Recurso que guarda los IDs de los nodos que necesitan actualizarse en el siguiente frame,
+/// en el orden en el que deben procesarse (padre antes que hijo).
+#[derive(Resource, Default)]
+struct ElemenetWorld(SpecWorld);
 
 /// Recurso que mapea el id de un nodo a su entidad en la escena.
 #[derive(Resource, Default)]
-struct EntityMap(HashMap<usize, Entity>);
+struct EntityMap(HashMap<u32, Entity>);
 
 /// Recurso para el modo debug que fuerza la recarga del XML cada segundo.
 #[derive(Resource)]
@@ -37,26 +37,27 @@ struct DebugTimer(Timer);
 /// Componente que identifica a la entidad que representa un nodo del DOM, mediante su id.
 #[derive(Component)]
 struct DomEntity {
-    pub id: usize,
+    pub id: u32,
 }
 /// Componente que identifica a la entidad que representa un nodo del DOM, mediante su id.
 #[derive(Component)]
 struct SystemEntity {
-    pub id: usize,
+    pub id: u32,
 }
 
 /// Función auxiliar para cargar el XML, parsearlo y aplanar el DOM.
 /// Retorna un tuple con:
 /// - Un HashMap con los nodos, y
 /// - Un Vec con los IDs de los nodos en el orden en que se deben procesar (padre antes que hijo).
-fn load_and_flatten_xml(url: &str) -> (HashMap<usize, HSMLEnum<Entity>>, Vec<usize>) {
+fn load_and_flatten_xml(mut world: &mut SpecWorld,url: &str) -> (HashMap<u32, SpecEntity>, Vec<u32>) {
     let rt = Runtime::new().expect("No se pudo crear el runtime de Tokio");
     let xml_content = rt
         .block_on(load_xml_from_url(url))
         .expect("Error al cargar XML");
     // println!("XML cargado: {:?}", xml_content);
+
     
-    let root_node: HSMLEnum<Entity> = parse_xml(&xml_content)
+    let root_node: SpecEntity = parse_xml(&mut world, &xml_content)
         .expect("Error al parsear el XML");
     
     // let demo_hsml = serialize_xml(&root_node);
@@ -64,22 +65,25 @@ fn load_and_flatten_xml(url: &str) -> (HashMap<usize, HSMLEnum<Entity>>, Vec<usi
     
     let mut map = HashMap::new();
     let mut dirty = Vec::new();
+
+    let hierarchys = world.read_storage::<Hierarchy>();
     
     fn flatten_dom(
-        node: HSMLEnum<Entity>,
-        map: &mut HashMap<usize, HSMLEnum<Entity>>,
-        dirty: &mut Vec<usize>,
+        node: SpecEntity,
+        map: &mut HashMap<u32, SpecEntity>,
+        dirty: &mut Vec<u32>,
+        hierarchys: &ReadStorage<Hierarchy>,
     ) {
         dirty.push(node.id());
         map.insert(node.id(), node.clone());
-        if let Some(element) = node.get_element() {
+        if let Some(element) = hierarchys.get(node) {
             for child in &element.children {
-                flatten_dom(child.clone(), map, dirty);
+                flatten_dom(child.clone(), map, dirty, hierarchys);
             }
         }
     }
     
-    flatten_dom(root_node, &mut map, &mut dirty);
+    flatten_dom(root_node, &mut map, &mut dirty, &hierarchys);
     (map, dirty)
 }
 
@@ -98,6 +102,7 @@ fn main() {
         .insert_resource(VirtualDomData::default())
         .insert_resource(DirtyNodes::default())
         .insert_resource(EntityMap::default())
+        .insert_resource(ElemenetWorld(build_world()))
         .insert_resource(DebugTimer(Timer::from_seconds(1.0, TimerMode::Repeating)))
         // Añadimos el recurso del contador de FPS
         .insert_resource(FpsCounter {
@@ -117,6 +122,7 @@ fn main() {
 /// - Configura cámara y luz.
 /// - Carga el XML inicial y actualiza los recursos VirtualDomData y DirtyNodes.
 fn setup(
+    mut world: ResMut<ElemenetWorld>, 
     mut commands: Commands, 
     mut dom_data: ResMut<VirtualDomData>,
     mut dirty_nodes: ResMut<DirtyNodes>,
@@ -152,7 +158,7 @@ fn setup(
         SystemEntity{id: 0 }
     ));
 
-    let (nodes, dirty) = load_and_flatten_xml("http://localhost:2052/static/main.hsml");
+    let (nodes, dirty) = load_and_flatten_xml(&mut world.0,"http://localhost:2052/static/main.hsml");
     dom_data.nodes = nodes;
     dirty_nodes.0 = dirty;
 }
@@ -160,6 +166,7 @@ fn setup(
 /// Sistema que recarga el XML cada segundo, actualiza el DOM virtual y elimina las entidades obsoletas.
 fn reload_xml_system(
     time: Res<Time>,
+    mut world: ResMut<ElemenetWorld>, 
     mut debug_timer: ResMut<DebugTimer>,
     mut dom_data: ResMut<VirtualDomData>,
     mut dirty_nodes: ResMut<DirtyNodes>,
@@ -169,7 +176,7 @@ fn reload_xml_system(
     debug_timer.0.tick(time.delta());
 
     if debug_timer.0.finished() {
-        let (new_nodes, new_dirty) = load_and_flatten_xml("http://localhost:2052/static/main.hsml");
+        let (new_nodes, new_dirty) = load_and_flatten_xml(&mut world.0, "http://localhost:2052/static/main.hsml");
 
         // Eliminar únicamente los nodos que realmente ya no existen.
         entity_map.0.retain(|&id, &mut entity| {
@@ -206,6 +213,7 @@ fn reload_xml_system(
 /// Se procesan los nodos en el orden definido en el array para asegurar que
 /// los padres se creen antes que los hijos.
 fn dom_sync_system(
+    worls: ResMut<ElemenetWorld>, 
     mut commands: Commands,
     mut dom_data: ResMut<VirtualDomData>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -215,24 +223,30 @@ fn dom_sync_system(
     mut query: Query<&mut Transform>,
     asset_server: Res<AssetServer>,
 ) {
+
+    let tags = worls.0.read_storage::<Tag>();
+    let transforms = worls.0.read_storage::<Transform2>();
+    let hierarchys = worls.0.read_storage::<Hierarchy>();
+    let models = worls.0.read_storage::<Model>();
+
+
     // Se recorre el array en el orden definido (padre -> hijo).
     for node_id in dirty_nodes.0.iter() {
         if let Some(node) = dom_data.nodes.get_mut(node_id) {
+            let tag = &tags.get(node.clone()).unwrap().0;
+            
             // Si la entidad ya existe, se actualiza su transformación.
             if let Some(&entity) = entity_map.0.get(node_id) {
-                if let Some(hsml) = node.get_hsml_element() {
-
+                if let Some(node_transform) = transforms.get(*node) {
                     if let Ok(mut transform) = query.get_mut(entity) {
-                        apply_hsml_element(&hsml, &mut transform );
+                        apply_transform(&node_transform, &mut transform );
                     }
                 }
             } else {
-                let tag_id = String::from(node.tag());
-
                 let node_id = node.id().clone();
-                let parent_id = node.parent().clone();
-                let mut node_clone = node.clone();
-                if let Some(hsml) = node_clone.get_hsml_element_mut() {
+                let hierarchy = hierarchys.get(*node).unwrap();
+                let parent_id = hierarchy.parent;
+                if let Some(node_transform) = transforms.get(*node) {
                     // Crear la entidad para el nodo.
                     let cube_handle = meshes.add(shapes::create_cube());
                     let material_handle = materials.add(StandardMaterial {
@@ -241,31 +255,31 @@ fn dom_sync_system(
                     });
                     let mut transform = Transform::default();
                     
-                    apply_hsml_element(&hsml, &mut transform );
+                    apply_transform(&node_transform, &mut transform );
 
                     let mut entity = commands.spawn_empty()
                     .insert(TransformBundle::from_transform(transform))
                     .insert(VisibilityBundle::default()).id();
 
-                    let mut node_clone = node.clone();
-                    match &mut node_clone {
-                        HSMLEnum::MODELElement(e)=> {
-                                                apply_model_element(e, &asset_server, &mut commands, &mut entity);
-                                            }
-                        _=> {
-                            let entity_emply = commands
-                            .spawn((
-                                PbrBundle {
-                                    mesh: cube_handle,
-                                    material: material_handle,
-                                    transform: transform.with_scale(Vec3 { x: 0.2, y: 0.2, z: 0.2 }),
-                                    ..Default::default()
-                                },
-                                DomEntity { id: node_id },
-                            ))
-                            .id();
-                            commands.entity(entity).push_children(&[entity_emply]);
+                    if tag == "model"{
+                        if let Some(model) = models.get(*node){
+                            apply_model(&model, &asset_server, &mut commands, &mut entity);
                         }
+                    }else if tag == "script"{
+                    }else if tag == "space"{
+                    }else{
+                        let entity_emply = commands
+                        .spawn((
+                            PbrBundle {
+                                mesh: cube_handle,
+                                material: material_handle,
+                                transform: transform.with_scale(Vec3 { x: 0.2, y: 0.2, z: 0.2 }),
+                                ..Default::default()
+                            },
+                            DomEntity { id: node_id },
+                        ))
+                        .id();
+                        commands.entity(entity).push_children(&[entity_emply]);
                     }
 
                     // Si el nodo tiene un padre, se añade como hijo de la entidad padre.
@@ -276,7 +290,6 @@ fn dom_sync_system(
                     }
 
                     entity_map.0.insert(node_id, entity);
-                    hsml.native = Some(entity);
 
                 }
 

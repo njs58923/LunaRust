@@ -27,6 +27,8 @@ bevy.workspace = true
 virtual-dom = { path = "../../../debs/core" }
 futures = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+specs = "0.20"
+specs-derive = "0.4"
 
 # all other dependencies are placed under this since on wasm, this crate is completely empty
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
