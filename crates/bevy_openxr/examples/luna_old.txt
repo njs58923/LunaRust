@@ -1,0 +1,46 @@
+// /// Sistema que simula cambios en el DOM virtual:
+// /// Se actualiza la rotación de todos los nodos y se marca cada uno como "dirty".
+// fn fake_update_dom_system(
+//     time: Res<Time>,
+//     mut state: Local<FakeUpdateState>,
+//     mut dom_data: ResMut<VirtualDomData>,
+//     mut next_id: ResMut<NextNodeId>,
+//     mut dirty_nodes: ResMut<DirtyNodes>,
+// ) {
+//     // Actualiza la rotación de cada nodo y márcalo como "dirty".
+//     for (_key, node) in dom_data.nodes.iter_mut() {
+//         node.ry += 2.0 * time.delta_seconds();
+//         dirty_nodes.0.insert(node.id, true);
+//     }
+    
+//     if state.timer.tick(time.delta()).just_finished() {
+//         if state.add_mode {
+//             // Añadir un nodo raíz (en un caso real podrías definir la jerarquía según tus necesidades).
+//             let new_id = next_id.0;
+//             next_id.0 += 1;
+//             let new_node = DomNode {
+//                 id: new_id,
+//                 parent: None,
+//                 x: new_id as f32 * 1.5,
+//                 y: 0.0,
+//                 z: 0.0,
+//                 rx: 0.0,
+//                 ry: 0.0,
+//                 rz: 0.0,
+//             };
+//             dom_data.nodes.insert(new_id, new_node);
+//             dirty_nodes.0.insert(new_id, true);
+//             info!("Se agregó el nodo raíz con id: {}", new_id);
+//         } else {
+//             // Quitar el nodo con el id más alto (último agregado).
+//             if let Some(&max_id) = dom_data.nodes.keys().max() {
+//                 if let Some(removed) = dom_data.nodes.remove(&max_id) {
+//                     info!("Se eliminó el nodo con id: {}", removed.id);
+//                     dirty_nodes.0.insert(removed.id, true);
+//                 }
+//             }
+//         }
+//         // Alternar entre añadir y quitar.
+//         state.add_mode = !state.add_mode;
+//     }
+// }

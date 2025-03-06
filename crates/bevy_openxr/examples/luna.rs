@@ -54,13 +54,13 @@ fn load_and_flatten_xml(url: &str) -> (HashMap<usize, HSMLEnum<Entity>>, Vec<usi
     let xml_content = rt
         .block_on(load_xml_from_url(url))
         .expect("Error al cargar XML");
-    println!("XML cargado: {:?}", xml_content);
+    // println!("XML cargado: {:?}", xml_content);
     
     let root_node: HSMLEnum<Entity> = parse_xml(&xml_content)
         .expect("Error al parsear el XML");
     
-    let demo_hsml = serialize_xml(&root_node);
-    println!("PREVIEW: {:?}", demo_hsml);
+    // let demo_hsml = serialize_xml(&root_node);
+    // println!("PREVIEW: {:?}", demo_hsml);
     
     let mut map = HashMap::new();
     let mut dirty = Vec::new();
@@ -98,18 +98,18 @@ fn main() {
         .insert_resource(VirtualDomData::default())
         .insert_resource(DirtyNodes::default())
         .insert_resource(EntityMap::default())
-        .insert_resource(DebugTimer(Timer::from_seconds(10.0, TimerMode::Repeating)))
+        .insert_resource(DebugTimer(Timer::from_seconds(1, TimerMode::Repeating)))
         // Añadimos el recurso del contador de FPS
-        // .insert_resource(FpsCounter {
-        //     timer: Timer::from_seconds(1.0, TimerMode::Once),
-        //     frame_count: 0,
-        //     fps: 0.0,
-        // })
+        .insert_resource(FpsCounter {
+            timer: Timer::from_seconds(1.0, TimerMode::Once),
+            frame_count: 0,
+            fps: 0.0,
+        })
         .add_systems(Startup, setup)
         .add_systems(Update, reload_xml_system)
         .add_systems(Update, dom_sync_system)
         // Añadimos el sistema para el contador de FPS
-        // .add_systems(Update, fps_counter_system)
+        .add_systems(Update, fps_counter_system)
         .run();
 }
 
@@ -145,7 +145,7 @@ fn setup(
                     color: Color::WHITE,
                 },
             ),
-            transform: Transform::from_xyz(-2.0, 8.0, 0.0), // Posición en espacio 3D
+            transform: Transform::from_xyz(-2.0, 5.0, 0.0), // Posición en espacio 3D
             ..default()
         },
         // Marcamos esta entidad como UI para identificarla después
@@ -167,24 +167,40 @@ fn reload_xml_system(
     mut entity_map: ResMut<EntityMap>,
 ) {
     debug_timer.0.tick(time.delta());
+
     if debug_timer.0.finished() {
         let (new_nodes, new_dirty) = load_and_flatten_xml("http://localhost:2052/static/main.hsml");
 
-        // Eliminar las entidades cuyos nodos ya no existen en el nuevo XML.
-        let old_ids: Vec<usize> = entity_map.0.keys().cloned().collect();
-        for id in old_ids {
+        // Eliminar únicamente los nodos que realmente ya no existen.
+        entity_map.0.retain(|&id, &mut entity| {
             if !new_nodes.contains_key(&id) {
-                if let Some(entity) = entity_map.0.remove(&id) {
-                    commands.entity(entity).despawn_recursive();
+                commands.entity(entity).despawn_recursive();
+                false
+            } else {
+                true
+            }
+        });
+
+        // Solo insertar en dirty_nodes los nodos realmente nuevos o que cambiaron.
+        let mut refined_dirty = Vec::new();
+        for node_id in new_dirty.iter() {
+            match (dom_data.nodes.get(node_id), new_nodes.get(node_id)) {
+                (Some(old_node), Some(new_node)) => {
+                    if old_node != new_node {
+                        refined_dirty.push(*node_id);
+                    }
                 }
+                (None, Some(_)) => refined_dirty.push(*node_id), // Nodo nuevo
+                _ => {},
             }
         }
-        
-        // Actualizar el recurso con los nuevos nodos y el nuevo orden de dirty.
+
+        // Actualizar los datos del DOM virtual con los nuevos valores.
         dom_data.nodes = new_nodes;
-        dirty_nodes.0 = new_dirty;
+        dirty_nodes.0 = refined_dirty;
     }
 }
+
 
 /// Sistema que sincroniza el DOM virtual con las entidades en la escena.
 /// Se procesan los nodos en el orden definido en el array para asegurar que
@@ -242,7 +258,7 @@ fn dom_sync_system(
                                 PbrBundle {
                                     mesh: cube_handle,
                                     material: material_handle,
-                                    transform: transform,
+                                    transform: transform.with_scale(Vec3 { x: 0.2, y: 0.2, z: 0.2 }),
                                     ..Default::default()
                                 },
                                 DomEntity { id: node_id },
@@ -275,69 +291,20 @@ fn dom_sync_system(
 fn fps_counter_system(
     time: Res<Time>,
     mut fps_counter: ResMut<FpsCounter>,
-    mut query: Query<&mut Text>,
+    mut query: Query<&mut Text, With<SystemEntity>>,
 ) {
     fps_counter.frame_count += 1;
     fps_counter.timer.tick(time.delta());
 
     if fps_counter.timer.finished() {
-        // Calcular FPS
-        fps_counter.fps = fps_counter.frame_count as f32 / fps_counter.timer.duration().as_secs_f32();
-        
-        // Actualizar el texto
+        fps_counter.fps = fps_counter.frame_count as f32 / fps_counter.timer.elapsed_secs();
+
         for mut text in query.iter_mut() {
             text.sections[0].value = format!("FPS: {:.1}", fps_counter.fps);
         }
 
-        // Reiniciar el contador
         fps_counter.frame_count = 0;
         fps_counter.timer.reset();
     }
 }
 
-// /// Sistema que simula cambios en el DOM virtual:
-// /// Se actualiza la rotación de todos los nodos y se marca cada uno como "dirty".
-// fn fake_update_dom_system(
-//     time: Res<Time>,
-//     mut state: Local<FakeUpdateState>,
-//     mut dom_data: ResMut<VirtualDomData>,
-//     mut next_id: ResMut<NextNodeId>,
-//     mut dirty_nodes: ResMut<DirtyNodes>,
-// ) {
-//     // Actualiza la rotación de cada nodo y márcalo como "dirty".
-//     for (_key, node) in dom_data.nodes.iter_mut() {
-//         node.ry += 2.0 * time.delta_seconds();
-//         dirty_nodes.0.insert(node.id, true);
-//     }
-    
-//     if state.timer.tick(time.delta()).just_finished() {
-//         if state.add_mode {
-//             // Añadir un nodo raíz (en un caso real podrías definir la jerarquía según tus necesidades).
-//             let new_id = next_id.0;
-//             next_id.0 += 1;
-//             let new_node = DomNode {
-//                 id: new_id,
-//                 parent: None,
-//                 x: new_id as f32 * 1.5,
-//                 y: 0.0,
-//                 z: 0.0,
-//                 rx: 0.0,
-//                 ry: 0.0,
-//                 rz: 0.0,
-//             };
-//             dom_data.nodes.insert(new_id, new_node);
-//             dirty_nodes.0.insert(new_id, true);
-//             info!("Se agregó el nodo raíz con id: {}", new_id);
-//         } else {
-//             // Quitar el nodo con el id más alto (último agregado).
-//             if let Some(&max_id) = dom_data.nodes.keys().max() {
-//                 if let Some(removed) = dom_data.nodes.remove(&max_id) {
-//                     info!("Se eliminó el nodo con id: {}", removed.id);
-//                     dirty_nodes.0.insert(removed.id, true);
-//                 }
-//             }
-//         }
-//         // Alternar entre añadir y quitar.
-//         state.add_mode = !state.add_mode;
-//     }
-// }

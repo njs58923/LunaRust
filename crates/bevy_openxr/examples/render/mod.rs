@@ -27,7 +27,6 @@ pub fn  apply_hsml_element<N>(node:&HSMLElement<N>, transform: &mut Transform) {
 }
 
 pub fn apply_model_element<N>(node:&MODELElement<N>,  asset_server: &Res<AssetServer>, commands:&mut Commands, entity: &mut Entity) {
-    println!("SRC: {:?}", node.src.clone().unwrap());
     let model_handle: Handle<Scene> = asset_server.load(GltfAssetLabel::Scene(0).from_asset(node.src.clone().unwrap()));
 
     let child_entity = commands
