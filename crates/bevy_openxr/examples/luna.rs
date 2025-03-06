@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use render::{apply_model, apply_transform};
-use std::{collections::HashMap};
+use std::collections::HashMap;
 use tokio::runtime::Runtime;
 mod utils;
 use utils::shapes;
@@ -8,7 +8,7 @@ use specs::{Entity as SpecEntity, ReadStorage, World as SpecWorld, WorldExt};
 mod render;
 
 use virtual_dom::{
-    dom::{element::{build_world, Hierarchy, Tag, Transform2}, hsml::Model}, load_xml_from_url, parse_xml,
+    dom::{element::{build_world, Hierarchy, Tag, Transform2}, hsml::Model}, load_xml_from_url, parse_xml, serialize_xml,
 };
 
 /// Recurso que guarda el DOM virtual como un HashMap de nodos.
@@ -54,14 +54,14 @@ fn load_and_flatten_xml(mut world: &mut SpecWorld,url: &str) -> (HashMap<u32, Sp
     let xml_content = rt
         .block_on(load_xml_from_url(url))
         .expect("Error al cargar XML");
-    // println!("XML cargado: {:?}", xml_content);
+    println!("XML cargado: {:?}", xml_content);
 
     
     let root_node: SpecEntity = parse_xml(&mut world, &xml_content)
         .expect("Error al parsear el XML");
     
-    // let demo_hsml = serialize_xml(&root_node);
-    // println!("PREVIEW: {:?}", demo_hsml);
+    let demo_hsml = serialize_xml(&mut world, root_node.clone());
+    println!("PREVIEW: {:?}", demo_hsml);
     
     let mut map = HashMap::new();
     let mut dirty = Vec::new();

@@ -5130,6 +5130,7 @@ name = "virtual-dom"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "lazy_static",
  "quick-xml",
  "reqwest 0.11.27",
  "specs",
