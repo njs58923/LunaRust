@@ -8,7 +8,7 @@ use specs::{Entity as SpecEntity, ReadStorage, World as SpecWorld, WorldExt};
 mod render;
 
 use virtual_dom::{
-    dom::{element::{build_world, Hierarchy, Tag, Transform2}, hsml::Model}, load_xml_from_url, parse_xml, serialize_xml,
+    dom::{element::{build_world, Hierarchy, Tag, Transform2}, hsml::Model}, load_xml_from_url, parse_xml
 };
 
 /// Recurso que guarda el DOM virtual como un HashMap de nodos.
@@ -33,18 +33,7 @@ struct EntityMap(HashMap<u32, Entity>);
 /// Recurso para el modo debug que fuerza la recarga del XML cada segundo.
 #[derive(Resource)]
 struct DebugTimer(Timer);
-
-/// Componente que identifica a la entidad que representa un nodo del DOM, mediante su id.
-#[derive(Component)]
-struct DomEntity {
-    pub id: u32,
-}
-/// Componente que identifica a la entidad que representa un nodo del DOM, mediante su id.
-#[derive(Component)]
-struct SystemEntity {
-    pub id: u32,
-}
-
+ 
 /// Función auxiliar para cargar el XML, parsearlo y aplanar el DOM.
 /// Retorna un tuple con:
 /// - Un HashMap con los nodos, y
@@ -54,14 +43,15 @@ fn load_and_flatten_xml(mut world: &mut SpecWorld,url: &str) -> (HashMap<u32, Sp
     let xml_content = rt
         .block_on(load_xml_from_url(url))
         .expect("Error al cargar XML");
-    println!("XML cargado: {:?}", xml_content);
+    // println!("XML cargado: {:?}", xml_content);
 
     
     let root_node: SpecEntity = parse_xml(&mut world, &xml_content)
         .expect("Error al parsear el XML");
+
     
-    let demo_hsml = serialize_xml(&mut world, root_node.clone());
-    println!("PREVIEW: {:?}", demo_hsml);
+    // let demo_hsml = serialize_xml(&mut world, root_node.clone());
+    // println!("PREVIEW: {:?}", demo_hsml);
     
     let mut map = HashMap::new();
     let mut dirty = Vec::new();
@@ -103,18 +93,18 @@ fn main() {
         .insert_resource(DirtyNodes::default())
         .insert_resource(EntityMap::default())
         .insert_resource(ElemenetWorld(build_world()))
-        .insert_resource(DebugTimer(Timer::from_seconds(1.0, TimerMode::Repeating)))
+        .insert_resource(DebugTimer(Timer::from_seconds(3.0, TimerMode::Repeating)))
         // Añadimos el recurso del contador de FPS
-        .insert_resource(FpsCounter {
-            timer: Timer::from_seconds(1.0, TimerMode::Once),
-            frame_count: 0,
-            fps: 0.0,
-        })
+        // .insert_resource(FpsCounter {
+        //     timer: Timer::from_seconds(1.0, TimerMode::Once),
+        //     frame_count: 0,
+        //     fps: 0.0,
+        // })
         .add_systems(Startup, setup)
         .add_systems(Update, reload_xml_system)
         .add_systems(Update, dom_sync_system)
         // Añadimos el sistema para el contador de FPS
-        .add_systems(Update, fps_counter_system)
+        // .add_systems(Update, fps_counter_system)
         .run();
 }
 
@@ -153,9 +143,7 @@ fn setup(
             ),
             transform: Transform::from_xyz(-2.0, 5.0, 0.0), // Posición en espacio 3D
             ..default()
-        },
-        // Marcamos esta entidad como UI para identificarla después
-        SystemEntity{id: 0 }
+        }
     ));
 
     let (nodes, dirty) = load_and_flatten_xml(&mut world.0,"http://localhost:2052/static/main.hsml");
@@ -194,10 +182,10 @@ fn reload_xml_system(
             match (dom_data.nodes.get(node_id), new_nodes.get(node_id)) {
                 (Some(old_node), Some(new_node)) => {
                     if old_node != new_node {
-                        refined_dirty.push(*node_id);
+                        refined_dirty.push(node_id.clone());
                     }
                 }
-                (None, Some(_)) => refined_dirty.push(*node_id), // Nodo nuevo
+                (None, Some(_)) => refined_dirty.push(node_id.clone()), // Nodo nuevo
                 _ => {},
             }
         }
@@ -215,7 +203,7 @@ fn reload_xml_system(
 fn dom_sync_system(
     worls: ResMut<ElemenetWorld>, 
     mut commands: Commands,
-    mut dom_data: ResMut<VirtualDomData>,
+    dom_data: ResMut<VirtualDomData>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut entity_map: ResMut<EntityMap>,
@@ -229,12 +217,11 @@ fn dom_sync_system(
     let hierarchys = worls.0.read_storage::<Hierarchy>();
     let models = worls.0.read_storage::<Model>();
 
-
     // Se recorre el array en el orden definido (padre -> hijo).
     for node_id in dirty_nodes.0.iter() {
-        if let Some(node) = dom_data.nodes.get_mut(node_id) {
+        if let Some(node) = dom_data.nodes.get(node_id) {
             let tag = &tags.get(node.clone()).unwrap().0;
-            
+
             // Si la entidad ya existe, se actualiza su transformación.
             if let Some(&entity) = entity_map.0.get(node_id) {
                 if let Some(node_transform) = transforms.get(*node) {
@@ -244,42 +231,51 @@ fn dom_sync_system(
                 }
             } else {
                 let node_id = node.id().clone();
-                let hierarchy = hierarchys.get(*node).unwrap();
+                let hierarchy = hierarchys.get(node.clone()).unwrap();
                 let parent_id = hierarchy.parent;
-                if let Some(node_transform) = transforms.get(*node) {
-                    // Crear la entidad para el nodo.
-                    let cube_handle = meshes.add(shapes::create_cube());
-                    let material_handle = materials.add(StandardMaterial {
-                        base_color: Color::rgb(0.5, 0.8, 0.8),
-                        ..Default::default()
-                    });
+                if let Some(node_transform) = transforms.get(node.clone()) {
                     let mut transform = Transform::default();
-                    
                     apply_transform(&node_transform, &mut transform );
 
                     let mut entity = commands.spawn_empty()
                     .insert(TransformBundle::from_transform(transform))
                     .insert(VisibilityBundle::default()).id();
 
-                    if tag == "model"{
-                        if let Some(model) = models.get(*node){
-                            apply_model(&model, &asset_server, &mut commands, &mut entity);
-                        }
-                    }else if tag == "script"{
-                    }else if tag == "space"{
-                    }else{
-                        let entity_emply = commands
-                        .spawn((
-                            PbrBundle {
-                                mesh: cube_handle,
-                                material: material_handle,
-                                transform: transform.with_scale(Vec3 { x: 0.2, y: 0.2, z: 0.2 }),
+                    match tag.as_str() {
+                        "model" => {
+                            // println!("⚠️ model {:?}", &tag);
+                            if let Some(model) = models.get(*node){
+                                apply_model(&model, &asset_server, &mut commands, &mut entity);
+                            }
+                        },
+                        "script" => {
+                            // println!("⚠️ script {:?}", &tag);
+                        },
+                        "space2" => {
+                            // println!("⚠️ space {:?}", &tag);
+                        },
+                        "include" => {
+                            // println!("⚠️ space {:?}", &tag);
+                        },
+                        _ => {
+                            // Crear la entidad para el nodo.
+                            let cube_handle = meshes.add(shapes::create_cube());
+                            let material_handle = materials.add(StandardMaterial {
+                                base_color: Color::rgb(0.5, 0.8, 0.8),
                                 ..Default::default()
-                            },
-                            DomEntity { id: node_id },
-                        ))
-                        .id();
-                        commands.entity(entity).push_children(&[entity_emply]);
+                            });
+                            let entity_emply = commands
+                            .spawn((
+                                PbrBundle {
+                                    mesh: cube_handle,
+                                    material: material_handle,
+                                    transform: transform.with_scale(Vec3 { x: 0.2, y: 0.2, z: 0.2 }),
+                                    ..Default::default()
+                                },
+                            ))
+                            .id();
+                            commands.entity(entity).push_children(&[entity_emply]);
+                        },
                     }
 
                     // Si el nodo tiene un padre, se añade como hijo de la entidad padre.
@@ -290,7 +286,6 @@ fn dom_sync_system(
                     }
 
                     entity_map.0.insert(node_id, entity);
-
                 }
 
             }
@@ -304,7 +299,7 @@ fn dom_sync_system(
 fn fps_counter_system(
     time: Res<Time>,
     mut fps_counter: ResMut<FpsCounter>,
-    mut query: Query<&mut Text, With<SystemEntity>>,
+    mut query: Query<&mut Text>,
 ) {
     fps_counter.frame_count += 1;
     fps_counter.timer.tick(time.delta());
