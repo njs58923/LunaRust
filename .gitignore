@@ -5,3 +5,4 @@
 .envrc
 .zed
 .direnv
+crates/bevy_openxr/cache/*

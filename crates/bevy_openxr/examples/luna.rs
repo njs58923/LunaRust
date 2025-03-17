@@ -1,18 +1,90 @@
-use bevy::{prelude::*, window::PresentMode, diagnostic::FrameTimeDiagnosticsPlugin};
-use bevy_egui::{egui, EguiPlugin, EguiContexts};
-use specs::{Entity as SpecEntity, Join, ReadStorage, World as SpecWorld, WorldExt};
-use std::collections::HashMap;
-use tokio::runtime::Runtime;
-use virtual_dom::{
-    dom::{element::{build_world, Attrs, Hierarchy, Tag, Transform2}, hsml::Model}, 
-    load_xml_from_url, parse_xml
+use bevy::{
+    asset::AssetPlugin, diagnostic::FrameTimeDiagnosticsPlugin, prelude::*, window::PresentMode
+    // Solo si lo usas:
+    // window::PresentMode,
 };
+use bevy_egui::{egui, EguiPlugin, EguiContexts};
+use specs::{World as SpecWorld, WorldExt, Entity as SpecEntity, Join, ReadStorage};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
+use tokio::runtime::Runtime;
+use url::Url;
+use base64::{engine::general_purpose::STANDARD as Base64Engine, Engine as _};
+
+use virtual_dom::{
+    dom::{
+        element::{build_world, Attrs, Hierarchy, Tag, Transform2},
+        hsml::Model,
+    },
+    load_xml_from_url, parse_xml,
+};
+use anyhow::Result;
+
+// Módulos ficticios
 mod render;
 mod utils;
-use render::{apply_model, apply_transform};
+use render::apply_transform;
 use utils::shapes;
 
-// Recursos existentes
+// --------------------------------------------------------------------------------------
+// LOG
+// --------------------------------------------------------------------------------------
+#[derive(Debug, Clone, Copy)]
+enum LogLevel {
+    Error,
+    Warn,
+    Info,
+}
+
+#[derive(Debug, Clone)]
+struct LogEntry {
+    level: LogLevel,
+    message: String,
+}
+
+impl LogEntry {
+    fn new(level: LogLevel, message: impl Into<String>) -> Self {
+        Self {
+            level,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Resource, Default)]
+struct LogPanel {
+    logs: Vec<LogEntry>,
+}
+
+impl LogPanel {
+    fn push_error(&mut self, msg: impl Into<String>) {
+        self.push(LogLevel::Error, msg);
+    }
+    fn push_warn(&mut self, msg: impl Into<String>) {
+        self.push(LogLevel::Warn, msg);
+    }
+    fn push_info(&mut self, msg: impl Into<String>) {
+        self.push(LogLevel::Info, msg);
+    }
+    fn push(&mut self, level: LogLevel, msg: impl Into<String>) {
+        const MAX_LOGS: usize = 300;
+        if self.logs.len() >= MAX_LOGS {
+            self.logs.remove(0);
+        }
+        self.logs.push(LogEntry::new(level, msg));
+    }
+    fn clear(&mut self) {
+        self.logs.clear();
+    }
+}
+
+// --------------------------------------------------------------------------------------
+// RECURSOS
+// --------------------------------------------------------------------------------------
 #[derive(Resource, Default)]
 struct VirtualDomData {
     pub nodes: HashMap<u32, SpecEntity>,
@@ -28,7 +100,9 @@ struct ElemenetWorld(SpecWorld);
 struct EntityMap(HashMap<u32, Entity>);
 
 #[derive(Resource, Default)]
-struct EntityCounter { count: usize }
+struct EntityCounter {
+    count: usize,
+}
 
 #[derive(Resource)]
 struct FpsCounter {
@@ -36,7 +110,6 @@ struct FpsCounter {
     frame_count: u32,
     fps: u32,
 }
-
 impl Default for FpsCounter {
     fn default() -> Self {
         Self {
@@ -56,65 +129,111 @@ struct DevtoolVisible(bool);
 #[derive(Resource, Default)]
 struct ReloadTrigger(bool);
 
-// Nuevos recursos para actualizaciones y eliminaciones
 #[derive(Resource, Default)]
-struct AttributeUpdates(Vec<(u32, String, String)>); // (entity_id, attr_key, new_value)
+struct AttributeUpdates(Vec<(u32, String, String)>);
 
-// Agregar un componente Dirty para marcar entidades que necesitan actualización
 #[derive(Component)]
 struct Dirty;
 
 #[derive(Resource, Default)]
-struct DeleteRequests(Vec<u32>); // IDs de entidades a eliminar
+struct DeleteRequests(Vec<u32>);
 
-// Recurso para recursos compartidos
 #[derive(Resource)]
 struct SharedResources {
     cube_mesh: Handle<Mesh>,
     default_material: Handle<StandardMaterial>,
 }
-// Actualizar main para incluir el nuevo sistema
+
+// Recurso con el runtime de Tokio
+#[derive(Resource)]
+struct TokioRuntime(Runtime);
+
+// CACHE: URL -> path local
+#[derive(Resource, Default)]
+struct ModelCache {
+    cache: HashMap<String, String>,
+}
+
+/// Medición de performance
+#[derive(Resource, Default)]
+struct PerformanceStats {
+    dom_sync_ms: f32,
+}
+
+// --------------------------------------------------------------------------------------
+// MAIN
+// --------------------------------------------------------------------------------------
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                present_mode: PresentMode::AutoNoVsync,
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(AssetPlugin {
+                    file_path: "assets".into(),
+                    watch_for_changes_override: Some(false),
+                    ..Default::default()
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        present_mode: PresentMode::Immediate,
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        )
         .add_plugins(EguiPlugin)
         .add_plugins(FrameTimeDiagnosticsPlugin)
+        // Nuestros recursos
         .insert_resource(VirtualDomData::default())
         .insert_resource(DirtyNodes::default())
         .insert_resource(EntityMap::default())
         .insert_resource(ElemenetWorld(build_world()))
         .insert_resource(EntityCounter::default())
         .insert_resource(FpsCounter::default())
-        .insert_resource(CurrentUrl("http://localhost:2052/static/main.hsml".to_string()))
+        .insert_resource(CurrentUrl(
+            "http://localhost:2052/static/main.hsml".to_string(),
+        ))
         .insert_resource(ReloadTrigger(false))
         .insert_resource(AttributeUpdates::default())
         .insert_resource(DeleteRequests::default())
         .insert_resource(DevtoolVisible(true))
+        .insert_resource(LogPanel::default())
+        // Runtime
+        .insert_resource(TokioRuntime(
+            Runtime::new().expect("No se pudo crear Tokio"),
+        ))
+        // Cache
+        .insert_resource(ModelCache::default())
+        // Stats
+        .insert_resource(PerformanceStats::default())
+        // Sistemas
         .add_systems(Startup, setup)
         .add_systems(
             Update,
             (
-                reload_xml_system.run_if(|reload_trigger: Res<ReloadTrigger>| reload_trigger.0),
-                mark_dirty_system, // Nuevo sistema para marcar entidades sucias
-                dom_sync_system.run_if(|dirty_nodes: Res<DirtyNodes>| !dirty_nodes.0.is_empty()),
-                ui_system.run_if(|devtool: Res<DevtoolVisible>| devtool.0),
-                apply_attribute_updates
-                    .run_if(|attribute_updates: Res<AttributeUpdates>| !attribute_updates.0.is_empty()),
-                process_delete_requests
-                    .run_if(|delete_requests: Res<DeleteRequests>| !delete_requests.0.is_empty()),
-                update_entity_counter.run_if(|entity_map: Res<EntityMap>| entity_map.is_changed()),
+                // Recarga de XML
+                reload_xml_system.run_if(|r: Res<ReloadTrigger>| r.0),
+                // Marcar dirty
+                mark_dirty_system,
+                // Sincronizar con Bevy solo si hay nodos dirty
+                dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
+                // Siempre mostrar la UI, y dentro ya decidimos si mostramos el devtool
+                ui_system,
+                // Aplicar updates a atributos
+                apply_attribute_updates.run_if(|a: Res<AttributeUpdates>| !a.0.is_empty()),
+                // Borrar
+                process_delete_requests.run_if(|del: Res<DeleteRequests>| !del.0.is_empty()),
+                // Contador de entidades
+                update_entity_counter.run_if(|m: Res<EntityMap>| m.is_changed()),
+                // FPS
                 update_fps_counter,
             ),
         )
         .run();
 }
 
+// --------------------------------------------------------------------------------------
+// SETUP
+// --------------------------------------------------------------------------------------
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -122,7 +241,8 @@ fn setup(
     mut world: ResMut<ElemenetWorld>,
     mut dom_data: ResMut<VirtualDomData>,
     mut dirty_nodes: ResMut<DirtyNodes>,
-    asset_server: Res<AssetServer>,
+    mut log_panel: ResMut<LogPanel>,
+    tokio_rt: Res<TokioRuntime>,
 ) {
     // Cámara 3D
     commands.spawn(Camera3dBundle {
@@ -134,7 +254,7 @@ fn setup(
         ..default()
     });
 
-    // Cámara para UI 2D
+    // Cámara 2D
     commands.spawn(Camera2dBundle {
         camera: Camera {
             order: 1,
@@ -149,23 +269,38 @@ fn setup(
         ..default()
     });
 
-    // Recursos compartidos
+    // Recursos
     let cube_mesh = meshes.add(shapes::create_cube());
     let default_material = materials.add(StandardMaterial {
         base_color: Color::rgb(0.5, 0.8, 0.8),
-        ..Default::default()
+        ..default()
     });
     commands.insert_resource(SharedResources {
         cube_mesh,
         default_material,
     });
 
-    let (nodes, dirty) = load_and_flatten_xml(&mut world.0, "http://localhost:2052/static/main.hsml");
-    dom_data.nodes = nodes;
-    dirty_nodes.0 = dirty;
+    // Cargar XML inicial
+    match load_and_flatten_xml(
+        &mut world.0,
+        "http://localhost:2052/static/main.hsml",
+        &tokio_rt.0,
+        &mut log_panel,
+    ) {
+        Ok((nodes, dirty)) => {
+            dom_data.nodes = nodes;
+            dirty_nodes.0 = dirty;
+            log_panel.push_info("XML inicial cargado correctamente.");
+        }
+        Err(e) => {
+            log_panel.push_error(format!("Error al cargar XML inicial: {e}"));
+        }
+    }
 }
 
-// Sistema de recarga optimizado
+// --------------------------------------------------------------------------------------
+// RELOAD XML
+// --------------------------------------------------------------------------------------
 fn reload_xml_system(
     mut world: ResMut<ElemenetWorld>,
     mut dom_data: ResMut<VirtualDomData>,
@@ -174,72 +309,107 @@ fn reload_xml_system(
     mut entity_map: ResMut<EntityMap>,
     url: Res<CurrentUrl>,
     mut reload_trigger: ResMut<ReloadTrigger>,
+    mut log_panel: ResMut<LogPanel>,
+    tokio_rt: Res<TokioRuntime>,
 ) {
-    if !reload_trigger.0 {
-        return;
-    }
+    log_panel.push_info(format!("Iniciando recarga de XML desde: {}", url.0));
 
-    let (new_nodes, new_dirty) = load_and_flatten_xml(&mut world.0, &url.0);
-
-    // Identificar nodos eliminados
-    let old_nodes: Vec<u32> = dom_data.nodes.keys().cloned().collect();
-    let mut entities_to_delete = Vec::new();
-    for old_id in old_nodes {
-        if !new_nodes.contains_key(&old_id) {
-            if let Some(entity) = entity_map.0.remove(&old_id) {
-                commands.entity(entity).despawn_recursive();
+    match load_and_flatten_xml(&mut world.0, &url.0, &tokio_rt.0, &mut log_panel) {
+        Ok((new_nodes, new_dirty)) => {
+            // Borrar viejos
+            let old_nodes: Vec<u32> = dom_data.nodes.keys().cloned().collect();
+            let mut to_delete = Vec::new();
+            for old_id in old_nodes {
+                if !new_nodes.contains_key(&old_id) {
+                    if let Some(ent) = entity_map.0.remove(&old_id) {
+                        commands.entity(ent).despawn_recursive();
+                    }
+                    to_delete.push(old_id);
+                }
             }
-            entities_to_delete.push(old_id);
+            // Borrar en specs
+            let to_delete: Vec<_> = to_delete
+                .into_iter()
+                .map(|id| world.0.entities().entity(id))
+                .collect();
+            for ent in to_delete {
+                world.0.delete_entity(ent).ok();
+            }
+
+            // Actualizar
+            dom_data.nodes = new_nodes;
+            dirty_nodes.0 = new_dirty;
+            reload_trigger.0 = false;
+            log_panel.push_info("Recarga de XML completada.");
+        }
+        Err(e) => {
+            log_panel.push_error(format!("Error al recargar XML: {e}"));
+            reload_trigger.0 = false;
         }
     }
-    let entities_to_delete: Vec<_> = entities_to_delete
-        .into_iter()
-        .map(|old_id| world.0.entities().entity(old_id))
-        .collect();
-    for entity in entities_to_delete {
-        world.0.delete_entity(entity).ok();
-    }
-
-    // Actualizar nodos existentes y agregar nuevos
-    dom_data.nodes = new_nodes;
-    dirty_nodes.0 = new_dirty;
-    reload_trigger.0 = false;
 }
 
-fn load_and_flatten_xml(world: &mut SpecWorld, url: &str) -> (HashMap<u32, SpecEntity>, Vec<u32>) {
-    let rt = Runtime::new().expect("No se pudo crear el runtime de Tokio");
-    let xml_content = rt
-        .block_on(load_xml_from_url(url))
-        .expect("Error al cargar XML");
-    
-    let root_node: SpecEntity = parse_xml(world, &xml_content)
-        .expect("Error al parsear el XML");
-    
+// --------------------------------------------------------------------------------------
+// LOAD & FLATTEN
+// --------------------------------------------------------------------------------------
+fn load_and_flatten_xml(
+    world: &mut SpecWorld,
+    url: &str,
+    rt: &Runtime,
+    log_panel: &mut LogPanel,
+) -> Result<(HashMap<u32, SpecEntity>, Vec<u32>)> {
+    log_panel.push_info(format!("Intentando descargar XML desde: {url}"));
+
+    let xml_content = match rt.block_on(load_xml_from_url(url)) {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(anyhow::anyhow!("Error al descargar XML desde {url}: {e}"));
+        }
+    };
+
+    log_panel.push_info(format!(
+        "Descarga OK. Longitud de XML: {} caracteres",
+        xml_content.len()
+    ));
+
+    let root_node = match parse_xml(world, &xml_content) {
+        Ok(r) => r,
+        Err(e) => {
+            return Err(anyhow::anyhow!("Error al parsear el XML: {e}"));
+        }
+    };
+
     let mut map = HashMap::new();
     let mut dirty = Vec::new();
+    let hierarchies = world.read_storage::<Hierarchy>();
 
-    let hierarchys = world.read_storage::<Hierarchy>();
-    
     fn flatten_dom(
         node: SpecEntity,
         map: &mut HashMap<u32, SpecEntity>,
         dirty: &mut Vec<u32>,
-        hierarchys: &ReadStorage<Hierarchy>,
+        hierarchies: &ReadStorage<Hierarchy>,
     ) {
         dirty.push(node.id());
-        map.insert(node.id(), node.clone());
-        if let Some(element) = hierarchys.get(node) {
-            for child in &element.children {
-                flatten_dom(child.clone(), map, dirty, hierarchys);
+        map.insert(node.id(), node);
+        if let Some(h) = hierarchies.get(node) {
+            for &child in &h.children {
+                flatten_dom(child, map, dirty, hierarchies);
             }
         }
     }
-    
-    flatten_dom(root_node, &mut map, &mut dirty, &hierarchys);
-    (map, dirty)
+
+    flatten_dom(root_node, &mut map, &mut dirty, &hierarchies);
+
+    log_panel.push_info(format!(
+        "Árbol DOM parseado. Se encontraron {} nodos.",
+        map.len()
+    ));
+    Ok((map, dirty))
 }
 
-// Sistema de UI actualizado
+// --------------------------------------------------------------------------------------
+// UI
+// --------------------------------------------------------------------------------------
 fn ui_system(
     mut contexts: EguiContexts,
     mut url: ResMut<CurrentUrl>,
@@ -254,12 +424,15 @@ fn ui_system(
     dom_data: Res<VirtualDomData>,
     mut attribute_updates: ResMut<AttributeUpdates>,
     mut delete_requests: ResMut<DeleteRequests>,
+    mut log_panel: ResMut<LogPanel>,
+    perf_stats: Res<PerformanceStats>,
 ) {
+    // Ventana NAVEGADOR (siempre se muestra)
     egui::Window::new("Navegador").show(contexts.ctx_mut(), |ui| {
         ui.horizontal(|ui| {
             ui.label("URL:");
-            let response = ui.text_edit_singleline(&mut url.0);
-            if response.lost_focus() && response.ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            let resp = ui.text_edit_singleline(&mut url.0);
+            if resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
                 reload_trigger.0 = true;
             }
             if ui.button("Ir").clicked() || ui.button("Recargar").clicked() {
@@ -268,35 +441,82 @@ fn ui_system(
         });
         ui.label(format!("Entities: {}", entity_counter.count));
         ui.label(format!("FPS: {}", fps_counter.fps));
+        ui.label(format!("Último dom_sync: {:.2} ms", perf_stats.dom_sync_ms));
         if ui.button("Toggle Devtool").clicked() {
             devtool_visible.0 = !devtool_visible.0;
         }
     });
 
+    // DEVTOOL (solo se muestra si devtool_visible es true)
     if devtool_visible.0 {
-        egui::Window::new("Devtool").show(contexts.ctx_mut(), |ui| {
-            ui.heading("Árbol de Elementos");
-            ui.separator();
-            if let Some(root) = get_root_entity(&world.0) {
-                show_element_tree(
-                    ui,
-                    root,
-                    &world.0,
-                    &entity_map,
-                    &mut commands,
-                    &mut camera_query,
-                    &dom_data,
-                    &mut attribute_updates,
-                    &mut delete_requests,
-                );
-            } else {
-                ui.label("No hay elementos en la escena.");
-            }
-        });
+        egui::Window::new("Devtool")
+            .id(egui::Id::new("devtool_window"))
+            .show(contexts.ctx_mut(), |ui| {
+                ui.heading("Árbol de Elementos");
+                ui.separator();
+
+                let w = ui.available_width();
+                ui.set_width(w);
+
+                egui::ScrollArea::vertical()
+                    .id_source("tree_scroll_area")
+                    .max_width(w)
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        if let Some(root) = get_root_entity(&world.0) {
+                            show_element_tree(
+                                ui,
+                                root,
+                                &world.0,
+                                &entity_map,
+                                &mut commands,
+                                &mut camera_query,
+                                &dom_data,
+                                &mut attribute_updates,
+                                &mut delete_requests,
+                                &mut log_panel,
+                            );
+                        } else {
+                            ui.label("No hay elementos en la escena.");
+                        }
+                    });
+
+                ui.separator();
+                ui.heading("Logs");
+
+                let w2 = ui.available_width();
+                ui.set_width(w2);
+
+                egui::ScrollArea::vertical()
+                    .id_source("logs_scroll_area")
+                    .max_width(w2)
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        for entry in &log_panel.logs {
+                            match entry.level {
+                                LogLevel::Error => {
+                                    ui.colored_label(egui::Color32::RED, &entry.message);
+                                }
+                                LogLevel::Warn => {
+                                    ui.colored_label(egui::Color32::YELLOW, &entry.message);
+                                }
+                                LogLevel::Info => {
+                                    ui.label(&entry.message);
+                                }
+                            }
+                        }
+                    });
+
+                if ui.button("Limpiar logs").clicked() {
+                    log_panel.clear();
+                }
+            });
     }
 }
 
-// Mostrar y editar el árbol de elementos
+// --------------------------------------------------------------------------------------
+// Mostrar árbol
+// --------------------------------------------------------------------------------------
 fn show_element_tree(
     ui: &mut egui::Ui,
     entity: SpecEntity,
@@ -307,84 +527,123 @@ fn show_element_tree(
     dom_data: &VirtualDomData,
     attribute_updates: &mut ResMut<AttributeUpdates>,
     delete_requests: &mut ResMut<DeleteRequests>,
+    log_panel: &mut ResMut<LogPanel>,
 ) {
     let hierarchies = world.read_storage::<Hierarchy>();
     let tags = world.read_storage::<Tag>();
     let attrs = world.read_storage::<Attrs>();
     let transforms = world.read_storage::<Transform2>();
 
-    if let Some(tag) = tags.get(entity) {
-        ui.collapsing(format!("{} (ID: {})", tag.0, entity.id()), |ui| {
-            // Editar atributos
-            if let Some(attrs) = attrs.get(entity) {
+    if let Some(tg) = tags.get(entity) {
+        ui.collapsing(format!("{} (ID: {:?})", tg.0, entity), |ui| {
+            // Atributos
+            if let Some(a) = attrs.get(entity) {
                 ui.label("Atributos:");
-                for (key, value) in &attrs.0 {
+                for (k, v) in &a.0 {
                     ui.horizontal(|ui| {
-                        ui.label(key);
-                        let mut val = value.clone();
+                        ui.label(k);
+                        let mut val = v.clone();
                         if ui.text_edit_singleline(&mut val).changed() {
-                            attribute_updates.0.push((entity.id(), key.clone(), val));
+                            // Guardar este cambio para aplicarlo en Specs y en el DOM
+                            attribute_updates
+                                .0
+                                .push((entity.id(), k.clone(), val.clone()));
+                            log_panel.push_info(format!(
+                                "Cambio de atributo: Entidad({:?}) [{}] = {}",
+                                entity, k, val
+                            ));
                         }
                     });
                 }
             }
-
-            // Botones "Mirar" y "Borrar"
+            // Botones
             ui.horizontal(|ui| {
                 if ui.button("Mirar").clicked() {
-                    if let Some(transform) = transforms.get(entity) {
-                        if let Ok(mut camera_transform) = camera_query.get_single_mut() {
-                            let pos = Vec3::new(transform.position.x, transform.position.y, transform.position.z);
-                            *camera_transform = Transform::from_translation(pos + Vec3::new(0.0, 3.0, 8.0))
+                    if let Some(tr) = transforms.get(entity) {
+                        if let Ok(mut cam) = camera_query.get_single_mut() {
+                            let pos = Vec3::new(tr.position.x, tr.position.y, tr.position.z);
+                            *cam = Transform::from_translation(pos + Vec3::new(0.0, 3.0, 8.0))
                                 .looking_at(pos, Vec3::Y);
+                            log_panel.push_info(format!(
+                                "Cámara ajustada para mirar la entidad: {:?}",
+                                entity
+                            ));
                         }
                     }
                 }
                 if ui.button("Borrar").clicked() {
                     delete_requests.0.push(entity.id());
+                    log_panel.push_warn(format!(
+                        "Solicitud de borrado para la entidad {:?}",
+                        entity
+                    ));
                 }
             });
 
-            // Mostrar hijos
-            if let Some(hierarchy) = hierarchies.get(entity) {
-                for child in &hierarchy.children {
-                    show_element_tree(ui, *child, world, entity_map, commands, camera_query, dom_data, attribute_updates, delete_requests);
+            // Hijos
+            if let Some(h) = hierarchies.get(entity) {
+                for child in &h.children {
+                    show_element_tree(
+                        ui,
+                        *child,
+                        world,
+                        entity_map,
+                        commands,
+                        camera_query,
+                        dom_data,
+                        attribute_updates,
+                        delete_requests,
+                        log_panel,
+                    );
                 }
             }
         });
     }
 }
 
-// Sistema para aplicar actualizaciones de atributos
+// --------------------------------------------------------------------------------------
+// Actualizar atributos (MARCA la entidad como Dirty)
+// --------------------------------------------------------------------------------------
 fn apply_attribute_updates(
     mut attribute_updates: ResMut<AttributeUpdates>,
     mut world: ResMut<ElemenetWorld>,
+    mut dirty_nodes: ResMut<DirtyNodes>,
 ) {
-    let mut attrs_storage = world.0.write_storage::<Attrs>();
-    for (entity_id, key, new_value) in attribute_updates.0.drain(..) {
-        if let Some(attrs) = attrs_storage.get_mut(world.0.entities().entity(entity_id)) {
-            attrs.0.insert(key, new_value);
+    let mut storage = world.0.write_storage::<Attrs>();
+    for (ent_id, key, val) in attribute_updates.0.drain(..) {
+        if let Some(a) = storage.get_mut(world.0.entities().entity(ent_id)) {
+            a.0.insert(key, val);
+            // Importante: marcar como dirty para que dom_sync_system vuelva a procesarla
+            dirty_nodes.0.push(ent_id);
         }
     }
 }
 
-// Sistema para procesar eliminaciones
+// --------------------------------------------------------------------------------------
+// Borrar
+// --------------------------------------------------------------------------------------
 fn process_delete_requests(
     mut delete_requests: ResMut<DeleteRequests>,
     mut world: ResMut<ElemenetWorld>,
     mut entity_map: ResMut<EntityMap>,
     mut commands: Commands,
+    mut log_panel: ResMut<LogPanel>,
 ) {
-    for entity_id in delete_requests.0.drain(..) {
-        if let Some(bevy_entity) = entity_map.0.remove(&entity_id) {
-            commands.entity(bevy_entity).despawn_recursive();
+    for ent_id in delete_requests.0.drain(..) {
+        if let Some(bevy_ent) = entity_map.0.remove(&ent_id) {
+            commands.entity(bevy_ent).despawn_recursive();
         }
-        let entity = world.0.entities().entity(entity_id);
-        world.0.delete_entity(entity).expect("Error al eliminar entidad de ElemenetWorld");
+        let sp_ent = world.0.entities().entity(ent_id);
+        match world.0.delete_entity(sp_ent) {
+            Ok(_) => log_panel.push_info(format!("Entidad (ID={}) eliminada correctamente.", ent_id)),
+            Err(_) => log_panel.push_error(format!("Error al eliminar la entidad (ID={}).", ent_id)),
+        }
     }
 }
 
-// Nuevo sistema para marcar entidades sucias
+// --------------------------------------------------------------------------------------
+// Mark Dirty
+// --------------------------------------------------------------------------------------
 fn mark_dirty_system(
     world: Res<ElemenetWorld>,
     mut commands: Commands,
@@ -392,14 +651,15 @@ fn mark_dirty_system(
     mut dirty_nodes: ResMut<DirtyNodes>,
 ) {
     for node_id in dirty_nodes.0.drain(..) {
-        if let Some(&entity) = entity_map.0.get(&node_id) {
-            commands.entity(entity).insert(Dirty);
+        if let Some(&ent) = entity_map.0.get(&node_id) {
+            commands.entity(ent).insert(Dirty);
         }
     }
 }
 
-
-// Sistema de sincronización optimizado
+// --------------------------------------------------------------------------------------
+// DOM -> Bevy + medición de tiempo
+// --------------------------------------------------------------------------------------
 fn dom_sync_system(
     world: Res<ElemenetWorld>,
     mut commands: Commands,
@@ -409,110 +669,360 @@ fn dom_sync_system(
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut query: Query<(Entity, &mut Transform, Option<&Dirty>)>,
     asset_server: Res<AssetServer>,
+    mut log_panel: ResMut<LogPanel>,
+    mut model_cache: ResMut<ModelCache>,
+    tokio_rt: Res<TokioRuntime>,
+    current_url: Res<CurrentUrl>,
+    mut perf_stats: ResMut<PerformanceStats>,
 ) {
+    let start_time = Instant::now();
+
     if dirty_nodes.0.is_empty() {
-        return; // Salir temprano si no hay cambios
+        return;
     }
 
     let tags = world.0.read_storage::<Tag>();
     let transforms = world.0.read_storage::<Transform2>();
-    let hierarchys = world.0.read_storage::<Hierarchy>();
+    let hierarchies = world.0.read_storage::<Hierarchy>();
     let models = world.0.read_storage::<Model>();
 
-    for node_id in dirty_nodes.0.drain(..) {
-        if let Some(node) = dom_data.nodes.get(&node_id) {
-            let tag = tags.get(*node).unwrap().0.clone();
-            let hierarchy = hierarchys.get(*node).unwrap();
-            let parent_id = hierarchy.parent;
+    log_panel.push_info(format!(
+        "dom_sync_system: Procesando {} dirty nodes...",
+        dirty_nodes.0.len()
+    ));
 
-            if let Some(&entity) = entity_map.0.get(&node_id) {
-                // Si la entidad ya existe, solo actualiza si está marcada como Dirty
-                if let Ok((_, mut transform, dirty)) = query.get_mut(entity) {
+    for node_id in dirty_nodes.0.drain(..) {
+        log_panel.push_info(format!("  Revisando node_id={}", node_id));
+        if let Some(node) = dom_data.nodes.get(&node_id) {
+            // Tag
+            let tag = tags.get(*node).map(|t| t.0.clone()).unwrap_or_default();
+            log_panel.push_info(format!("    Tag='{}'", tag));
+
+            let hierarchy = hierarchies.get(*node);
+            let parent_id = hierarchy.and_then(|h| h.parent);
+
+            // Calculamos la Transform de Specs
+            let mut transform_b = Transform::default();
+            if let Some(tr2) = transforms.get(*node) {
+                apply_transform(tr2, &mut transform_b);
+            }
+
+            // ¿existe la entidad de Bevy asociada a este node_id?
+            if let Some(&bevy_ent) = entity_map.0.get(&node_id) {
+                // Si existe, solo actualizamos su Transform si está marcado con Dirty
+                if let Ok((_, mut t, dirty)) = query.get_mut(bevy_ent) {
                     if dirty.is_some() {
-                        if let Some(node_transform) = transforms.get(*node) {
-                            apply_transform(node_transform, &mut transform);
-                        }
-                        commands.entity(entity).remove::<Dirty>();
+                        *t = transform_b;
+                        commands.entity(bevy_ent).remove::<Dirty>();
+                        log_panel.push_info(format!(
+                            "    Actualizado transform en entidad existente {:?}",
+                            bevy_ent
+                        ));
                     }
                 }
             } else {
-                // Crear nueva entidad
-                let mut transform = Transform::default();
-                if let Some(node_transform) = transforms.get(*node) {
-                    apply_transform(node_transform, &mut transform);
-                }
+                // Crear nueva
+                log_panel.push_info("    -> No existe, creando nueva entidad...");
 
-                let mut entity = commands
-                    .spawn((
-                        TransformBundle::from_transform(transform),
-                        VisibilityBundle::default(),
-                        Dirty, // Marcar como Dirty al crearse
-                    ))
-                    .id();
-
-                match tag.as_str() {
+                let new_ent = match tag.as_str() {
                     "model" => {
-                        if let Some(model) = models.get(*node) {
-                            apply_model(model, &asset_server, &mut commands, &mut entity);
+                        log_panel.push_info("    -> Tag='model'");
+                        if let Some(model_data) = models.get(*node) {
+                            if let Some(ref original_src) = model_data.src {
+                                if let Some(final_url) =
+                                    resolve_remote_path(&current_url.0, original_src)
+                                {
+                                    log_panel.push_info(format!("       final_url={}", final_url));
+                                    // Descargamos o usamos caché
+                                    let scene_handle = apply_model_with_cache(
+                                        &final_url,
+                                        &asset_server,
+                                        &mut log_panel,
+                                        &mut model_cache,
+                                        &tokio_rt.0,
+                                    );
+                                    // Creamos un SceneBundle con transform_b:
+                                    commands
+                                        .spawn((
+                                            SceneBundle {
+                                                scene: scene_handle,
+                                                transform: transform_b,
+                                                ..Default::default()
+                                            },
+                                            Dirty,
+                                        ))
+                                        .id()
+                                } else {
+                                    log_panel.push_error(format!(
+                                        "No se pudo unir '{}' con base '{}'",
+                                        original_src, current_url.0
+                                    ));
+                                    // Creamos de todas formas la entidad con un "Bundle" vacío
+                                    commands
+                                        .spawn((
+                                            SpatialBundle {
+                                                transform: transform_b,
+                                                ..Default::default()
+                                            },
+                                            Dirty,
+                                        ))
+                                        .id()
+                                }
+                            } else {
+                                log_panel.push_warn("No hay src en <model>. Creando caja por defecto.");
+                                commands
+                                    .spawn((
+                                        PbrBundle {
+                                            mesh: shared_resources.cube_mesh.clone(),
+                                            material: shared_resources.default_material.clone(),
+                                            transform: transform_b,
+                                            ..default()
+                                        },
+                                        Dirty,
+                                    ))
+                                    .id()
+                            }
+                        } else {
+                            // No hay Model en Specs => caja default
+                            commands
+                                .spawn((
+                                    PbrBundle {
+                                        mesh: shared_resources.cube_mesh.clone(),
+                                        material: shared_resources.default_material.clone(),
+                                        transform: transform_b,
+                                        ..default()
+                                    },
+                                    Dirty,
+                                ))
+                                .id()
                         }
                     }
-                    "script" | "space2" | "include" => {}
-                    _ => {
-                        let cube_handle = shared_resources.cube_mesh.clone();
-                        let material_handle = shared_resources.default_material.clone();
-                        let child_entity = commands
+                    "script" | "space2" | "include" => {
+                        log_panel.push_info("    -> script/space2/include, no spawneamos nada 3D");
+                        commands
+                            .spawn((
+                                SpatialBundle {
+                                    transform: transform_b,
+                                    ..Default::default()
+                                },
+                                Dirty,
+                            ))
+                            .id()
+                    }
+                    other => {
+                        log_panel.push_info(format!("    -> Tag='{}', generamos un cubo", other));
+                        let new_ent_emply = commands
+                            .spawn((
+                                SpatialBundle {
+                                    transform: transform_b,
+                                    ..Default::default()
+                                },
+                                Dirty,
+                            ))
+                            .id();
+                        let child = commands
                             .spawn(PbrBundle {
-                                mesh: cube_handle,
-                                material: material_handle,
+                                mesh: shared_resources.cube_mesh.clone(),
+                                material: shared_resources.default_material.clone(),
                                 transform: Transform::from_scale(Vec3::splat(0.2)),
                                 ..Default::default()
                             })
                             .id();
-                        commands.entity(entity).push_children(&[child_entity]);
+                        commands.entity(new_ent_emply).push_children(&[child]);
+                        new_ent_emply
                     }
-                }
+                };
 
-                // Actualizar jerarquía solo si es necesario
-                if let Some(parent_id) = parent_id {
-                    if let Some(&parent_entity) = entity_map.0.get(&parent_id) {
-                        commands.entity(entity).set_parent(parent_entity);
+                // Jerarquía (parent-child en Bevy)
+                if let Some(pid) = parent_id {
+                    if let Some(&parent_bevy_ent) = entity_map.0.get(&pid) {
+                        commands.entity(new_ent).set_parent(parent_bevy_ent);
                     }
                 } else {
-                    commands.entity(entity).remove_parent();
+                    commands.entity(new_ent).remove_parent();
                 }
 
-                entity_map.0.insert(node_id, entity);
+                // Guardamos la relación node_id -> bevy_entity
+                entity_map.0.insert(node_id, new_ent);
             }
-
+        } else {
+            log_panel.push_error(format!("    No existe dom_data.nodes para node_id={}", node_id));
         }
     }
+
+    // Tiempo transcurrido
+    let elapsed = start_time.elapsed().as_secs_f32() * 1000.0;
+    perf_stats.dom_sync_ms = elapsed;
 }
 
-fn update_entity_counter(
-    mut counter: ResMut<EntityCounter>,
-    query: Query<Entity>,
-) {
-    counter.count = query.iter().count();
+// --------------------------------------------------------------------------------------
+// Contador de entidades
+// --------------------------------------------------------------------------------------
+fn update_entity_counter(mut c: ResMut<EntityCounter>, q: Query<Entity>) {
+    c.count = q.iter().count();
 }
 
-fn update_fps_counter(
-    time: Res<Time>,
-    mut fps_counter: ResMut<FpsCounter>,
-) {
-    fps_counter.frame_count += 1;
-    if fps_counter.timer.tick(time.delta()).just_finished() {
-        fps_counter.fps = fps_counter.frame_count;
-        fps_counter.frame_count = 0;
+// --------------------------------------------------------------------------------------
+// FPS
+// --------------------------------------------------------------------------------------
+fn update_fps_counter(time: Res<Time>, mut f: ResMut<FpsCounter>) {
+    f.frame_count += 1;
+    if f.timer.tick(time.delta()).just_finished() {
+        f.fps = f.frame_count;
+        f.frame_count = 0;
     }
 }
 
-// Obtener la entidad raíz del árbol (sin padre)
+// --------------------------------------------------------------------------------------
+// Root
+// --------------------------------------------------------------------------------------
 fn get_root_entity(world: &SpecWorld) -> Option<SpecEntity> {
-    let hierarchies = world.read_storage::<Hierarchy>();
-    for (entity, hierarchy) in (&world.entities(), &hierarchies).join() {
-        if hierarchy.parent.is_none() {
-            return Some(entity);
+    let hier = world.read_storage::<Hierarchy>();
+    for (ent, h) in (&world.entities(), &hier).join() {
+        if h.parent.is_none() {
+            return Some(ent);
         }
     }
     None
+}
+
+// --------------------------------------------------------------------------------------
+// Genera un nombre base64
+// --------------------------------------------------------------------------------------
+fn encode_url_to_filename(url: &str) -> String {
+    let b64 = Base64Engine.encode(url);
+    let safe_b64 = b64.replace('/', "_").replace('+', "-");
+    let ext = match Path::new(url).extension() {
+        Some(e) => e.to_string_lossy().to_string(),
+        None => "bin".to_string(),
+    };
+    format!("{safe_b64}.{ext}")
+}
+
+// --------------------------------------------------------------------------------------
+// DESCARGA si no está en cache (assets/cache/xxx)
+// --------------------------------------------------------------------------------------
+fn download_model_if_needed(
+    rt: &Runtime,
+    url: &str,
+    cache: &mut ModelCache,
+    log_panel: &mut LogPanel,
+) -> Result<String> {
+    // 1) ¿Está en la cache?
+    if let Some(cached_path) = cache.cache.get(url) {
+        if Path::new(cached_path).exists() {
+            log_panel.push_info(format!("Ya estaba en cache: {} -> {}", url, cached_path));
+            return Ok(cached_path.clone());
+        } else {
+            log_panel.push_warn(format!(
+                "Cache decía {}->{} pero no existe el archivo. Se descarga de nuevo.",
+                url, cached_path
+            ));
+        }
+    } else {
+        log_panel.push_info(format!("No estaba en cache, se descargará: {}", url));
+    }
+
+    // Crear carpeta cache
+    let _ = fs::create_dir_all("crates/bevy_openxr/assets/cache");
+    // Nombre base64
+    let filename = encode_url_to_filename(url);
+    let local_path = format!("crates/bevy_openxr/assets/cache/{}", filename);
+
+    // Distinguimos HTTP vs local
+    if url.starts_with("http://") || url.starts_with("https://") {
+        log_panel.push_info(format!("Descargando HTTP: {}", url));
+        let bytes = rt
+            .block_on(load_bytes_from_url(url))
+            .map_err(|e| anyhow::anyhow!("Fallo en descarga: {e}"))?;
+        fs::write(&local_path, bytes)
+            .map_err(|e| anyhow::anyhow!("No se pudo escribir archivo: {e}"))?;
+    } else {
+        let from = PathBuf::from(url);
+        if !from.exists() {
+            return Err(anyhow::anyhow!("El archivo local no existe: {url}"));
+        }
+        fs::copy(&from, &local_path)
+            .map_err(|e| anyhow::anyhow!("No se pudo copiar archivo local: {e}"))?;
+    }
+
+    cache.cache.insert(url.to_string(), local_path.clone());
+    log_panel.push_info(format!(
+        "Guardado en cache => url={} -> local_path={}",
+        url, local_path
+    ));
+    Ok(local_path)
+}
+
+// --------------------------------------------------------------------------------------
+// APLICAR model
+// --------------------------------------------------------------------------------------
+fn apply_model_with_cache(
+    remote_path: &str,
+    asset_server: &AssetServer,
+    log_panel: &mut LogPanel,
+    model_cache: &mut ModelCache,
+    rt: &Runtime,
+) -> Handle<Scene> {
+    match download_model_if_needed(rt, remote_path, model_cache, log_panel) {
+        Ok(local_path) => {
+            log_panel.push_info(format!("Descarga/caché OK => {local_path}"));
+            // Convertir la ruta a algo relativo a "assets/", si procede
+            let relative: String = local_path
+                .strip_prefix("crates/bevy_openxr/assets/")
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| local_path.clone());
+
+            log_panel.push_info(format!("Cargando con asset_server.load('{relative}')"));
+
+            // Detectar extensión
+            if relative.ends_with(".gltf") || relative.ends_with(".glb") {
+                // Usar GltfAssetLabel para la escena 0
+                let scene_handle: Handle<Scene> =
+                    asset_server.load(GltfAssetLabel::Scene(0).from_asset(relative));
+                scene_handle
+            } else {
+                // Carga normal como Scene
+                let scene_handle: Handle<Scene> = asset_server.load(relative);
+                scene_handle
+            }
+        }
+        Err(e) => {
+            log_panel.push_error(format!("No se pudo preparar el modelo '{remote_path}': {e}"));
+            // Retornamos un handle vacío para no romper
+            Handle::default()
+        }
+    }
+}
+
+// --------------------------------------------------------------------------------------
+// Carga bytes
+// --------------------------------------------------------------------------------------
+async fn load_bytes_from_url(url: &str) -> Result<Vec<u8>> {
+    let resp = reqwest::get(url).await?;
+    if !resp.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "Status code {} al descargar {}",
+            resp.status(),
+            url
+        ));
+    }
+    let bytes = resp.bytes().await?;
+    Ok(bytes.to_vec())
+}
+
+// --------------------------------------------------------------------------------------
+// Combina la URL base con la ruta
+// --------------------------------------------------------------------------------------
+fn resolve_remote_path(base_url: &str, remote_path: &str) -> Option<String> {
+    if remote_path.starts_with("http://") || remote_path.starts_with("https://") {
+        return Some(remote_path.to_string());
+    }
+    let Ok(base) = Url::parse(base_url) else {
+        return None;
+    };
+    let Ok(final_url) = base.join(remote_path) else {
+        return None;
+    };
+    Some(final_url.to_string())
 }

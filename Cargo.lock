@@ -869,7 +869,9 @@ dependencies = [
 name = "bevy_mod_openxr"
 version = "0.1.1"
 dependencies = [
+ "anyhow",
  "ash",
+ "base64 0.21.7",
  "bevy",
  "bevy_egui",
  "bevy_mod_xr",
@@ -879,10 +881,12 @@ dependencies = [
  "jni 0.20.0",
  "ndk-context",
  "openxr",
+ "reqwest 0.11.27",
  "specs",
  "specs-derive",
  "thiserror",
  "tokio",
+ "url",
  "virtual-dom",
  "wgpu 0.20.1",
  "wgpu-hal 0.21.1",
