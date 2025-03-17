@@ -1,10 +1,11 @@
 use bevy::{
-    asset::AssetPlugin, diagnostic::FrameTimeDiagnosticsPlugin, prelude::*, window::PresentMode
-    // Solo si lo usas:
-    // window::PresentMode,
+    asset::AssetPlugin,
+    diagnostic::FrameTimeDiagnosticsPlugin,
+    prelude::*,
+    window::{PresentMode, PrimaryWindow, Window},
 };
-use bevy_egui::{egui, EguiPlugin, EguiContexts};
-use specs::{World as SpecWorld, WorldExt, Entity as SpecEntity, Join, ReadStorage};
+use bevy_egui::{egui, EguiContexts, EguiPlugin};
+use specs::{Entity as SpecEntity, Join, ReadStorage, World as SpecWorld, WorldExt};
 use std::{
     collections::HashMap,
     fs,
@@ -13,8 +14,8 @@ use std::{
 };
 use tokio::runtime::Runtime;
 use url::Url;
-use base64::{engine::general_purpose::STANDARD as Base64Engine, Engine as _};
 
+use base64::{engine::general_purpose::STANDARD as Base64Engine, Engine as _};
 use virtual_dom::{
     dom::{
         element::{build_world, Attrs, Hierarchy, Tag, Transform2},
@@ -161,6 +162,30 @@ struct PerformanceStats {
 }
 
 // --------------------------------------------------------------------------------------
+// PESTAÑAS DEL DEVTOOL
+// --------------------------------------------------------------------------------------
+#[derive(PartialEq, Eq)]
+enum DevtoolTab {
+    Status,
+    Hsml,
+    Logs,
+    Redes,
+}
+
+#[derive(Resource)]
+struct DevtoolState {
+    active_tab: DevtoolTab,
+}
+
+impl Default for DevtoolState {
+    fn default() -> Self {
+        DevtoolState {
+            active_tab: DevtoolTab::Status,
+        }
+    }
+}
+
+// --------------------------------------------------------------------------------------
 // MAIN
 // --------------------------------------------------------------------------------------
 fn main() {
@@ -205,6 +230,8 @@ fn main() {
         .insert_resource(ModelCache::default())
         // Stats
         .insert_resource(PerformanceStats::default())
+        // Estado del devtool
+        .insert_resource(DevtoolState::default())
         // Sistemas
         .add_systems(Startup, setup)
         .add_systems(
@@ -408,7 +435,7 @@ fn load_and_flatten_xml(
 }
 
 // --------------------------------------------------------------------------------------
-// UI
+// UI (Devtool con 4 pestañas: Status, HSML, Logs, Redes)
 // --------------------------------------------------------------------------------------
 fn ui_system(
     mut contexts: EguiContexts,
@@ -417,6 +444,7 @@ fn ui_system(
     entity_counter: Res<EntityCounter>,
     fps_counter: Res<FpsCounter>,
     mut devtool_visible: ResMut<DevtoolVisible>,
+    mut devtool_state: ResMut<DevtoolState>,
     world: Res<ElemenetWorld>,
     entity_map: Res<EntityMap>,
     mut commands: Commands,
@@ -439,76 +467,136 @@ fn ui_system(
                 reload_trigger.0 = true;
             }
         });
-        ui.label(format!("Entities: {}", entity_counter.count));
-        ui.label(format!("FPS: {}", fps_counter.fps));
-        ui.label(format!("Último dom_sync: {:.2} ms", perf_stats.dom_sync_ms));
+        // Se movieron la info de Entities, FPS y dom_sync al tab "Status".
+        // Aquí solo un botón para mostrar/ocultar Devtool:
         if ui.button("Toggle Devtool").clicked() {
             devtool_visible.0 = !devtool_visible.0;
         }
     });
 
-    // DEVTOOL (solo se muestra si devtool_visible es true)
+    // --------------------------------------------------------------------
+    // DEVTOOL: cuatro pestañas (Status, HSML, Logs, Redes)
+    // --------------------------------------------------------------------
     if devtool_visible.0 {
         egui::Window::new("Devtool")
             .id(egui::Id::new("devtool_window"))
             .show(contexts.ctx_mut(), |ui| {
-                ui.heading("Árbol de Elementos");
+                ui.horizontal(|ui| {
+                    // Botones de pestañas
+                    if ui
+                        .selectable_label(devtool_state.active_tab == DevtoolTab::Status, "Status")
+                        .clicked()
+                    {
+                        devtool_state.active_tab = DevtoolTab::Status;
+                    }
+                    if ui
+                        .selectable_label(devtool_state.active_tab == DevtoolTab::Hsml, "HSML")
+                        .clicked()
+                    {
+                        devtool_state.active_tab = DevtoolTab::Hsml;
+                    }
+                    if ui
+                        .selectable_label(devtool_state.active_tab == DevtoolTab::Logs, "Consola")
+                        .clicked()
+                    {
+                        devtool_state.active_tab = DevtoolTab::Logs;
+                    }
+                    if ui
+                        .selectable_label(devtool_state.active_tab == DevtoolTab::Redes, "Redes")
+                        .clicked()
+                    {
+                        devtool_state.active_tab = DevtoolTab::Redes;
+                    }
+                });
                 ui.separator();
 
-                let w = ui.available_width();
-                ui.set_width(w);
+                // Contenido de cada pestaña
+                match devtool_state.active_tab {
+                    DevtoolTab::Status => {
+                        ui.heading("Estado General");
+                        ui.separator();
+                        // Resolución de la ventana
+                        // if let Ok(window) = windows.get_single() {
+                        //     let w = window.resolution.physical_width();
+                        //     let h = window.resolution.physical_height();
+                        //     ui.label(format!("Resolución: {} x {}", w, h));
+                        // } else {
+                        //     ui.label("No se pudo obtener la ventana principal.");
+                        // }
 
-                egui::ScrollArea::vertical()
-                    .id_source("tree_scroll_area")
-                    .max_width(w)
-                    .max_height(300.0)
-                    .show(ui, |ui| {
-                        if let Some(root) = get_root_entity(&world.0) {
-                            show_element_tree(
-                                ui,
-                                root,
-                                &world.0,
-                                &entity_map,
-                                &mut commands,
-                                &mut camera_query,
-                                &dom_data,
-                                &mut attribute_updates,
-                                &mut delete_requests,
-                                &mut log_panel,
-                            );
-                        } else {
-                            ui.label("No hay elementos en la escena.");
+                        ui.label(format!("Entities: {}", entity_counter.count));
+                        ui.label(format!("FPS: {}", fps_counter.fps));
+                        ui.label(format!("Último dom_sync: {:.2} ms", perf_stats.dom_sync_ms));
+                    }
+                    DevtoolTab::Hsml => {
+                        ui.heading("Árbol de Elementos (HSML)");
+                        ui.separator();
+
+                        let w = ui.available_width();
+                        ui.set_width(w);
+
+                        egui::ScrollArea::vertical()
+                            .id_source("tree_scroll_area")
+                            .max_width(w)
+                            .max_height(300.0)
+                            .show(ui, |ui| {
+                                if let Some(root) = get_root_entity(&world.0) {
+                                    show_element_tree(
+                                        ui,
+                                        root,
+                                        &world.0,
+                                        &entity_map,
+                                        &mut commands,
+                                        &mut camera_query,
+                                        &dom_data,
+                                        &mut attribute_updates,
+                                        &mut delete_requests,
+                                        &mut log_panel,
+                                    );
+                                } else {
+                                    ui.label("No hay elementos en la escena.");
+                                }
+                            });
+                    }
+                    DevtoolTab::Logs => {
+                        ui.heading("Consola");
+                        ui.separator();
+
+                        let w2 = ui.available_width();
+                        ui.set_width(w2);
+
+                        egui::ScrollArea::vertical()
+                            .id_source("logs_scroll_area")
+                            .max_width(w2)
+                            .max_height(200.0)
+                            .show(ui, |ui| {
+                                for entry in &log_panel.logs {
+                                    match entry.level {
+                                        LogLevel::Error => {
+                                            ui.colored_label(egui::Color32::RED, &entry.message);
+                                        }
+                                        LogLevel::Warn => {
+                                            ui.colored_label(
+                                                egui::Color32::YELLOW,
+                                                &entry.message,
+                                            );
+                                        }
+                                        LogLevel::Info => {
+                                            ui.label(&entry.message);
+                                        }
+                                    }
+                                }
+                            });
+
+                        if ui.button("Limpiar logs").clicked() {
+                            log_panel.clear();
                         }
-                    });
-
-                ui.separator();
-                ui.heading("Logs");
-
-                let w2 = ui.available_width();
-                ui.set_width(w2);
-
-                egui::ScrollArea::vertical()
-                    .id_source("logs_scroll_area")
-                    .max_width(w2)
-                    .max_height(200.0)
-                    .show(ui, |ui| {
-                        for entry in &log_panel.logs {
-                            match entry.level {
-                                LogLevel::Error => {
-                                    ui.colored_label(egui::Color32::RED, &entry.message);
-                                }
-                                LogLevel::Warn => {
-                                    ui.colored_label(egui::Color32::YELLOW, &entry.message);
-                                }
-                                LogLevel::Info => {
-                                    ui.label(&entry.message);
-                                }
-                            }
-                        }
-                    });
-
-                if ui.button("Limpiar logs").clicked() {
-                    log_panel.clear();
+                    }
+                    DevtoolTab::Redes => {
+                        ui.heading("Redes");
+                        ui.separator();
+                        ui.label("En blanco por ahora...");
+                    }
                 }
             });
     }
@@ -769,7 +857,8 @@ fn dom_sync_system(
                                         .id()
                                 }
                             } else {
-                                log_panel.push_warn("No hay src en <model>. Creando caja por defecto.");
+                                log_panel
+                                    .push_warn("No hay src en <model>. Creando caja por defecto.");
                                 commands
                                     .spawn((
                                         PbrBundle {
@@ -798,7 +887,8 @@ fn dom_sync_system(
                         }
                     }
                     "script" | "space2" | "include" => {
-                        log_panel.push_info("    -> script/space2/include, no spawneamos nada 3D");
+                        log_panel
+                            .push_info("    -> script/space2/include, no spawneamos nada 3D");
                         commands
                             .spawn((
                                 SpatialBundle {
@@ -811,7 +901,7 @@ fn dom_sync_system(
                     }
                     other => {
                         log_panel.push_info(format!("    -> Tag='{}', generamos un cubo", other));
-                        let new_ent_emply = commands
+                        let new_ent_empty = commands
                             .spawn((
                                 SpatialBundle {
                                     transform: transform_b,
@@ -828,8 +918,8 @@ fn dom_sync_system(
                                 ..Default::default()
                             })
                             .id();
-                        commands.entity(new_ent_emply).push_children(&[child]);
-                        new_ent_emply
+                        commands.entity(new_ent_empty).push_children(&[child]);
+                        new_ent_empty
                     }
                 };
 
@@ -975,11 +1065,11 @@ fn apply_model_with_cache(
 
             log_panel.push_info(format!("Cargando con asset_server.load('{relative}')"));
 
-            // Detectar extensión
+            // Para archivos .gltf o .glb se puede usar “#Scene0”
             if relative.ends_with(".gltf") || relative.ends_with(".glb") {
-                // Usar GltfAssetLabel para la escena 0
-                let scene_handle: Handle<Scene> =
-                    asset_server.load(GltfAssetLabel::Scene(0).from_asset(relative));
+                // Se puede cargar escena 0 con “#Scene0”
+                let final_path = format!("{relative}#Scene0");
+                let scene_handle: Handle<Scene> = asset_server.load(final_path);
                 scene_handle
             } else {
                 // Carga normal como Scene
