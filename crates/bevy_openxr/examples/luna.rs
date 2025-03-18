@@ -910,15 +910,17 @@ fn dom_sync_system(
                                 Dirty,
                             ))
                             .id();
-                        let child = commands
-                            .spawn(PbrBundle {
-                                mesh: shared_resources.cube_mesh.clone(),
-                                material: shared_resources.default_material.clone(),
-                                transform: Transform::from_scale(Vec3::splat(0.2)),
-                                ..Default::default()
-                            })
-                            .id();
-                        commands.entity(new_ent_empty).push_children(&[child]);
+                        if false {
+                            let child = commands
+                                .spawn(PbrBundle {
+                                    mesh: shared_resources.cube_mesh.clone(),
+                                    material: shared_resources.default_material.clone(),
+                                    transform: Transform::from_scale(Vec3::splat(0.2)),
+                                    ..Default::default()
+                                })
+                                .id();
+                            commands.entity(new_ent_empty).push_children(&[child]);
+                        }
                         new_ent_empty
                     }
                 };
