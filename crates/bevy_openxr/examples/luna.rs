@@ -886,9 +886,9 @@ fn dom_sync_system(
                                 .id()
                         }
                     }
-                    "script" | "space2" | "include" => {
+                    "script" | "space" => {
                         log_panel
-                            .push_info("    -> script/space2/include, no spawneamos nada 3D");
+                            .push_info("    -> script/space, no spawneamos nada 3D");
                         commands
                             .spawn((
                                 SpatialBundle {
@@ -898,6 +898,22 @@ fn dom_sync_system(
                                 Dirty,
                             ))
                             .id()
+                    }
+                    "include" => {
+                        log_panel
+                            .push_info("    -> include, no spawneamos nada 3D");
+                        commands
+                            .spawn((
+                                SpatialBundle {
+                                    transform: transform_b,
+                                    ..Default::default()
+                                },
+                                Dirty,
+                            ))
+                            .id()
+
+                            // Aqui debo de poder cargar otro .hsml
+                            // Sample: <include src="/zonas/plaza.hsml"/>
                     }
                     other => {
                         log_panel.push_info(format!("    -> Tag='{}', generamos un cubo", other));
