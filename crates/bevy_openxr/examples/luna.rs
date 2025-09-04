@@ -19,7 +19,8 @@ use base64::{engine::general_purpose::STANDARD as Base64Engine, Engine as _};
 use virtual_dom::{
     dom::{
         element::{build_world, Attrs, Hierarchy, Tag, Transform2},
-        hsml::Model,
+        hsml::{Model, Include},
+        TRANSFORM_POSITION, TRANSFORM_ROTATION, TRANSFORM_SCALE
     },
     load_xml_from_url, parse_xml,
 };
@@ -185,7 +186,6 @@ impl Default for DevtoolState {
     }
 }
 
-const ATTR_DELETE_SENTINEL: &str = "[DEL]";
 
 // --------------------------------------------------------------------------------------
 // MAIN
@@ -408,6 +408,10 @@ fn load_and_flatten_xml(
         }
     };
 
+    let mut include_dirty = expand_includes(world, url, rt, log_panel).unwrap_or_default();
+
+    println!("include_dirty: {:?}", include_dirty.len());
+
     let mut map = HashMap::new();
     let mut dirty = Vec::new();
     let hierarchies = world.read_storage::<Hierarchy>();
@@ -429,6 +433,10 @@ fn load_and_flatten_xml(
 
     flatten_dom(root_node, &mut map, &mut dirty, &hierarchies);
 
+    dirty.extend(include_dirty.drain(..));
+    dirty.sort_unstable();
+    dirty.dedup();
+    
     log_panel.push_info(format!(
         "Árbol DOM parseado. Se encontraron {} nodos.",
         map.len()
@@ -729,6 +737,8 @@ fn show_element_tree(
 // --------------------------------------------------------------------------------------
 // Actualizar atributos (MARCA la entidad como Dirty)
 // --------------------------------------------------------------------------------------
+const ATTR_DELETE_SENTINEL: &str = "[DEL]";
+
 fn apply_attribute_updates(
     mut attribute_updates: ResMut<AttributeUpdates>,
     mut world: ResMut<ElemenetWorld>,
@@ -736,32 +746,33 @@ fn apply_attribute_updates(
 ) {
     let entities = world.0.entities();
 
-    let mut attrs_storage = world.0.write_storage::<Attrs>();
-    let mut tr_storage    = world.0.write_storage::<Transform2>();
-    let mut model_storage  = world.0.write_storage::<Model>();
+    let mut attrs_storage   = world.0.write_storage::<Attrs>();
+    let mut tr_storage      = world.0.write_storage::<Transform2>();
+    let mut model_storage   = world.0.write_storage::<Model>();
+    let mut include_storage = world.0.write_storage::<Include>();
+
+    // alias (los de tu schema + los "cortos")
+    let (px, py, pz) = (TRANSFORM_POSITION[0], TRANSFORM_POSITION[1], TRANSFORM_POSITION[2]);
+    let (rx, ry, rz) = (TRANSFORM_ROTATION[0], TRANSFORM_ROTATION[1], TRANSFORM_ROTATION[2]);
+    let (sx, sy, sz) = (TRANSFORM_SCALE[0],    TRANSFORM_SCALE[1],    TRANSFORM_SCALE[2]);
 
     for (ent_id, key, val) in attribute_updates.0.drain(..) {
         let ent = entities.entity(ent_id);
-        if !entities.is_alive(ent) {
-            continue;
-        }
+        if !entities.is_alive(ent) { continue; }
 
-        // Asegurar que haya Attrs
+        // Asegurar Attrs
         if attrs_storage.get(ent).is_none() {
             let _ = attrs_storage.insert(ent, Attrs(HashMap::new()));
         }
 
+        // Set / Del en Attrs
         if let Some(a) = attrs_storage.get_mut(ent) {
             if val == ATTR_DELETE_SENTINEL {
-                // --- eliminar atributo ---
                 a.0.remove(&key);
-
-                // (Opcional) si querés "revertir" efectos en Transform2 cuando
-                // se borran keys como x/y/z/sx/sy/sz/rx/ry/rz, podés resetear:
                 if let Some(tr) = tr_storage.get_mut(ent) {
                     match key.as_str() {
                         // posición
-                        "x" => tr.position.x = 0.0, // o 0.0 si querés resetear
+                        "x" => tr.position.x = 0.0, 
                         "y" => tr.position.y = 0.0,
                         "z" => tr.position.z = 0.0,
 
@@ -780,49 +791,53 @@ fn apply_attribute_updates(
                     }
                 }
             } else {
-                // --- set/update atributo ---
                 a.0.insert(key.clone(), val.clone());
-
-                // reflejar en Transform2 si corresponde
-                if let Some(tr) = tr_storage.get_mut(ent) {
-                    let parse_f32 = || -> Option<f32> { val.trim().parse::<f32>().ok() };
-                    match key.as_str() {
-                        "x" => if let Some(f) = parse_f32() { tr.position.x = f; },
-                        "y" => if let Some(f) = parse_f32() { tr.position.y = f; },
-                        "z" => if let Some(f) = parse_f32() { tr.position.z = f; },
-
-                        "rx" => if let Some(f) = parse_f32() { tr.rotation.x = f; },
-                        "ry" => if let Some(f) = parse_f32() { tr.rotation.y = f; },
-                        "rz" => if let Some(f) = parse_f32() { tr.rotation.z = f; },
-
-                        "s"  => if let Some(f) = parse_f32() {
-                            tr.scale.x = f; tr.scale.y = f; tr.scale.z = f;
-                        }
-                        "sx" => if let Some(f) = parse_f32() { tr.scale.x = f; },
-                        "sy" => if let Some(f) = parse_f32() { tr.scale.y = f; },
-                        "sz" => if let Some(f) = parse_f32() { tr.scale.z = f; },
-
-                        _ => {}
-                    }
-                }
             }
         }
-        
-        // *** NUEVO: si cambia "src" y la entidad tiene Model, sincronizá el componente ***
+
+        // Reflejar en Transform2 si existe
+        if let Some(tr) = tr_storage.get_mut(ent) {
+            let parse_f32 = || -> Option<f32> { val.trim().parse::<f32>().ok() };
+            match key.as_str() {
+                // posición (acepta alias de schema y cortos)
+                k if k == px || k == "x"  => if let Some(f) = parse_f32() { tr.position.x = f; },
+                k if k == py || k == "y"  => if let Some(f) = parse_f32() { tr.position.y = f; },
+                k if k == pz || k == "z"  => if let Some(f) = parse_f32() { tr.position.z = f; },
+
+                // rotación
+                k if k == rx || k == "rx" => if let Some(f) = parse_f32() { tr.rotation.x = f; },
+                k if k == ry || k == "ry" => if let Some(f) = parse_f32() { tr.rotation.y = f; },
+                k if k == rz || k == "rz" => if let Some(f) = parse_f32() { tr.rotation.z = f; },
+
+                // escala uniforme
+                "s" => if let Some(f) = parse_f32() {
+                    tr.scale.x = f; tr.scale.y = f; tr.scale.z = f;
+                },
+
+                // escala (alias)
+                k if k == sx || k == "sx" => if let Some(f) = parse_f32() { tr.scale.x = f; },
+                k if k == sy || k == "sy" => if let Some(f) = parse_f32() { tr.scale.y = f; },
+                k if k == sz || k == "sz" => if let Some(f) = parse_f32() { tr.scale.z = f; },
+
+                _ => {}
+            }
+        }
+
+        // Sincronizar alto nivel
         if key == "src" {
             if let Some(m) = model_storage.get_mut(ent) {
-                if val == ATTR_DELETE_SENTINEL {
-                    m.src = None;
-                } else {
-                    m.src = Some(val.clone());
-                }
+                m.src = (val != ATTR_DELETE_SENTINEL).then(|| val.clone());
+            }
+            if let Some(i) = include_storage.get_mut(ent) {
+                i.src = (val != ATTR_DELETE_SENTINEL).then(|| val.clone());
             }
         }
 
-        // Marcar dirty (y que `dom_sync_system` drene después)
+        // marcar dirty
         dirty_nodes.0.push(ent_id);
     }
 }
+
 
 
 
@@ -1311,4 +1326,82 @@ fn resolve_remote_path(base_url: &str, remote_path: &str) -> Option<String> {
         return None;
     };
     Some(final_url.to_string())
+}
+
+/// Recolecta IDs de un subárbol para marcarlos dirty
+fn collect_subtree_ids(
+    world: &SpecWorld,
+    root: SpecEntity,
+    out: &mut Vec<u32>,
+) {
+    let hier = world.read_storage::<Hierarchy>();
+    out.push(root.id());
+    if let Some(h) = hier.get(root) {
+        for &c in &h.children {
+            collect_subtree_ids(world, c, out);
+        }
+    }
+}
+
+/// Expande TODOS los <include src="..."> del world.
+/// Devuelve IDs que deben marcarse dirty.
+fn expand_includes(
+    world: &mut SpecWorld,
+    base_url: &str,
+    rt: &Runtime,
+    log: &mut LogPanel,
+) -> anyhow::Result<Vec<u32>> {
+    use specs::Join;
+
+    // 1) FASE DE LECTURA (inmutable) EN UN BLOQUE
+    let targets: Vec<(SpecEntity, String)> = {
+        let entities   = world.entities();                 // <- inmutable
+        let includes_r = world.read_storage::<Include>();  // <- inmutable
+
+        let mut v = Vec::new();
+        for (ent, inc) in (&entities, &includes_r).join() {
+            if let Some(ref src) = inc.src {
+                v.push((ent, src.clone()));
+            }
+        }
+        // al salir del bloque, se liberan 'entities' e 'includes_r'
+        v
+    }; // <- aquí se sueltan TODOS los borrows inmutables
+
+    // 2) FASE DE MUTACIÓN (ya podemos usar &mut World)
+    let mut new_dirty = Vec::new();
+
+    for (parent_ent, src) in targets {
+        // resolver URL
+        let Some(final_url) = resolve_remote_path(base_url, &src) else {
+            log.push_warn(format!("include: no se pudo resolver src='{src}' contra base='{base_url}'"));
+            continue;
+        };
+
+        // descargar
+        let xml = match rt.block_on(load_xml_from_url(&final_url)) {
+            Ok(x) => x,
+            Err(e) => {
+                log.push_error(format!("include: error descargando {} -> {e}", final_url));
+                continue;
+            }
+        };
+
+        // parsear (requiere &mut World)  ✅ ahora compila
+        let child_root = match parse_xml(world, &xml) {
+            Ok(r) => r,
+            Err(e) => {
+                log.push_error(format!("include: error parseando {} -> {e}", final_url));
+                continue;
+            }
+        };
+
+        // colgar como hijo (requiere &mut World)  ✅ ahora compila
+        Hierarchy::add_child(world, parent_ent, child_root);
+
+        // recolectar IDs del subárbol para marcarlos dirty
+        collect_subtree_ids(world, child_root, &mut new_dirty);
+    }
+
+    Ok(new_dirty)
 }
