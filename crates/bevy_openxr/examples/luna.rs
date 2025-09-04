@@ -239,14 +239,14 @@ fn main() {
             (
                 // Recarga de XML
                 reload_xml_system.run_if(|r: Res<ReloadTrigger>| r.0),
+                // Aplicar updates a atributos
+                apply_attribute_updates.run_if(|a: Res<AttributeUpdates>| !a.0.is_empty()),
                 // Marcar dirty
                 mark_dirty_system,
                 // Sincronizar con Bevy solo si hay nodos dirty
                 dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
                 // Siempre mostrar la UI, y dentro ya decidimos si mostramos el devtool
                 ui_system,
-                // Aplicar updates a atributos
-                apply_attribute_updates.run_if(|a: Res<AttributeUpdates>| !a.0.is_empty()),
                 // Borrar
                 process_delete_requests.run_if(|del: Res<DeleteRequests>| !del.0.is_empty()),
                 // Contador de entidades
@@ -641,9 +641,44 @@ fn show_element_tree(
                                 entity, k, val
                             ));
                         }
+                        if ui.button("🗑").on_hover_text("Eliminar atributo").clicked() {
+                            attribute_updates
+                                .0
+                                .push((entity.id(), k.clone(), "[DEL]".to_string())); // <- en vez de String::from_str
+                            log_panel.push_warn(format!(
+                                "Eliminar atributo: Entidad({:?}) [{}]",
+                                entity, k
+                            ));
+                        }
                     });
                 }
             }
+            ui.horizontal(|ui| {
+                ui.label("Crear atributo:");
+            
+                let id = ui.make_persistent_id(("new_attr_key", entity.id()));
+
+                // leer (inmutable)
+                let mut key = ui.data_mut(|d| d.get_persisted::<String>(id).unwrap_or_default());
+
+                // editar
+                let te_resp = ui.text_edit_singleline(&mut key);
+
+                // escribir (mutable)
+                ui.data_mut(|d| d.insert_persisted(id, key.clone()));
+
+                if ui.button("Crear").clicked() && !key.trim().is_empty() {
+                    attribute_updates.0.push((entity.id(), key.clone(), String::new()));
+                    log_panel.push_info(format!("Crear de atributo: Entidad({:?}) [{}] = ''", entity, key));
+
+                    // limpiar buffer y re-persistir
+                    key.clear();
+                    ui.data_mut(|d| d.insert_persisted(id, key.clone()));
+                    te_resp.request_focus();
+                }
+
+            });
+            
             // Botones
             ui.horizontal(|ui| {
                 if ui.button("Mirar").clicked() {
@@ -696,16 +731,66 @@ fn apply_attribute_updates(
     mut attribute_updates: ResMut<AttributeUpdates>,
     mut world: ResMut<ElemenetWorld>,
     mut dirty_nodes: ResMut<DirtyNodes>,
+    mut log_panel: ResMut<LogPanel>,
 ) {
-    let mut storage = world.0.write_storage::<Attrs>();
+    let entities = world.0.entities();
+
+    // storages en modo escritura, porque vamos a mutar
+    let mut attrs_storage = world.0.write_storage::<Attrs>();
+    let mut tr_storage = world.0.write_storage::<Transform2>();
+
     for (ent_id, key, val) in attribute_updates.0.drain(..) {
-        if let Some(a) = storage.get_mut(world.0.entities().entity(ent_id)) {
-            a.0.insert(key, val);
-            // Importante: marcar como dirty para que dom_sync_system vuelva a procesarla
-            dirty_nodes.0.push(ent_id);
+        let ent = entities.entity(ent_id);
+        // si la entidad ya no existe, ignoramos el update
+        if !entities.is_alive(ent) {
+            continue;
         }
+
+        // 1) Actualizar/crear Attrs
+        // Si no existe Attrs, lo insertamos vacío y luego lo mutamos.
+        if attrs_storage.get(ent).is_none() {
+            let _ = attrs_storage.insert(ent, Attrs(HashMap::new()));
+        }
+        if let Some(a) = attrs_storage.get_mut(ent) {
+            a.0.insert(key.clone(), val.clone());
+        }
+
+        // 2) Intentar reflejar en Transform2 (si la entidad lo tiene)
+        if let Some(tr) = tr_storage.get_mut(ent) {
+            // helper para parsear f32 sin panics
+            let parse_f32 = || -> Option<f32> { val.trim().parse::<f32>().ok() };
+
+            match key.as_str() {
+                // posición
+                "x" => if let Some(f) = parse_f32() { tr.position.x = f; },
+                "y" => if let Some(f) = parse_f32() { tr.position.y = f; },
+                "z" => if let Some(f) = parse_f32() { tr.position.z = f; },
+
+                // rotación
+                "rx" => if let Some(f) = parse_f32() { tr.rotation.x = f; },
+                "ry" => if let Some(f) = parse_f32() { tr.rotation.y = f; },
+                "rz" => if let Some(f) = parse_f32() { tr.rotation.z = f; },
+
+                // escala uniforme
+                "s"  => if let Some(f) = parse_f32() {
+                    tr.scale.x = f; tr.scale.y = f; tr.scale.z = f;
+                },
+
+                // escala no uniforme
+                "sx" => if let Some(f) = parse_f32() { tr.scale.x = f; },
+                "sy" => if let Some(f) = parse_f32() { tr.scale.y = f; },
+                "sz" => if let Some(f) = parse_f32() { tr.scale.z = f; },
+
+                _ => {} // otros atributos sólo se guardan en Attrs
+            }
+        }
+        log_panel.push_info(format!("apply_attribute_updates: 5 . Entidad (ID={})", ent_id));
+
+        // 3) Marcar como dirty para que dom_sync_system la reprocese
+        dirty_nodes.0.push(ent_id);
     }
 }
+
 
 // --------------------------------------------------------------------------------------
 // Borrar
@@ -736,9 +821,10 @@ fn mark_dirty_system(
     world: Res<ElemenetWorld>,
     mut commands: Commands,
     entity_map: Res<EntityMap>,
-    mut dirty_nodes: ResMut<DirtyNodes>,
+    dirty_nodes: ResMut<DirtyNodes>, // <- no necesitamos mut del Vec
 ) {
-    for node_id in dirty_nodes.0.drain(..) {
+    // NO drenar: iteramos por copia/refs y dejamos que dom_sync drene
+    for node_id in dirty_nodes.0.iter().copied() {
         if let Some(&ent) = entity_map.0.get(&node_id) {
             commands.entity(ent).insert(Dirty);
         }
@@ -799,14 +885,12 @@ fn dom_sync_system(
             if let Some(&bevy_ent) = entity_map.0.get(&node_id) {
                 // Si existe, solo actualizamos su Transform si está marcado con Dirty
                 if let Ok((_, mut t, dirty)) = query.get_mut(bevy_ent) {
-                    if dirty.is_some() {
-                        *t = transform_b;
-                        commands.entity(bevy_ent).remove::<Dirty>();
-                        log_panel.push_info(format!(
-                            "    Actualizado transform en entidad existente {:?}",
-                            bevy_ent
-                        ));
-                    }
+                    *t = transform_b;
+                    commands.entity(bevy_ent).remove::<Dirty>();
+                    log_panel.push_info(format!(
+                        "    Actualizado transform en entidad existente {:?}",
+                        bevy_ent
+                    ));
                 }
             } else {
                 // Crear nueva
