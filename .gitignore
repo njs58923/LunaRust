@@ -6,3 +6,4 @@
 .zed
 .direnv
 crates/bevy_openxr/cache/*
+crates/bevy_openxr/assets/cache
