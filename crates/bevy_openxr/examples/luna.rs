@@ -738,6 +738,7 @@ fn apply_attribute_updates(
 
     let mut attrs_storage = world.0.write_storage::<Attrs>();
     let mut tr_storage    = world.0.write_storage::<Transform2>();
+    let mut model_storage  = world.0.write_storage::<Model>();
 
     for (ent_id, key, val) in attribute_updates.0.drain(..) {
         let ent = entities.entity(ent_id);
@@ -803,6 +804,17 @@ fn apply_attribute_updates(
 
                         _ => {}
                     }
+                }
+            }
+        }
+        
+        // *** NUEVO: si cambia "src" y la entidad tiene Model, sincronizá el componente ***
+        if key == "src" {
+            if let Some(m) = model_storage.get_mut(ent) {
+                if val == ATTR_DELETE_SENTINEL {
+                    m.src = None;
+                } else {
+                    m.src = Some(val.clone());
                 }
             }
         }
@@ -904,15 +916,75 @@ fn dom_sync_system(
             }
 
             // ¿existe la entidad de Bevy asociada a este node_id?
-            if let Some(&bevy_ent) = entity_map.0.get(&node_id) {
-                // Si existe, solo actualizamos su Transform si está marcado con Dirty
+            if let Some(&bevy_ent) = entity_map.0.get(&node_id) { // ********* CAMBIO CLAVE *********
+                if tag == "model" {
+                    // 1) eliminar entidad vieja
+                    commands.entity(bevy_ent).despawn_recursive();
+                    entity_map.0.remove(&node_id);
+    
+                    // 2) crear nueva con el src actual
+                    let new_ent = {
+                        if let Some(model_data) = models.get(*node) {
+                            if let Some(ref original_src) = model_data.src {
+                                if let Some(final_url) = resolve_remote_path(&current_url.0, original_src) {
+                                    let scene_handle = apply_model_with_cache(
+                                        &final_url,
+                                        &asset_server,
+                                        &mut log_panel,
+                                        &mut model_cache,
+                                        &tokio_rt.0,
+                                    );
+                                    commands.spawn((
+                                        SceneBundle {
+                                            scene: scene_handle,
+                                            transform: transform_b,
+                                            ..Default::default()
+                                        },
+                                        Dirty,
+                                    )).id()
+                                } else {
+                                    // src inválido → placeholder vacío
+                                    commands.spawn((
+                                        SpatialBundle { transform: transform_b, ..Default::default() },
+                                        Dirty,
+                                    )).id()
+                                }
+                            } else {
+                                // sin src → placeholder
+                                commands.spawn((
+                                    SpatialBundle { transform: transform_b, ..Default::default() },
+                                    Dirty,
+                                )).id()
+                            }
+                        } else {
+                            // no hay componente Model → placeholder
+                            commands.spawn((
+                                SpatialBundle { transform: transform_b, ..Default::default() },
+                                Dirty,
+                            )).id()
+                        }
+                    };
+    
+                    // 3) restaurar parent
+                    if let Some(pid) = parent_id {
+                        if let Some(&parent_bevy_ent) = entity_map.0.get(&pid) {
+                            commands.entity(new_ent).set_parent(parent_bevy_ent);
+                        }
+                    } else {
+                        commands.entity(new_ent).remove_parent();
+                    }
+    
+                    // 4) actualizar mapping
+                    entity_map.0.insert(node_id, new_ent);
+                    continue; // ya procesamos este node_id
+                }
+    
+                // caso normal (no-model): solo actualizar transform si tiene Dirty
                 if let Ok((_, mut t, dirty)) = query.get_mut(bevy_ent) {
-                    *t = transform_b;
-                    commands.entity(bevy_ent).remove::<Dirty>();
-                    log_panel.push_info(format!(
-                        "    Actualizado transform en entidad existente {:?}",
-                        bevy_ent
-                    ));
+                    if dirty.is_some() {
+                        *t = transform_b;
+                        commands.entity(bevy_ent).remove::<Dirty>();
+                    }
                 }
             } else {
                 // Crear nueva
