@@ -23,3 +23,32 @@ bevy = { version = "0.14.0", default-features = false, features = [
 	"jpeg"
 ] }
 bevy_egui = "0.28.0"  # Versión compatible con Bevy 0.14.0
+
+
+# ⚠️ Optimizaciones Mias ⚠️
+
+# cargo build --release -p bevy_mod_openxr --example luna
+# cargo run   --release -p bevy_mod_openxr --example luna
+
+[profile.dev]
+opt-level = 1               # mucho mejor que 0 y compila rápido
+debug-assertions = true     # si querés mantener asserts; ponlo en false si buscas más fps
+overflow-checks = false
+incremental = true
+codegen-units = 256
+
+# Compila las dependencias (Bevy, glam, wgpu, egui, etc.) con -O3 incluso en dev:
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev-optimized]
+inherits = "dev"
+opt-level = 2
+debug-assertions = false
+overflow-checks = false
+codegen-units = 64
+
+[profile.dev-optimized.package."*"]
+opt-level = 3
+
+# ⚠️ Optimizaciones Mias ⚠️

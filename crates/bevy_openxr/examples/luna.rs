@@ -1225,10 +1225,10 @@ fn download_model_if_needed(
     }
 
     // Crear carpeta cache
-    let _ = fs::create_dir_all("crates/bevy_openxr/assets/cache");
+    let _ = fs::create_dir_all("***/bevy_oxr/crates/bevy_openxr/assets/cache");
     // Nombre base64
     let filename = encode_url_to_filename(url);
-    let local_path = format!("crates/bevy_openxr/assets/cache/{}", filename);
+    let local_path = format!("***/bevy_oxr/crates/bevy_openxr/assets/cache/{}", filename);
 
     // Distinguimos HTTP vs local
     if url.starts_with("http://") || url.starts_with("https://") {
