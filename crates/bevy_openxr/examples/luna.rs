@@ -185,6 +185,8 @@ impl Default for DevtoolState {
     }
 }
 
+const ATTR_DELETE_SENTINEL: &str = "[DEL]";
+
 // --------------------------------------------------------------------------------------
 // MAIN
 // --------------------------------------------------------------------------------------
@@ -731,65 +733,85 @@ fn apply_attribute_updates(
     mut attribute_updates: ResMut<AttributeUpdates>,
     mut world: ResMut<ElemenetWorld>,
     mut dirty_nodes: ResMut<DirtyNodes>,
-    mut log_panel: ResMut<LogPanel>,
 ) {
     let entities = world.0.entities();
 
-    // storages en modo escritura, porque vamos a mutar
     let mut attrs_storage = world.0.write_storage::<Attrs>();
-    let mut tr_storage = world.0.write_storage::<Transform2>();
+    let mut tr_storage    = world.0.write_storage::<Transform2>();
 
     for (ent_id, key, val) in attribute_updates.0.drain(..) {
         let ent = entities.entity(ent_id);
-        // si la entidad ya no existe, ignoramos el update
         if !entities.is_alive(ent) {
             continue;
         }
 
-        // 1) Actualizar/crear Attrs
-        // Si no existe Attrs, lo insertamos vacío y luego lo mutamos.
+        // Asegurar que haya Attrs
         if attrs_storage.get(ent).is_none() {
             let _ = attrs_storage.insert(ent, Attrs(HashMap::new()));
         }
+
         if let Some(a) = attrs_storage.get_mut(ent) {
-            a.0.insert(key.clone(), val.clone());
-        }
+            if val == ATTR_DELETE_SENTINEL {
+                // --- eliminar atributo ---
+                a.0.remove(&key);
 
-        // 2) Intentar reflejar en Transform2 (si la entidad lo tiene)
-        if let Some(tr) = tr_storage.get_mut(ent) {
-            // helper para parsear f32 sin panics
-            let parse_f32 = || -> Option<f32> { val.trim().parse::<f32>().ok() };
+                // (Opcional) si querés "revertir" efectos en Transform2 cuando
+                // se borran keys como x/y/z/sx/sy/sz/rx/ry/rz, podés resetear:
+                if let Some(tr) = tr_storage.get_mut(ent) {
+                    match key.as_str() {
+                        // posición
+                        "x" => tr.position.x = 0.0, // o 0.0 si querés resetear
+                        "y" => tr.position.y = 0.0,
+                        "z" => tr.position.z = 0.0,
 
-            match key.as_str() {
-                // posición
-                "x" => if let Some(f) = parse_f32() { tr.position.x = f; },
-                "y" => if let Some(f) = parse_f32() { tr.position.y = f; },
-                "z" => if let Some(f) = parse_f32() { tr.position.z = f; },
+                        // rotación
+                        "rx" => tr.rotation.x = 0.0, // o 0.0
+                        "ry" => tr.rotation.y = 0.0,
+                        "rz" => tr.rotation.z = 0.0,
 
-                // rotación
-                "rx" => if let Some(f) = parse_f32() { tr.rotation.x = f; },
-                "ry" => if let Some(f) = parse_f32() { tr.rotation.y = f; },
-                "rz" => if let Some(f) = parse_f32() { tr.rotation.z = f; },
+                        // escala
+                        "s"  => { /* podrías no tocar nada o resetear a 1.0 */ }
+                        "sx" => tr.scale.x = 1.0, // o 1.0
+                        "sy" => tr.scale.y = 1.0,
+                        "sz" => tr.scale.z = 1.0,
 
-                // escala uniforme
-                "s"  => if let Some(f) = parse_f32() {
-                    tr.scale.x = f; tr.scale.y = f; tr.scale.z = f;
-                },
+                        _ => {}
+                    }
+                }
+            } else {
+                // --- set/update atributo ---
+                a.0.insert(key.clone(), val.clone());
 
-                // escala no uniforme
-                "sx" => if let Some(f) = parse_f32() { tr.scale.x = f; },
-                "sy" => if let Some(f) = parse_f32() { tr.scale.y = f; },
-                "sz" => if let Some(f) = parse_f32() { tr.scale.z = f; },
+                // reflejar en Transform2 si corresponde
+                if let Some(tr) = tr_storage.get_mut(ent) {
+                    let parse_f32 = || -> Option<f32> { val.trim().parse::<f32>().ok() };
+                    match key.as_str() {
+                        "x" => if let Some(f) = parse_f32() { tr.position.x = f; },
+                        "y" => if let Some(f) = parse_f32() { tr.position.y = f; },
+                        "z" => if let Some(f) = parse_f32() { tr.position.z = f; },
 
-                _ => {} // otros atributos sólo se guardan en Attrs
+                        "rx" => if let Some(f) = parse_f32() { tr.rotation.x = f; },
+                        "ry" => if let Some(f) = parse_f32() { tr.rotation.y = f; },
+                        "rz" => if let Some(f) = parse_f32() { tr.rotation.z = f; },
+
+                        "s"  => if let Some(f) = parse_f32() {
+                            tr.scale.x = f; tr.scale.y = f; tr.scale.z = f;
+                        }
+                        "sx" => if let Some(f) = parse_f32() { tr.scale.x = f; },
+                        "sy" => if let Some(f) = parse_f32() { tr.scale.y = f; },
+                        "sz" => if let Some(f) = parse_f32() { tr.scale.z = f; },
+
+                        _ => {}
+                    }
+                }
             }
         }
-        log_panel.push_info(format!("apply_attribute_updates: 5 . Entidad (ID={})", ent_id));
 
-        // 3) Marcar como dirty para que dom_sync_system la reprocese
+        // Marcar dirty (y que `dom_sync_system` drene después)
         dirty_nodes.0.push(ent_id);
     }
 }
+
 
 
 // --------------------------------------------------------------------------------------
