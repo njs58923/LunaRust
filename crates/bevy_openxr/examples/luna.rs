@@ -22,7 +22,7 @@ use virtual_dom::{
     load_xml_from_url, parse_xml,
 };
 use anyhow::Result;
-use bevy::{gltf::GltfPlugin, prelude::*};
+use bevy::{gltf::GltfPlugin, gltf::GltfLoaderSettings, prelude::*};
 use bevy_mod_openxr::add_xr_plugins;
 use std::f32::consts::*;
 
@@ -196,8 +196,8 @@ fn main() {
 
     // ── Variables ────────────────────────────────────────────────────────────────
 
-    let mut ar_on = true;
-    let start_url = "http://localhost:2052/main.hsml".to_string();
+    let mut ar_on = false;
+    let start_url = "http://localhost:2052/main.html".to_string();
     let devtools_on = false;
 
     // ── Plugins ────────────────────────────────────────────────────────────────
@@ -288,6 +288,9 @@ fn main() {
             update_entity_counter.run_if(|m: Res<EntityMap>| m.is_changed()),
             // FPS
             update_fps_counter,
+
+            // MOVE
+            camera_keyboard_movement_system
         ),
     );
 
@@ -1323,11 +1326,17 @@ fn apply_model_with_cache(
             if relative.ends_with(".gltf") || relative.ends_with(".glb") {
                 // Se puede cargar escena 0 con “#Scene0”
                 let final_path = format!("{relative}#Scene0");
-                let scene_handle: Handle<Scene> = asset_server.load(final_path);
+                let scene_handle: Handle<Scene> = asset_server.load_with_settings(final_path, |settings: &mut GltfLoaderSettings| {
+                    settings.load_cameras = false;
+                    settings.load_lights = false;
+                });
                 scene_handle
             } else {
                 // Carga normal como Scene
-                let scene_handle: Handle<Scene> = asset_server.load(relative);
+                let scene_handle: Handle<Scene> = asset_server.load_with_settings(relative, |settings: &mut GltfLoaderSettings| {
+                    settings.load_cameras = false;
+                    settings.load_lights = false;
+                });
                 scene_handle
             }
         }
@@ -1447,4 +1456,52 @@ fn expand_includes(
     }
 
     Ok(new_dirty)
+}
+
+
+fn camera_keyboard_movement_system(
+    time: Res<Time>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut query: Query<&mut Transform, With<Camera3d>>,
+) {
+    let Ok(mut transform) = query.get_single_mut() else {
+        return;
+    };
+
+    // Usamos Vec3 como acumulador
+    let mut direction = Vec3::ZERO;
+
+    // forward / right ahora son Dir3 -> los convertimos a Vec3
+    let forward = transform.forward().as_vec3();
+    let right = transform.right().as_vec3();
+    let up = Vec3::Y;
+
+    let speed = 5.0;
+
+    // WASD para moverte en el plano
+    if keyboard.pressed(KeyCode::KeyW) {
+        direction += forward;
+    }
+    if keyboard.pressed(KeyCode::KeyS) {
+        direction -= forward;
+    }
+    if keyboard.pressed(KeyCode::KeyD) {
+        direction += right;
+    }
+    if keyboard.pressed(KeyCode::KeyA) {
+        direction -= right;
+    }
+
+    // Q/E para subir/bajar
+    if keyboard.pressed(KeyCode::KeyE) {
+        direction += up;
+    }
+    if keyboard.pressed(KeyCode::KeyQ) {
+        direction -= up;
+    }
+
+    if direction.length_squared() > 0.0 {
+        direction = direction.normalize();
+        transform.translation += direction * speed * time.delta_seconds();
+    }
 }
