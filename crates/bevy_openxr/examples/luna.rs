@@ -7,10 +7,7 @@ use bevy::{
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use specs::{Entity as SpecEntity, Join, ReadStorage, World as SpecWorld, WorldExt};
 use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-    time::Instant,
+    collections::HashMap, env::{self}, fs, path::{Path, PathBuf}, time::Instant
 };
 use tokio::runtime::Runtime;
 use url::Url;
@@ -25,12 +22,16 @@ use virtual_dom::{
     load_xml_from_url, parse_xml,
 };
 use anyhow::Result;
+use bevy::{gltf::GltfPlugin, prelude::*};
+use bevy_mod_openxr::add_xr_plugins;
+use std::f32::consts::*;
 
 // Módulos ficticios
 mod render;
 mod utils;
 use render::apply_transform;
 use utils::shapes;
+use utils::folder;
 
 // --------------------------------------------------------------------------------------
 // LOG
@@ -191,9 +192,26 @@ impl Default for DevtoolState {
 // MAIN
 // --------------------------------------------------------------------------------------
 fn main() {
-    App::new()
-        .add_plugins(
-            DefaultPlugins
+    let mut app = App::new();
+
+    // ── Variables ────────────────────────────────────────────────────────────────
+
+    let mut ar_on = true;
+    let start_url = "http://localhost:2052/main.hsml".to_string();
+    let devtools_on = false;
+
+    // ── Plugins ────────────────────────────────────────────────────────────────
+
+
+    let args: Vec<String> = env::args().collect();
+    // args[0] = nombre del binario (por ej. "luna")
+    println!("Args: {:?}", &args[1..]);
+
+    if args.iter().any(|a| a == "--ar") {
+        ar_on = true;
+    }
+
+    let default_plugins = DefaultPlugins
                 .set(AssetPlugin {
                     file_path: "assets".into(),
                     watch_for_changes_override: Some(false),
@@ -205,59 +223,76 @@ fn main() {
                         ..default()
                     }),
                     ..default()
-                }),
-        )
-        .add_plugins(EguiPlugin)
-        .add_plugins(FrameTimeDiagnosticsPlugin)
-        // Nuestros recursos
-        .insert_resource(VirtualDomData::default())
-        .insert_resource(DirtyNodes::default())
-        .insert_resource(EntityMap::default())
-        .insert_resource(ElemenetWorld(build_world()))
-        .insert_resource(EntityCounter::default())
-        .insert_resource(FpsCounter::default())
-        .insert_resource(CurrentUrl(
-            "http://localhost:2052/static/main.hsml".to_string(),
-        ))
-        .insert_resource(ReloadTrigger(false))
-        .insert_resource(AttributeUpdates::default())
-        .insert_resource(DeleteRequests::default())
-        .insert_resource(DevtoolVisible(true))
-        .insert_resource(LogPanel::default())
-        // Runtime
-        .insert_resource(TokioRuntime(
-            Runtime::new().expect("No se pudo crear Tokio"),
-        ))
-        // Cache
-        .insert_resource(ModelCache::default())
-        // Stats
-        .insert_resource(PerformanceStats::default())
-        // Estado del devtool
-        .insert_resource(DevtoolState::default())
-        // Sistemas
-        .add_systems(Startup, setup)
-        .add_systems(
-            Update,
-            (
-                // Recarga de XML
-                reload_xml_system.run_if(|r: Res<ReloadTrigger>| r.0),
-                // Aplicar updates a atributos
-                apply_attribute_updates.run_if(|a: Res<AttributeUpdates>| !a.0.is_empty()),
-                // Marcar dirty
-                mark_dirty_system,
-                // Sincronizar con Bevy solo si hay nodos dirty
-                dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
-                // Siempre mostrar la UI, y dentro ya decidimos si mostramos el devtool
-                ui_system,
-                // Borrar
-                process_delete_requests.run_if(|del: Res<DeleteRequests>| !del.0.is_empty()),
-                // Contador de entidades
-                update_entity_counter.run_if(|m: Res<EntityMap>| m.is_changed()),
-                // FPS
-                update_fps_counter,
-            ),
-        )
-        .run();
+                });
+
+    if ar_on == false {
+        app.add_plugins(default_plugins);
+    } else {
+        app.add_plugins(add_xr_plugins(default_plugins));
+        app.add_plugins(bevy_xr_utils::hand_gizmos::HandGizmosPlugin);
+    }
+
+
+    app.add_plugins(EguiPlugin);
+    app.add_plugins(FrameTimeDiagnosticsPlugin);
+
+    // ── Recursos ──────────────────────────────────────────────────────────────
+    app.insert_resource(VirtualDomData::default());
+    app.insert_resource(DirtyNodes::default());
+    app.insert_resource(EntityMap::default());
+    app.insert_resource(ElemenetWorld(build_world()));
+    app.insert_resource(EntityCounter::default());
+    app.insert_resource(FpsCounter::default());
+    app.insert_resource(CurrentUrl(start_url));
+    app.insert_resource(ReloadTrigger(false));
+    app.insert_resource(AttributeUpdates::default());
+    app.insert_resource(DeleteRequests::default());
+    app.insert_resource(DevtoolVisible(devtools_on));
+    app.insert_resource(LogPanel::default());
+
+    // Runtime
+    app.insert_resource(TokioRuntime(
+        Runtime::new().expect("No se pudo crear Tokio"),
+    ));
+
+    // Cache
+    app.insert_resource(ModelCache::default());
+
+    // Stats
+    app.insert_resource(PerformanceStats::default());
+
+    // Estado del devtool
+    app.insert_resource(DevtoolState::default());
+
+    // ── Sistemas ──────────────────────────────────────────────────────────────
+    app.add_systems(Startup, setup);
+
+    app.add_systems(
+        Update,
+        (
+            // Recarga de XML
+            reload_xml_system.run_if(|r: Res<ReloadTrigger>| r.0),
+            // Aplicar updates a atributos
+            apply_attribute_updates
+                .run_if(|a: Res<AttributeUpdates>| !a.0.is_empty()),
+            // Marcar dirty
+            mark_dirty_system,
+            // Sincronizar con Bevy solo si hay nodos dirty
+            dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
+            // Siempre mostrar la UI, y dentro ya decidimos si mostramos el devtool
+            ui_system,
+            // Borrar
+            process_delete_requests
+                .run_if(|del: Res<DeleteRequests>| !del.0.is_empty()),
+            // Contador de entidades
+            update_entity_counter.run_if(|m: Res<EntityMap>| m.is_changed()),
+            // FPS
+            update_fps_counter,
+        ),
+    );
+
+    // ── Run ───────────────────────────────────────────────────────────────────
+    app.run();
 }
 
 // --------------------------------------------------------------------------------------
@@ -1224,11 +1259,19 @@ fn download_model_if_needed(
         log_panel.push_info(format!("No estaba en cache, se descargará: {}", url));
     }
 
+    let (assets_dir, cache_dir) = folder::resolve_assets_and_cache_dirs();
+
+    // 2) Loggear a dónde escribimos
+    log_panel.push_info(format!("Assets dir: {}", assets_dir.display()));
+    log_panel.push_info(format!("Cache dir:  {}", cache_dir.display()));
+
+    // path.display() = ***\bevy_oxr\assets/cache
+
     // Crear carpeta cache
-    let _ = fs::create_dir_all("***/bevy_oxr/crates/bevy_openxr/assets/cache");
-    // Nombre base64
+    let _ = fs::create_dir_all(cache_dir.clone());
+    // Nombre base64                 
     let filename = encode_url_to_filename(url);
-    let local_path = format!("***/bevy_oxr/crates/bevy_openxr/assets/cache/{}", filename);
+    let local_path = cache_dir.join(filename).to_string_lossy().to_string();
 
     // Distinguimos HTTP vs local
     if url.starts_with("http://") || url.starts_with("https://") {
