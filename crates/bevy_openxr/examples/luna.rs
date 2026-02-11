@@ -1146,6 +1146,18 @@ fn dom_sync_system(
                             // Aqui debo de poder cargar otro .hsml
                             // Sample: <include src="/zonas/plaza.hsml"/>
                     }
+                    "groud" => {
+                        let new_ent_empty = commands
+                            .spawn((
+                                SpatialBundle {
+                                    transform: transform_b,
+                                    ..Default::default()
+                                },
+                                Dirty,
+                            ))
+                            .id();
+                        new_ent_empty
+                    }
                     other => {
                         log_panel.push_info(format!("    -> Tag='{}', generamos un cubo", other));
                         let new_ent_empty = commands
