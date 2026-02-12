@@ -318,19 +318,11 @@ fn main() {
             js_eval_pending_scripts,
             js_tick_system,
         )
-            .chain() // Force sequential execution on main thread
-            .run_if(script_runtime_exists),
+            .chain(), // Force sequential execution on main thread
     );
 
     // ── Run ───────────────────────────────────────────────────────────────────
     app.run();
-}
-
-// --------------------------------------------------------------------------------------
-// RUN CONDITIONS
-// --------------------------------------------------------------------------------------
-fn script_runtime_exists(world: &World) -> bool {
-    world.get_non_send_resource::<ScriptRuntime>().is_some()
 }
 
 // --------------------------------------------------------------------------------------
