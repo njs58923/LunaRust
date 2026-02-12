@@ -5,6 +5,10 @@ use bevy::{
     prelude::*,
     window::{PresentMode, PrimaryWindow, Window},
 };
+use fontdue::{
+    layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
+    Font, FontSettings,
+};
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use specs::{Entity as SpecEntity, Join, ReadStorage, World as SpecWorld, WorldExt};
 use std::{
@@ -12,7 +16,7 @@ use std::{
     env::{self},
     fs,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{mpsc, OnceLock},
     thread::{self, JoinHandle},
     time::Instant,
 };
@@ -1160,44 +1164,75 @@ fn get_attr_string(attrs: &HashMap<String, String>, key: &str, default: &str) ->
         .unwrap_or_else(|| default.to_string())
 }
 
-/// Create a simple text texture (renders text to an image)
+fn get_text_font() -> &'static Font {
+    static FONT: OnceLock<Font> = OnceLock::new();
+    FONT.get_or_init(|| {
+        let font_bytes: &[u8] = include_bytes!("../assets/fonts/FiraSans-Regular.ttf");
+        Font::from_bytes(font_bytes, FontSettings::default())
+            .expect("No se pudo cargar la fuente FiraSans-Regular.ttf")
+    })
+}
+
+/// Create a text texture using fontdue rasterization.
 fn create_text_texture(
     text: &str,
     color: Color,
     images: &mut Assets<Image>,
 ) -> Handle<Image> {
-    // Dimensiones de la textura (ajustar según necesidad)
-    let width = (text.len() * 32).max(128).min(1024) as u32;
-    let height = 64u32;
+    let text_font = get_text_font();
+    let normalized_text = if text.is_empty() { " " } else { text };
+    let font_px = 48.0f32;
+    let padding = 4u32;
 
-    // Crear imagen con fondo transparente
+    let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+    layout.reset(&LayoutSettings {
+        x: 0.0,
+        y: 0.0,
+        ..LayoutSettings::default()
+    });
+    layout.append(&[text_font], &TextStyle::new(normalized_text, font_px, 0));
+
+    let glyphs = layout.glyphs();
+    let mut max_x = 0f32;
+    let mut max_y = 0f32;
+    for glyph in glyphs {
+        max_x = max_x.max(glyph.x + glyph.width as f32);
+        max_y = max_y.max(glyph.y + glyph.height as f32);
+    }
+
+    let width = (max_x.ceil() as u32 + padding * 2).max(32);
+    let height = (max_y.ceil() as u32 + padding * 2).max(16);
+
     let mut data = vec![0u8; (width * height * 4) as usize];
 
-    // Extraer componentes de color (0-255)
     let color_array = color.to_srgba().to_u8_array();
     let r = color_array[0];
     let g = color_array[1];
     let b = color_array[2];
 
-    // Renderizado simple de "texto" como bloques de píxeles
-    // (Para un renderizado real, necesitaríamos una librería de fuentes)
-    let char_width = 16;
-    let char_height = 32;
-    let y_offset = (height - char_height) / 2;
+    for glyph in glyphs {
+        let (_, bitmap) = text_font.rasterize_config(glyph.key);
+        let base_x = padding as i32 + glyph.x.floor() as i32;
+        let base_y = padding as i32 + glyph.y.floor() as i32;
 
-    for (i, _ch) in text.chars().enumerate() {
-        let x_start = i as u32 * char_width + 8;
-
-        // Dibujar un rectángulo simple por cada carácter
-        for y in y_offset..(y_offset + char_height) {
-            for x in x_start..(x_start + char_width - 4) {
-                if x < width && y < height {
-                    let idx = ((y * width + x) * 4) as usize;
-                    data[idx] = r;         // R
-                    data[idx + 1] = g;     // G
-                    data[idx + 2] = b;     // B
-                    data[idx + 3] = 255;   // A (opaco)
+        for gy in 0..glyph.height {
+            for gx in 0..glyph.width {
+                let alpha = bitmap[gy * glyph.width + gx];
+                if alpha == 0 {
+                    continue;
                 }
+
+                let x = base_x + gx as i32;
+                let y = base_y + gy as i32;
+                if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+                    continue;
+                }
+
+                let idx = ((y as u32 * width + x as u32) * 4) as usize;
+                data[idx] = r;
+                data[idx + 1] = g;
+                data[idx + 2] = b;
+                data[idx + 3] = alpha;
             }
         }
     }
@@ -1218,7 +1253,7 @@ fn create_text_texture(
 }
 
 // --------------------------------------------------------------------------------------
-// DOM -> Bevy + medición de tiempo
+// DOM -> Bevy + medicion de tiempo
 // --------------------------------------------------------------------------------------
 fn dom_sync_system(
     world: Res<ElemenetWorld>,
@@ -1334,7 +1369,61 @@ fn dom_sync_system(
                     entity_map.0.insert(node_id, new_ent);
                     continue; // ya procesamos este node_id
                 }
-    
+
+                if tag == "text" {
+                    commands.entity(bevy_ent).despawn_recursive();
+                    entity_map.0.remove(&node_id);
+
+                    let empty_map = HashMap::new();
+                    let attrs_map = attrs_storage
+                        .get(*node)
+                        .map(|a| &a.0)
+                        .unwrap_or(&empty_map);
+
+                    let text_value = get_attr_string(attrs_map, "value", "Text");
+                    let text_size = get_attr_f32(attrs_map, "size", 0.1);
+                    let text_color = attrs_map
+                        .get("color")
+                        .and_then(|c| parse_hex_color(c))
+                        .unwrap_or(Color::srgb(1.0, 1.0, 1.0));
+
+                    let text_texture = create_text_texture(&text_value, text_color, &mut images);
+                    let text_material = materials.add(StandardMaterial {
+                        base_color_texture: Some(text_texture),
+                        alpha_mode: bevy::prelude::AlphaMode::Blend,
+                        unlit: true,
+                        ..Default::default()
+                    });
+
+                    let text_width = text_size * text_value.chars().count() as f32 * 0.6;
+                    let text_height = text_size;
+                    let mut text_transform = transform_b;
+                    text_transform.scale = Vec3::new(text_width.max(0.01), text_height.max(0.01), 1.0);
+
+                    let new_ent = commands
+                        .spawn((
+                            PbrBundle {
+                                mesh: shared_resources.plane_mesh.clone(),
+                                material: text_material,
+                                transform: text_transform,
+                                ..Default::default()
+                            },
+                            Dirty,
+                        ))
+                        .id();
+
+                    if let Some(pid) = parent_id {
+                        if let Some(&parent_bevy_ent) = entity_map.0.get(&pid) {
+                            commands.entity(new_ent).set_parent(parent_bevy_ent);
+                        }
+                    } else {
+                        commands.entity(new_ent).remove_parent();
+                    }
+
+                    entity_map.0.insert(node_id, new_ent);
+                    continue;
+                }
+
                 // caso normal (no-model): solo actualizar transform si tiene Dirty
                 if let Ok((_, mut t, dirty)) = query.get_mut(bevy_ent) {
                     if dirty.is_some() {
