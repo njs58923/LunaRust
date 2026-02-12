@@ -1609,6 +1609,9 @@ fn filter_snapshot_map<T: Clone>(source: &HashMap<i32, T>, allowed: &HashSet<i32
 // EXCLUSIVE SYSTEM - must run on main thread
 // --------------------------------------------------------------------------------------
 fn js_eval_pending_scripts(world: &mut World) {
+    const MAX_SCRIPTS_PER_FRAME: usize = 1;
+    const MAX_EVAL_BUDGET_MS: f32 = 4.0;
+
     let pending_scripts = {
         let Some(mut pending) = world.get_resource_mut::<PendingScripts>() else {
             return;
@@ -1620,7 +1623,19 @@ fn js_eval_pending_scripts(world: &mut World) {
         return;
     }
 
+    let eval_start = Instant::now();
+    let mut evaluated_this_frame = 0usize;
+    let mut deferred_scripts: Vec<(u32, String, String)> = Vec::new();
+
     for (space_id, url, code) in pending_scripts {
+        let elapsed_ms = eval_start.elapsed().as_secs_f32() * 1000.0;
+        if evaluated_this_frame >= MAX_SCRIPTS_PER_FRAME || elapsed_ms >= MAX_EVAL_BUDGET_MS {
+            deferred_scripts.push((space_id, url, code));
+            continue;
+        }
+
+        evaluated_this_frame += 1;
+
         let mut created_context = false;
         let mut already_loaded = false;
         let mut eval_error: Option<String> = None;
@@ -1695,6 +1710,23 @@ fn js_eval_pending_scripts(world: &mut World) {
                 space_id, url, err
             ));
         }
+    }
+
+    if !deferred_scripts.is_empty() {
+        let deferred_count = deferred_scripts.len();
+        {
+            let Some(mut pending) = world.get_resource_mut::<PendingScripts>() else {
+                return;
+            };
+            pending.0.extend(deferred_scripts.into_iter());
+        }
+        let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
+            return;
+        };
+        log_panel.push_info(format!(
+            "[JS] Throttle de eval: {} script(s) diferidos al siguiente frame",
+            deferred_count
+        ));
     }
 }
 
