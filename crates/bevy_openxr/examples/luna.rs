@@ -7,7 +7,13 @@ use bevy::{
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use specs::{Entity as SpecEntity, Join, ReadStorage, World as SpecWorld, WorldExt};
 use std::{
-    collections::HashMap, env::{self}, fs, path::{Path, PathBuf}, time::Instant
+    collections::HashMap,
+    env::{self},
+    fs,
+    path::{Path, PathBuf},
+    sync::mpsc,
+    thread::{self, JoinHandle},
+    time::Instant,
 };
 use tokio::runtime::Runtime;
 use url::Url;
@@ -171,10 +177,68 @@ struct SpaceScriptContext {
     loaded_scripts: HashSet<String>,
 }
 
+#[derive(Clone)]
+struct SpaceSnapshots {
+    attr_snap: HashMap<i32, HashMap<String, String>>,
+    tag_snap: HashMap<i32, String>,
+    positions: HashMap<i32, js_runtime::Vec3>,
+    rotations: HashMap<i32, js_runtime::Vec3>,
+    scales: HashMap<i32, js_runtime::Vec3>,
+    global_positions: HashMap<i32, js_runtime::Vec3>,
+    parents: HashMap<i32, i32>,
+    children: HashMap<i32, Vec<i32>>,
+}
+
+struct JsTickData {
+    logs: Vec<(String, String)>,
+    attr_updates: Vec<(i32, String, String)>,
+    pos_updates: Vec<(i32, js_runtime::Vec3)>,
+    rot_updates: Vec<(i32, js_runtime::Vec3)>,
+    scale_updates: Vec<(i32, js_runtime::Vec3)>,
+    creation_queue: Vec<(i32, String)>,
+    hierarchy_queue: Vec<(i32, i32)>,
+    remove_queue: Vec<i32>,
+    fetch_queue: Vec<(i32, String)>,
+    navigate_queue: Vec<String>,
+}
+
+enum JsWorkerCommand {
+    UpdateSnapshots(SpaceSnapshots),
+    EvalScript { url: String, code: String },
+    Tick { elapsed_ms: f64 },
+    PushElementCreationResults(Vec<(i32, i32)>),
+    PushFetchResults(Vec<(i32, std::result::Result<String, String>)>),
+    Shutdown,
+}
+
+enum JsWorkerEvent {
+    EvalResult {
+        url: String,
+        already_loaded: bool,
+        error: Option<String>,
+    },
+    TickData(JsTickData),
+    WorkerError(String),
+}
+
+struct SpaceScriptWorker {
+    cmd_tx: mpsc::Sender<JsWorkerCommand>,
+    event_rx: mpsc::Receiver<JsWorkerEvent>,
+    join: Option<JoinHandle<()>>,
+}
+
 /// Runtime manager: one JS context/isolate per <space> node.
 #[derive(Default)]
 struct ScriptRuntimeManager {
-    contexts: HashMap<u32, SpaceScriptContext>,
+    contexts: HashMap<u32, SpaceScriptWorker>,
+}
+
+impl Drop for ScriptRuntimeManager {
+    fn drop(&mut self) {
+        for worker in self.contexts.values_mut() {
+            stop_space_worker(worker);
+        }
+    }
 }
 
 /// Scripts pending evaluation: Vec<(space_id, url, code)>
@@ -1595,6 +1659,110 @@ fn create_space_context(space_id: u32) -> std::result::Result<SpaceScriptContext
     })
 }
 
+fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorker, String> {
+    let (cmd_tx, cmd_rx) = mpsc::channel::<JsWorkerCommand>();
+    let (event_tx, event_rx) = mpsc::channel::<JsWorkerEvent>();
+
+    let join = thread::Builder::new()
+        .name(format!("js-space-{}", space_id))
+        .spawn(move || {
+            let mut ctx = match create_space_context(space_id) {
+                Ok(ctx) => ctx,
+                Err(err) => {
+                    let _ = event_tx.send(JsWorkerEvent::WorkerError(err));
+                    return;
+                }
+            };
+
+            while let Ok(cmd) = cmd_rx.recv() {
+                match cmd {
+                    JsWorkerCommand::UpdateSnapshots(snap) => {
+                        ctx.engine.update_attr_snapshot(snap.attr_snap);
+                        ctx.engine.update_tag_snapshot(snap.tag_snap);
+                        ctx.engine.update_transform_snapshot(
+                            snap.positions,
+                            snap.rotations,
+                            snap.scales,
+                            snap.global_positions,
+                        );
+                        ctx.engine
+                            .update_hierarchy_snapshot(snap.parents, snap.children);
+                    }
+                    JsWorkerCommand::EvalScript { url, code } => {
+                        if ctx.loaded_scripts.contains(&url) {
+                            let _ = event_tx.send(JsWorkerEvent::EvalResult {
+                                url,
+                                already_loaded: true,
+                                error: None,
+                            });
+                            continue;
+                        }
+
+                        let wrapped_code = format!("(function(){{\n{}\n}})();", code);
+                        match ctx.engine.eval(&wrapped_code) {
+                            Ok(_) => {
+                                ctx.loaded_scripts.insert(url.clone());
+                                let _ = event_tx.send(JsWorkerEvent::EvalResult {
+                                    url,
+                                    already_loaded: false,
+                                    error: None,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(JsWorkerEvent::EvalResult {
+                                    url,
+                                    already_loaded: false,
+                                    error: Some(e.to_string()),
+                                });
+                            }
+                        }
+                    }
+                    JsWorkerCommand::Tick { elapsed_ms } => {
+                        ctx.engine.fire_raf(elapsed_ms);
+                        let tick_data = JsTickData {
+                            logs: ctx.engine.drain_logs(),
+                            attr_updates: ctx.engine.drain_attr_updates(),
+                            pos_updates: ctx.engine.drain_transform_position_updates(),
+                            rot_updates: ctx.engine.drain_transform_rotation_updates(),
+                            scale_updates: ctx.engine.drain_transform_scale_updates(),
+                            creation_queue: ctx.engine.drain_element_creation_queue(),
+                            hierarchy_queue: ctx.engine.drain_hierarchy_append_queue(),
+                            remove_queue: ctx.engine.drain_remove_element_queue(),
+                            fetch_queue: ctx.engine.drain_fetch_queue(),
+                            navigate_queue: ctx.engine.drain_navigate_queue(),
+                        };
+                        let _ = event_tx.send(JsWorkerEvent::TickData(tick_data));
+                    }
+                    JsWorkerCommand::PushElementCreationResults(results) => {
+                        for (request_id, node_id) in results {
+                            ctx.engine.push_element_creation_result(request_id, node_id);
+                        }
+                    }
+                    JsWorkerCommand::PushFetchResults(results) => {
+                        for (request_id, result) in results {
+                            ctx.engine.push_fetch_result(request_id, result);
+                        }
+                    }
+                    JsWorkerCommand::Shutdown => break,
+                }
+            }
+        })
+        .map_err(|e| format!("failed to spawn JS worker for space {}: {}", space_id, e))?;
+
+    Ok(SpaceScriptWorker {
+        cmd_tx,
+        event_rx,
+        join: Some(join),
+    })
+}
+
+fn stop_space_worker(worker: &mut SpaceScriptWorker) {
+    let _ = worker.cmd_tx.send(JsWorkerCommand::Shutdown);
+    if let Some(join) = worker.join.take() {
+        let _ = join.join();
+    }
+}
+
 fn filter_snapshot_map<T: Clone>(source: &HashMap<i32, T>, allowed: &HashSet<i32>) -> HashMap<i32, T> {
     source
         .iter()
@@ -1609,8 +1777,8 @@ fn filter_snapshot_map<T: Clone>(source: &HashMap<i32, T>, allowed: &HashSet<i32
 // EXCLUSIVE SYSTEM - must run on main thread
 // --------------------------------------------------------------------------------------
 fn js_eval_pending_scripts(world: &mut World) {
-    const MAX_SCRIPTS_PER_FRAME: usize = 1;
-    const MAX_EVAL_BUDGET_MS: f32 = 4.0;
+    const MAX_SCRIPTS_PER_FRAME: usize = 2;
+    const MAX_ENQUEUE_BUDGET_MS: f32 = 1.5;
 
     let pending_scripts = {
         let Some(mut pending) = world.get_resource_mut::<PendingScripts>() else {
@@ -1623,92 +1791,50 @@ fn js_eval_pending_scripts(world: &mut World) {
         return;
     }
 
-    let eval_start = Instant::now();
-    let mut evaluated_this_frame = 0usize;
+    let enqueue_start = Instant::now();
+    let mut queued_this_frame = 0usize;
     let mut deferred_scripts: Vec<(u32, String, String)> = Vec::new();
+    let mut log_messages = Vec::new();
 
     for (space_id, url, code) in pending_scripts {
-        let elapsed_ms = eval_start.elapsed().as_secs_f32() * 1000.0;
-        if evaluated_this_frame >= MAX_SCRIPTS_PER_FRAME || elapsed_ms >= MAX_EVAL_BUDGET_MS {
+        let elapsed_ms = enqueue_start.elapsed().as_secs_f32() * 1000.0;
+        if queued_this_frame >= MAX_SCRIPTS_PER_FRAME || elapsed_ms >= MAX_ENQUEUE_BUDGET_MS {
             deferred_scripts.push((space_id, url, code));
             continue;
         }
 
-        evaluated_this_frame += 1;
+        queued_this_frame += 1;
 
-        let mut created_context = false;
-        let mut already_loaded = false;
-        let mut eval_error: Option<String> = None;
-        let mut eval_ok = false;
-
-        {
+        let enqueue_result = {
             let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
                 return;
             };
-
-            if !manager.contexts.contains_key(&space_id) {
-                match create_space_context(space_id) {
-                    Ok(ctx) => {
-                        manager.contexts.insert(space_id, ctx);
-                        created_context = true;
-                    }
-                    Err(err) => {
-                        eval_error = Some(err);
-                    }
-                }
+            if let Some(worker) = manager.contexts.get_mut(&space_id) {
+                worker
+                    .cmd_tx
+                    .send(JsWorkerCommand::EvalScript {
+                        url: url.clone(),
+                        code,
+                    })
+                    .map_err(|e| e.to_string())
+            } else {
+                Err(format!("missing JS context for space {}", space_id))
             }
-
-            if eval_error.is_none() {
-                if let Some(ctx) = manager.contexts.get_mut(&space_id) {
-                    if ctx.loaded_scripts.contains(&url) {
-                        already_loaded = true;
-                    } else {
-                        let wrapped_code = format!("(function(){{\n{}\n}})();", code);
-                        match ctx.engine.eval(&wrapped_code) {
-                            Ok(_) => {
-                                ctx.loaded_scripts.insert(url.clone());
-                                eval_ok = true;
-                            }
-                            Err(e) => {
-                                eval_error = Some(e.to_string());
-                            }
-                        }
-                    }
-                } else {
-                    eval_error = Some(format!("missing JS context for space {}", space_id));
-                }
-            }
-        }
-
-        let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
-            return;
         };
 
-        if created_context {
-            log_panel.push_info(format!("[JS][space:{}] Context created", space_id));
-        }
-
-        if already_loaded {
-            log_panel.push_info(format!(
-                "[JS][space:{}] Script ya cargado, omitiendo: {}",
-                space_id, url
-            ));
-            continue;
-        }
-
-        if eval_ok {
-            log_panel.push_info(format!(
-                "[JS][space:{}] Script evaluado OK: {}",
-                space_id, url
-            ));
-            continue;
-        }
-
-        if let Some(err) = eval_error {
-            log_panel.push_error(format!(
-                "[JS][space:{}] Error evaluando {}: {}",
-                space_id, url, err
-            ));
+        match enqueue_result {
+            Ok(_) => {
+                log_messages.push(LogEntry::new(
+                    LogLevel::Info,
+                    format!("[JS][space:{}] Script encolado: {}", space_id, url),
+                ));
+            }
+            Err(err) => {
+                log_messages.push(LogEntry::new(
+                    LogLevel::Error,
+                    format!("[JS][space:{}] Error encolando {}: {}", space_id, url, err),
+                ));
+            }
         }
     }
 
@@ -1720,13 +1846,26 @@ fn js_eval_pending_scripts(world: &mut World) {
             };
             pending.0.extend(deferred_scripts.into_iter());
         }
+        log_messages.push(LogEntry::new(
+            LogLevel::Info,
+            format!(
+                "[JS] Throttle de eval: {} script(s) diferidos al siguiente frame",
+                deferred_count
+            ),
+        ));
+    }
+
+    if !log_messages.is_empty() {
         let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
             return;
         };
-        log_panel.push_info(format!(
-            "[JS] Throttle de eval: {} script(s) diferidos al siguiente frame",
-            deferred_count
-        ));
+        for entry in log_messages {
+            match entry.level {
+                LogLevel::Error => log_panel.push_error(entry.message),
+                LogLevel::Warn => log_panel.push_warn(entry.message),
+                LogLevel::Info => log_panel.push_info(entry.message),
+            }
+        }
     }
 }
 
@@ -1829,7 +1968,7 @@ fn js_update_snapshots_system(world: &mut World) {
     let active_space_ids: HashSet<u32> = space_subtrees.keys().copied().collect();
     let mut removed_contexts = Vec::new();
     let mut created_contexts = Vec::new();
-    let mut creation_errors = Vec::new();
+    let mut errors = Vec::new();
 
     {
         let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
@@ -1843,26 +1982,29 @@ fn js_update_snapshots_system(world: &mut World) {
             .filter(|space_id| !active_space_ids.contains(space_id))
             .collect();
         for space_id in stale_ids {
-            manager.contexts.remove(&space_id);
-            removed_contexts.push(space_id);
+            if let Some(mut worker) = manager.contexts.remove(&space_id) {
+                stop_space_worker(&mut worker);
+                removed_contexts.push(space_id);
+            }
         }
 
         for space_id in &active_space_ids {
             if manager.contexts.contains_key(space_id) {
                 continue;
             }
-            match create_space_context(*space_id) {
-                Ok(ctx) => {
-                    manager.contexts.insert(*space_id, ctx);
+            match spawn_space_worker(*space_id) {
+                Ok(worker) => {
+                    manager.contexts.insert(*space_id, worker);
                     created_contexts.push(*space_id);
                 }
                 Err(err) => {
-                    creation_errors.push(err);
+                    errors.push(err);
                 }
             }
         }
 
-        for (space_id, ctx) in manager.contexts.iter_mut() {
+        let mut broken_contexts = Vec::new();
+        for (space_id, worker) in manager.contexts.iter_mut() {
             let Some(allowed) = space_subtrees.get(space_id) else {
                 continue;
             };
@@ -1895,20 +2037,35 @@ fn js_update_snapshots_system(world: &mut World) {
                 filtered_children.insert(*node_id, children);
             }
 
-            ctx.engine.update_attr_snapshot(filtered_attrs);
-            ctx.engine.update_tag_snapshot(filtered_tags);
-            ctx.engine.update_transform_snapshot(
-                filtered_positions,
-                filtered_rotations,
-                filtered_scales,
-                filtered_global_positions,
-            );
-            ctx.engine
-                .update_hierarchy_snapshot(filtered_parents, filtered_children);
+            let snap = SpaceSnapshots {
+                attr_snap: filtered_attrs,
+                tag_snap: filtered_tags,
+                positions: filtered_positions,
+                rotations: filtered_rotations,
+                scales: filtered_scales,
+                global_positions: filtered_global_positions,
+                parents: filtered_parents,
+                children: filtered_children,
+            };
+
+            if let Err(e) = worker.cmd_tx.send(JsWorkerCommand::UpdateSnapshots(snap)) {
+                errors.push(format!(
+                    "failed to send snapshots to JS worker for space {}: {}",
+                    space_id, e
+                ));
+                broken_contexts.push(*space_id);
+            }
+        }
+
+        for space_id in broken_contexts {
+            if let Some(mut worker) = manager.contexts.remove(&space_id) {
+                stop_space_worker(&mut worker);
+                removed_contexts.push(space_id);
+            }
         }
     }
 
-    if !removed_contexts.is_empty() || !created_contexts.is_empty() || !creation_errors.is_empty() {
+    if !removed_contexts.is_empty() || !created_contexts.is_empty() || !errors.is_empty() {
         let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
             return;
         };
@@ -1922,7 +2079,7 @@ fn js_update_snapshots_system(world: &mut World) {
         for space_id in created_contexts {
             log_panel.push_info(format!("[JS][space:{}] Context created", space_id));
         }
-        for err in creation_errors {
+        for err in errors {
             log_panel.push_error(format!("[JS] {}", err));
         }
     }
@@ -1933,36 +2090,126 @@ fn js_update_snapshots_system(world: &mut World) {
 // EXCLUSIVE SYSTEM - must run on main thread
 // --------------------------------------------------------------------------------------
 fn js_tick_system(world: &mut World) {
-    // Block 1: Fire requestAnimationFrame callbacks
     let elapsed_ms = {
         let Some(time) = world.get_resource::<Time>() else {
             return;
         };
         time.elapsed_seconds_f64() * 1000.0
     };
+    let mut eval_events: Vec<(u32, String, bool, Option<String>)> = Vec::new();
+    let mut tick_batches: Vec<(u32, JsTickData)> = Vec::new();
+    let mut worker_errors: Vec<String> = Vec::new();
+
     {
         let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
             return;
         };
-        for ctx in manager.contexts.values_mut() {
-            ctx.engine.fire_raf(elapsed_ms);
+
+        for worker in manager.contexts.values_mut() {
+            let _ = worker.cmd_tx.send(JsWorkerCommand::Tick { elapsed_ms });
+        }
+
+        let mut broken_contexts = Vec::new();
+        for (space_id, worker) in manager.contexts.iter_mut() {
+            loop {
+                match worker.event_rx.try_recv() {
+                    Ok(JsWorkerEvent::EvalResult {
+                        url,
+                        already_loaded,
+                        error,
+                    }) => {
+                        eval_events.push((*space_id, url, already_loaded, error));
+                    }
+                    Ok(JsWorkerEvent::TickData(data)) => {
+                        tick_batches.push((*space_id, data));
+                    }
+                    Ok(JsWorkerEvent::WorkerError(err)) => {
+                        worker_errors.push(format!("[JS][space:{}] {}", space_id, err));
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        broken_contexts.push(*space_id);
+                        break;
+                    }
+                }
+            }
+        }
+
+        for space_id in broken_contexts {
+            if let Some(mut worker) = manager.contexts.remove(&space_id) {
+                stop_space_worker(&mut worker);
+                worker_errors.push(format!(
+                    "[JS][space:{}] worker disconnected and context removed",
+                    space_id
+                ));
+            }
         }
     }
 
-    // Block 2: Drain console logs -> LogPanel
-    let logs_by_context = {
-        let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
+    if !eval_events.is_empty() || !worker_errors.is_empty() {
+        let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
             return;
         };
-        let mut logs_by_context = Vec::new();
-        for (space_id, ctx) in manager.contexts.iter_mut() {
-            let logs = ctx.engine.drain_logs();
-            if !logs.is_empty() {
-                logs_by_context.push((*space_id, logs));
+        for (space_id, url, already_loaded, error) in eval_events {
+            if already_loaded {
+                log_panel.push_info(format!(
+                    "[JS][space:{}] Script ya cargado, omitiendo: {}",
+                    space_id, url
+                ));
+            } else if let Some(err) = error {
+                log_panel.push_error(format!(
+                    "[JS][space:{}] Error evaluando {}: {}",
+                    space_id, url, err
+                ));
+            } else {
+                log_panel.push_info(format!(
+                    "[JS][space:{}] Script evaluado OK: {}",
+                    space_id, url
+                ));
             }
         }
-        logs_by_context
-    };
+        for err in worker_errors {
+            log_panel.push_error(err);
+        }
+    }
+
+    let mut logs_by_context = Vec::new();
+    let mut attr_updates = Vec::new();
+    let mut pos_updates = Vec::new();
+    let mut rot_updates = Vec::new();
+    let mut scale_updates = Vec::new();
+    let mut creation_batches = Vec::new();
+    let mut hierarchy_batches = Vec::new();
+    let mut remove_batches = Vec::new();
+    let mut fetch_batches = Vec::new();
+    let mut navigate_batches = Vec::new();
+
+    for (space_id, data) in tick_batches {
+        if !data.logs.is_empty() {
+            logs_by_context.push((space_id, data.logs));
+        }
+        if !data.creation_queue.is_empty() {
+            creation_batches.push((space_id, data.creation_queue));
+        }
+        if !data.hierarchy_queue.is_empty() {
+            hierarchy_batches.push((space_id, data.hierarchy_queue));
+        }
+        if !data.remove_queue.is_empty() {
+            remove_batches.push((space_id, data.remove_queue));
+        }
+        if !data.fetch_queue.is_empty() {
+            fetch_batches.push((space_id, data.fetch_queue));
+        }
+        if !data.navigate_queue.is_empty() {
+            navigate_batches.push((space_id, data.navigate_queue));
+        }
+
+        attr_updates.extend(data.attr_updates);
+        pos_updates.extend(data.pos_updates);
+        rot_updates.extend(data.rot_updates);
+        scale_updates.extend(data.scale_updates);
+    }
+
     {
         let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
             return;
@@ -1978,23 +2225,6 @@ fn js_tick_system(world: &mut World) {
         }
     }
 
-    // Block 3: Drain attr updates and transform updates -> AttributeUpdates resource
-    let (attr_updates, pos_updates, rot_updates, scale_updates) = {
-        let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
-            return;
-        };
-        let mut attr_updates = Vec::new();
-        let mut pos_updates = Vec::new();
-        let mut rot_updates = Vec::new();
-        let mut scale_updates = Vec::new();
-        for ctx in manager.contexts.values_mut() {
-            attr_updates.extend(ctx.engine.drain_attr_updates());
-            pos_updates.extend(ctx.engine.drain_transform_position_updates());
-            rot_updates.extend(ctx.engine.drain_transform_rotation_updates());
-            scale_updates.extend(ctx.engine.drain_transform_scale_updates());
-        }
-        (attr_updates, pos_updates, rot_updates, scale_updates)
-    };
     {
         let Some(mut attribute_updates) = world.get_resource_mut::<AttributeUpdates>() else {
             return;
@@ -2003,7 +2233,6 @@ fn js_tick_system(world: &mut World) {
         for (node_id, key, value) in attr_updates {
             attribute_updates.0.push((node_id as u32, key, value));
         }
-
         for (node_id, pos) in pos_updates {
             attribute_updates.0.push((node_id as u32, "x".to_string(), pos.x.to_string()));
             attribute_updates.0.push((node_id as u32, "y".to_string(), pos.y.to_string()));
@@ -2021,20 +2250,6 @@ fn js_tick_system(world: &mut World) {
         }
     }
 
-    // Block 4: Process element creation requests
-    let creation_batches = {
-        let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
-            return;
-        };
-        let mut batches = Vec::new();
-        for (space_id, ctx) in manager.contexts.iter_mut() {
-            let queue = ctx.engine.drain_element_creation_queue();
-            if !queue.is_empty() {
-                batches.push((*space_id, queue));
-            }
-        }
-        batches
-    };
     for (space_id, creation_queue) in creation_batches {
         use virtual_dom::dom::element::Vec3 as DomVec3;
 
@@ -2088,7 +2303,6 @@ fn js_tick_system(world: &mut World) {
             };
             dirty_nodes.0.extend(created_node_ids);
         }
-
         {
             let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
                 return;
@@ -2097,33 +2311,18 @@ fn js_tick_system(world: &mut World) {
                 log_panel.push_info(msg);
             }
         }
-
         {
             let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
                 return;
             };
-            if let Some(ctx) = manager.contexts.get_mut(&space_id) {
-                for (request_id, node_id) in creation_results {
-                    ctx.engine.push_element_creation_result(request_id, node_id);
-                }
+            if let Some(worker) = manager.contexts.get_mut(&space_id) {
+                let _ = worker
+                    .cmd_tx
+                    .send(JsWorkerCommand::PushElementCreationResults(creation_results));
             }
         }
     }
 
-    // Block 5: Process hierarchy updates (appendChild)
-    let hierarchy_batches = {
-        let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
-            return;
-        };
-        let mut batches = Vec::new();
-        for (space_id, ctx) in manager.contexts.iter_mut() {
-            let queue = ctx.engine.drain_hierarchy_append_queue();
-            if !queue.is_empty() {
-                batches.push((*space_id, queue));
-            }
-        }
-        batches
-    };
     for (space_id, hierarchy_queue) in hierarchy_batches {
         let (dirty_child_ids, log_messages) = {
             let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else {
@@ -2161,7 +2360,6 @@ fn js_tick_system(world: &mut World) {
             };
             dirty_nodes.0.extend(dirty_child_ids);
         }
-
         {
             let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
                 return;
@@ -2172,26 +2370,11 @@ fn js_tick_system(world: &mut World) {
         }
     }
 
-    // Block 6: Process element removal
-    let remove_batches = {
-        let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
-            return;
-        };
-        let mut batches = Vec::new();
-        for (space_id, ctx) in manager.contexts.iter_mut() {
-            let queue = ctx.engine.drain_remove_element_queue();
-            if !queue.is_empty() {
-                batches.push((*space_id, queue));
-            }
-        }
-        batches
-    };
     for (space_id, remove_queue) in remove_batches {
         let log_messages = {
             let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else {
                 return;
             };
-
             let mut log_messages = Vec::new();
             for node_id in remove_queue {
                 let (ent, is_alive) = {
@@ -2199,42 +2382,22 @@ fn js_tick_system(world: &mut World) {
                     let ent = entities.entity(node_id as u32);
                     (ent, entities.is_alive(ent))
                 };
-
                 if is_alive {
                     specs_world.0.delete_entity(ent).ok();
-                    log_messages.push(format!(
-                        "[JS][space:{}] remove: node_id={}",
-                        space_id, node_id
-                    ));
+                    log_messages.push(format!("[JS][space:{}] remove: node_id={}", space_id, node_id));
                 }
             }
             log_messages
         };
 
-        {
-            let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
-                return;
-            };
-            for msg in log_messages {
-                log_panel.push_info(msg);
-            }
+        let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
+            return;
+        };
+        for msg in log_messages {
+            log_panel.push_info(msg);
         }
     }
 
-    // Block 7: Process fetch requests
-    let fetch_batches = {
-        let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
-            return;
-        };
-        let mut batches = Vec::new();
-        for (space_id, ctx) in manager.contexts.iter_mut() {
-            let queue = ctx.engine.drain_fetch_queue();
-            if !queue.is_empty() {
-                batches.push((*space_id, queue));
-            }
-        }
-        batches
-    };
     for (space_id, fetch_queue) in fetch_batches {
         let fetch_results = {
             let Some(tokio_rt) = world.get_resource::<TokioRuntime>() else {
@@ -2254,7 +2417,6 @@ fn js_tick_system(world: &mut World) {
                 });
                 fetch_results.push((*request_id, result));
             }
-
             fetch_results
         };
 
@@ -2266,33 +2428,18 @@ fn js_tick_system(world: &mut World) {
                 log_panel.push_info(format!("[JS][space:{}] fetch: {}", space_id, url));
             }
         }
-
         {
             let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
                 return;
             };
-            if let Some(ctx) = manager.contexts.get_mut(&space_id) {
-                for (request_id, result) in fetch_results {
-                    ctx.engine.push_fetch_result(request_id, result);
-                }
+            if let Some(worker) = manager.contexts.get_mut(&space_id) {
+                let _ = worker
+                    .cmd_tx
+                    .send(JsWorkerCommand::PushFetchResults(fetch_results));
             }
         }
     }
 
-    // Block 8: Process navigate requests
-    let navigate_batches = {
-        let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
-            return;
-        };
-        let mut batches = Vec::new();
-        for (space_id, ctx) in manager.contexts.iter_mut() {
-            let queue = ctx.engine.drain_navigate_queue();
-            if !queue.is_empty() {
-                batches.push((*space_id, queue));
-            }
-        }
-        batches
-    };
     if !navigate_batches.is_empty() {
         {
             let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
