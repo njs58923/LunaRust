@@ -197,6 +197,25 @@ struct ModelCache {
     cache: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TextMaterialKey {
+    value: String,
+    size_bits: u32,
+    color_key: String,
+}
+
+#[derive(Resource, Default)]
+struct TextMaterialCache {
+    materials: HashMap<TextMaterialKey, Handle<StandardMaterial>>,
+}
+
+#[derive(SystemParam)]
+struct TextRenderParams<'w> {
+    materials: ResMut<'w, Assets<StandardMaterial>>,
+    images: ResMut<'w, Assets<Image>>,
+    text_material_cache: ResMut<'w, TextMaterialCache>,
+}
+
 /// Medición de performance
 #[derive(Resource, Default)]
 struct PerformanceStats {
@@ -381,7 +400,7 @@ fn main() {
 
     // Cache
     app.insert_resource(ModelCache::default());
-
+    app.insert_resource(TextMaterialCache::default());
     // Stats
     app.insert_resource(PerformanceStats::default());
 
@@ -1252,6 +1271,56 @@ fn create_text_texture(
     images.add(image)
 }
 
+fn parse_text_attrs(attrs_map: &HashMap<String, String>) -> (String, f32, Color) {
+    let text_value = get_attr_string(attrs_map, "value", "Text");
+    let text_size = get_attr_f32(attrs_map, "size", 0.1);
+    let text_color = attrs_map
+        .get("color")
+        .and_then(|c| parse_hex_color(c))
+        .unwrap_or(Color::srgb(1.0, 1.0, 1.0));
+    (text_value, text_size, text_color)
+}
+
+fn build_text_transform(mut base_transform: Transform, text_value: &str, text_size: f32) -> Transform {
+    let text_width = text_size * text_value.chars().count() as f32 * 0.6;
+    let text_height = text_size;
+    base_transform.scale = Vec3::new(text_width.max(0.01), text_height.max(0.01), 1.0);
+    base_transform
+}
+
+fn get_or_create_text_material(
+    text_cache: &mut TextMaterialCache,
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+    text_value: &str,
+    text_size: f32,
+    text_color: Color,
+) -> Handle<StandardMaterial> {
+    let [r, g, b, a] = text_color.to_srgba().to_u8_array();
+    let cache_key = TextMaterialKey {
+        value: text_value.to_string(),
+        size_bits: text_size.to_bits(),
+        color_key: format!("{r:02x}{g:02x}{b:02x}{a:02x}"),
+    };
+
+    if let Some(handle) = text_cache.materials.get(&cache_key) {
+        return handle.clone();
+    }
+
+    let text_texture = create_text_texture(text_value, text_color, images);
+    let text_material = materials.add(StandardMaterial {
+        base_color_texture: Some(text_texture),
+        alpha_mode: bevy::prelude::AlphaMode::Blend,
+        unlit: true,
+        ..Default::default()
+    });
+
+    text_cache.materials.insert(cache_key, text_material.clone());
+    text_material
+}
+
+const DOM_SYNC_VERBOSE_LOGS: bool = false;
+
 // --------------------------------------------------------------------------------------
 // DOM -> Bevy + medicion de tiempo
 // --------------------------------------------------------------------------------------
@@ -1262,7 +1331,12 @@ fn dom_sync_system(
     shared_resources: Res<SharedResources>,
     mut entity_map: ResMut<EntityMap>,
     mut dirty_nodes: ResMut<DirtyNodes>,
-    mut query: Query<(Entity, &mut Transform, Option<&Dirty>)>,
+    mut query: Query<(
+        Entity,
+        &mut Transform,
+        Option<&Dirty>,
+        Option<&mut Handle<StandardMaterial>>,
+    )>,
     asset_server: Res<AssetServer>,
     mut log_panel: ResMut<LogPanel>,
     mut model_cache: ResMut<ModelCache>,
@@ -1270,8 +1344,7 @@ fn dom_sync_system(
     current_url: Res<CurrentUrl>,
     mut perf_stats: ResMut<PerformanceStats>,
     mut pending_scripts: ResMut<PendingScripts>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut images: ResMut<Assets<Image>>,
+    mut text_render: TextRenderParams,
 ) {
     let start_time = Instant::now();
 
@@ -1291,11 +1364,15 @@ fn dom_sync_system(
     ));
 
     for node_id in dirty_nodes.0.drain(..) {
-        log_panel.push_info(format!("  Revisando node_id={}", node_id));
+        if DOM_SYNC_VERBOSE_LOGS {
+            log_panel.push_info(format!("  Revisando node_id={}", node_id));
+        }
         if let Some(node) = dom_data.nodes.get(&node_id) {
             // Tag
             let tag = tags.get(*node).map(|t| t.0.clone()).unwrap_or_default();
-            log_panel.push_info(format!("    Tag='{}'", tag));
+            if DOM_SYNC_VERBOSE_LOGS {
+                log_panel.push_info(format!("    Tag='{}'", tag));
+            }
 
             let hierarchy = hierarchies.get(*node);
             let parent_id = hierarchy.and_then(|h| h.parent);
@@ -1371,34 +1448,40 @@ fn dom_sync_system(
                 }
 
                 if tag == "text" {
-                    commands.entity(bevy_ent).despawn_recursive();
-                    entity_map.0.remove(&node_id);
-
                     let empty_map = HashMap::new();
                     let attrs_map = attrs_storage
                         .get(*node)
                         .map(|a| &a.0)
                         .unwrap_or(&empty_map);
 
-                    let text_value = get_attr_string(attrs_map, "value", "Text");
-                    let text_size = get_attr_f32(attrs_map, "size", 0.1);
-                    let text_color = attrs_map
-                        .get("color")
-                        .and_then(|c| parse_hex_color(c))
-                        .unwrap_or(Color::srgb(1.0, 1.0, 1.0));
+                    let (text_value, text_size, text_color) = parse_text_attrs(attrs_map);
+                    let text_material = get_or_create_text_material(
+                        &mut text_render.text_material_cache,
+                        &mut text_render.materials,
+                        &mut text_render.images,
+                        &text_value,
+                        text_size,
+                        text_color,
+                    );
+                    let text_transform = build_text_transform(transform_b, &text_value, text_size);
 
-                    let text_texture = create_text_texture(&text_value, text_color, &mut images);
-                    let text_material = materials.add(StandardMaterial {
-                        base_color_texture: Some(text_texture),
-                        alpha_mode: bevy::prelude::AlphaMode::Blend,
-                        unlit: true,
-                        ..Default::default()
-                    });
+                    let mut updated_in_place = false;
+                    if let Ok((_, mut t, dirty, maybe_material)) = query.get_mut(bevy_ent) {
+                        *t = text_transform;
+                        if let Some(mut material_handle) = maybe_material {
+                            *material_handle = text_material.clone();
+                            if dirty.is_some() {
+                                commands.entity(bevy_ent).remove::<Dirty>();
+                            }
+                            updated_in_place = true;
+                        }
+                    }
+                    if updated_in_place {
+                        continue;
+                    }
 
-                    let text_width = text_size * text_value.chars().count() as f32 * 0.6;
-                    let text_height = text_size;
-                    let mut text_transform = transform_b;
-                    text_transform.scale = Vec3::new(text_width.max(0.01), text_height.max(0.01), 1.0);
+                    commands.entity(bevy_ent).despawn_recursive();
+                    entity_map.0.remove(&node_id);
 
                     let new_ent = commands
                         .spawn((
@@ -1425,7 +1508,7 @@ fn dom_sync_system(
                 }
 
                 // caso normal (no-model): solo actualizar transform si tiene Dirty
-                if let Ok((_, mut t, dirty)) = query.get_mut(bevy_ent) {
+                if let Ok((_, mut t, dirty, _)) = query.get_mut(bevy_ent) {
                     if dirty.is_some() {
                         *t = transform_b;
                         commands.entity(bevy_ent).remove::<Dirty>();
@@ -1433,17 +1516,23 @@ fn dom_sync_system(
                 }
             } else {
                 // Crear nueva
-                log_panel.push_info("    -> No existe, creando nueva entidad...");
+                if DOM_SYNC_VERBOSE_LOGS {
+                    log_panel.push_info("    -> No existe, creando nueva entidad...");
+                }
 
                 let new_ent = match tag.as_str() {
                     "model" => {
-                        log_panel.push_info("    -> Tag='model'");
+                        if DOM_SYNC_VERBOSE_LOGS {
+                            log_panel.push_info("    -> Tag='model'");
+                        }
                         if let Some(model_data) = models.get(*node) {
                             if let Some(ref original_src) = model_data.src {
                                 if let Some(final_url) =
                                     resolve_remote_path(&current_url.0, original_src)
                                 {
-                                    log_panel.push_info(format!("       final_url={}", final_url));
+                                    if DOM_SYNC_VERBOSE_LOGS {
+                                        log_panel.push_info(format!("       final_url={}", final_url));
+                                    }
                                     // Descargamos o usamos caché
                                     let scene_handle = apply_model_with_cache(
                                         &final_url,
@@ -1510,7 +1599,9 @@ fn dom_sync_system(
                         }
                     }
                     "script" => {
-                        log_panel.push_info("    -> script tag encontrado");
+                        if DOM_SYNC_VERBOSE_LOGS {
+                            log_panel.push_info("    -> script tag encontrado");
+                        }
                         let scripts_storage = world.0.read_storage::<Script>();
                         if let Some(script_comp) = scripts_storage.get(*node) {
                             if let Some(ref src) = script_comp.src {
@@ -1567,7 +1658,9 @@ fn dom_sync_system(
                             .id()
                     }
                     "space" => {
-                        log_panel.push_info("    -> space, no spawneamos nada 3D");
+                        if DOM_SYNC_VERBOSE_LOGS {
+                            log_panel.push_info("    -> space, no spawneamos nada 3D");
+                        }
                         commands
                             .spawn((
                                 SpatialBundle {
@@ -1579,8 +1672,10 @@ fn dom_sync_system(
                             .id()
                     }
                     "include" => {
-                        log_panel
-                            .push_info("    -> include, no spawneamos nada 3D");
+                        if DOM_SYNC_VERBOSE_LOGS {
+                            log_panel
+                                .push_info("    -> include, no spawneamos nada 3D");
+                        }
                         commands
                             .spawn((
                                 SpatialBundle {
@@ -1607,7 +1702,9 @@ fn dom_sync_system(
                         new_ent_empty
                     }
                     "box" => {
-                        log_panel.push_info("    -> box element");
+                        if DOM_SYNC_VERBOSE_LOGS {
+                            log_panel.push_info("    -> box element");
+                        }
 
                         // Parse box attributes
                         let color = attrs_storage.get(*node)
@@ -1616,7 +1713,7 @@ fn dom_sync_system(
                             .unwrap_or(Color::srgb(0.5, 0.5, 0.5));
 
                         // Create material with the specified color
-                        let material = materials.add(StandardMaterial {
+                        let material = text_render.materials.add(StandardMaterial {
                             base_color: color,
                             ..Default::default()
                         });
@@ -1634,7 +1731,9 @@ fn dom_sync_system(
                             .id()
                     }
                     "text" => {
-                        log_panel.push_info("    -> text element");
+                        if DOM_SYNC_VERBOSE_LOGS {
+                            log_panel.push_info("    -> text element");
+                        }
 
                         // Parse text attributes
                         let empty_map = HashMap::new();
@@ -1642,30 +1741,16 @@ fn dom_sync_system(
                             .map(|a| &a.0)
                             .unwrap_or(&empty_map);
 
-                        let text_value = get_attr_string(attrs_map, "value", "Text");
-                        let text_size = get_attr_f32(attrs_map, "size", 0.1);
-                        let text_color = attrs_map.get("color")
-                            .and_then(|c| parse_hex_color(c))
-                            .unwrap_or(Color::srgb(1.0, 1.0, 1.0));
-
-                        // Generate text texture
-                        let text_texture = create_text_texture(&text_value, text_color, &mut images);
-
-                        // Create material with text texture
-                        let text_material = materials.add(StandardMaterial {
-                            base_color_texture: Some(text_texture),
-                            alpha_mode: bevy::prelude::AlphaMode::Blend,
-                            unlit: true,
-                            ..Default::default()
-                        });
-
-                        // Calculate text plane dimensions
-                        let text_width = text_size * text_value.len() as f32 * 0.6; // Adjust ratio
-                        let text_height = text_size;
-
-                        // Create transform with proper scale for text plane
-                        let mut text_transform = transform_b;
-                        text_transform.scale = Vec3::new(text_width, text_height, 1.0);
+                        let (text_value, text_size, text_color) = parse_text_attrs(attrs_map);
+                        let text_material = get_or_create_text_material(
+                            &mut text_render.text_material_cache,
+                            &mut text_render.materials,
+                            &mut text_render.images,
+                            &text_value,
+                            text_size,
+                            text_color,
+                        );
+                        let text_transform = build_text_transform(transform_b, &text_value, text_size);
 
                         // Create text as a 3D plane in world space
                         commands
@@ -1681,7 +1766,9 @@ fn dom_sync_system(
                             .id()
                     }
                     other => {
-                        log_panel.push_info(format!("    -> Tag='{}', elemento desconocido", other));
+                        if DOM_SYNC_VERBOSE_LOGS {
+                            log_panel.push_info(format!("    -> Tag='{}', elemento desconocido", other));
+                        }
 
                         // Para elementos desconocidos, crear un cubo genérico
                         commands
