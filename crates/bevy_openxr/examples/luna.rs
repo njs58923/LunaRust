@@ -1,6 +1,7 @@
 use bevy::{
     asset::AssetPlugin,
     diagnostic::FrameTimeDiagnosticsPlugin,
+    ecs::system::SystemParam,
     prelude::*,
     window::{PresentMode, PrimaryWindow, Window},
 };
@@ -135,6 +136,30 @@ impl Default for FpsCounter {
 
 #[derive(Resource, Default)]
 struct CurrentUrl(String);
+
+#[derive(Resource)]
+struct AutoLoadConfig {
+    enabled: bool,
+    start_url: String,
+}
+
+impl Default for AutoLoadConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            start_url: "luna://home".to_string(),
+        }
+    }
+}
+
+// SystemParam bundle to reduce parameter count in ui_system
+#[derive(SystemParam)]
+struct UiSystemParams<'w> {
+    entity_counter: Res<'w, EntityCounter>,
+    fps_counter: Res<'w, FpsCounter>,
+    perf_stats: Res<'w, PerformanceStats>,
+    auto_load_config: ResMut<'w, AutoLoadConfig>,
+}
 
 #[derive(Resource, Default)]
 struct DevtoolVisible(bool);
@@ -327,7 +352,17 @@ fn main() {
     app.insert_resource(ElemenetWorld(build_world()));
     app.insert_resource(EntityCounter::default());
     app.insert_resource(FpsCounter::default());
-    app.insert_resource(CurrentUrl(start_url));
+
+    // Auto-load config
+    let auto_load_config = AutoLoadConfig::default();
+    let initial_url = if auto_load_config.enabled {
+        auto_load_config.start_url.clone()
+    } else {
+        start_url.clone()
+    };
+
+    app.insert_resource(CurrentUrl(initial_url));
+    app.insert_resource(AutoLoadConfig::default());
     app.insert_resource(ReloadTrigger(false));
     app.insert_resource(AttributeUpdates::default());
     app.insert_resource(DeleteRequests::default());
@@ -354,6 +389,7 @@ fn main() {
     // ── Sistemas ──────────────────────────────────────────────────────────────
     app.add_systems(Startup, (setup, init_js_runtime).chain());
 
+    // DOM/XML systems
     app.add_systems(
         Update,
         (
@@ -366,20 +402,20 @@ fn main() {
             mark_dirty_system,
             // Sincronizar con Bevy solo si hay nodos dirty
             dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
-            // Siempre mostrar la UI, y dentro ya decidimos si mostramos el devtool
-            ui_system,
             // Borrar
             process_delete_requests
                 .run_if(|del: Res<DeleteRequests>| !del.0.is_empty()),
-            // Contador de entidades
-            update_entity_counter.run_if(|m: Res<EntityMap>| m.is_changed()),
-            // FPS
-            update_fps_counter,
-
-            // MOVE
-            camera_keyboard_movement_system
         ),
     );
+
+    // UI, stats, and input systems
+    app.add_systems(Update, ui_system);
+    app.add_systems(
+        Update,
+        update_entity_counter.run_if(|m: Res<EntityMap>| m.is_changed()),
+    );
+    app.add_systems(Update, update_fps_counter);
+    app.add_systems(Update, camera_keyboard_movement_system);
 
     // JS systems - MUST run on main thread (V8 is !Send)
     // Registered separately to ensure single-threaded execution
@@ -430,6 +466,7 @@ fn setup(
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut log_panel: ResMut<LogPanel>,
     tokio_rt: Res<TokioRuntime>,
+    auto_load_config: Res<AutoLoadConfig>,
 ) {
     // Cámara 3D
     commands.spawn(Camera3dBundle {
@@ -467,21 +504,27 @@ fn setup(
         default_material,
     });
 
-    // Cargar XML inicial
-    match load_and_flatten_xml(
-        &mut world.0,
-        "http://localhost:2052/static/main.hsml",
-        &tokio_rt.0,
-        &mut log_panel,
-    ) {
-        Ok((nodes, dirty)) => {
-            dom_data.nodes = nodes;
-            dirty_nodes.0 = dirty;
-            log_panel.push_info("XML inicial cargado correctamente.");
+    // Cargar XML inicial si auto-load está habilitado
+    if auto_load_config.enabled {
+        log_panel.push_info(format!("Auto-load habilitado. Cargando: {}", auto_load_config.start_url));
+
+        match load_and_flatten_xml(
+            &mut world.0,
+            &auto_load_config.start_url,
+            &tokio_rt.0,
+            &mut log_panel,
+        ) {
+            Ok((nodes, dirty)) => {
+                dom_data.nodes = nodes;
+                dirty_nodes.0 = dirty;
+                log_panel.push_info("XML inicial cargado correctamente.");
+            }
+            Err(e) => {
+                log_panel.push_error(format!("Error al cargar XML inicial: {e}"));
+            }
         }
-        Err(e) => {
-            log_panel.push_error(format!("Error al cargar XML inicial: {e}"));
-        }
+    } else {
+        log_panel.push_info("Auto-load deshabilitado. No se carga contenido inicial.");
     }
 }
 
@@ -625,8 +668,6 @@ fn ui_system(
     mut contexts: EguiContexts,
     mut url: ResMut<CurrentUrl>,
     mut reload_trigger: ResMut<ReloadTrigger>,
-    entity_counter: Res<EntityCounter>,
-    fps_counter: Res<FpsCounter>,
     mut devtool_visible: ResMut<DevtoolVisible>,
     mut devtool_state: ResMut<DevtoolState>,
     world: Res<ElemenetWorld>,
@@ -637,7 +678,7 @@ fn ui_system(
     mut attribute_updates: ResMut<AttributeUpdates>,
     mut delete_requests: ResMut<DeleteRequests>,
     mut log_panel: ResMut<LogPanel>,
-    perf_stats: Res<PerformanceStats>,
+    mut ui_params: UiSystemParams,
 ) {
     // Ventana NAVEGADOR (siempre se muestra)
     egui::Window::new("Navegador").show(contexts.ctx_mut(), |ui| {
@@ -699,18 +740,30 @@ fn ui_system(
                     DevtoolTab::Status => {
                         ui.heading("Estado General");
                         ui.separator();
-                        // Resolución de la ventana
-                        // if let Ok(window) = windows.get_single() {
-                        //     let w = window.resolution.physical_width();
-                        //     let h = window.resolution.physical_height();
-                        //     ui.label(format!("Resolución: {} x {}", w, h));
-                        // } else {
-                        //     ui.label("No se pudo obtener la ventana principal.");
-                        // }
 
-                        ui.label(format!("Entities: {}", entity_counter.count));
-                        ui.label(format!("FPS: {}", fps_counter.fps));
-                        ui.label(format!("Último dom_sync: {:.2} ms", perf_stats.dom_sync_ms));
+                        ui.label(format!("Entities: {}", ui_params.entity_counter.count));
+                        ui.label(format!("FPS: {}", ui_params.fps_counter.fps));
+                        ui.label(format!("Último dom_sync: {:.2} ms", ui_params.perf_stats.dom_sync_ms));
+
+                        ui.separator();
+                        ui.heading("Configuración");
+
+                        // Auto-load checkbox
+                        let mut auto_load_enabled = ui_params.auto_load_config.enabled;
+                        if ui.checkbox(&mut auto_load_enabled, "Auto-cargar al iniciar").changed() {
+                            ui_params.auto_load_config.enabled = auto_load_enabled;
+                            log_panel.push_info(format!("Auto-load {}", if auto_load_enabled { "habilitado" } else { "deshabilitado" }));
+                        }
+
+                        // URL de inicio editable
+                        ui.horizontal(|ui| {
+                            ui.label("URL inicial:");
+                            if ui.text_edit_singleline(&mut ui_params.auto_load_config.start_url).changed() {
+                                log_panel.push_info(format!("URL inicial cambiada a: {}", ui_params.auto_load_config.start_url));
+                            }
+                        });
+
+                        ui.label(format!("URL actual: {}", url.0));
                     }
                     DevtoolTab::Hsml => {
                         ui.heading("Árbol de Elementos (HSML)");
