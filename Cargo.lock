@@ -889,6 +889,7 @@ dependencies = [
  "futures",
  "jni 0.20.0",
  "js_runtime",
+ "lazy_static",
  "ndk-context",
  "openxr",
  "reqwest 0.11.27",

@@ -37,9 +37,11 @@ use std::f32::consts::*;
 // Módulos ficticios
 mod render;
 mod utils;
+mod virtual_routes;
 use render::apply_transform;
 use utils::shapes;
 use utils::folder;
+use virtual_routes::VIRTUAL_ROUTES;
 
 // --------------------------------------------------------------------------------------
 // LOG
@@ -279,7 +281,7 @@ fn main() {
     // ── Variables ────────────────────────────────────────────────────────────────
 
     let mut ar_on = false;
-    let start_url = "http://localhost:2052/main.html".to_string();
+    let start_url = "luna://home".to_string();
     let devtools_on = false;
 
     // ── Plugins ────────────────────────────────────────────────────────────────
@@ -543,17 +545,32 @@ fn load_and_flatten_xml(
     rt: &Runtime,
     log_panel: &mut LogPanel,
 ) -> Result<(HashMap<u32, SpecEntity>, Vec<u32>)> {
-    log_panel.push_info(format!("Intentando descargar XML desde: {url}"));
+    log_panel.push_info(format!("Intentando cargar documento desde: {url}"));
 
-    let xml_content = match rt.block_on(load_xml_from_url(url)) {
-        Ok(c) => c,
-        Err(e) => {
-            return Err(anyhow::anyhow!("Error al descargar XML desde {url}: {e}"));
+    // INTERCEPTOR DE RUTAS VIRTUALES
+    let xml_content = if virtual_routes::VirtualRoutes::is_virtual_url(url) {
+        match VIRTUAL_ROUTES.resolve(url) {
+            Some(content) => {
+                log_panel.push_info(format!("✓ Virtual route resolved: {url}"));
+                content
+            }
+            None => {
+                log_panel.push_error(format!("✗ Virtual route not found: {url}"));
+                return Err(anyhow::anyhow!("Virtual route not found: {url}"));
+            }
+        }
+    } else {
+        // HTTP fetch estándar
+        match rt.block_on(load_xml_from_url(url)) {
+            Ok(c) => c,
+            Err(e) => {
+                return Err(anyhow::anyhow!("Error al descargar XML desde {url}: {e}"));
+            }
         }
     };
 
     log_panel.push_info(format!(
-        "Descarga OK. Longitud de XML: {} caracteres",
+        "Contenido obtenido. Longitud: {} caracteres",
         xml_content.len()
     ));
 
@@ -1242,11 +1259,31 @@ fn dom_sync_system(
                         if let Some(script_comp) = scripts_storage.get(*node) {
                             if let Some(ref src) = script_comp.src {
                                 if let Some(final_url) = resolve_remote_path(&current_url.0, src) {
-                                    log_panel.push_info(format!("    -> Descargando script: {}", final_url));
-                                    match tokio_rt.0.block_on(async {
-                                        let resp = reqwest::get(&final_url).await?;
-                                        resp.text().await
-                                    }) {
+
+                                    // MANEJAR SCRIPTS VIRTUALES
+                                    let code_result = if virtual_routes::VirtualRoutes::is_virtual_url(&final_url) {
+                                        match VIRTUAL_ROUTES.resolve(&final_url) {
+                                            Some(code) => {
+                                                log_panel.push_info(format!("✓ Virtual script: {}", final_url));
+                                                Ok(code)
+                                            }
+                                            None => {
+                                                log_panel.push_error(format!("✗ Virtual script not found: {}", final_url));
+                                                Err(format!("Virtual script not found: {}", final_url))
+                                            }
+                                        }
+                                    } else {
+                                        // HTTP download estándar
+                                        log_panel.push_info(format!("    -> Descargando script: {}", final_url));
+                                        tokio_rt.0.block_on(async {
+                                            let resp = reqwest::get(&final_url).await
+                                                .map_err(|e| format!("Error HTTP: {}", e))?;
+                                            resp.text().await
+                                                .map_err(|e| format!("Error leyendo texto: {}", e))
+                                        })
+                                    };
+
+                                    match code_result {
                                         Ok(code) => {
                                             if let Some(space_id) = find_owner_space_id(&world.0, *node) {
                                                 pending_scripts.0.push((space_id, final_url, code));
@@ -1257,7 +1294,7 @@ fn dom_sync_system(
                                             }
                                         }
                                         Err(e) => {
-                                            log_panel.push_error(format!("Error descargando script {}: {}", final_url, e));
+                                            log_panel.push_error(format!("Error cargando script {}: {}", final_url, e));
                                         }
                                     }
                                 }
@@ -1535,9 +1572,17 @@ async fn load_bytes_from_url(url: &str) -> Result<Vec<u8>> {
 // Combina la URL base con la ruta
 // --------------------------------------------------------------------------------------
 fn resolve_remote_path(base_url: &str, remote_path: &str) -> Option<String> {
+    // 1. Check luna:// FIRST
+    if virtual_routes::VirtualRoutes::is_virtual_url(remote_path) {
+        return Some(remote_path.to_string());
+    }
+
+    // 2. HTTP/HTTPS absolutos
     if remote_path.starts_with("http://") || remote_path.starts_with("https://") {
         return Some(remote_path.to_string());
     }
+
+    // 3. Resolución relativa
     let Ok(base) = Url::parse(base_url) else {
         return None;
     };
@@ -1597,12 +1642,26 @@ fn expand_includes(
             continue;
         };
 
-        // descargar
-        let xml = match rt.block_on(load_xml_from_url(&final_url)) {
-            Ok(x) => x,
-            Err(e) => {
-                log.push_error(format!("include: error descargando {} -> {e}", final_url));
-                continue;
+        // descargar (con soporte para luna://)
+        let xml = if virtual_routes::VirtualRoutes::is_virtual_url(&final_url) {
+            match VIRTUAL_ROUTES.resolve(&final_url) {
+                Some(content) => {
+                    log.push_info(format!("✓ Virtual include: {}", final_url));
+                    content
+                }
+                None => {
+                    log.push_error(format!("✗ Virtual include not found: {}", final_url));
+                    continue;
+                }
+            }
+        } else {
+            // HTTP download estándar
+            match rt.block_on(load_xml_from_url(&final_url)) {
+                Ok(x) => x,
+                Err(e) => {
+                    log.push_error(format!("include: error descargando {} -> {e}", final_url));
+                    continue;
+                }
             }
         };
 
