@@ -2,6 +2,41 @@
 use bevy::render::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
 
+pub fn create_plane() -> Mesh {
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            vec![
+                [-0.5, -0.5, 0.0],
+                [ 0.5, -0.5, 0.0],
+                [ 0.5,  0.5, 0.0],
+                [-0.5,  0.5, 0.0],
+            ],
+        )
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_UV_0,
+            vec![
+                [0.0, 1.0],
+                [1.0, 1.0],
+                [1.0, 0.0],
+                [0.0, 0.0],
+            ],
+        )
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_NORMAL,
+            vec![
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0],
+            ],
+        )
+        .with_inserted_indices(Indices::U32(vec![
+            0, 1, 2,
+            0, 2, 3,
+        ]))
+}
+
 pub fn create_cube() -> Mesh {
     Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
         .with_inserted_attribute(

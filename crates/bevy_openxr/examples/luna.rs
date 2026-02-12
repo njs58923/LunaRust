@@ -179,6 +179,7 @@ struct DeleteRequests(Vec<u32>);
 #[derive(Resource)]
 struct SharedResources {
     cube_mesh: Handle<Mesh>,
+    plane_mesh: Handle<Mesh>,
     default_material: Handle<StandardMaterial>,
 }
 
@@ -495,12 +496,14 @@ fn setup(
 
     // Recursos
     let cube_mesh = meshes.add(shapes::create_cube());
+    let plane_mesh = meshes.add(shapes::create_plane());
     let default_material = materials.add(StandardMaterial {
-        base_color: Color::rgb(0.5, 0.8, 0.8),
+        base_color: Color::srgb(0.5, 0.8, 0.8),
         ..default()
     });
     commands.insert_resource(SharedResources {
         cube_mesh,
+        plane_mesh,
         default_material,
     });
 
@@ -1157,6 +1160,63 @@ fn get_attr_string(attrs: &HashMap<String, String>, key: &str, default: &str) ->
         .unwrap_or_else(|| default.to_string())
 }
 
+/// Create a simple text texture (renders text to an image)
+fn create_text_texture(
+    text: &str,
+    color: Color,
+    images: &mut Assets<Image>,
+) -> Handle<Image> {
+    // Dimensiones de la textura (ajustar según necesidad)
+    let width = (text.len() * 32).max(128).min(1024) as u32;
+    let height = 64u32;
+
+    // Crear imagen con fondo transparente
+    let mut data = vec![0u8; (width * height * 4) as usize];
+
+    // Extraer componentes de color (0-255)
+    let color_array = color.to_srgba().to_u8_array();
+    let r = color_array[0];
+    let g = color_array[1];
+    let b = color_array[2];
+
+    // Renderizado simple de "texto" como bloques de píxeles
+    // (Para un renderizado real, necesitaríamos una librería de fuentes)
+    let char_width = 16;
+    let char_height = 32;
+    let y_offset = (height - char_height) / 2;
+
+    for (i, _ch) in text.chars().enumerate() {
+        let x_start = i as u32 * char_width + 8;
+
+        // Dibujar un rectángulo simple por cada carácter
+        for y in y_offset..(y_offset + char_height) {
+            for x in x_start..(x_start + char_width - 4) {
+                if x < width && y < height {
+                    let idx = ((y * width + x) * 4) as usize;
+                    data[idx] = r;         // R
+                    data[idx + 1] = g;     // G
+                    data[idx + 2] = b;     // B
+                    data[idx + 3] = 255;   // A (opaco)
+                }
+            }
+        }
+    }
+
+    let image = Image::new(
+        bevy::render::render_resource::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        data,
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD,
+    );
+
+    images.add(image)
+}
+
 // --------------------------------------------------------------------------------------
 // DOM -> Bevy + medición de tiempo
 // --------------------------------------------------------------------------------------
@@ -1176,6 +1236,7 @@ fn dom_sync_system(
     mut perf_stats: ResMut<PerformanceStats>,
     mut pending_scripts: ResMut<PendingScripts>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     let start_time = Instant::now();
 
@@ -1498,19 +1559,32 @@ fn dom_sync_system(
                             .and_then(|c| parse_hex_color(c))
                             .unwrap_or(Color::srgb(1.0, 1.0, 1.0));
 
-                        // Create text entity
+                        // Generate text texture
+                        let text_texture = create_text_texture(&text_value, text_color, &mut images);
+
+                        // Create material with text texture
+                        let text_material = materials.add(StandardMaterial {
+                            base_color_texture: Some(text_texture),
+                            alpha_mode: bevy::prelude::AlphaMode::Blend,
+                            unlit: true,
+                            ..Default::default()
+                        });
+
+                        // Calculate text plane dimensions
+                        let text_width = text_size * text_value.len() as f32 * 0.6; // Adjust ratio
+                        let text_height = text_size;
+
+                        // Create transform with proper scale for text plane
+                        let mut text_transform = transform_b;
+                        text_transform.scale = Vec3::new(text_width, text_height, 1.0);
+
+                        // Create text as a 3D plane in world space
                         commands
                             .spawn((
-                                Text2dBundle {
-                                    text: Text::from_section(
-                                        text_value,
-                                        TextStyle {
-                                            font_size: text_size * 100.0, // Scale up for visibility
-                                            color: text_color,
-                                            ..Default::default()
-                                        },
-                                    ),
-                                    transform: transform_b,
+                                PbrBundle {
+                                    mesh: shared_resources.plane_mesh.clone(),
+                                    material: text_material,
+                                    transform: text_transform,
                                     ..Default::default()
                                 },
                                 Dirty,
