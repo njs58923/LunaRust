@@ -1126,6 +1126,38 @@ fn mark_dirty_system(
 }
 
 // --------------------------------------------------------------------------------------
+// HELPER FUNCTIONS FOR ATTRIBUTE PARSING
+// --------------------------------------------------------------------------------------
+
+/// Parse a hex color string (e.g., "#FF5733") to Bevy Color
+fn parse_hex_color(hex: &str) -> Option<Color> {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32 / 255.0;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32 / 255.0;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32 / 255.0;
+
+    Some(Color::srgb(r, g, b))
+}
+
+/// Get an attribute as f32, with a default value
+fn get_attr_f32(attrs: &HashMap<String, String>, key: &str, default: f32) -> f32 {
+    attrs.get(key)
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(default)
+}
+
+/// Get an attribute as String, with a default value
+fn get_attr_string(attrs: &HashMap<String, String>, key: &str, default: &str) -> String {
+    attrs.get(key)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| default.to_string())
+}
+
+// --------------------------------------------------------------------------------------
 // DOM -> Bevy + medición de tiempo
 // --------------------------------------------------------------------------------------
 fn dom_sync_system(
@@ -1143,6 +1175,7 @@ fn dom_sync_system(
     current_url: Res<CurrentUrl>,
     mut perf_stats: ResMut<PerformanceStats>,
     mut pending_scripts: ResMut<PendingScripts>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let start_time = Instant::now();
 
@@ -1154,6 +1187,7 @@ fn dom_sync_system(
     let transforms = world.0.read_storage::<Transform2>();
     let hierarchies = world.0.read_storage::<Hierarchy>();
     let models = world.0.read_storage::<Model>();
+    let attrs_storage = world.0.read_storage::<Attrs>();
 
     log_panel.push_info(format!(
         "dom_sync_system: Procesando {} dirty nodes...",
@@ -1422,10 +1456,71 @@ fn dom_sync_system(
                             .id();
                         new_ent_empty
                     }
-                    other => {
-                        log_panel.push_info(format!("    -> Tag='{}', generamos un cubo", other));
+                    "box" => {
+                        log_panel.push_info("    -> box element");
 
-                        // Para elementos visuales como text y box, crear un cubo visible
+                        // Parse box attributes
+                        let color = attrs_storage.get(*node)
+                            .and_then(|a| a.0.get("color"))
+                            .and_then(|c| parse_hex_color(c))
+                            .unwrap_or(Color::srgb(0.5, 0.5, 0.5));
+
+                        // Create material with the specified color
+                        let material = materials.add(StandardMaterial {
+                            base_color: color,
+                            ..Default::default()
+                        });
+
+                        commands
+                            .spawn((
+                                PbrBundle {
+                                    mesh: shared_resources.cube_mesh.clone(),
+                                    material,
+                                    transform: transform_b,
+                                    ..Default::default()
+                                },
+                                Dirty,
+                            ))
+                            .id()
+                    }
+                    "text" => {
+                        log_panel.push_info("    -> text element");
+
+                        // Parse text attributes
+                        let empty_map = HashMap::new();
+                        let attrs_map = attrs_storage.get(*node)
+                            .map(|a| &a.0)
+                            .unwrap_or(&empty_map);
+
+                        let text_value = get_attr_string(attrs_map, "value", "Text");
+                        let text_size = get_attr_f32(attrs_map, "size", 0.1);
+                        let text_color = attrs_map.get("color")
+                            .and_then(|c| parse_hex_color(c))
+                            .unwrap_or(Color::srgb(1.0, 1.0, 1.0));
+
+                        // Create text entity
+                        commands
+                            .spawn((
+                                Text2dBundle {
+                                    text: Text::from_section(
+                                        text_value,
+                                        TextStyle {
+                                            font_size: text_size * 100.0, // Scale up for visibility
+                                            color: text_color,
+                                            ..Default::default()
+                                        },
+                                    ),
+                                    transform: transform_b,
+                                    ..Default::default()
+                                },
+                                Dirty,
+                            ))
+                            .id()
+                    }
+                    other => {
+                        log_panel.push_info(format!("    -> Tag='{}', elemento desconocido", other));
+
+                        // Para elementos desconocidos, crear un cubo genérico
                         commands
                             .spawn((
                                 PbrBundle {
