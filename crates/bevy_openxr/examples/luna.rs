@@ -609,11 +609,12 @@ fn load_and_flatten_xml(
     dirty.extend(include_dirty.drain(..));
     dirty.sort_unstable();
     dirty.dedup();
-    
+
     log_panel.push_info(format!(
         "Árbol DOM parseado. Se encontraron {} nodos.",
         map.len()
     ));
+
     Ok((map, dirty))
 }
 
@@ -771,9 +772,27 @@ fn ui_system(
                                 }
                             });
 
-                        if ui.button("Limpiar logs").clicked() {
-                            log_panel.clear();
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Limpiar logs").clicked() {
+                                log_panel.clear();
+                            }
+
+                            if ui.button("Copiar logs").clicked() {
+                                let logs_text: String = log_panel.logs.iter()
+                                    .map(|entry| {
+                                        let prefix = match entry.level {
+                                            LogLevel::Error => "[ERROR] ",
+                                            LogLevel::Warn => "[WARN] ",
+                                            LogLevel::Info => "[INFO] ",
+                                        };
+                                        format!("{}{}", prefix, entry.message)
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+
+                                ui.output_mut(|o| o.copied_text = logs_text);
+                            }
+                        });
                     }
                     DevtoolTab::Redes => {
                         ui.heading("Redes");
@@ -1352,27 +1371,19 @@ fn dom_sync_system(
                     }
                     other => {
                         log_panel.push_info(format!("    -> Tag='{}', generamos un cubo", other));
-                        let new_ent_empty = commands
+
+                        // Para elementos visuales como text y box, crear un cubo visible
+                        commands
                             .spawn((
-                                SpatialBundle {
+                                PbrBundle {
+                                    mesh: shared_resources.cube_mesh.clone(),
+                                    material: shared_resources.default_material.clone(),
                                     transform: transform_b,
                                     ..Default::default()
                                 },
                                 Dirty,
                             ))
-                            .id();
-                        if false {
-                            let child = commands
-                                .spawn(PbrBundle {
-                                    mesh: shared_resources.cube_mesh.clone(),
-                                    material: shared_resources.default_material.clone(),
-                                    transform: Transform::from_scale(Vec3::splat(0.2)),
-                                    ..Default::default()
-                                })
-                                .id();
-                            commands.entity(new_ent_empty).push_children(&[child]);
-                        }
-                        new_ent_empty
+                            .id()
                     }
                 };
 
@@ -1421,12 +1432,29 @@ fn update_fps_counter(time: Res<Time>, mut f: ResMut<FpsCounter>) {
 // --------------------------------------------------------------------------------------
 fn get_root_entity(world: &SpecWorld) -> Option<SpecEntity> {
     let hier = world.read_storage::<Hierarchy>();
+    let tags = world.read_storage::<Tag>();
+
+    let mut roots = Vec::new();
     for (ent, h) in (&world.entities(), &hier).join() {
         if h.parent.is_none() {
-            return Some(ent);
+            let tag_name = tags.get(ent).map(|t| t.0.as_str()).unwrap_or("???");
+            roots.push((ent, tag_name.to_string()));
         }
     }
-    None
+
+    // Priorizar 'hsml' o 'space' como root, ignorar otros
+    let hsml_root = roots.iter().find(|(_, tag)| tag == "hsml").map(|(ent, _)| *ent);
+    if hsml_root.is_some() {
+        return hsml_root;
+    }
+
+    let space_root = roots.iter().find(|(_, tag)| tag == "space").map(|(ent, _)| *ent);
+    if space_root.is_some() {
+        return space_root;
+    }
+
+    // Fallback: retornar el primero
+    roots.into_iter().next().map(|(ent, _)| ent)
 }
 
 // --------------------------------------------------------------------------------------

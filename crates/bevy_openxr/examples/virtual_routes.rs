@@ -38,14 +38,19 @@ impl VirtualRoutes {
     pub fn resolve(&self, url: &str) -> Option<String> {
         let route_path = url.strip_prefix("luna://")?.trim_start_matches('/');
 
+        println!("[VirtualRoutes] Resolving: '{}' -> route_path: '{}'", url, route_path);
+
         if let Some(handler) = self.routes.get(route_path) {
-            return Some(match handler {
+            let content = match handler {
                 RouteHandler::Static(content) => content.to_string(),
                 RouteHandler::Dynamic(generator) => generator(route_path),
-            });
+            };
+            println!("[VirtualRoutes] ✓ Found route, content length: {}", content.len());
+            return Some(content);
         }
 
         // No match - return 404
+        println!("[VirtualRoutes] ✗ Route not found, returning 404");
         Some(LUNA_404.to_string())
     }
 
@@ -59,42 +64,53 @@ impl VirtualRoutes {
 // ============================================================================
 
 const LUNA_HOME: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
-<space>
-  <text x="0" y="3" z="-5" value="Luna Browser - Home" size="0.4" />
-  <text x="0" y="2.4" z="-5" value="Welcome to Luna 3D Browser" size="0.2" />
+<hsml>
+  <head>
+    <name>Luna Home</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space>
+    <text x="0" y="1.5" z="-2" value="Luna Browser - Home" size="0.3" />
+    <text x="0" y="1.2" z="-2" value="Welcome to Luna 3D Browser" size="0.15" />
 
-  <box x="-2" y="1.5" z="-4" sx="0.8" sy="0.8" sz="0.1" color="#4CAF50" id="btn_demos" />
-  <text x="-2" y="1.5" z="-3.9" value="Demos" size="0.15" />
+    <box x="-0.8" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#4CAF50" id="btn_demos" />
+    <text x="-0.8" y="0.6" z="-1.9" value="Demos" size="0.1" />
 
-  <box x="0" y="1.5" z="-4" sx="0.8" sy="0.8" sz="0.1" color="#2196F3" id="btn_settings" />
-  <text x="0" y="1.5" z="-3.9" value="Settings" size="0.15" />
+    <box x="0" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#2196F3" id="btn_settings" />
+    <text x="0" y="0.6" z="-1.9" value="Settings" size="0.1" />
 
-  <box x="2" y="1.5" z="-4" sx="0.8" sy="0.8" sz="0.1" color="#FF9800" id="btn_about" />
-  <text x="2" y="1.5" z="-3.9" value="About" size="0.15" />
+    <box x="0.8" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#FF9800" id="btn_about" />
+    <text x="0.8" y="0.6" z="-1.9" value="About" size="0.1" />
 
-  <script src="luna://internal/home_navigation.js" />
-</space>"##;
+    <script src="luna://internal/home_navigation.js" />
+  </space>
+</hsml>"##;
 
 const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
-<space>
-  <text x="0" y="3.5" z="-5" value="Luna Demos" size="0.4" />
-  <text x="0" y="3" z="-5" value="Interactive 3D Demonstrations" size="0.18" />
+<hsml>
+  <head>
+    <name>Luna Demos</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space>
+    <text x="0" y="1.5" z="-2" value="Luna Demos" size="0.3" />
+    <text x="0" y="1.2" z="-2" value="Interactive 3D Demonstrations" size="0.15" />
 
-  <!-- Demo 1: Rotating Cube -->
-  <box x="-3" y="1.8" z="-4" sx="0.9" sy="0.6" sz="0.1" color="#9C27B0" id="demo_cube" />
-  <text x="-3" y="1.8" z="-3.9" value="Rotating Cube" size="0.12" />
+    <box x="-1.2" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#9C27B0" id="demo_cube" />
+    <text x="-1.2" y="0.6" z="-1.9" value="Demo 1" size="0.1" />
 
-  <!-- Demo 2: Color Animation -->
-  <box x="0" y="1.8" z="-4" sx="0.9" sy="0.6" sz="0.1" color="#00BCD4" id="demo_colors" />
-  <text x="0" y="1.8" z="-3.9" value="Color Animation" size="0.12" />
+    <box x="0" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#00BCD4" id="demo_colors" />
+    <text x="0" y="0.6" z="-1.9" value="Demo 2" size="0.1" />
 
-  <!-- Demo 3: Interactive Buttons -->
-  <box x="3" y="1.8" z="-4" sx="0.9" sy="0.6" sz="0.1" color="#FF5722" id="demo_buttons" />
-  <text x="3" y="1.8" z="-3.9" value="Interactive UI" size="0.12" />
+    <box x="1.2" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#FF5722" id="demo_buttons" />
+    <text x="1.2" y="0.6" z="-1.9" value="Demo 3" size="0.1" />
 
-  <!-- Back to Home -->
-  <box x="0" y="0" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" />
-  <text x="0" y="0" z="-3.95" value="Back to Home" size="0.1" />
+    <box x="0" y="-0.2" z="-2" sx="0.6" sy="0.2" sz="0.05" color="#4CAF50" id="btn_home" />
+    <text x="0" y="-0.2" z="-1.95" value="Back to Home" size="0.08" />
 
   <script>
     const btnHome = hiperspace.dimention.getElementById('btn_home');
@@ -111,14 +127,21 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     console.log('[luna://demos] Page loaded');
   </script>
-</space>"##;
+  </space>
+</hsml>"##;
 
 const LUNA_SETTINGS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
-<space>
+<hsml>
+  <head>
+    <name>Luna Settings</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space>
   <text x="0" y="3.5" z="-5" value="Luna Settings" size="0.4" />
   <text x="0" y="3" z="-5" value="Browser Configuration" size="0.18" />
 
-  <!-- Settings categories -->
   <text x="-3" y="2.2" z="-5" value="Appearance" size="0.15" color="#4CAF50" />
   <text x="-3" y="1.8" z="-5" value="- Theme: Default" size="0.1" />
   <text x="-3" y="1.5" z="-5" value="- Font Size: Medium" size="0.1" />
@@ -131,7 +154,6 @@ const LUNA_SETTINGS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <text x="3" y="1.8" z="-5" value="- Proxy: None" size="0.1" />
   <text x="3" y="1.5" z="-5" value="- Timeout: 30s" size="0.1" />
 
-  <!-- Action buttons -->
   <box x="-1.5" y="0" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#9C27B0" id="btn_cache" />
   <text x="-1.5" y="0" z="-3.95" value="Cache Stats" size="0.1" />
 
@@ -149,18 +171,24 @@ const LUNA_SETTINGS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     console.log('[luna://settings] Settings page loaded');
   </script>
-</space>"##;
+  </space>
+</hsml>"##;
 
 const LUNA_ABOUT: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
-<space>
+<hsml>
+  <head>
+    <name>Luna About</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space>
   <text x="0" y="3.5" z="-5" value="About Luna Browser" size="0.4" />
   <text x="0" y="2.9" z="-5" value="Spatial 3D Web Browser" size="0.18" />
 
-  <!-- Version info -->
   <text x="0" y="2.3" z="-5" value="Version: 0.1.0-alpha" size="0.14" />
   <text x="0" y="2" z="-5" value="Built with Bevy 0.14 + OpenXR" size="0.12" />
 
-  <!-- Features -->
   <text x="0" y="1.4" z="-5" value="Features:" size="0.15" color="#4CAF50" />
   <text x="0" y="1.1" z="-5" value="- HSML (Spatial HTML) Parsing" size="0.1" />
   <text x="0" y="0.8" z="-5" value="- JavaScript Runtime (V8 via deno_core)" size="0.1" />
@@ -168,10 +196,8 @@ const LUNA_ABOUT: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <text x="0" y="0.2" z="-5" value="- HTTP Caching System" size="0.1" />
   <text x="0" y="-0.1" z="-5" value="- DevTools with Console" size="0.1" />
 
-  <!-- Links -->
   <text x="0" y="-0.7" z="-5" value="Project: Luna Browser by Sam" size="0.11" color="#2196F3" />
 
-  <!-- Back button -->
   <box x="0" y="-1.5" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" />
   <text x="0" y="-1.5" z="-3.95" value="Back to Home" size="0.1" />
 
@@ -181,14 +207,21 @@ const LUNA_ABOUT: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     console.log('[luna://about] About page loaded');
   </script>
-</space>"##;
+  </space>
+</hsml>"##;
 
 const LUNA_404: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
-<space>
+<hsml>
+  <head>
+    <name>404 Not Found</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space>
   <text x="0" y="3" z="-5" value="404 - Page Not Found" size="0.35" color="#F44336" />
   <text x="0" y="2.5" z="-5" value="The requested luna:// page does not exist" size="0.15" />
 
-  <!-- Available pages list -->
   <text x="0" y="1.8" z="-5" value="Available Pages:" size="0.16" color="#4CAF50" />
   <text x="0" y="1.4" z="-5" value="- luna://home" size="0.11" />
   <text x="0" y="1.1" z="-5" value="- luna://demos" size="0.11" />
@@ -204,7 +237,8 @@ const LUNA_404: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     if (btn) btn.addEventListener('click', () => { location.href = 'luna://home'; });
     console.log('[luna://404] Error page loaded');
   </script>
-</space>"##;
+  </space>
+</hsml>"##;
 
 // ============================================================================
 // SCRIPTS INTERNOS
@@ -228,7 +262,14 @@ console.log('[luna://home] Navigation ready');
 
 fn generate_cache_stats(_path: &str) -> String {
     r##"<?xml version="1.0" encoding="UTF-8"?>
-<space>
+<hsml>
+  <head>
+    <name>Cache Statistics</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space>
   <text x="0" y="3.5" z="-5" value="HTTP Cache Statistics" size="0.35" />
   <text x="0" y="2.9" z="-5" value="Real-time cache monitoring" size="0.16" />
 
@@ -247,5 +288,6 @@ fn generate_cache_stats(_path: &str) -> String {
     if (btn) btn.addEventListener('click', () => { location.href = 'luna://settings'; });
     console.log('[luna://cache-stats] Stats page loaded (placeholder)');
   </script>
-</space>"##.to_string()
+  </space>
+</hsml>"##.to_string()
 }
