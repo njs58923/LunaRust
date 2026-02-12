@@ -16,14 +16,16 @@ use base64::{engine::general_purpose::STANDARD as Base64Engine, Engine as _};
 use virtual_dom::{
     dom::{
         element::{build_world, Attrs, Hierarchy, Tag, Transform2},
-        hsml::{Model, Include},
+        hsml::{Model, Include, Script},
         TRANSFORM_POSITION, TRANSFORM_ROTATION, TRANSFORM_SCALE
     },
     load_xml_from_url, parse_xml,
 };
+use js_runtime::Engine as JsEngine;
 use anyhow::Result;
 use bevy::{gltf::GltfPlugin, gltf::GltfLoaderSettings, prelude::*};
 use bevy_mod_openxr::add_xr_plugins;
+use std::collections::HashSet;
 use std::f32::consts::*;
 
 // Módulos ficticios
@@ -163,6 +165,16 @@ struct PerformanceStats {
     dom_sync_ms: f32,
 }
 
+/// JS engine wrapper (NonSend because V8 is single-threaded)
+struct ScriptRuntime {
+    engine: JsEngine,
+    loaded_scripts: HashSet<String>,
+}
+
+/// Scripts pending evaluation: Vec<(url, code)>
+#[derive(Resource, Default)]
+struct PendingScripts(Vec<(String, String)>);
+
 // --------------------------------------------------------------------------------------
 // PESTAÑAS DEL DEVTOOL
 // --------------------------------------------------------------------------------------
@@ -264,8 +276,11 @@ fn main() {
     // Estado del devtool
     app.insert_resource(DevtoolState::default());
 
+    // JS Runtime resources (engine created in startup system)
+    app.insert_resource(PendingScripts::default());
+
     // ── Sistemas ──────────────────────────────────────────────────────────────
-    app.add_systems(Startup, setup);
+    app.add_systems(Startup, (setup, init_js_runtime).chain());
 
     app.add_systems(
         Update,
@@ -294,8 +309,68 @@ fn main() {
         ),
     );
 
+    // JS systems - MUST run on main thread (V8 is !Send)
+    // Registered separately to ensure single-threaded execution
+    app.add_systems(
+        Update,
+        (
+            js_update_snapshots_system,
+            js_eval_pending_scripts,
+            js_tick_system,
+        )
+            .chain() // Force sequential execution on main thread
+            .run_if(script_runtime_exists),
+    );
+
     // ── Run ───────────────────────────────────────────────────────────────────
     app.run();
+}
+
+// --------------------------------------------------------------------------------------
+// RUN CONDITIONS
+// --------------------------------------------------------------------------------------
+fn script_runtime_exists(world: &World) -> bool {
+    world.get_non_send_resource::<ScriptRuntime>().is_some()
+}
+
+// --------------------------------------------------------------------------------------
+// INIT JS RUNTIME
+// --------------------------------------------------------------------------------------
+fn init_js_runtime(
+    world: &mut World,
+) {
+    let mut log_panel = world.resource_mut::<LogPanel>();
+    log_panel.push_info("[JS] Initializing V8 runtime...");
+
+    // Initialize V8 platform (safe to call multiple times)
+    js_runtime::init_v8_platform();
+
+    log_panel.push_info("[JS] Creating JS engine...");
+    drop(log_panel); // Release borrow before creating engine
+
+    // Create the engine (this is the expensive part)
+    let engine = match std::panic::catch_unwind(|| {
+        JsEngine::new()
+    }) {
+        Ok(engine) => {
+            let mut log_panel = world.resource_mut::<LogPanel>();
+            log_panel.push_info("[JS] JS engine created successfully");
+            engine
+        }
+        Err(e) => {
+            let mut log_panel = world.resource_mut::<LogPanel>();
+            log_panel.push_error(format!("[JS] PANIC creating engine: {:?}", e));
+            panic!("Failed to create JS engine");
+        }
+    };
+
+    world.insert_non_send_resource(ScriptRuntime {
+        engine,
+        loaded_scripts: HashSet::new(),
+    });
+
+    let mut log_panel = world.resource_mut::<LogPanel>();
+    log_panel.push_info("[JS] Runtime initialization complete");
 }
 
 // --------------------------------------------------------------------------------------
@@ -935,6 +1010,7 @@ fn dom_sync_system(
     tokio_rt: Res<TokioRuntime>,
     current_url: Res<CurrentUrl>,
     mut perf_stats: ResMut<PerformanceStats>,
+    mut pending_scripts: ResMut<PendingScripts>,
 ) {
     let start_time = Instant::now();
 
@@ -1117,9 +1193,39 @@ fn dom_sync_system(
                                 .id()
                         }
                     }
-                    "script" | "space" => {
-                        log_panel
-                            .push_info("    -> script/space, no spawneamos nada 3D");
+                    "script" => {
+                        log_panel.push_info("    -> script tag encontrado");
+                        let scripts_storage = world.0.read_storage::<Script>();
+                        if let Some(script_comp) = scripts_storage.get(*node) {
+                            if let Some(ref src) = script_comp.src {
+                                if let Some(final_url) = resolve_remote_path(&current_url.0, src) {
+                                    log_panel.push_info(format!("    -> Descargando script: {}", final_url));
+                                    match tokio_rt.0.block_on(async {
+                                        let resp = reqwest::get(&final_url).await?;
+                                        resp.text().await
+                                    }) {
+                                        Ok(code) => {
+                                            pending_scripts.0.push((final_url, code));
+                                        }
+                                        Err(e) => {
+                                            log_panel.push_error(format!("Error descargando script {}: {}", final_url, e));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        commands
+                            .spawn((
+                                SpatialBundle {
+                                    transform: transform_b,
+                                    ..Default::default()
+                                },
+                                Dirty,
+                            ))
+                            .id()
+                    }
+                    "space" => {
+                        log_panel.push_info("    -> space, no spawneamos nada 3D");
                         commands
                             .spawn((
                                 SpatialBundle {
@@ -1470,6 +1576,495 @@ fn expand_includes(
     Ok(new_dirty)
 }
 
+
+// --------------------------------------------------------------------------------------
+// JS: Evaluar scripts pendientes
+// EXCLUSIVE SYSTEM - must run on main thread
+// --------------------------------------------------------------------------------------
+fn js_eval_pending_scripts(world: &mut World) {
+    // Drain pending scripts
+    let pending_scripts = {
+        let Some(mut pending) = world.get_resource_mut::<PendingScripts>() else {
+            return;
+        };
+        pending.0.drain(..).collect::<Vec<_>>()
+    };
+
+    if pending_scripts.is_empty() {
+        return;
+    }
+
+    // Process scripts
+    for (url, code) in pending_scripts {
+        // Check if already loaded
+        let already_loaded = {
+            let Some(runtime) = world.get_non_send_resource::<ScriptRuntime>() else {
+                return;
+            };
+            runtime.loaded_scripts.contains(&url)
+        };
+
+        if already_loaded {
+            let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
+                return;
+            };
+            log_panel.push_info(format!("[JS] Script ya cargado, omitiendo: {}", url));
+            continue;
+        }
+
+        // Log evaluation start
+        {
+            let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
+                return;
+            };
+            log_panel.push_info(format!("[JS] Evaluando script: {}", url));
+        }
+
+        // Evaluate script
+        let eval_result = {
+            let Some(mut runtime) = world.get_non_send_resource_mut::<ScriptRuntime>() else {
+                return;
+            };
+            runtime.engine.eval(&code)
+        };
+
+        // Mark as loaded (if successful)
+        if eval_result.is_ok() {
+            let Some(mut runtime) = world.get_non_send_resource_mut::<ScriptRuntime>() else {
+                return;
+            };
+            runtime.loaded_scripts.insert(url.clone());
+        }
+
+        // Log result
+        {
+            let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
+                return;
+            };
+
+            match eval_result {
+                Ok(_) => {
+                    log_panel.push_info(format!("[JS] Script evaluado OK: {}", url));
+                }
+                Err(e) => {
+                    log_panel.push_error(format!("[JS] Error evaluando {}: {}", url, e));
+                }
+            }
+        }
+    }
+}
+
+// --------------------------------------------------------------------------------------
+// JS: Update snapshots (called before JS code runs)
+// EXCLUSIVE SYSTEM - must run on main thread
+// --------------------------------------------------------------------------------------
+fn js_update_snapshots_system(world: &mut World) {
+    // Build all snapshots from specs_world first
+    let (attr_snap, tag_snap, positions, rotations, scales, global_positions, parents, children_map) = {
+        let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
+            return;
+        };
+        let entities = specs_world.0.entities();
+        let attrs_storage = specs_world.0.read_storage::<Attrs>();
+        let tags_storage = specs_world.0.read_storage::<Tag>();
+        let transforms_storage = specs_world.0.read_storage::<Transform2>();
+        let hierarchies_storage = specs_world.0.read_storage::<Hierarchy>();
+
+        // Build attr snapshot
+        let mut attr_snap = std::collections::HashMap::new();
+        for (ent, attrs) in (&entities, &attrs_storage).join() {
+            let mut map = std::collections::HashMap::new();
+            for (k, v) in &attrs.0 {
+                map.insert(k.clone(), v.clone());
+            }
+            attr_snap.insert(ent.id() as i32, map);
+        }
+
+        // Build tag snapshot
+        let mut tag_snap = std::collections::HashMap::new();
+        for (ent, tag) in (&entities, &tags_storage).join() {
+            tag_snap.insert(ent.id() as i32, tag.0.clone());
+        }
+
+        // Build transform snapshots
+        let mut positions = std::collections::HashMap::new();
+        let mut rotations = std::collections::HashMap::new();
+        let mut scales = std::collections::HashMap::new();
+        let mut global_positions = std::collections::HashMap::new();
+
+        for (ent, tr) in (&entities, &transforms_storage).join() {
+            use js_runtime::Vec3;
+            positions.insert(ent.id() as i32, Vec3 { x: tr.position.x, y: tr.position.y, z: tr.position.z });
+            rotations.insert(ent.id() as i32, Vec3 { x: tr.rotation.x, y: tr.rotation.y, z: tr.rotation.z });
+            scales.insert(ent.id() as i32, Vec3 { x: tr.scale.x, y: tr.scale.y, z: tr.scale.z });
+            global_positions.insert(ent.id() as i32, Vec3 { x: tr.position.x, y: tr.position.y, z: tr.position.z });
+        }
+
+        // Build hierarchy snapshot
+        let mut parents = std::collections::HashMap::new();
+        let mut children_map = std::collections::HashMap::new();
+
+        for (ent, hier) in (&entities, &hierarchies_storage).join() {
+            if let Some(parent_id) = hier.parent {
+                parents.insert(ent.id() as i32, parent_id as i32);
+            } else {
+                parents.insert(ent.id() as i32, -1);
+            }
+
+            let child_ids: Vec<i32> = hier.children.iter().map(|child_ent| child_ent.id() as i32).collect();
+            children_map.insert(ent.id() as i32, child_ids);
+        }
+
+        (attr_snap, tag_snap, positions, rotations, scales, global_positions, parents, children_map)
+    };
+
+    // Now update runtime with all snapshots
+    {
+        let Some(mut runtime) = world.get_non_send_resource_mut::<ScriptRuntime>() else {
+            return;
+        };
+        runtime.engine.update_attr_snapshot(attr_snap);
+        runtime.engine.update_tag_snapshot(tag_snap);
+        runtime.engine.update_transform_snapshot(positions, rotations, scales, global_positions);
+        runtime.engine.update_hierarchy_snapshot(parents, children_map);
+    }
+}
+
+// --------------------------------------------------------------------------------------
+// JS: Tick cada frame (fire RAF, drain logs, drain all updates)
+// EXCLUSIVE SYSTEM - must run on main thread
+// --------------------------------------------------------------------------------------
+fn js_tick_system(world: &mut World) {
+    // Block 1: Fire requestAnimationFrame callbacks
+    let elapsed_ms = {
+        let Some(time) = world.get_resource::<Time>() else {
+            return;
+        };
+        time.elapsed_seconds_f64() * 1000.0
+    };
+    {
+        let Some(mut runtime) = world.get_non_send_resource_mut::<ScriptRuntime>() else {
+            return;
+        };
+        runtime.engine.fire_raf(elapsed_ms);
+    }
+
+    // Block 2: Drain console logs -> LogPanel
+    let logs = {
+        let Some(mut runtime) = world.get_non_send_resource_mut::<ScriptRuntime>() else {
+            return;
+        };
+        runtime.engine.drain_logs()
+    };
+    {
+        let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
+            return;
+        };
+        for (level, msg) in logs {
+            match level.as_str() {
+                "warn" => log_panel.push_warn(format!("[JS] {}", msg)),
+                "error" => log_panel.push_error(format!("[JS] {}", msg)),
+                _ => log_panel.push_info(format!("[JS] {}", msg)),
+            }
+        }
+    }
+
+    // Block 3: Drain attr updates and transform updates -> AttributeUpdates resource
+    let (attr_updates, pos_updates, rot_updates, scale_updates) = {
+        let Some(mut runtime) = world.get_non_send_resource_mut::<ScriptRuntime>() else {
+            return;
+        };
+        (
+            runtime.engine.drain_attr_updates(),
+            runtime.engine.drain_transform_position_updates(),
+            runtime.engine.drain_transform_rotation_updates(),
+            runtime.engine.drain_transform_scale_updates(),
+        )
+    };
+    {
+        let Some(mut attribute_updates) = world.get_resource_mut::<AttributeUpdates>() else {
+            return;
+        };
+
+        for (node_id, key, value) in attr_updates {
+            attribute_updates.0.push((node_id as u32, key, value));
+        }
+
+        for (node_id, pos) in pos_updates {
+            attribute_updates.0.push((node_id as u32, "x".to_string(), pos.x.to_string()));
+            attribute_updates.0.push((node_id as u32, "y".to_string(), pos.y.to_string()));
+            attribute_updates.0.push((node_id as u32, "z".to_string(), pos.z.to_string()));
+        }
+        for (node_id, rot) in rot_updates {
+            attribute_updates.0.push((node_id as u32, "rx".to_string(), rot.x.to_string()));
+            attribute_updates.0.push((node_id as u32, "ry".to_string(), rot.y.to_string()));
+            attribute_updates.0.push((node_id as u32, "rz".to_string(), rot.z.to_string()));
+        }
+        for (node_id, scale) in scale_updates {
+            attribute_updates.0.push((node_id as u32, "sx".to_string(), scale.x.to_string()));
+            attribute_updates.0.push((node_id as u32, "sy".to_string(), scale.y.to_string()));
+            attribute_updates.0.push((node_id as u32, "sz".to_string(), scale.z.to_string()));
+        }
+    }
+
+    // Block 4: Process element creation requests
+    let creation_queue = {
+        let Some(mut runtime) = world.get_non_send_resource_mut::<ScriptRuntime>() else {
+            return;
+        };
+        runtime.engine.drain_element_creation_queue()
+    };
+    if !creation_queue.is_empty() {
+        use virtual_dom::dom::element::Vec3 as DomVec3;
+
+        // Create entities and collect results
+        let (creation_results, created_node_ids, log_messages) = {
+            let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else {
+                return;
+            };
+
+            let mut creation_results = Vec::new();
+            let mut created_node_ids = Vec::new();
+            let mut log_messages = Vec::new();
+
+            for (request_id, tag_name) in creation_queue {
+                let new_ent = {
+                    let entities = specs_world.0.entities();
+                    entities.create()
+                };
+
+                let new_ent_id = {
+                    use specs::world::EntityBuilder;
+                    let mut tags_storage = specs_world.0.write_storage::<Tag>();
+                    let mut attrs_storage = specs_world.0.write_storage::<Attrs>();
+                    let mut transform_storage = specs_world.0.write_storage::<Transform2>();
+                    let mut hier_storage = specs_world.0.write_storage::<Hierarchy>();
+
+                    tags_storage.insert(new_ent, Tag(tag_name.clone())).ok();
+                    attrs_storage.insert(new_ent, Attrs(HashMap::new())).ok();
+                    transform_storage.insert(new_ent, Transform2 {
+                        position: DomVec3 { x: 0.0, y: 0.0, z: 0.0 },
+                        rotation: DomVec3 { x: 0.0, y: 0.0, z: 0.0 },
+                        scale: DomVec3 { x: 1.0, y: 1.0, z: 1.0 },
+                    }).ok();
+                    hier_storage.insert(new_ent, Hierarchy { parent: None, children: Vec::new() }).ok();
+
+                    new_ent.id()
+                };
+
+                creation_results.push((request_id, new_ent_id as i32));
+                created_node_ids.push(new_ent_id);
+                log_messages.push(format!("[JS] createElement('{}') -> node_id={}", tag_name, new_ent_id));
+            }
+
+            (creation_results, created_node_ids, log_messages)
+        };
+
+        // Mark dirty
+        {
+            let Some(mut dirty_nodes) = world.get_resource_mut::<DirtyNodes>() else {
+                return;
+            };
+            dirty_nodes.0.extend(created_node_ids);
+        }
+
+        // Log creation
+        {
+            let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
+                return;
+            };
+            for msg in log_messages {
+                log_panel.push_info(msg);
+            }
+        }
+
+        // Push results back to runtime
+        {
+            let Some(mut runtime) = world.get_non_send_resource_mut::<ScriptRuntime>() else {
+                return;
+            };
+            for (request_id, node_id) in creation_results {
+                runtime.engine.push_element_creation_result(request_id, node_id);
+            }
+        }
+    }
+
+    // Block 5: Process hierarchy updates (appendChild)
+    let hierarchy_queue = {
+        let Some(mut runtime) = world.get_non_send_resource_mut::<ScriptRuntime>() else {
+            return;
+        };
+        runtime.engine.drain_hierarchy_append_queue()
+    };
+    if !hierarchy_queue.is_empty() {
+        let (dirty_child_ids, log_messages) = {
+            let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else {
+                return;
+            };
+
+            let mut dirty_child_ids = Vec::new();
+            let mut log_messages = Vec::new();
+
+            for (parent_id, child_id) in hierarchy_queue {
+                let (parent_ent, child_ent, are_alive) = {
+                    let entities = specs_world.0.entities();
+                    let parent_ent = entities.entity(parent_id as u32);
+                    let child_ent = entities.entity(child_id as u32);
+                    let are_alive = entities.is_alive(parent_ent) && entities.is_alive(child_ent);
+                    (parent_ent, child_ent, are_alive)
+                };
+
+                if are_alive {
+                    Hierarchy::add_child(&mut specs_world.0, parent_ent, child_ent);
+                    dirty_child_ids.push(child_id as u32);
+                    log_messages.push(format!("[JS] appendChild: parent={} child={}", parent_id, child_id));
+                }
+            }
+
+            (dirty_child_ids, log_messages)
+        };
+
+        // Mark dirty
+        {
+            let Some(mut dirty_nodes) = world.get_resource_mut::<DirtyNodes>() else {
+                return;
+            };
+            dirty_nodes.0.extend(dirty_child_ids);
+        }
+
+        // Log
+        {
+            let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
+                return;
+            };
+            for msg in log_messages {
+                log_panel.push_info(msg);
+            }
+        }
+    }
+
+    // Block 6: Process element removal
+    let remove_queue = {
+        let Some(mut runtime) = world.get_non_send_resource_mut::<ScriptRuntime>() else {
+            return;
+        };
+        runtime.engine.drain_remove_element_queue()
+    };
+    if !remove_queue.is_empty() {
+        let log_messages = {
+            let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else {
+                return;
+            };
+
+            let mut log_messages = Vec::new();
+
+            for node_id in remove_queue {
+                let (ent, is_alive) = {
+                    let entities = specs_world.0.entities();
+                    let ent = entities.entity(node_id as u32);
+                    (ent, entities.is_alive(ent))
+                };
+
+                if is_alive {
+                    specs_world.0.delete_entity(ent).ok();
+                    log_messages.push(format!("[JS] remove: node_id={}", node_id));
+                }
+            }
+
+            log_messages
+        };
+
+        // Log removals
+        {
+            let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
+                return;
+            };
+            for msg in log_messages {
+                log_panel.push_info(msg);
+            }
+        }
+    }
+
+    // Block 7: Process fetch requests
+    let fetch_queue = {
+        let Some(mut runtime) = world.get_non_send_resource_mut::<ScriptRuntime>() else {
+            return;
+        };
+        runtime.engine.drain_fetch_queue()
+    };
+    if !fetch_queue.is_empty() {
+        // Perform fetches
+        let fetch_results = {
+            let Some(tokio_rt) = world.get_resource::<TokioRuntime>() else {
+                return;
+            };
+
+            let mut fetch_results = Vec::new();
+
+            for (request_id, url) in &fetch_queue {
+                let result = tokio_rt.0.block_on(async {
+                    match reqwest::get(url).await {
+                        Ok(resp) => match resp.text().await {
+                            Ok(text) => Ok(text),
+                            Err(e) => Err(format!("Failed to read response: {}", e)),
+                        },
+                        Err(e) => Err(format!("HTTP error: {}", e)),
+                    }
+                });
+
+                fetch_results.push((request_id.clone(), result));
+            }
+
+            fetch_results
+        };
+
+        // Log fetches
+        {
+            let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
+                return;
+            };
+            for (_, url) in &fetch_queue {
+                log_panel.push_info(format!("[JS] fetch: {}", url));
+            }
+        }
+
+        // Push results to runtime
+        {
+            let Some(mut runtime) = world.get_non_send_resource_mut::<ScriptRuntime>() else {
+                return;
+            };
+            for (request_id, result) in fetch_results {
+                runtime.engine.push_fetch_result(request_id, result);
+            }
+        }
+    }
+
+    // Block 8: Process navigate requests
+    let navigate_queue = {
+        let Some(mut runtime) = world.get_non_send_resource_mut::<ScriptRuntime>() else {
+            return;
+        };
+        runtime.engine.drain_navigate_queue()
+    };
+    if !navigate_queue.is_empty() {
+        // Log navigations
+        {
+            let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
+                return;
+            };
+            for url in &navigate_queue {
+                log_panel.push_warn(format!("[JS] navigate: {}", url));
+            }
+        }
+        // Set reload trigger
+        {
+            let Some(mut reload_trigger) = world.get_resource_mut::<ReloadTrigger>() else {
+                return;
+            };
+            reload_trigger.0 = true;
+        }
+    }
+}
 
 fn camera_keyboard_movement_system(
     time: Res<Time>,
