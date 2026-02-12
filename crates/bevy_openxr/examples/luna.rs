@@ -1648,7 +1648,8 @@ fn js_eval_pending_scripts(world: &mut World) {
                     if ctx.loaded_scripts.contains(&url) {
                         already_loaded = true;
                     } else {
-                        match ctx.engine.eval(&code) {
+                        let wrapped_code = format!("(function(){{\n{}\n}})();", code);
+                        match ctx.engine.eval(&wrapped_code) {
                             Ok(_) => {
                                 ctx.loaded_scripts.insert(url.clone());
                                 eval_ok = true;
