@@ -83,7 +83,6 @@ const LUNA_HOME: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     <box x="0.8" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#FF9800" id="btn_about" />
     <text x="0.8" y="0.6" z="-1.9" value="About" size="0.1" />
-
     <script src="luna://internal/home_navigation.js" />
   </space>
 </hsml>"##;

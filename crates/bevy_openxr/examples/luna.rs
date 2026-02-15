@@ -1379,6 +1379,7 @@ fn dom_sync_system(
     mut perf_stats: ResMut<PerformanceStats>,
     mut pending_scripts: ResMut<PendingScripts>,
     mut text_render: TextRenderParams,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let start_time = Instant::now();
 
@@ -1741,10 +1742,15 @@ fn dom_sync_system(
                         }
 
                         // Parse box attributes
-                        let color = attrs_storage.get(*node)
+                        let attrs_opt = attrs_storage.get(*node);
+                        let color = attrs_opt
                             .and_then(|a| a.0.get("color"))
                             .and_then(|c| parse_hex_color(c))
                             .unwrap_or(Color::srgb(0.5, 0.5, 0.5));
+
+                        let border_radius: Option<f32> = attrs_opt
+                            .and_then(|a| a.0.get("border-radius"))
+                            .and_then(|v| v.parse().ok());
 
                         // Create material with the specified color
                         let material = text_render.materials.add(StandardMaterial {
@@ -1752,10 +1758,17 @@ fn dom_sync_system(
                             ..Default::default()
                         });
 
+                        // Use rounded cube mesh if border-radius is set
+                        let mesh = if let Some(radius) = border_radius {
+                            meshes.add(shapes::create_rounded_cube(radius, 6))
+                        } else {
+                            shared_resources.cube_mesh.clone()
+                        };
+
                         commands
                             .spawn((
                                 PbrBundle {
-                                    mesh: shared_resources.cube_mesh.clone(),
+                                    mesh,
                                     material,
                                     transform: transform_b,
                                     ..Default::default()
