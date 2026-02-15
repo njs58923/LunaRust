@@ -36,6 +36,10 @@ use js_runtime::Engine as JsEngine;
 use anyhow::Result;
 use bevy::{gltf::GltfPlugin, gltf::GltfLoaderSettings, prelude::*};
 use bevy_mod_openxr::add_xr_plugins;
+use bevy_mod_xr::session::{
+    XrBeginSessionEvent, XrCreateSessionEvent, XrDestroySessionEvent, XrEndSessionEvent,
+    XrRequestExitEvent, XrSessionPlugin, XrState, XrStateChanged,
+};
 use std::collections::HashSet;
 use std::f32::consts::*;
 
@@ -164,6 +168,14 @@ struct UiSystemParams<'w> {
     perf_stats: Res<'w, PerformanceStats>,
     auto_load_config: ResMut<'w, AutoLoadConfig>,
 }
+
+#[derive(Resource)]
+struct RenderMode {
+    is_vr: bool,
+}
+
+#[derive(Component)]
+struct DesktopCamera;
 
 #[derive(Resource, Default)]
 struct DevtoolVisible(bool);
@@ -358,12 +370,12 @@ fn main() {
                     ..default()
                 });
 
-    if ar_on == false {
-        app.add_plugins(default_plugins);
-    } else {
-        app.add_plugins(add_xr_plugins(default_plugins));
-        app.add_plugins(bevy_xr_utils::hand_gizmos::HandGizmosPlugin);
-    }
+    app.add_plugins(
+        add_xr_plugins(default_plugins)
+            .set(XrSessionPlugin { auto_handle: false }),
+    );
+    app.add_plugins(bevy_xr_utils::hand_gizmos::HandGizmosPlugin);
+    app.insert_resource(RenderMode { is_vr: ar_on });
 
 
     app.add_plugins(EguiPlugin);
@@ -439,7 +451,11 @@ fn main() {
         update_entity_counter.run_if(|m: Res<EntityMap>| m.is_changed()),
     );
     app.add_systems(Update, update_fps_counter);
-    app.add_systems(Update, camera_keyboard_movement_system);
+    app.add_systems(
+        Update,
+        camera_keyboard_movement_system.run_if(|rm: Res<RenderMode>| !rm.is_vr),
+    );
+    app.add_systems(Update, (xr_session_handler, toggle_render_mode));
 
     // JS systems - MUST run on main thread (V8 is !Send)
     // Registered separately to ensure single-threaded execution
@@ -492,15 +508,18 @@ fn setup(
     tokio_rt: Res<TokioRuntime>,
     auto_load_config: Res<AutoLoadConfig>,
 ) {
-    // Cámara 3D
-    commands.spawn(Camera3dBundle {
-        camera: Camera {
-            order: 0,
+    // Cámara 3D (desktop)
+    commands.spawn((
+        Camera3dBundle {
+            camera: Camera {
+                order: 0,
+                ..default()
+            },
+            transform: Transform::from_xyz(0.0, 3.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
             ..default()
         },
-        transform: Transform::from_xyz(0.0, 3.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
-        ..default()
-    });
+        DesktopCamera,
+    ));
 
     // Cámara 2D
     commands.spawn(Camera2dBundle {
@@ -705,6 +724,7 @@ fn ui_system(
     mut delete_requests: ResMut<DeleteRequests>,
     mut log_panel: ResMut<LogPanel>,
     mut ui_params: UiSystemParams,
+    mut render_mode: ResMut<RenderMode>,
 ) {
     // Ventana NAVEGADOR (siempre se muestra)
     egui::Window::new("Navegador").show(contexts.ctx_mut(), |ui| {
@@ -718,7 +738,21 @@ fn ui_system(
                 reload_trigger.0 = true;
             }
         });
-        // Se movieron la info de Entities, FPS y dom_sync al tab "Status".
+
+        // Botón VR/Desktop toggle
+        let label = if render_mode.is_vr {
+            "Cambiar a Desktop"
+        } else {
+            "Cambiar a VR"
+        };
+        if ui.button(label).clicked() {
+            render_mode.is_vr = !render_mode.is_vr;
+            log_panel.push_info(format!(
+                "Modo cambiado a: {}",
+                if render_mode.is_vr { "VR" } else { "Desktop" }
+            ));
+        }
+
         // Aquí solo un botón para mostrar/ocultar Devtool:
         if ui.button("Toggle Devtool").clicked() {
             devtool_visible.0 = !devtool_visible.0;
@@ -2941,6 +2975,70 @@ fn js_tick_system(world: &mut World) {
                 return;
             };
             reload_trigger.0 = true;
+        }
+    }
+}
+
+// --------------------------------------------------------------------------------------
+// XR SESSION MANAGEMENT
+// --------------------------------------------------------------------------------------
+fn xr_session_handler(
+    render_mode: Res<RenderMode>,
+    mut state_changed: EventReader<XrStateChanged>,
+    mut create_session: EventWriter<XrCreateSessionEvent>,
+    mut begin_session: EventWriter<XrBeginSessionEvent>,
+    mut end_session: EventWriter<XrEndSessionEvent>,
+    mut destroy_session: EventWriter<XrDestroySessionEvent>,
+) {
+    for XrStateChanged(state) in state_changed.read() {
+        match state {
+            XrState::Available => {
+                if render_mode.is_vr {
+                    create_session.send_default();
+                }
+            }
+            XrState::Ready => {
+                if render_mode.is_vr {
+                    begin_session.send_default();
+                }
+            }
+            XrState::Stopping => {
+                end_session.send_default();
+            }
+            XrState::Exiting { .. } => {
+                destroy_session.send_default();
+            }
+            _ => {}
+        }
+    }
+}
+
+fn toggle_render_mode(
+    render_mode: Res<RenderMode>,
+    xr_state: Res<XrState>,
+    mut create_session: EventWriter<XrCreateSessionEvent>,
+    mut request_exit: EventWriter<XrRequestExitEvent>,
+    mut desktop_cameras: Query<&mut Camera, With<DesktopCamera>>,
+) {
+    if !render_mode.is_changed() {
+        return;
+    }
+
+    if render_mode.is_vr {
+        // Switching to VR: disable desktop camera and start XR session
+        for mut cam in desktop_cameras.iter_mut() {
+            cam.is_active = false;
+        }
+        if *xr_state == XrState::Available {
+            create_session.send_default();
+        }
+    } else {
+        // Switching to Desktop: enable desktop camera and request XR exit
+        for mut cam in desktop_cameras.iter_mut() {
+            cam.is_active = true;
+        }
+        if *xr_state == XrState::Running || *xr_state == XrState::Ready {
+            request_exit.send_default();
         }
     }
 }
