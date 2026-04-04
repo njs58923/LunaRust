@@ -362,6 +362,24 @@ pub fn dom_sync_system(
 
         if let Some(&bevy_ent) = entity_map.0.get(&node_id) {
             // --- Update existing entity ---
+            //
+            // REGLA: para aplicar cambios de atributos (setAttribute desde JS) hay que
+            // leer el valor directamente de `attrs_storage` en esta rama, no depender del
+            // componente Bevy `Dirty`.
+            //
+            // Por qué: `mark_dirty_system` inserta `Dirty` via Commands, que son diferidas
+            // (se aplican al final del schedule, no entre sistemas del mismo frame). Entonces
+            // cuando `dom_sync_system` corre en el mismo frame, `Option<&Dirty>` siempre
+            // llega como `None` para actualizaciones de JS, y el guard `if dirty.is_some()`
+            // nunca se cumple. La señal correcta es que el nodo esté en `dirty_nodes.0`
+            // (que `apply_attribute_updates` ya garantizó). El componente `Dirty` solo se
+            // usa para limpiar el marcador si ya estaba presente por otro motivo.
+            //
+            // Patrón correcto para agregar soporte a un nuevo tag con atributos mutables:
+            //   1. Leer los attrs desde `attrs_storage.get(*node)` directamente.
+            //   2. Aplicar el cambio al asset/componente Bevy sin condicionarlo a `dirty`.
+            //   3. Llamar `commands.entity(bevy_ent).remove::<Dirty>()` solo si `dirty.is_some()`.
+            //   4. Agregar `continue` para no caer en el default de transform-only.
             if tag == "model" {
                 commands.entity(bevy_ent).despawn_recursive();
                 entity_map.0.remove(&node_id);
@@ -406,6 +424,23 @@ pub fn dom_sync_system(
                 }, Dirty)).id();
                 set_parent(&mut commands, new_ent, parent_id, &entity_map);
                 entity_map.0.insert(node_id, new_ent);
+                continue;
+            }
+
+            if tag == "box" || tag == "sphere" {
+                if let Ok((_, mut t, dirty, maybe_material)) = query.get_mut(bevy_ent) {
+                    *t = transform_b;
+                    if let Some(material_handle) = maybe_material {
+                        let color = attrs_storage.get(*node)
+                            .and_then(|a| a.0.get("color"))
+                            .and_then(|c| parse_hex_color(c))
+                            .unwrap_or(Color::srgb(0.5, 0.5, 0.5));
+                        if let Some(mat) = text_render.materials.get_mut(&*material_handle) {
+                            mat.base_color = color;
+                        }
+                    }
+                    if dirty.is_some() { commands.entity(bevy_ent).remove::<Dirty>(); }
+                }
                 continue;
             }
 
