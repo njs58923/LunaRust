@@ -19,6 +19,7 @@ impl VirtualRoutes {
         let mut routes = HashMap::new();
 
         // Registrar rutas estáticas
+        routes.insert("root".to_string(), RouteHandler::Static(LUNA_ROOT));
         routes.insert("home".to_string(), RouteHandler::Static(LUNA_HOME));
         routes.insert("demos".to_string(), RouteHandler::Static(LUNA_DEMOS));
         routes.insert("settings".to_string(), RouteHandler::Static(LUNA_SETTINGS));
@@ -35,6 +36,10 @@ impl VirtualRoutes {
         routes.insert(
             "internal/home_navigation.js".to_string(),
             RouteHandler::Static(SCRIPT_HOME_NAV),
+        );
+        routes.insert(
+            "internal/root_api.js".to_string(),
+            RouteHandler::Static(SCRIPT_ROOT_API),
         );
 
         Self { routes }
@@ -73,6 +78,22 @@ impl VirtualRoutes {
 // ============================================================================
 // DOCUMENTOS HSML ESTÁTICOS
 // ============================================================================
+
+const LUNA_ROOT: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head>
+    <name>Luna Root</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space id="luna_root">
+    <text x="0" y="1.6" z="-2" value="Luna Root" size="0.28" />
+    <text x="0" y="1.25" z="-2" value="Root compositor ready. Use dimension.luna.* from scripts." size="0.12" />
+    <text x="0" y="0.95" z="-2" value="mountSpace / updateSpace / setSpaceVisible / unmountSpace / listMountedSpaces" size="0.08" />
+    <script src="luna://internal/root_api.js" />
+  </space>
+</hsml>"##;
 
 const LUNA_HOME: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 <hsml>
@@ -266,6 +287,202 @@ if (btnAbout) btnAbout.addEventListener('click', () => { location.href = 'luna:/
 console.log('[luna://home] Navigation ready');
 "##;
 
+const SCRIPT_ROOT_API: &str = r##"
+(function (global) {
+  const root = global.hiperspace && global.hiperspace.dimention;
+  if (!root) {
+    console.error('[luna://root] Missing root space');
+    return;
+  }
+
+  const dimension = global.dimension || (global.dimension = {});
+  const registry = new Map();
+  let nextPublicId = 1;
+
+  function normalizeTag(tagName) {
+    return String(tagName || '').toLowerCase();
+  }
+
+  function isPending(space) {
+    return typeof space.nodeId === 'number' && space.nodeId < 0;
+  }
+
+  function isDirectRootChild(space) {
+    if (isPending(space)) {
+      return true;
+    }
+    const parent = space.parent;
+    return !!parent && parent.nodeId === root.nodeId;
+  }
+
+  function cloneVec3(vec, fallback) {
+    if (!vec || typeof vec !== 'object') return { ...fallback };
+    return {
+      x: Number(vec.x ?? fallback.x),
+      y: Number(vec.y ?? fallback.y),
+      z: Number(vec.z ?? fallback.z),
+    };
+  }
+
+  function findPrimaryInclude(space) {
+    for (const child of space.children) {
+      if (normalizeTag(child.tagName) === 'include') {
+        return child;
+      }
+    }
+    return null;
+  }
+
+  function registerSpace(space) {
+    for (const [publicId, entry] of registry) {
+      if (entry.space.nodeId === space.nodeId) {
+        if (!entry.include) {
+          entry.include = findPrimaryInclude(space);
+        }
+        return publicId;
+      }
+    }
+
+    const publicId = nextPublicId++;
+    registry.set(publicId, {
+      space,
+      include: findPrimaryInclude(space),
+    });
+    return publicId;
+  }
+
+  function discoverDirectSpaces() {
+    for (const child of root.children) {
+      if (normalizeTag(child.tagName) === 'space') {
+        registerSpace(child);
+      }
+    }
+  }
+
+  function cleanupRegistry() {
+    for (const [publicId, entry] of [...registry.entries()]) {
+      if (!isDirectRootChild(entry.space)) {
+        registry.delete(publicId);
+      }
+    }
+  }
+
+  function getMountedEntry(publicId) {
+    discoverDirectSpaces();
+    cleanupRegistry();
+    return registry.get(publicId) || null;
+  }
+
+  function ensureInclude(entry) {
+    if (entry.include) return entry.include;
+    const include = root.createElement('include');
+    entry.space.appendChild(include);
+    entry.include = include;
+    return include;
+  }
+
+  function applySpaceOptions(entry, options) {
+    const opts = options || {};
+    const space = entry.space;
+
+    if (opts.visible != null) {
+      space.setAttribute('visible', opts.visible ? 'true' : 'false');
+    }
+
+    if (opts.position) {
+      space.position = cloneVec3(opts.position, { x: 0, y: 0, z: 0 });
+    }
+
+    if (opts.rotation) {
+      space.rotation = cloneVec3(opts.rotation, { x: 0, y: 0, z: 0 });
+    }
+
+    if (opts.scale != null) {
+      if (typeof opts.scale === 'number') {
+        space.scale = Number(opts.scale);
+      } else {
+        space.scale = cloneVec3(opts.scale, { x: 1, y: 1, z: 1 });
+      }
+    }
+
+    if (opts.title != null) {
+      space.setAttribute('title', String(opts.title));
+    }
+
+    if (opts.url != null) {
+      const include = ensureInclude(entry);
+      include.setAttribute('src', String(opts.url));
+    }
+  }
+
+  function describeSpace(publicId, entry) {
+    const include = entry.include || findPrimaryInclude(entry.space);
+    entry.include = include;
+    return {
+      id: publicId,
+      nodeId: entry.space.nodeId,
+      url: include ? include.getAttribute('src') : '',
+      visible: entry.space.getAttribute('visible') !== 'false',
+      loaded: include ? include.children.length > 0 : entry.space.children.length > 0,
+      position: cloneVec3(entry.space.position, { x: 0, y: 0, z: 0 }),
+      rotation: cloneVec3(entry.space.rotation, { x: 0, y: 0, z: 0 }),
+      scale: cloneVec3(entry.space.scale, { x: 1, y: 1, z: 1 }),
+      title: entry.space.getAttribute('title') || '',
+    };
+  }
+
+  dimension.luna = {
+    mountSpace(url, options = {}) {
+      discoverDirectSpaces();
+      cleanupRegistry();
+
+      const space = root.createElement('space');
+      const publicId = registerSpace(space);
+      const entry = registry.get(publicId);
+      if (!entry) return -1;
+
+      space.setAttribute('visible', options.visible === false ? 'false' : 'true');
+      space.setAttribute('managed-by', 'dimension.luna');
+      applySpaceOptions(entry, { ...options, url });
+      root.appendChild(space);
+      return publicId;
+    },
+
+    updateSpace(id, options = {}) {
+      const entry = getMountedEntry(id);
+      if (!entry) return false;
+      applySpaceOptions(entry, options);
+      return true;
+    },
+
+    setSpaceVisible(id, visible) {
+      return this.updateSpace(id, { visible });
+    },
+
+    unmountSpace(id) {
+      const entry = getMountedEntry(id);
+      if (!entry) return false;
+      registry.delete(id);
+      entry.space.remove();
+      return true;
+    },
+
+    listMountedSpaces() {
+      discoverDirectSpaces();
+      cleanupRegistry();
+      const mounted = [];
+      for (const [publicId, entry] of registry) {
+        if (!isDirectRootChild(entry.space)) continue;
+        mounted.push(describeSpace(publicId, entry));
+      }
+      return mounted;
+    },
+  };
+
+  console.log('[luna://root] dimension.luna ready');
+})(globalThis);
+"##;
+
 // ============================================================================
 // GENERADORES DE CONTENIDO DINÁMICO
 // ============================================================================
@@ -335,6 +552,13 @@ mod tests {
     }
 
     #[test]
+    fn resolve_root_returns_hsml() {
+        let content = VIRTUAL_ROUTES.resolve("luna://root").unwrap();
+        assert!(content.contains("<hsml>"));
+        assert!(content.contains("Luna Root"));
+    }
+
+    #[test]
     fn resolve_demos_returns_hsml() {
         let content = VIRTUAL_ROUTES.resolve("luna://demos").unwrap();
         assert!(content.contains("<hsml>"));
@@ -358,6 +582,15 @@ mod tests {
             .resolve("luna://internal/home_navigation.js")
             .unwrap();
         assert!(content.contains("luna://demos"));
+    }
+
+    #[test]
+    fn resolve_internal_root_api_returns_js() {
+        let content = VIRTUAL_ROUTES
+            .resolve("luna://internal/root_api.js")
+            .unwrap();
+        assert!(content.contains("dimension.luna"));
+        assert!(content.contains("mountSpace"));
     }
 
     #[test]

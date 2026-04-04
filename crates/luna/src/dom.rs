@@ -44,6 +44,19 @@ fn primitive_color(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> Colo
         .unwrap_or(Color::srgb(0.5, 0.5, 0.5))
 }
 
+fn node_visible(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> bool {
+    let Some(attrs) = attrs_storage.get(node) else {
+        return true;
+    };
+    let Some(value) = attrs.0.get("visible") else {
+        return true;
+    };
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "false" | "0" | "no" | "off" | "hidden"
+    )
+}
+
 fn spawn_colored_primitive(
     commands: &mut Commands,
     materials: &mut Assets<StandardMaterial>,
@@ -678,6 +691,7 @@ pub fn dom_sync_system(
         Option<&Dirty>,
         Option<&mut Handle<StandardMaterial>>,
     )>,
+    mut visibility_query: Query<&mut Visibility>,
     asset_server: Res<AssetServer>,
     mut log_panel: ResMut<LogPanel>,
     mut perf_stats: ResMut<PerformanceStats>,
@@ -860,6 +874,23 @@ pub fn dom_sync_system(
                 continue;
             }
 
+            if tag == "space" || tag == "include" {
+                if let Ok((_, mut t, dirty, _)) = query.get_mut(bevy_ent) {
+                    *t = transform_b;
+                    if dirty.is_some() {
+                        commands.entity(bevy_ent).remove::<Dirty>();
+                    }
+                }
+                if let Ok(mut visibility) = visibility_query.get_mut(bevy_ent) {
+                    *visibility = if node_visible(&attrs_storage, *node) {
+                        Visibility::Visible
+                    } else {
+                        Visibility::Hidden
+                    };
+                }
+                continue;
+            }
+
             if tag == "box" || tag == "sphere" || tag == "plane" || tag == "cylinder" {
                 if let Ok((_, mut t, dirty, maybe_material)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
@@ -956,6 +987,11 @@ pub fn dom_sync_system(
                     .spawn((
                         SpatialBundle {
                             transform: transform_b,
+                            visibility: if node_visible(&attrs_storage, *node) {
+                                Visibility::Visible
+                            } else {
+                                Visibility::Hidden
+                            },
                             ..Default::default()
                         },
                         Dirty,
