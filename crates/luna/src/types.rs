@@ -160,3 +160,13 @@ pub struct TextRenderParams<'w> {
     pub images: ResMut<'w, Assets<Image>>,
     pub text_material_cache: ResMut<'w, TextMaterialCache>,
 }
+
+#[derive(SystemParam)]
+pub struct AsyncDomParams<'w> {
+    pub tokio_rt: Res<'w, TokioRuntime>,
+    pub io_service: Res<'w, crate::IoService>,
+    pub current_url: Res<'w, CurrentUrl>,
+    pub script_load_states: ResMut<'w, crate::ScriptLoadStates>,
+    pub pending_model_loads: ResMut<'w, crate::PendingModelLoads>,
+    pub model_load_states: ResMut<'w, crate::ModelLoadStates>,
+}

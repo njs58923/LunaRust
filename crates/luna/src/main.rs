@@ -16,7 +16,7 @@ use bevy_mod_xr::session::{
     XrRequestExitEvent, XrSessionPlugin, XrState, XrStateChanged,
 };
 
-use luna::{dom, js, ui, utils};
+use luna::{dom, io, js, ui, utils};
 use luna::*;
 
 // ─── main ────────────────────────────────────────────────────────────────────
@@ -78,6 +78,10 @@ fn main() {
     app.insert_resource(PerformanceStats::default());
     app.insert_resource(DevtoolState::default());
     app.insert_resource(PendingScripts::default());
+    app.insert_resource(IoService::default());
+    app.insert_resource(ScriptLoadStates::default());
+    app.insert_resource(PendingModelLoads::default());
+    app.insert_resource(ModelLoadStates::default());
 
     // Systems
     app.add_systems(Startup, (setup, js::init_js_runtime).chain());
@@ -101,7 +105,12 @@ fn main() {
 
     app.add_systems(
         Update,
-        (js::js_update_snapshots_system, js::js_eval_pending_scripts, js::js_tick_system).chain(),
+        (
+            js::js_update_snapshots_system,
+            io::poll_io_results_system,
+            js::js_eval_pending_scripts,
+            js::js_tick_system,
+        ).chain(),
     );
 
     app.run();

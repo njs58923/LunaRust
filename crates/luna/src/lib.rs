@@ -3,6 +3,7 @@
 // El binario (main.rs) importa desde aquí con `use luna::*`.
 
 pub mod dom;
+pub mod io;
 pub mod js;
 pub mod render;
 pub mod routes;
@@ -12,6 +13,7 @@ pub mod utils;
 
 // Re-exportar todos los tipos públicos para que main.rs pueda hacer `use luna::*`
 pub use dom::*;
+pub use io::*;
 pub use render::{apply_transform, resolve_remote_path};
 pub use routes::VIRTUAL_ROUTES;
 pub use types::*;

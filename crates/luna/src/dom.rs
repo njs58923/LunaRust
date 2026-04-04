@@ -15,16 +15,16 @@ use virtual_dom::{
 };
 
 use crate::{
-    AttributeUpdates, CurrentUrl, DeleteRequests, Dirty, DirtyNodes, ElemenetWorld, EntityMap,
-    LogPanel, ModelCache, PendingScripts, PerformanceStats, SharedResources, TextRenderParams,
-    TokioRuntime, VirtualDomData,
+    AsyncDomParams, AttributeUpdates, CurrentUrl, DeleteRequests, Dirty, DirtyNodes,
+    ElemenetWorld, EntityMap, IoService, LogPanel, ModelLoadState, ModelLoadStates,
+    PendingModelLoads, PerformanceStats, ScriptLoadState, ScriptLoadStates, SharedResources,
+    TextRenderParams, TokioRuntime, VirtualDomData, VIRTUAL_ROUTES,
 };
 use crate::render::{
-    apply_model_with_cache, apply_transform, build_text_transform, get_or_create_text_material,
-    parse_hex_color, parse_text_attrs, resolve_remote_path,
+    apply_transform, build_text_transform, get_or_create_text_material, parse_hex_color,
+    parse_text_attrs, resolve_remote_path,
 };
-use crate::routes::VIRTUAL_ROUTES;
-use crate::js::find_owner_space_id;
+use crate::io::{clear_async_node_state, request_model_prepare, request_script_load};
 
 const DOM_SYNC_VERBOSE_LOGS: bool = false;
 const ATTR_DELETE_SENTINEL: &str = "[DEL]";
@@ -42,6 +42,9 @@ pub fn reload_xml_system(
     mut log_panel: ResMut<LogPanel>,
     tokio_rt: Res<TokioRuntime>,
     mut manager: NonSendMut<crate::js::ScriptRuntimeManager>,
+    mut script_load_states: ResMut<ScriptLoadStates>,
+    mut pending_model_loads: ResMut<PendingModelLoads>,
+    mut model_load_states: ResMut<ModelLoadStates>,
 ) {
     log_panel.push_info(format!("Reloading XML from: {}", url.0));
 
@@ -51,6 +54,9 @@ pub fn reload_xml_system(
     }
     manager.contexts.clear();
     log_panel.push_info("[JS] All JS contexts cleared for page reload");
+    script_load_states.0.clear();
+    pending_model_loads.0.clear();
+    model_load_states.0.clear();
 
     match load_and_flatten_xml(&mut world.0, &url.0, &tokio_rt.0, &mut log_panel) {
         Ok((new_nodes, new_dirty)) => {
@@ -286,8 +292,17 @@ pub fn process_delete_requests(
     mut entity_map: ResMut<EntityMap>,
     mut commands: Commands,
     mut log_panel: ResMut<LogPanel>,
+    mut script_load_states: ResMut<ScriptLoadStates>,
+    mut pending_model_loads: ResMut<PendingModelLoads>,
+    mut model_load_states: ResMut<ModelLoadStates>,
 ) {
     for ent_id in delete_requests.0.drain(..) {
+        clear_async_node_state(
+            ent_id,
+            &mut script_load_states,
+            &mut pending_model_loads,
+            &mut model_load_states,
+        );
         if let Some(bevy_ent) = entity_map.0.remove(&ent_id) {
             commands.entity(bevy_ent).despawn_recursive();
         }
@@ -316,6 +331,73 @@ pub fn mark_dirty_system(
 
 // ─── DOM → Bevy sync ─────────────────────────────────────────────────────────
 
+fn queue_script_load_if_needed(
+    node: SpecEntity,
+    current_url: &CurrentUrl,
+    scripts_storage: &ReadStorage<Script>,
+    script_load_states: &mut ScriptLoadStates,
+    tokio_rt: &TokioRuntime,
+    io_service: &IoService,
+    log_panel: &mut LogPanel,
+) {
+    let Some(script_comp) = scripts_storage.get(node) else { return; };
+    let Some(src) = script_comp.src.as_ref() else { return; };
+    let Some(final_url) = resolve_remote_path(&current_url.0, src) else {
+        log_panel.push_error(format!("Cannot resolve script src '{src}' against '{}'", current_url.0));
+        return;
+    };
+
+    let should_request = !matches!(
+        script_load_states.0.get(&node.id()),
+        Some(ScriptLoadState::Requested { url })
+            | Some(ScriptLoadState::Loaded { url })
+            | Some(ScriptLoadState::Failed { url, .. })
+            if *url == final_url
+    );
+
+    if should_request {
+        script_load_states.0.insert(
+            node.id(),
+            ScriptLoadState::Requested {
+                url: final_url.clone(),
+            },
+        );
+        request_script_load(&tokio_rt.0, io_service, node.id(), final_url.clone());
+        log_panel.push_info(format!("Queued async script load: {final_url}"));
+    }
+}
+
+fn queue_model_prepare_if_needed(
+    node_id: u32,
+    final_url: &str,
+    pending_model_loads: &mut PendingModelLoads,
+    model_load_states: &mut ModelLoadStates,
+    tokio_rt: &TokioRuntime,
+    io_service: &IoService,
+    log_panel: &mut LogPanel,
+) {
+    let should_request = !matches!(
+        model_load_states.0.get(&node_id),
+        Some(ModelLoadState::Requested { url })
+            | Some(ModelLoadState::Ready { url, .. })
+            | Some(ModelLoadState::Failed { url, .. })
+            if *url == final_url
+    );
+
+    if should_request {
+        model_load_states.0.insert(
+            node_id,
+            ModelLoadState::Requested {
+                url: final_url.to_string(),
+            },
+        );
+        if pending_model_loads.enqueue(final_url, node_id) {
+            request_model_prepare(&tokio_rt.0, io_service, final_url.to_string());
+            log_panel.push_info(format!("Queued async model prepare: {final_url}"));
+        }
+    }
+}
+
 pub fn dom_sync_system(
     world: Res<ElemenetWorld>,
     mut commands: Commands,
@@ -326,21 +408,25 @@ pub fn dom_sync_system(
     mut query: Query<(Entity, &mut Transform, Option<&Dirty>, Option<&mut Handle<StandardMaterial>>)>,
     asset_server: Res<AssetServer>,
     mut log_panel: ResMut<LogPanel>,
-    mut model_cache: ResMut<ModelCache>,
-    tokio_rt: Res<TokioRuntime>,
-    current_url: Res<CurrentUrl>,
     mut perf_stats: ResMut<PerformanceStats>,
-    mut pending_scripts: ResMut<PendingScripts>,
+    mut async_dom: AsyncDomParams,
     mut text_render: TextRenderParams,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let start_time = Instant::now();
     if dirty_nodes.0.is_empty() { return; }
+    let tokio_rt = &async_dom.tokio_rt;
+    let io_service = &async_dom.io_service;
+    let current_url = &async_dom.current_url;
+    let script_load_states = &mut async_dom.script_load_states;
+    let pending_model_loads = &mut async_dom.pending_model_loads;
+    let model_load_states = &mut async_dom.model_load_states;
 
     let tags = world.0.read_storage::<Tag>();
     let transforms = world.0.read_storage::<Transform2>();
     let hierarchies = world.0.read_storage::<Hierarchy>();
     let models = world.0.read_storage::<Model>();
+    let scripts_storage = world.0.read_storage::<Script>();
     let attrs_storage = world.0.read_storage::<Attrs>();
 
     // log_panel.push_info(format!("dom_sync: processing {} dirty nodes...", dirty_nodes.0.len()));
@@ -381,15 +467,49 @@ pub fn dom_sync_system(
             //   3. Llamar `commands.entity(bevy_ent).remove::<Dirty>()` solo si `dirty.is_some()`.
             //   4. Agregar `continue` para no caer en el default de transform-only.
             if tag == "model" {
-                commands.entity(bevy_ent).despawn_recursive();
-                entity_map.0.remove(&node_id);
+                let resolved_asset_path = models.get(*node)
+                    .and_then(|model_data| model_data.src.as_ref())
+                    .and_then(|original_src| resolve_remote_path(&current_url.0, original_src))
+                    .and_then(|final_url| {
+                        queue_model_prepare_if_needed(
+                            node_id,
+                            &final_url,
+                            pending_model_loads,
+                            model_load_states,
+                            tokio_rt,
+                            io_service,
+                            &mut log_panel,
+                        );
 
-                let new_ent = spawn_model_entity(
-                    &mut commands, &models, *node, &current_url, &asset_server,
-                    &mut log_panel, &mut model_cache, &tokio_rt, transform_b, &shared_resources,
-                );
-                set_parent(&mut commands, new_ent, parent_id, &entity_map);
-                entity_map.0.insert(node_id, new_ent);
+                        match model_load_states.0.get(&node_id) {
+                            Some(ModelLoadState::Ready { url, asset_path }) if *url == final_url => {
+                                Some(asset_path.clone())
+                            }
+                            Some(ModelLoadState::Failed { url, error }) if *url == final_url => {
+                                log_panel.push_warn(format!("Model load failed for {final_url}: {error}"));
+                                None
+                            }
+                            _ => None,
+                        }
+                    });
+
+                if let Some(asset_path) = resolved_asset_path {
+                    commands.entity(bevy_ent).despawn_recursive();
+                    entity_map.0.remove(&node_id);
+
+                    let new_ent = spawn_model_entity(
+                        &mut commands,
+                        &asset_server,
+                        transform_b,
+                        Some(asset_path.as_str()),
+                        &shared_resources,
+                    );
+                    set_parent(&mut commands, new_ent, parent_id, &entity_map);
+                    entity_map.0.insert(node_id, new_ent);
+                } else if let Ok((_, mut t, dirty, _)) = query.get_mut(bevy_ent) {
+                    *t = transform_b;
+                    if dirty.is_some() { commands.entity(bevy_ent).remove::<Dirty>(); }
+                }
                 continue;
             }
 
@@ -427,6 +547,23 @@ pub fn dom_sync_system(
                 continue;
             }
 
+            if tag == "script" {
+                queue_script_load_if_needed(
+                    *node,
+                    current_url,
+                    &scripts_storage,
+                    script_load_states,
+                    tokio_rt,
+                    io_service,
+                    &mut log_panel,
+                );
+                if let Ok((_, mut t, dirty, _)) = query.get_mut(bevy_ent) {
+                    *t = transform_b;
+                    if dirty.is_some() { commands.entity(bevy_ent).remove::<Dirty>(); }
+                }
+                continue;
+            }
+
             if tag == "box" || tag == "sphere" {
                 if let Ok((_, mut t, dirty, maybe_material)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
@@ -456,41 +593,51 @@ pub fn dom_sync_system(
             if DOM_SYNC_VERBOSE_LOGS { log_panel.push_info("  Creating new entity..."); }
 
             let new_ent = match tag.as_str() {
-                "model" => spawn_model_entity(
-                    &mut commands, &models, *node, &current_url, &asset_server,
-                    &mut log_panel, &mut model_cache, &tokio_rt, transform_b, &shared_resources,
-                ),
-                "script" => {
-                    let scripts_storage = world.0.read_storage::<Script>();
-                    if let Some(script_comp) = scripts_storage.get(*node) {
-                        if let Some(ref src) = script_comp.src {
-                            if let Some(final_url) = resolve_remote_path(&current_url.0, src) {
-                                let code_result = if crate::routes::VirtualRoutes::is_virtual_url(&final_url) {
-                                    match VIRTUAL_ROUTES.resolve(&final_url) {
-                                        Some(code) => { log_panel.push_info(format!("Virtual script: {}", final_url)); Ok(code) }
-                                        None => { log_panel.push_error(format!("Virtual script not found: {}", final_url)); Err(format!("Not found: {}", final_url)) }
-                                    }
-                                } else {
-                                    log_panel.push_info(format!("Downloading script: {}", final_url));
-                                    tokio_rt.0.block_on(async {
-                                        let resp = reqwest::get(&final_url).await.map_err(|e| format!("HTTP error: {}", e))?;
-                                        resp.text().await.map_err(|e| format!("Read error: {}", e))
-                                    })
-                                };
+                "model" => {
+                    let resolved_asset_path = models.get(*node)
+                        .and_then(|model_data| model_data.src.as_ref())
+                        .and_then(|original_src| resolve_remote_path(&current_url.0, original_src))
+                        .and_then(|final_url| {
+                            queue_model_prepare_if_needed(
+                                node_id,
+                                &final_url,
+                                pending_model_loads,
+                                model_load_states,
+                                tokio_rt,
+                                io_service,
+                                &mut log_panel,
+                            );
 
-                                match code_result {
-                                    Ok(code) => {
-                                        if let Some(space_id) = find_owner_space_id(&world.0, *node) {
-                                            pending_scripts.0.push((space_id, final_url, code));
-                                        } else {
-                                            log_panel.push_warn("script without <space> ancestor: skipping");
-                                        }
-                                    }
-                                    Err(e) => log_panel.push_error(format!("Script load error {}: {}", final_url, e)),
+                            match model_load_states.0.get(&node_id) {
+                                Some(ModelLoadState::Ready { url, asset_path }) if *url == final_url => {
+                                    Some(asset_path.clone())
                                 }
+                                Some(ModelLoadState::Failed { url, error }) if *url == final_url => {
+                                    log_panel.push_warn(format!("Model load failed for {final_url}: {error}"));
+                                    None
+                                }
+                                _ => None,
                             }
-                        }
-                    }
+                        });
+
+                    spawn_model_entity(
+                        &mut commands,
+                        &asset_server,
+                        transform_b,
+                        resolved_asset_path.as_deref(),
+                        &shared_resources,
+                    )
+                }
+                "script" => {
+                    queue_script_load_if_needed(
+                        *node,
+                        current_url,
+                        &scripts_storage,
+                        script_load_states,
+                        tokio_rt,
+                        io_service,
+                        &mut log_panel,
+                    );
                     commands.spawn((SpatialBundle { transform: transform_b, ..Default::default() }, Dirty)).id()
                 }
                 "space" | "include" => {
@@ -562,30 +709,27 @@ fn set_parent(commands: &mut Commands, new_ent: Entity, parent_id: Option<u32>, 
 
 fn spawn_model_entity(
     commands: &mut Commands,
-    models: &ReadStorage<Model>,
-    node: SpecEntity,
-    current_url: &CurrentUrl,
     asset_server: &AssetServer,
-    log_panel: &mut LogPanel,
-    model_cache: &mut ModelCache,
-    tokio_rt: &TokioRuntime,
     transform_b: Transform,
+    asset_path: Option<&str>,
     shared_resources: &SharedResources,
 ) -> Entity {
-    if let Some(model_data) = models.get(node) {
-        if let Some(ref original_src) = model_data.src {
-            if let Some(final_url) = resolve_remote_path(&current_url.0, original_src) {
-                let scene_handle = apply_model_with_cache(
-                    &final_url, asset_server, log_panel, model_cache, &tokio_rt.0,
-                );
-                return commands.spawn((SceneBundle { scene: scene_handle, transform: transform_b, ..Default::default() }, Dirty)).id();
-            } else {
-                log_panel.push_error(format!("Cannot resolve '{}' against '{}'", original_src, current_url.0));
-            }
+    if let Some(asset_path) = asset_path {
+        let scene_handle = if asset_path.ends_with(".gltf") || asset_path.ends_with(".glb") {
+            asset_server.load(format!("{asset_path}#Scene0"))
         } else {
-            log_panel.push_warn("No src in <model>. Using default box.");
-        }
+            asset_server.load(asset_path.to_string())
+        };
+        return commands.spawn((
+            SceneBundle {
+                scene: scene_handle,
+                transform: transform_b,
+                ..Default::default()
+            },
+            Dirty,
+        )).id();
     }
+
     commands.spawn((PbrBundle {
         mesh: shared_resources.cube_mesh.clone(),
         material: shared_resources.default_material.clone(),

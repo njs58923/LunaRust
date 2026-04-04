@@ -12,8 +12,9 @@ use js_runtime::Engine as JsEngine;
 use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
 
 use crate::{
-    AttributeUpdates, DeleteRequests, DirtyNodes, ElemenetWorld, LogLevel, LogPanel,
-    PendingScripts, ReloadTrigger,
+    request_fetch_text, AttributeUpdates, DirtyNodes, ElemenetWorld,
+    IoService, LogLevel, LogPanel, ModelLoadStates, PendingModelLoads, PendingScripts,
+    ReloadTrigger, ScriptLoadStates,
 };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -618,6 +619,22 @@ pub fn js_tick_system(world: &mut World) {
 
     // Remove elements
     for (space_id, remove_queue) in remove_batches {
+        if let Some(mut script_load_states) = world.get_resource_mut::<ScriptLoadStates>() {
+            for node_id in &remove_queue {
+                script_load_states.0.remove(&(*node_id as u32));
+            }
+        }
+        if let Some(mut pending_model_loads) = world.get_resource_mut::<PendingModelLoads>() {
+            for node_id in &remove_queue {
+                pending_model_loads.remove_node(*node_id as u32);
+            }
+        }
+        if let Some(mut model_load_states) = world.get_resource_mut::<ModelLoadStates>() {
+            for node_id in &remove_queue {
+                model_load_states.0.remove(&(*node_id as u32));
+            }
+        }
+
         let log_messages = {
             let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else { return; };
             let mut log_messages = Vec::new();
@@ -641,31 +658,14 @@ pub fn js_tick_system(world: &mut World) {
 
     // Fetch
     for (space_id, fetch_queue) in fetch_batches {
-        let fetch_results = {
-            let Some(tokio_rt) = world.get_resource::<crate::TokioRuntime>() else { return; };
-            let mut fetch_results = Vec::new();
-            for (request_id, url) in &fetch_queue {
-                let result = tokio_rt.0.block_on(async {
-                    match reqwest::get(url).await {
-                        Ok(resp) => match resp.text().await {
-                            Ok(text) => Ok(text),
-                            Err(e) => Err(format!("Failed to read response: {}", e)),
-                        },
-                        Err(e) => Err(format!("HTTP error: {}", e)),
-                    }
-                });
-                fetch_results.push((*request_id, result));
-            }
-            fetch_results
-        };
+        let Some(tokio_rt) = world.get_resource::<crate::TokioRuntime>() else { return; };
+        let Some(io_service) = world.get_resource::<IoService>() else { return; };
+        for (request_id, url) in &fetch_queue {
+            request_fetch_text(&tokio_rt.0, &io_service, space_id, *request_id, url.clone());
+        }
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
             for (_, url) in &fetch_queue {
-                log_panel.push_info(format!("[JS][space:{}] fetch: {}", space_id, url));
-            }
-        }
-        if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() {
-            if let Some(worker) = manager.contexts.get_mut(&space_id) {
-                let _ = worker.cmd_tx.send(JsWorkerCommand::PushFetchResults(fetch_results));
+                log_panel.push_info(format!("[JS][space:{}] fetch queued: {}", space_id, url));
             }
         }
     }
