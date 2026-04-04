@@ -18,6 +18,11 @@ use crate::{
 };
 
 pub enum IoResult {
+    DocumentLoaded {
+        epoch: u64,
+        url: String,
+        result: Result<String, String>,
+    },
     FetchCompleted {
         space_id: u32,
         request_id: i32,
@@ -55,6 +60,28 @@ impl IoService {
         self.result_tx.clone()
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct CompletedDocumentLoad {
+    pub epoch: u64,
+    pub url: String,
+    pub result: Result<String, String>,
+}
+
+#[derive(Resource, Default)]
+pub struct PendingDocumentLoads(pub Vec<CompletedDocumentLoad>);
+
+#[derive(Debug, Clone)]
+pub struct ActiveDocumentLoad {
+    pub epoch: u64,
+    pub url: String,
+}
+
+#[derive(Resource, Default)]
+pub struct DocumentLoadState(pub Option<ActiveDocumentLoad>);
+
+#[derive(Resource, Default)]
+pub struct NavigationEpoch(pub u64);
 
 #[derive(Debug, Clone)]
 pub enum ScriptLoadState {
@@ -127,6 +154,19 @@ pub fn request_fetch_text(
             request_id,
             result,
         });
+    });
+}
+
+pub fn request_document_load(
+    rt: &Runtime,
+    io_service: &IoService,
+    epoch: u64,
+    url: String,
+) {
+    let tx = io_service.sender();
+    rt.spawn(async move {
+        let result = load_text_resource(&url).await;
+        let _ = tx.send(IoResult::DocumentLoaded { epoch, url, result });
     });
 }
 
@@ -244,6 +284,7 @@ pub fn poll_io_results_system(
     io_service: Res<IoService>,
     world: Res<ElemenetWorld>,
     current_url: Res<CurrentUrl>,
+    mut pending_document_loads: ResMut<PendingDocumentLoads>,
     mut log_panel: ResMut<LogPanel>,
     mut pending_scripts: ResMut<PendingScripts>,
     mut script_load_states: ResMut<ScriptLoadStates>,
@@ -261,6 +302,9 @@ pub fn poll_io_results_system(
         };
 
         match result {
+            IoResult::DocumentLoaded { epoch, url, result } => {
+                pending_document_loads.0.push(CompletedDocumentLoad { epoch, url, result });
+            }
             IoResult::FetchCompleted {
                 space_id,
                 request_id,

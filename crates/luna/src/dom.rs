@@ -7,7 +7,7 @@ use tokio::runtime::Runtime;
 
 use virtual_dom::{
     dom::{
-        element::{Attrs, Hierarchy, Tag, Transform2},
+        element::{build_world, Attrs, Hierarchy, Tag, Transform2},
         hsml::{Include, Model, Script},
         TRANSFORM_POSITION, TRANSFORM_ROTATION, TRANSFORM_SCALE,
     },
@@ -15,30 +15,52 @@ use virtual_dom::{
 };
 
 use crate::{
-    AsyncDomParams, AttributeUpdates, CurrentUrl, DeleteRequests, Dirty, DirtyNodes,
-    ElemenetWorld, EntityMap, IoService, LogPanel, ModelLoadState, ModelLoadStates,
-    PendingModelLoads, PerformanceStats, ScriptLoadState, ScriptLoadStates, SharedResources,
-    TextRenderParams, TokioRuntime, VirtualDomData, VIRTUAL_ROUTES,
+    ActiveDocumentLoad, AsyncDomParams, AttributeUpdates, CompletedDocumentLoad, CurrentUrl,
+    DeleteRequests, Dirty, DirtyNodes, DocumentLoadState, ElemenetWorld, EntityMap, IoService,
+    LogPanel, ModelLoadState, ModelLoadStates, NavigationEpoch, PendingDocumentLoads,
+    PendingModelLoads, PerformanceStats, ReloadTrigger, ScriptLoadState, ScriptLoadStates,
+    SharedResources, TextRenderParams, TokioRuntime, VirtualDomData, VIRTUAL_ROUTES,
 };
-use crate::render::{
-    apply_transform, build_text_transform, get_or_create_text_material, parse_hex_color,
-    parse_text_attrs, resolve_remote_path,
-};
-use crate::io::{clear_async_node_state, request_model_prepare, request_script_load};
+use crate::render::{apply_transform, build_text_transform, get_or_create_text_material, parse_hex_color, parse_text_attrs, resolve_remote_path};
+use crate::io::{clear_async_node_state, request_document_load, request_model_prepare, request_script_load};
 
 const DOM_SYNC_VERBOSE_LOGS: bool = false;
 const ATTR_DELETE_SENTINEL: &str = "[DEL]";
 
 // ─── Reload ──────────────────────────────────────────────────────────────────
 
-pub fn reload_xml_system(
+pub fn request_navigation_system(
+    mut reload_trigger: ResMut<ReloadTrigger>,
+    current_url: Res<CurrentUrl>,
+    tokio_rt: Res<TokioRuntime>,
+    io_service: Res<IoService>,
+    mut nav_epoch: ResMut<NavigationEpoch>,
+    mut document_load_state: ResMut<DocumentLoadState>,
+    mut log_panel: ResMut<LogPanel>,
+) {
+    let url = current_url.0.clone();
+    nav_epoch.0 += 1;
+    let epoch = nav_epoch.0;
+    document_load_state.0 = Some(ActiveDocumentLoad {
+        epoch,
+        url: url.clone(),
+    });
+    reload_trigger.0 = false;
+    request_document_load(&tokio_rt.0, &io_service, epoch, url.clone());
+    log_panel.push_info(format!("Queued document load (epoch {epoch}): {url}"));
+}
+
+pub fn commit_pending_document_load_system(
     mut world: ResMut<ElemenetWorld>,
     mut dom_data: ResMut<VirtualDomData>,
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut commands: Commands,
     mut entity_map: ResMut<EntityMap>,
-    url: Res<CurrentUrl>,
-    mut reload_trigger: ResMut<crate::ReloadTrigger>,
+    mut pending_document_loads: ResMut<PendingDocumentLoads>,
+    mut document_load_state: ResMut<DocumentLoadState>,
+    mut attribute_updates: ResMut<AttributeUpdates>,
+    mut delete_requests: ResMut<DeleteRequests>,
+    mut pending_scripts: ResMut<crate::PendingScripts>,
     mut log_panel: ResMut<LogPanel>,
     tokio_rt: Res<TokioRuntime>,
     mut manager: NonSendMut<crate::js::ScriptRuntimeManager>,
@@ -46,46 +68,59 @@ pub fn reload_xml_system(
     mut pending_model_loads: ResMut<PendingModelLoads>,
     mut model_load_states: ResMut<ModelLoadStates>,
 ) {
-    log_panel.push_info(format!("Reloading XML from: {}", url.0));
-
-    // Shutdown all JS workers before loading new content
-    for worker in manager.contexts.values_mut() {
-        crate::js::stop_space_worker(worker);
+    let pending = pending_document_loads.0.drain(..).collect::<Vec<_>>();
+    if pending.is_empty() {
+        return;
     }
-    manager.contexts.clear();
-    log_panel.push_info("[JS] All JS contexts cleared for page reload");
-    script_load_states.0.clear();
-    pending_model_loads.0.clear();
-    model_load_states.0.clear();
 
-    match load_and_flatten_xml(&mut world.0, &url.0, &tokio_rt.0, &mut log_panel) {
-        Ok((new_nodes, new_dirty)) => {
-            let old_nodes: Vec<u32> = dom_data.nodes.keys().cloned().collect();
-            let mut to_delete = Vec::new();
-            for old_id in old_nodes {
-                if !new_nodes.contains_key(&old_id) {
-                    if let Some(ent) = entity_map.0.remove(&old_id) {
-                        commands.entity(ent).despawn_recursive();
+    for CompletedDocumentLoad { epoch, url, result } in pending {
+        let is_active = matches!(
+            document_load_state.0.as_ref(),
+            Some(active) if active.epoch == epoch && active.url == url
+        );
+        if !is_active {
+            log_panel.push_info(format!("Dropping stale document load (epoch {epoch}): {url}"));
+            continue;
+        }
+
+        match result {
+            Ok(xml_content) => {
+                let mut new_world = build_world();
+                match flatten_loaded_xml(&mut new_world, &url, &xml_content, &tokio_rt.0, &mut log_panel) {
+                    Ok((new_nodes, new_dirty)) => {
+                        for worker in manager.contexts.values_mut() {
+                            crate::js::stop_space_worker(worker);
+                        }
+                        manager.contexts.clear();
+                        log_panel.push_info("[JS] All JS contexts cleared for committed navigation");
+
+                        script_load_states.0.clear();
+                        pending_model_loads.0.clear();
+                        model_load_states.0.clear();
+                        attribute_updates.0.clear();
+                        delete_requests.0.clear();
+                        pending_scripts.0.clear();
+
+                        for bevy_ent in entity_map.0.drain().map(|(_, ent)| ent) {
+                            commands.entity(bevy_ent).despawn_recursive();
+                        }
+
+                        world.0 = new_world;
+                        dom_data.nodes = new_nodes;
+                        dirty_nodes.0 = new_dirty;
+                        document_load_state.0 = None;
+                        log_panel.push_info(format!("Document commit complete (epoch {epoch}): {url}"));
                     }
-                    to_delete.push(old_id);
+                    Err(error) => {
+                        document_load_state.0 = None;
+                        log_panel.push_error(format!("Error committing XML from {url}: {error}"));
+                    }
                 }
             }
-            let to_delete: Vec<_> = to_delete
-                .into_iter()
-                .map(|id| world.0.entities().entity(id))
-                .collect();
-            for ent in to_delete {
-                world.0.delete_entity(ent).ok();
+            Err(error) => {
+                document_load_state.0 = None;
+                log_panel.push_error(format!("Error loading document {url}: {error}"));
             }
-
-            dom_data.nodes = new_nodes;
-            dirty_nodes.0 = new_dirty;
-            reload_trigger.0 = false;
-            log_panel.push_info("XML reload complete.");
-        }
-        Err(e) => {
-            log_panel.push_error(format!("Error reloading XML: {e}"));
-            reload_trigger.0 = false;
         }
     }
 }
@@ -118,6 +153,16 @@ pub fn load_and_flatten_xml(
         }
     };
 
+    flatten_loaded_xml(world, url, &xml_content, rt, log_panel)
+}
+
+pub fn flatten_loaded_xml(
+    world: &mut SpecWorld,
+    url: &str,
+    xml_content: &str,
+    rt: &Runtime,
+    log_panel: &mut LogPanel,
+) -> Result<(HashMap<u32, SpecEntity>, Vec<u32>)> {
     log_panel.push_info(format!("Content retrieved. Length: {} chars", xml_content.len()));
 
     let root_node = parse_xml(world, &xml_content)

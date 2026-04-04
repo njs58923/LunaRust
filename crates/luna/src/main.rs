@@ -79,6 +79,9 @@ fn main() {
     app.insert_resource(DevtoolState::default());
     app.insert_resource(PendingScripts::default());
     app.insert_resource(IoService::default());
+    app.insert_resource(PendingDocumentLoads::default());
+    app.insert_resource(DocumentLoadState::default());
+    app.insert_resource(NavigationEpoch::default());
     app.insert_resource(ScriptLoadStates::default());
     app.insert_resource(PendingModelLoads::default());
     app.insert_resource(ModelLoadStates::default());
@@ -89,7 +92,9 @@ fn main() {
     app.add_systems(
         Update,
         (
-            dom::reload_xml_system.run_if(|r: Res<ReloadTrigger>| r.0),
+            io::poll_io_results_system,
+            dom::request_navigation_system.run_if(|r: Res<ReloadTrigger>| r.0),
+            dom::commit_pending_document_load_system.run_if(|p: Res<PendingDocumentLoads>| !p.0.is_empty()),
             dom::apply_attribute_updates.run_if(|a: Res<AttributeUpdates>| !a.0.is_empty()),
             dom::mark_dirty_system,
             dom::dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
@@ -107,7 +112,6 @@ fn main() {
         Update,
         (
             js::js_update_snapshots_system,
-            io::poll_io_results_system,
             js::js_eval_pending_scripts,
             js::js_tick_system,
         ).chain(),
@@ -122,11 +126,8 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut world: ResMut<ElemenetWorld>,
-    mut dom_data: ResMut<VirtualDomData>,
-    mut dirty_nodes: ResMut<DirtyNodes>,
     mut log_panel: ResMut<LogPanel>,
-    tokio_rt: Res<TokioRuntime>,
+    mut reload_trigger: ResMut<ReloadTrigger>,
     auto_load_config: Res<AutoLoadConfig>,
 ) {
     commands.spawn((
@@ -155,15 +156,11 @@ fn setup(
     commands.insert_resource(SharedResources { cube_mesh, plane_mesh, default_material });
 
     if auto_load_config.enabled {
-        log_panel.push_info(format!("Auto-load enabled. Loading: {}", auto_load_config.start_url));
-        match dom::load_and_flatten_xml(&mut world.0, &auto_load_config.start_url, &tokio_rt.0, &mut log_panel) {
-            Ok((nodes, dirty)) => {
-                dom_data.nodes = nodes;
-                dirty_nodes.0 = dirty;
-                log_panel.push_info("Initial XML loaded.");
-            }
-            Err(e) => log_panel.push_error(format!("Error loading initial XML: {e}")),
-        }
+        reload_trigger.0 = true;
+        log_panel.push_info(format!(
+            "Auto-load enabled. Queued initial navigation: {}",
+            auto_load_config.start_url
+        ));
     } else {
         log_panel.push_info("Auto-load disabled.");
     }
