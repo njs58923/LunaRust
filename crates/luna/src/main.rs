@@ -149,11 +149,19 @@ fn setup(
 
     let cube_mesh = meshes.add(utils::shapes::create_cube());
     let plane_mesh = meshes.add(utils::shapes::create_plane());
+    let sphere_mesh = meshes.add(Sphere::new(0.5));
+    let cylinder_mesh = meshes.add(Cylinder::new(0.5, 1.0));
     let default_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.5, 0.8, 0.8),
         ..default()
     });
-    commands.insert_resource(SharedResources { cube_mesh, plane_mesh, default_material });
+    commands.insert_resource(SharedResources {
+        cube_mesh,
+        plane_mesh,
+        sphere_mesh,
+        cylinder_mesh,
+        default_material,
+    });
 
     if auto_load_config.enabled {
         reload_trigger.0 = true;

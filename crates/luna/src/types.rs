@@ -108,6 +108,8 @@ pub struct DeleteRequests(pub Vec<u32>);
 pub struct SharedResources {
     pub cube_mesh: Handle<Mesh>,
     pub plane_mesh: Handle<Mesh>,
+    pub sphere_mesh: Handle<Mesh>,
+    pub cylinder_mesh: Handle<Mesh>,
     pub default_material: Handle<StandardMaterial>,
 }
 

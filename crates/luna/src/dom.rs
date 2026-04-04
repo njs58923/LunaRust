@@ -28,6 +28,34 @@ use crate::io::{clear_async_node_state, request_document_load, request_model_pre
 const DOM_SYNC_VERBOSE_LOGS: bool = false;
 const ATTR_DELETE_SENTINEL: &str = "[DEL]";
 
+fn primitive_color(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> Color {
+    attrs_storage.get(node)
+        .and_then(|a| a.0.get("color"))
+        .and_then(|c| parse_hex_color(c))
+        .unwrap_or(Color::srgb(0.5, 0.5, 0.5))
+}
+
+fn spawn_colored_primitive(
+    commands: &mut Commands,
+    materials: &mut Assets<StandardMaterial>,
+    mesh: Handle<Mesh>,
+    color: Color,
+    transform: Transform,
+    double_sided: bool,
+) -> Entity {
+    let material = materials.add(StandardMaterial {
+        base_color: color,
+        cull_mode: double_sided.then_some(None).flatten(),
+        ..Default::default()
+    });
+    commands.spawn((PbrBundle {
+        mesh,
+        material,
+        transform,
+        ..Default::default()
+    }, Dirty)).id()
+}
+
 // ─── Reload ──────────────────────────────────────────────────────────────────
 
 pub fn request_navigation_system(
@@ -704,14 +732,11 @@ pub fn dom_sync_system(
                 continue;
             }
 
-            if tag == "box" || tag == "sphere" {
+            if tag == "box" || tag == "sphere" || tag == "plane" || tag == "cylinder" {
                 if let Ok((_, mut t, dirty, maybe_material)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
                     if let Some(material_handle) = maybe_material {
-                        let color = attrs_storage.get(*node)
-                            .and_then(|a| a.0.get("color"))
-                            .and_then(|c| parse_hex_color(c))
-                            .unwrap_or(Color::srgb(0.5, 0.5, 0.5));
+                        let color = primitive_color(&attrs_storage, *node);
                         if let Some(mat) = text_render.materials.get_mut(&*material_handle) {
                             mat.base_color = color;
                         }
@@ -785,21 +810,54 @@ pub fn dom_sync_system(
                 }
                 "box" => {
                     let attrs_opt = attrs_storage.get(*node);
-                    let color = attrs_opt
-                        .and_then(|a| a.0.get("color"))
-                        .and_then(|c| parse_hex_color(c))
-                        .unwrap_or(Color::srgb(0.5, 0.5, 0.5));
+                    let color = primitive_color(&attrs_storage, *node);
                     let border_radius: Option<f32> = attrs_opt
                         .and_then(|a| a.0.get("border-radius"))
                         .and_then(|v| v.parse().ok());
 
-                    let material = text_render.materials.add(StandardMaterial { base_color: color, ..Default::default() });
                     let mesh = if let Some(radius) = border_radius {
                         meshes.add(crate::utils::shapes::create_rounded_cube(radius, 6))
                     } else {
                         shared_resources.cube_mesh.clone()
                     };
-                    commands.spawn((PbrBundle { mesh, material, transform: transform_b, ..Default::default() }, Dirty)).id()
+                    spawn_colored_primitive(
+                        &mut commands,
+                        &mut text_render.materials,
+                        mesh,
+                        color,
+                        transform_b,
+                        false,
+                    )
+                }
+                "sphere" => {
+                    spawn_colored_primitive(
+                        &mut commands,
+                        &mut text_render.materials,
+                        shared_resources.sphere_mesh.clone(),
+                        primitive_color(&attrs_storage, *node),
+                        transform_b,
+                        false,
+                    )
+                }
+                "plane" => {
+                    spawn_colored_primitive(
+                        &mut commands,
+                        &mut text_render.materials,
+                        shared_resources.plane_mesh.clone(),
+                        primitive_color(&attrs_storage, *node),
+                        transform_b,
+                        true,
+                    )
+                }
+                "cylinder" => {
+                    spawn_colored_primitive(
+                        &mut commands,
+                        &mut text_render.materials,
+                        shared_resources.cylinder_mesh.clone(),
+                        primitive_color(&attrs_storage, *node),
+                        transform_b,
+                        false,
+                    )
                 }
                 "text" => {
                     let empty_map = HashMap::new();
