@@ -95,6 +95,7 @@ pub fn commit_pending_document_load_system(
     mut script_load_states: ResMut<ScriptLoadStates>,
     mut pending_model_loads: ResMut<PendingModelLoads>,
     mut model_load_states: ResMut<ModelLoadStates>,
+    mut space_handle_tables: ResMut<crate::SpaceHandleTables>,
 ) {
     let pending = pending_document_loads.0.drain(..).collect::<Vec<_>>();
     if pending.is_empty() {
@@ -128,6 +129,8 @@ pub fn commit_pending_document_load_system(
                         attribute_updates.0.clear();
                         delete_requests.0.clear();
                         pending_scripts.0.clear();
+                        space_handle_tables.by_space.clear();
+                        space_handle_tables.next_runtime_id = 0;
 
                         for bevy_ent in entity_map.0.drain().map(|(_, ent)| ent) {
                             commands.entity(bevy_ent).despawn_recursive();
@@ -463,6 +466,7 @@ pub fn process_delete_requests(
     mut script_load_states: ResMut<ScriptLoadStates>,
     mut pending_model_loads: ResMut<PendingModelLoads>,
     mut model_load_states: ResMut<ModelLoadStates>,
+    mut space_handle_tables: ResMut<crate::SpaceHandleTables>,
 ) {
     for ent_id in delete_requests.0.drain(..) {
         clear_async_node_state(
@@ -471,6 +475,12 @@ pub fn process_delete_requests(
             &mut pending_model_loads,
             &mut model_load_states,
         );
+        for table in space_handle_tables.by_space.values_mut() {
+            if let Some(local_id) = table.global_to_local.remove(&ent_id) {
+                table.local_to_global.remove(&local_id);
+            }
+            table.detached_globals.remove(&ent_id);
+        }
         if let Some(bevy_ent) = entity_map.0.remove(&ent_id) {
             commands.entity(bevy_ent).despawn_recursive();
         }

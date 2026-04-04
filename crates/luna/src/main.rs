@@ -70,6 +70,7 @@ fn main() {
     app.insert_resource(ReloadTrigger(false));
     app.insert_resource(AttributeUpdates::default());
     app.insert_resource(DeleteRequests::default());
+    app.insert_resource(SpaceHandleTables::default());
     app.insert_resource(DevtoolVisible(false));
     app.insert_resource(LogPanel::default());
     app.insert_resource(TokioRuntime(Runtime::new().expect("Failed to create Tokio runtime")));

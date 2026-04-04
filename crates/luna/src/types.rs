@@ -104,6 +104,21 @@ pub struct Dirty;
 #[derive(Resource, Default)]
 pub struct DeleteRequests(pub Vec<u32>);
 
+#[derive(Default)]
+pub struct SpaceHandleTable {
+    pub runtime_id: u64,
+    pub next_local_id: i32,
+    pub local_to_global: HashMap<i32, u32>,
+    pub global_to_local: HashMap<u32, i32>,
+    pub detached_globals: std::collections::HashSet<u32>,
+}
+
+#[derive(Resource, Default)]
+pub struct SpaceHandleTables {
+    pub next_runtime_id: u64,
+    pub by_space: HashMap<u32, SpaceHandleTable>,
+}
+
 #[derive(Resource)]
 pub struct SharedResources {
     pub cube_mesh: Handle<Mesh>,

@@ -14,7 +14,7 @@ use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
 use crate::{
     request_fetch_text, AttributeUpdates, DirtyNodes, ElemenetWorld,
     IoService, LogLevel, LogPanel, ModelLoadStates, PendingModelLoads, PendingScripts,
-    ReloadTrigger, ScriptLoadStates,
+    ReloadTrigger, ScriptLoadStates, SpaceHandleTable, SpaceHandleTables,
 };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -210,6 +210,150 @@ fn filter_snapshot_map<T: Clone>(source: &HashMap<i32, T>, allowed: &HashSet<i32
         .collect()
 }
 
+fn next_runtime_id(space_handle_tables: &mut SpaceHandleTables) -> u64 {
+    space_handle_tables.next_runtime_id += 1;
+    space_handle_tables.next_runtime_id
+}
+
+fn reset_space_handle_table(space_handle_tables: &mut SpaceHandleTables, space_id: u32) {
+    let runtime_id = next_runtime_id(space_handle_tables);
+    let mut table = SpaceHandleTable {
+        runtime_id,
+        next_local_id: 1,
+        ..Default::default()
+    };
+    table.local_to_global.insert(0, space_id);
+    table.global_to_local.insert(space_id, 0);
+    space_handle_tables.by_space.insert(space_id, table);
+}
+
+fn ensure_space_handle_table<'a>(
+    space_handle_tables: &'a mut SpaceHandleTables,
+    space_id: u32,
+) -> &'a mut SpaceHandleTable {
+    if !space_handle_tables.by_space.contains_key(&space_id) {
+        reset_space_handle_table(space_handle_tables, space_id);
+    }
+    space_handle_tables.by_space.get_mut(&space_id).expect("space handle table must exist")
+}
+
+fn ensure_local_id(table: &mut SpaceHandleTable, global_id: u32) -> i32 {
+    if let Some(local_id) = table.global_to_local.get(&global_id).copied() {
+        return local_id;
+    }
+    let local_id = table.next_local_id;
+    table.next_local_id += 1;
+    table.global_to_local.insert(global_id, local_id);
+    table.local_to_global.insert(local_id, global_id);
+    local_id
+}
+
+fn resolve_global_id(space_handle_tables: &SpaceHandleTables, space_id: u32, local_id: i32) -> Option<u32> {
+    space_handle_tables.by_space.get(&space_id)
+        .and_then(|table| table.local_to_global.get(&local_id).copied())
+}
+
+fn sync_space_handle_table(
+    table: &mut SpaceHandleTable,
+    space_id: u32,
+    allowed: &HashSet<i32>,
+) {
+    table.global_to_local.entry(space_id).or_insert(0);
+    table.local_to_global.entry(0).or_insert(space_id);
+    table.detached_globals.remove(&space_id);
+
+    let allowed_globals: HashSet<u32> = allowed.iter().map(|node_id| *node_id as u32).collect();
+    let retained_globals: HashSet<u32> = allowed_globals.union(&table.detached_globals).copied().collect();
+
+    table.global_to_local.retain(|global_id, _| retained_globals.contains(global_id));
+    table.local_to_global.retain(|_, global_id| retained_globals.contains(global_id));
+
+    for &global_id in &allowed_globals {
+        ensure_local_id(table, global_id);
+        table.detached_globals.remove(&global_id);
+    }
+}
+
+fn build_local_space_snapshot(
+    space_id: u32,
+    allowed: &HashSet<i32>,
+    table: &mut SpaceHandleTable,
+    attr_snap: &HashMap<i32, HashMap<String, String>>,
+    tag_snap: &HashMap<i32, String>,
+    positions: &HashMap<i32, js_runtime::Vec3>,
+    rotations: &HashMap<i32, js_runtime::Vec3>,
+    scales: &HashMap<i32, js_runtime::Vec3>,
+    global_positions: &HashMap<i32, js_runtime::Vec3>,
+    parents: &HashMap<i32, i32>,
+    children_map: &HashMap<i32, Vec<i32>>,
+) -> SpaceSnapshots {
+    sync_space_handle_table(table, space_id, allowed);
+
+    let mut local_attr_snap = HashMap::new();
+    let mut local_tag_snap = HashMap::new();
+    let mut local_positions = HashMap::new();
+    let mut local_rotations = HashMap::new();
+    let mut local_scales = HashMap::new();
+    let mut local_global_positions = HashMap::new();
+    let mut local_parents = HashMap::new();
+    let mut local_children = HashMap::new();
+
+    for &global_node_id_i32 in allowed {
+        let global_node_id = global_node_id_i32 as u32;
+        let local_id = ensure_local_id(table, global_node_id);
+
+        if let Some(attrs) = attr_snap.get(&global_node_id_i32) {
+            local_attr_snap.insert(local_id, attrs.clone());
+        }
+        if let Some(tag) = tag_snap.get(&global_node_id_i32) {
+            local_tag_snap.insert(local_id, tag.clone());
+        }
+        if let Some(pos) = positions.get(&global_node_id_i32) {
+            local_positions.insert(local_id, pos.clone());
+        }
+        if let Some(rot) = rotations.get(&global_node_id_i32) {
+            local_rotations.insert(local_id, rot.clone());
+        }
+        if let Some(scale) = scales.get(&global_node_id_i32) {
+            local_scales.insert(local_id, scale.clone());
+        }
+        if let Some(global_pos) = global_positions.get(&global_node_id_i32) {
+            local_global_positions.insert(local_id, global_pos.clone());
+        }
+
+        let parent_local = parents.get(&global_node_id_i32)
+            .copied()
+            .and_then(|parent_id| {
+                if parent_id < 0 {
+                    Some(-1)
+                } else {
+                    table.global_to_local.get(&(parent_id as u32)).copied()
+                }
+            })
+            .unwrap_or(-1);
+        local_parents.insert(local_id, parent_local);
+
+        let children = children_map.get(&global_node_id_i32)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|child_id| table.global_to_local.get(&(child_id as u32)).copied())
+            .collect::<Vec<_>>();
+        local_children.insert(local_id, children);
+    }
+
+    SpaceSnapshots {
+        attr_snap: local_attr_snap,
+        tag_snap: local_tag_snap,
+        positions: local_positions,
+        rotations: local_rotations,
+        scales: local_scales,
+        global_positions: local_global_positions,
+        parents: local_parents,
+        children: local_children,
+    }
+}
+
 pub fn find_owner_space_id(world: &specs::World, mut node: specs::Entity) -> Option<u32> {
     let entities = world.entities();
     let hier = world.read_storage::<Hierarchy>();
@@ -310,36 +454,50 @@ pub fn js_update_snapshots_system(world: &mut World) {
                 Err(err) => { errors.push(err); }
             }
         }
+    }
 
-        let mut broken_contexts = Vec::new();
-        for (space_id, worker) in manager.contexts.iter_mut() {
+    if !removed_contexts.is_empty() || !created_contexts.is_empty() {
+        let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() else { return; };
+        for &space_id in &removed_contexts {
+            space_handle_tables.by_space.remove(&space_id);
+        }
+        for &space_id in &created_contexts {
+            reset_space_handle_table(&mut space_handle_tables, space_id);
+        }
+    }
+
+    let snapshot_batches = {
+        let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() else { return; };
+        let mut snapshot_batches = Vec::new();
+        for space_id in &active_space_ids {
             let Some(allowed) = space_subtrees.get(space_id) else { continue; };
+            let table = ensure_space_handle_table(&mut space_handle_tables, *space_id);
+            let snap = build_local_space_snapshot(
+                *space_id,
+                allowed,
+                table,
+                &attr_snap,
+                &tag_snap,
+                &positions,
+                &rotations,
+                &scales,
+                &global_positions,
+                &parents,
+                &children_map,
+            );
+            snapshot_batches.push((*space_id, snap));
+        }
+        snapshot_batches
+    };
 
-            let mut filtered_parents = HashMap::new();
-            let mut filtered_children = HashMap::new();
-            for node_id in allowed {
-                let parent = parents.get(node_id).copied().unwrap_or(-1);
-                let normalized_parent = if parent >= 0 && !allowed.contains(&parent) { -1 } else { parent };
-                filtered_parents.insert(*node_id, normalized_parent);
-                let children = children_map.get(node_id).cloned().unwrap_or_default()
-                    .into_iter().filter(|c| allowed.contains(c)).collect();
-                filtered_children.insert(*node_id, children);
-            }
-
-            let snap = SpaceSnapshots {
-                attr_snap: filter_snapshot_map(&attr_snap, allowed),
-                tag_snap: filter_snapshot_map(&tag_snap, allowed),
-                positions: filter_snapshot_map(&positions, allowed),
-                rotations: filter_snapshot_map(&rotations, allowed),
-                scales: filter_snapshot_map(&scales, allowed),
-                global_positions: filter_snapshot_map(&global_positions, allowed),
-                parents: filtered_parents,
-                children: filtered_children,
-            };
-
+    {
+        let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else { return; };
+        let mut broken_contexts = Vec::new();
+        for (space_id, snap) in snapshot_batches {
+            let Some(worker) = manager.contexts.get_mut(&space_id) else { continue; };
             if let Err(e) = worker.cmd_tx.send(JsWorkerCommand::UpdateSnapshots(snap)) {
                 errors.push(format!("failed to send snapshots to space {}: {}", space_id, e));
-                broken_contexts.push(*space_id);
+                broken_contexts.push(space_id);
             }
         }
 
@@ -348,6 +506,13 @@ pub fn js_update_snapshots_system(world: &mut World) {
                 stop_space_worker(&mut worker);
                 removed_contexts.push(space_id);
             }
+        }
+    }
+
+    if !removed_contexts.is_empty() {
+        let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() else { return; };
+        for &space_id in &removed_contexts {
+            space_handle_tables.by_space.remove(&space_id);
         }
     }
 
@@ -478,10 +643,10 @@ pub fn js_tick_system(world: &mut World) {
     }
 
     let mut logs_by_context = Vec::new();
-    let mut attr_updates = Vec::new();
-    let mut pos_updates = Vec::new();
-    let mut rot_updates = Vec::new();
-    let mut scale_updates = Vec::new();
+    let mut attr_update_batches = Vec::new();
+    let mut pos_update_batches = Vec::new();
+    let mut rot_update_batches = Vec::new();
+    let mut scale_update_batches = Vec::new();
     let mut creation_batches = Vec::new();
     let mut hierarchy_batches = Vec::new();
     let mut remove_batches = Vec::new();
@@ -495,10 +660,10 @@ pub fn js_tick_system(world: &mut World) {
         if !data.remove_queue.is_empty() { remove_batches.push((space_id, data.remove_queue)); }
         if !data.fetch_queue.is_empty() { fetch_batches.push((space_id, data.fetch_queue)); }
         if !data.navigate_queue.is_empty() { navigate_batches.push((space_id, data.navigate_queue)); }
-        attr_updates.extend(data.attr_updates);
-        pos_updates.extend(data.pos_updates);
-        rot_updates.extend(data.rot_updates);
-        scale_updates.extend(data.scale_updates);
+        if !data.attr_updates.is_empty() { attr_update_batches.push((space_id, data.attr_updates)); }
+        if !data.pos_updates.is_empty() { pos_update_batches.push((space_id, data.pos_updates)); }
+        if !data.rot_updates.is_empty() { rot_update_batches.push((space_id, data.rot_updates)); }
+        if !data.scale_updates.is_empty() { scale_update_batches.push((space_id, data.scale_updates)); }
     }
 
     {
@@ -514,35 +679,86 @@ pub fn js_tick_system(world: &mut World) {
         }
     }
 
+    let mut ownership_logs = Vec::new();
+    let validated_attribute_updates = {
+        let Some(space_handle_tables) = world.get_resource::<SpaceHandleTables>() else { return; };
+        let mut validated = Vec::new();
+
+        for (space_id, updates) in attr_update_batches {
+            for (local_id, key, value) in updates {
+                if let Some(global_id) = resolve_global_id(&space_handle_tables, space_id, local_id) {
+                    validated.push((global_id, key, value));
+                } else {
+                    ownership_logs.push(format!(
+                        "[JS][space:{space_id}] Blocked invalid local attribute write: local_id={local_id}, key={key}"
+                    ));
+                }
+            }
+        }
+
+        for (space_id, updates) in pos_update_batches {
+            for (local_id, pos) in updates {
+                if let Some(global_id) = resolve_global_id(&space_handle_tables, space_id, local_id) {
+                    validated.push((global_id, "x".to_string(), pos.x.to_string()));
+                    validated.push((global_id, "y".to_string(), pos.y.to_string()));
+                    validated.push((global_id, "z".to_string(), pos.z.to_string()));
+                } else {
+                    ownership_logs.push(format!(
+                        "[JS][space:{space_id}] Blocked invalid local position write: local_id={local_id}"
+                    ));
+                }
+            }
+        }
+
+        for (space_id, updates) in rot_update_batches {
+            for (local_id, rot) in updates {
+                if let Some(global_id) = resolve_global_id(&space_handle_tables, space_id, local_id) {
+                    validated.push((global_id, "rx".to_string(), rot.x.to_string()));
+                    validated.push((global_id, "ry".to_string(), rot.y.to_string()));
+                    validated.push((global_id, "rz".to_string(), rot.z.to_string()));
+                } else {
+                    ownership_logs.push(format!(
+                        "[JS][space:{space_id}] Blocked invalid local rotation write: local_id={local_id}"
+                    ));
+                }
+            }
+        }
+
+        for (space_id, updates) in scale_update_batches {
+            for (local_id, scale) in updates {
+                if let Some(global_id) = resolve_global_id(&space_handle_tables, space_id, local_id) {
+                    validated.push((global_id, "sx".to_string(), scale.x.to_string()));
+                    validated.push((global_id, "sy".to_string(), scale.y.to_string()));
+                    validated.push((global_id, "sz".to_string(), scale.z.to_string()));
+                } else {
+                    ownership_logs.push(format!(
+                        "[JS][space:{space_id}] Blocked invalid local scale write: local_id={local_id}"
+                    ));
+                }
+            }
+        }
+
+        validated
+    };
+
     {
         let Some(mut attribute_updates) = world.get_resource_mut::<AttributeUpdates>() else { return; };
-        for (node_id, key, value) in attr_updates {
-            attribute_updates.0.push((node_id as u32, key, value));
-        }
-        for (node_id, pos) in pos_updates {
-            attribute_updates.0.push((node_id as u32, "x".to_string(), pos.x.to_string()));
-            attribute_updates.0.push((node_id as u32, "y".to_string(), pos.y.to_string()));
-            attribute_updates.0.push((node_id as u32, "z".to_string(), pos.z.to_string()));
-        }
-        for (node_id, rot) in rot_updates {
-            attribute_updates.0.push((node_id as u32, "rx".to_string(), rot.x.to_string()));
-            attribute_updates.0.push((node_id as u32, "ry".to_string(), rot.y.to_string()));
-            attribute_updates.0.push((node_id as u32, "rz".to_string(), rot.z.to_string()));
-        }
-        for (node_id, scale) in scale_updates {
-            attribute_updates.0.push((node_id as u32, "sx".to_string(), scale.x.to_string()));
-            attribute_updates.0.push((node_id as u32, "sy".to_string(), scale.y.to_string()));
-            attribute_updates.0.push((node_id as u32, "sz".to_string(), scale.z.to_string()));
+        attribute_updates.0.extend(validated_attribute_updates);
+    }
+
+    if !ownership_logs.is_empty() {
+        let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else { return; };
+        for msg in ownership_logs.drain(..) {
+            log_panel.push_warn(msg);
         }
     }
 
     // Element creation
     for (space_id, creation_queue) in creation_batches {
         use virtual_dom::dom::element::Vec3 as DomVec3;
-        let (creation_results, created_entities, log_messages) = {
+        let (created_nodes, log_messages) = {
             let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else { return; };
-            let mut creation_results = Vec::new();
-            let mut created_entities: Vec<(u32, specs::Entity)> = Vec::new();
+            let mut created_nodes: Vec<(i32, u32, specs::Entity)> = Vec::new();
             let mut log_messages = Vec::new();
 
             for (request_id, tag_name) in creation_queue {
@@ -562,20 +778,31 @@ pub fn js_tick_system(world: &mut World) {
                     hier_storage.insert(new_ent, Hierarchy { parent: None, children: Vec::new() }).ok();
                     new_ent.id()
                 };
-                creation_results.push((request_id, new_ent_id as i32));
-                created_entities.push((new_ent_id, new_ent));
+                created_nodes.push((request_id, new_ent_id, new_ent));
                 log_messages.push(format!("[JS][space:{}] createElement('{}') -> node_id={}", space_id, tag_name, new_ent_id));
             }
-            (creation_results, created_entities, log_messages)
+            (created_nodes, log_messages)
+        };
+
+        let creation_results = {
+            let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() else { return; };
+            let table = ensure_space_handle_table(&mut space_handle_tables, space_id);
+            let mut creation_results = Vec::new();
+            for &(request_id, global_id, _) in &created_nodes {
+                let local_id = ensure_local_id(table, global_id);
+                table.detached_globals.insert(global_id);
+                creation_results.push((request_id, local_id));
+            }
+            creation_results
         };
 
         if let Some(mut dom_data) = world.get_resource_mut::<crate::VirtualDomData>() {
-            for &(id, ent) in &created_entities {
+            for &(_, id, ent) in &created_nodes {
                 dom_data.nodes.insert(id, ent);
             }
         }
         if let Some(mut dirty_nodes) = world.get_resource_mut::<DirtyNodes>() {
-            dirty_nodes.0.extend(created_entities.iter().map(|&(id, _)| id));
+            dirty_nodes.0.extend(created_nodes.iter().map(|&(_, id, _)| id));
         }
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
             for msg in log_messages { log_panel.push_info(msg); }
@@ -589,59 +816,105 @@ pub fn js_tick_system(world: &mut World) {
 
     // Hierarchy append
     for (space_id, hierarchy_queue) in hierarchy_batches {
+        let (allowed_appends, rejected_logs) = {
+            let Some(space_handle_tables) = world.get_resource::<SpaceHandleTables>() else { return; };
+            let mut allowed_appends = Vec::new();
+            let mut rejected_logs = Vec::new();
+            for (parent_local_id, child_local_id) in hierarchy_queue {
+                let Some(parent_id) = resolve_global_id(&space_handle_tables, space_id, parent_local_id) else {
+                    rejected_logs.push(format!(
+                        "[JS][space:{space_id}] Blocked invalid local appendChild parent: local_id={parent_local_id}"
+                    ));
+                    continue;
+                };
+                let Some(child_id) = resolve_global_id(&space_handle_tables, space_id, child_local_id) else {
+                    rejected_logs.push(format!(
+                        "[JS][space:{space_id}] Blocked invalid local appendChild child: local_id={child_local_id}"
+                    ));
+                    continue;
+                };
+                allowed_appends.push((parent_id, child_id));
+            }
+            (allowed_appends, rejected_logs)
+        };
+
         let (dirty_child_ids, log_messages) = {
             let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else { return; };
             let mut dirty_child_ids = Vec::new();
             let mut log_messages = Vec::new();
-            for (parent_id, child_id) in hierarchy_queue {
+            for (parent_id, child_id) in allowed_appends {
                 let (parent_ent, child_ent, are_alive) = {
                     let entities = specs_world.0.entities();
-                    let parent_ent = entities.entity(parent_id as u32);
-                    let child_ent = entities.entity(child_id as u32);
+                    let parent_ent = entities.entity(parent_id);
+                    let child_ent = entities.entity(child_id);
                     let are_alive = entities.is_alive(parent_ent) && entities.is_alive(child_ent);
                     (parent_ent, child_ent, are_alive)
                 };
                 if are_alive {
                     Hierarchy::add_child(&mut specs_world.0, parent_ent, child_ent);
-                    dirty_child_ids.push(child_id as u32);
+                    dirty_child_ids.push(child_id);
                     log_messages.push(format!("[JS][space:{}] appendChild: parent={} child={}", space_id, parent_id, child_id));
                 }
             }
             (dirty_child_ids, log_messages)
         };
+
+        if let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() {
+            let Some(table) = space_handle_tables.by_space.get_mut(&space_id) else { return; };
+            for child_id in &dirty_child_ids {
+                table.detached_globals.remove(child_id);
+            }
+        }
         if let Some(mut dirty_nodes) = world.get_resource_mut::<DirtyNodes>() {
             dirty_nodes.0.extend(dirty_child_ids);
         }
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
             for msg in log_messages { log_panel.push_info(msg); }
+            for msg in rejected_logs { log_panel.push_warn(msg); }
         }
     }
 
     // Remove elements
     for (space_id, remove_queue) in remove_batches {
+        let (allowed_remove_ids, rejected_logs) = {
+            let Some(space_handle_tables) = world.get_resource::<SpaceHandleTables>() else { return; };
+            let mut allowed_remove_ids = Vec::new();
+            let mut rejected_logs = Vec::new();
+            for local_id in remove_queue {
+                if let Some(node_id) = resolve_global_id(&space_handle_tables, space_id, local_id) {
+                    allowed_remove_ids.push(node_id);
+                } else {
+                    rejected_logs.push(format!(
+                        "[JS][space:{space_id}] Blocked invalid local remove: local_id={local_id}"
+                    ));
+                }
+            }
+            (allowed_remove_ids, rejected_logs)
+        };
+
         if let Some(mut script_load_states) = world.get_resource_mut::<ScriptLoadStates>() {
-            for node_id in &remove_queue {
-                script_load_states.0.remove(&(*node_id as u32));
+            for node_id in &allowed_remove_ids {
+                script_load_states.0.remove(node_id);
             }
         }
         if let Some(mut pending_model_loads) = world.get_resource_mut::<PendingModelLoads>() {
-            for node_id in &remove_queue {
-                pending_model_loads.remove_node(*node_id as u32);
+            for node_id in &allowed_remove_ids {
+                pending_model_loads.remove_node(*node_id);
             }
         }
         if let Some(mut model_load_states) = world.get_resource_mut::<ModelLoadStates>() {
-            for node_id in &remove_queue {
-                model_load_states.0.remove(&(*node_id as u32));
+            for node_id in &allowed_remove_ids {
+                model_load_states.0.remove(node_id);
             }
         }
 
         let log_messages = {
             let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else { return; };
             let mut log_messages = Vec::new();
-            for node_id in remove_queue {
+            for &node_id in &allowed_remove_ids {
                 let (ent, is_alive) = {
                     let entities = specs_world.0.entities();
-                    let ent = entities.entity(node_id as u32);
+                    let ent = entities.entity(node_id);
                     (ent, entities.is_alive(ent))
                 };
                 if is_alive {
@@ -651,8 +924,18 @@ pub fn js_tick_system(world: &mut World) {
             }
             log_messages
         };
+        if let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() {
+            let Some(table) = space_handle_tables.by_space.get_mut(&space_id) else { return; };
+            for node_id in &allowed_remove_ids {
+                if let Some(local_id) = table.global_to_local.remove(node_id) {
+                    table.local_to_global.remove(&local_id);
+                }
+                table.detached_globals.remove(node_id);
+            }
+        }
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
             for msg in log_messages { log_panel.push_info(msg); }
+            for msg in rejected_logs { log_panel.push_warn(msg); }
         }
     }
 
