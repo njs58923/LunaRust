@@ -1,10 +1,11 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{mpsc, Mutex},
 };
 
 use bevy::prelude::*;
+use quick_xml::{events::Event, Reader};
 use specs::WorldExt;
 use tokio::{runtime::Runtime, task};
 use virtual_dom::dom::hsml::Script;
@@ -21,7 +22,7 @@ pub enum IoResult {
     DocumentLoaded {
         epoch: u64,
         url: String,
-        result: Result<String, String>,
+        result: Result<LoadedDocumentBundle, String>,
     },
     FetchCompleted {
         space_id: u32,
@@ -65,7 +66,7 @@ impl IoService {
 pub struct CompletedDocumentLoad {
     pub epoch: u64,
     pub url: String,
-    pub result: Result<String, String>,
+    pub result: Result<LoadedDocumentBundle, String>,
 }
 
 #[derive(Resource, Default)]
@@ -82,6 +83,13 @@ pub struct DocumentLoadState(pub Option<ActiveDocumentLoad>);
 
 #[derive(Resource, Default)]
 pub struct NavigationEpoch(pub u64);
+
+#[derive(Debug, Clone, Default)]
+pub struct LoadedDocumentBundle {
+    pub root_xml: String,
+    pub includes: HashMap<String, String>,
+    pub warnings: Vec<String>,
+}
 
 #[derive(Debug, Clone)]
 pub enum ScriptLoadState {
@@ -165,7 +173,7 @@ pub fn request_document_load(
 ) {
     let tx = io_service.sender();
     rt.spawn(async move {
-        let result = load_text_resource(&url).await;
+        let result = load_document_bundle(&url).await;
         let _ = tx.send(IoResult::DocumentLoaded { epoch, url, result });
     });
 }
@@ -213,6 +221,86 @@ async fn load_text_resource(url: &str) -> Result<String, String> {
         .text()
         .await
         .map_err(|e| format!("Read error: {e}"))
+}
+
+fn extract_include_sources(xml: &str) -> Result<Vec<String>, String> {
+    let mut reader = Reader::from_str(xml);
+    reader.trim_text(true);
+    let mut includes = Vec::new();
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                if e.name().as_ref() != b"include" {
+                    continue;
+                }
+                for attr in e.attributes() {
+                    let attr = attr.map_err(|e| format!("Include attr read error: {e}"))?;
+                    if attr.key.as_ref() == b"src" {
+                        let value = attr
+                            .unescape_value()
+                            .map_err(|e| format!("Include attr decode error: {e}"))?
+                            .to_string();
+                        includes.push(value);
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(format!("Include scan XML error: {e}")),
+            _ => {}
+        }
+    }
+
+    Ok(includes)
+}
+
+async fn load_document_bundle(url: &str) -> Result<LoadedDocumentBundle, String> {
+    let root_xml = load_text_resource(url).await?;
+    let mut bundle = LoadedDocumentBundle {
+        root_xml: root_xml.clone(),
+        includes: HashMap::new(),
+        warnings: Vec::new(),
+    };
+    let mut queue = VecDeque::from([(url.to_string(), root_xml)]);
+    let mut visited = HashSet::new();
+
+    while let Some((base_url, xml)) = queue.pop_front() {
+        let include_sources = match extract_include_sources(&xml) {
+            Ok(sources) => sources,
+            Err(error) => {
+                bundle.warnings.push(format!(
+                    "include scan failed for {base_url}: {error}"
+                ));
+                continue;
+            }
+        };
+
+        for src in include_sources {
+            let Some(final_url) = resolve_remote_path(&base_url, &src) else {
+                bundle.warnings.push(format!(
+                    "include: cannot resolve src='{src}' against base='{base_url}'"
+                ));
+                continue;
+            };
+            if !visited.insert(final_url.clone()) {
+                continue;
+            }
+
+            match load_text_resource(&final_url).await {
+                Ok(include_xml) => {
+                    queue.push_back((final_url.clone(), include_xml.clone()));
+                    bundle.includes.insert(final_url, include_xml);
+                }
+                Err(error) => {
+                    bundle.warnings.push(format!(
+                        "include: load error {final_url} -> {error}"
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(bundle)
 }
 
 async fn prepare_model_asset(url: &str) -> Result<String, String> {

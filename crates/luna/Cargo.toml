@@ -25,6 +25,7 @@ url = "2.3"
 base64 = "0.21"
 lazy_static = "1.4"
 fontdue = "0.9"
+quick-xml = "0.27"
 
 [lints.clippy]
 too_many_arguments = "allow"

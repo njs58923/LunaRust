@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Instant};
+use std::{collections::{HashMap, HashSet}, time::Instant};
 
 use anyhow::Result;
 use bevy::prelude::*;
@@ -17,9 +17,10 @@ use virtual_dom::{
 use crate::{
     ActiveDocumentLoad, AsyncDomParams, AttributeUpdates, CompletedDocumentLoad, CurrentUrl,
     DeleteRequests, Dirty, DirtyNodes, DocumentLoadState, ElemenetWorld, EntityMap, IoService,
-    LogPanel, ModelLoadState, ModelLoadStates, NavigationEpoch, PendingDocumentLoads,
-    PendingModelLoads, PerformanceStats, ReloadTrigger, ScriptLoadState, ScriptLoadStates,
-    SharedResources, TextRenderParams, TokioRuntime, VirtualDomData, VIRTUAL_ROUTES,
+    LoadedDocumentBundle, LogPanel, ModelLoadState, ModelLoadStates, NavigationEpoch,
+    PendingDocumentLoads, PendingModelLoads, PerformanceStats, ReloadTrigger, ScriptLoadState,
+    ScriptLoadStates, SharedResources, TextRenderParams, TokioRuntime, VirtualDomData,
+    VIRTUAL_ROUTES,
 };
 use crate::render::{apply_transform, build_text_transform, get_or_create_text_material, parse_hex_color, parse_text_attrs, resolve_remote_path};
 use crate::io::{clear_async_node_state, request_document_load, request_model_prepare, request_script_load};
@@ -62,7 +63,6 @@ pub fn commit_pending_document_load_system(
     mut delete_requests: ResMut<DeleteRequests>,
     mut pending_scripts: ResMut<crate::PendingScripts>,
     mut log_panel: ResMut<LogPanel>,
-    tokio_rt: Res<TokioRuntime>,
     mut manager: NonSendMut<crate::js::ScriptRuntimeManager>,
     mut script_load_states: ResMut<ScriptLoadStates>,
     mut pending_model_loads: ResMut<PendingModelLoads>,
@@ -84,9 +84,9 @@ pub fn commit_pending_document_load_system(
         }
 
         match result {
-            Ok(xml_content) => {
+            Ok(bundle) => {
                 let mut new_world = build_world();
-                match flatten_loaded_xml(&mut new_world, &url, &xml_content, &tokio_rt.0, &mut log_panel) {
+                match flatten_loaded_document_bundle(&mut new_world, &url, &bundle, &mut log_panel) {
                     Ok((new_nodes, new_dirty)) => {
                         for worker in manager.contexts.values_mut() {
                             crate::js::stop_space_worker(worker);
@@ -169,7 +169,36 @@ pub fn flatten_loaded_xml(
         .map_err(|e| anyhow::anyhow!("Error parsing XML: {e}"))?;
 
     let mut include_dirty = expand_includes(world, url, rt, log_panel).unwrap_or_default();
+    finish_flatten(world, root_node, &mut include_dirty, log_panel)
+}
 
+pub fn flatten_loaded_document_bundle(
+    world: &mut SpecWorld,
+    url: &str,
+    bundle: &LoadedDocumentBundle,
+    log_panel: &mut LogPanel,
+) -> Result<(HashMap<u32, SpecEntity>, Vec<u32>)> {
+    log_panel.push_info(format!(
+        "Content retrieved. Length: {} chars",
+        bundle.root_xml.len()
+    ));
+    for warning in &bundle.warnings {
+        log_panel.push_warn(warning.clone());
+    }
+
+    let root_node = parse_xml(world, &bundle.root_xml)
+        .map_err(|e| anyhow::anyhow!("Error parsing XML: {e}"))?;
+
+    let mut include_dirty = expand_includes_from_bundle(world, url, bundle, log_panel)?;
+    finish_flatten(world, root_node, &mut include_dirty, log_panel)
+}
+
+fn finish_flatten(
+    world: &SpecWorld,
+    root_node: SpecEntity,
+    include_dirty: &mut Vec<u32>,
+    log_panel: &mut LogPanel,
+) -> Result<(HashMap<u32, SpecEntity>, Vec<u32>)> {
     let mut map = HashMap::new();
     let mut dirty = Vec::new();
     let hierarchies = world.read_storage::<Hierarchy>();
@@ -214,45 +243,111 @@ pub fn expand_includes(
     rt: &Runtime,
     log: &mut LogPanel,
 ) -> anyhow::Result<Vec<u32>> {
-    let targets: Vec<(SpecEntity, String)> = {
-        let entities = world.entities();
-        let includes_r = world.read_storage::<Include>();
-        let mut v = Vec::new();
-        for (ent, inc) in (&entities, &includes_r).join() {
-            if let Some(ref src) = inc.src {
-                v.push((ent, src.clone()));
-            }
-        }
-        v
-    };
-
-    let mut new_dirty = Vec::new();
-
-    for (parent_ent, src) in targets {
-        let Some(final_url) = resolve_remote_path(base_url, &src) else {
-            log.push_warn(format!("include: cannot resolve src='{src}' against base='{base_url}'"));
-            continue;
-        };
-
-        let xml = if crate::routes::VirtualRoutes::is_virtual_url(&final_url) {
-            match VIRTUAL_ROUTES.resolve(&final_url) {
-                Some(content) => { log.push_info(format!("Virtual include: {}", final_url)); content }
-                None => { log.push_error(format!("Virtual include not found: {}", final_url)); continue; }
+    expand_includes_with_loader(world, base_url, log, |final_url, log| {
+        if crate::routes::VirtualRoutes::is_virtual_url(final_url) {
+            match VIRTUAL_ROUTES.resolve(final_url) {
+                Some(content) => {
+                    log.push_info(format!("Virtual include: {}", final_url));
+                    Ok(Some(content))
+                }
+                None => {
+                    log.push_error(format!("Virtual include not found: {}", final_url));
+                    Ok(None)
+                }
             }
         } else {
-            match rt.block_on(load_xml_from_url(&final_url)) {
-                Ok(x) => x,
-                Err(e) => { log.push_error(format!("include: download error {} -> {e}", final_url)); continue; }
+            match rt.block_on(load_xml_from_url(final_url)) {
+                Ok(x) => Ok(Some(x)),
+                Err(e) => {
+                    log.push_error(format!("include: download error {} -> {e}", final_url));
+                    Ok(None)
+                }
             }
+        }
+    })
+}
+
+pub fn expand_includes_from_bundle(
+    world: &mut SpecWorld,
+    base_url: &str,
+    bundle: &LoadedDocumentBundle,
+    log: &mut LogPanel,
+) -> anyhow::Result<Vec<u32>> {
+    expand_includes_with_loader(world, base_url, log, |final_url, log| {
+        if let Some(content) = bundle.includes.get(final_url) {
+            return Ok(Some(content.clone()));
+        }
+        if crate::routes::VirtualRoutes::is_virtual_url(final_url) {
+            match VIRTUAL_ROUTES.resolve(final_url) {
+                Some(content) => {
+                    log.push_info(format!("Virtual include: {}", final_url));
+                    return Ok(Some(content));
+                }
+                None => {
+                    log.push_error(format!("Virtual include not found: {}", final_url));
+                    return Ok(None);
+                }
+            }
+        }
+        log.push_warn(format!("include bundle missing: {}", final_url));
+        Ok(None)
+    })
+}
+
+fn expand_includes_with_loader<F>(
+    world: &mut SpecWorld,
+    base_url: &str,
+    log: &mut LogPanel,
+    mut load: F,
+) -> anyhow::Result<Vec<u32>>
+where
+    F: FnMut(&str, &mut LogPanel) -> anyhow::Result<Option<String>>,
+{
+    let mut processed = HashSet::new();
+    let mut new_dirty = Vec::new();
+
+    loop {
+        let targets: Vec<(SpecEntity, String)> = {
+            let entities = world.entities();
+            let includes_r = world.read_storage::<Include>();
+            let mut v = Vec::new();
+            for (ent, inc) in (&entities, &includes_r).join() {
+                if processed.contains(&ent.id()) {
+                    continue;
+                }
+                if let Some(ref src) = inc.src {
+                    v.push((ent, src.clone()));
+                }
+            }
+            v
         };
 
-        let child_root = match parse_xml(world, &xml) {
-            Ok(r) => r,
-            Err(e) => { log.push_error(format!("include: parse error {} -> {e}", final_url)); continue; }
-        };
+        if targets.is_empty() {
+            break;
+        }
 
-        Hierarchy::add_child(world, parent_ent, child_root);
-        collect_subtree_ids(world, child_root, &mut new_dirty);
+        for (parent_ent, src) in targets {
+            processed.insert(parent_ent.id());
+            let Some(final_url) = resolve_remote_path(base_url, &src) else {
+                log.push_warn(format!("include: cannot resolve src='{src}' against base='{base_url}'"));
+                continue;
+            };
+
+            let Some(xml) = load(&final_url, log)? else {
+                continue;
+            };
+
+            let child_root = match parse_xml(world, &xml) {
+                Ok(r) => r,
+                Err(e) => {
+                    log.push_error(format!("include: parse error {} -> {e}", final_url));
+                    continue;
+                }
+            };
+
+            Hierarchy::add_child(world, parent_ent, child_root);
+            collect_subtree_ids(world, child_root, &mut new_dirty);
+        }
     }
 
     Ok(new_dirty)
