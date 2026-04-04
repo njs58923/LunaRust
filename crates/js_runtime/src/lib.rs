@@ -359,8 +359,15 @@ fn op_set_timeout(state: &mut OpState, #[smi] id: i32, #[smi] ms: i32) {
     let timers = state.borrow::<Timers>();
     let ready = timers.ready.clone();
     let cancelled = timers.cancelled.clone();
+    // setTimeout(fn, 0) fires on the next pump — no thread needed.
+    if ms <= 0 {
+        if !cancelled.lock().unwrap().contains(&id) {
+            ready.lock().unwrap().push(id);
+        }
+        return;
+    }
     thread::spawn(move || {
-        thread::sleep(Duration::from_millis(ms.max(0) as u64));
+        thread::sleep(Duration::from_millis(ms as u64));
         if cancelled.lock().unwrap().contains(&id) {
             return;
         }
