@@ -1,0 +1,40 @@
+{
+  "name": "luna",
+  "private": true,
+  "scripts": {
+
+    "luna":          "cargo run -p luna",
+    "luna:ar":       "cargo run -p luna -- --ar",
+    "luna:release":  "cargo run -p luna --release",
+
+    "check":         "cargo check -p luna",
+    "check:all":     "cargo check --workspace",
+
+    "build":         "cargo build -p luna",
+    "build:release": "cargo build -p luna --release",
+    "build:all":     "cargo build --workspace",
+
+    "test":          "cargo test --workspace",
+    "test:luna":     "cargo test -p luna",
+    "test:dom":      "cargo test -p virtual-dom",
+    "test:js":       "cargo test -p js_runtime",
+
+    "lint":          "cargo clippy -p luna -- -D warnings",
+    "lint:all":      "cargo clippy --workspace -- -D warnings",
+
+    "fmt":           "cargo fmt --all",
+    "fmt:check":     "cargo fmt --all -- --check",
+
+    "doc":           "cargo doc -p luna --open",
+    "doc:all":       "cargo doc --workspace --no-deps --open",
+
+    "clean":         "cargo clean",
+    "clean:cache":   "rm -rf crates/luna/assets/cache/*",
+
+    "android:check": "cargo check -p android --target aarch64-linux-android",
+
+    "deps:tree":     "cargo tree -p luna",
+    "deps:outdated": "cargo outdated -p luna",
+    "deps:audit":    "cargo audit"
+  }
+}

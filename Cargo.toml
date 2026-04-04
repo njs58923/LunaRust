@@ -22,7 +22,9 @@ bevy = { version = "0.14.0", default-features = false, features = [
 	"x11",
 	"jpeg"
 ] }
-bevy_egui = "0.28.0"  # Versión compatible con Bevy 0.14.0
+bevy_egui = "0.28.0"
+virtual-dom = { path = "crates/virtual_dom" }
+js_runtime = { path = "crates/js_runtime" }
 
 
 # ⚠️ Optimizaciones Mias ⚠️

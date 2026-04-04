@@ -1,0 +1,1 @@
+Native JS increment: 1000000 iterations in 29.8803ms

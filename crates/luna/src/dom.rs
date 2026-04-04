@@ -1,0 +1,560 @@
+use std::{collections::HashMap, time::Instant};
+
+use anyhow::Result;
+use bevy::prelude::*;
+use specs::{Entity as SpecEntity, Join, ReadStorage, World as SpecWorld, WorldExt};
+use tokio::runtime::Runtime;
+
+use virtual_dom::{
+    dom::{
+        element::{Attrs, Hierarchy, Tag, Transform2},
+        hsml::{Include, Model, Script},
+        TRANSFORM_POSITION, TRANSFORM_ROTATION, TRANSFORM_SCALE,
+    },
+    load_xml_from_url, parse_xml,
+};
+
+use crate::{
+    AttributeUpdates, CurrentUrl, DeleteRequests, Dirty, DirtyNodes, ElemenetWorld, EntityMap,
+    LogPanel, ModelCache, PendingScripts, PerformanceStats, SharedResources, TextRenderParams,
+    TokioRuntime, VirtualDomData,
+};
+use crate::render::{
+    apply_model_with_cache, apply_transform, build_text_transform, get_or_create_text_material,
+    parse_hex_color, parse_text_attrs, resolve_remote_path,
+};
+use crate::routes::VIRTUAL_ROUTES;
+use crate::js::find_owner_space_id;
+
+const DOM_SYNC_VERBOSE_LOGS: bool = false;
+const ATTR_DELETE_SENTINEL: &str = "[DEL]";
+
+// ─── Reload ──────────────────────────────────────────────────────────────────
+
+pub fn reload_xml_system(
+    mut world: ResMut<ElemenetWorld>,
+    mut dom_data: ResMut<VirtualDomData>,
+    mut dirty_nodes: ResMut<DirtyNodes>,
+    mut commands: Commands,
+    mut entity_map: ResMut<EntityMap>,
+    url: Res<CurrentUrl>,
+    mut reload_trigger: ResMut<crate::ReloadTrigger>,
+    mut log_panel: ResMut<LogPanel>,
+    tokio_rt: Res<TokioRuntime>,
+    mut manager: NonSendMut<crate::js::ScriptRuntimeManager>,
+) {
+    log_panel.push_info(format!("Reloading XML from: {}", url.0));
+
+    // Shutdown all JS workers before loading new content
+    for worker in manager.contexts.values_mut() {
+        crate::js::stop_space_worker(worker);
+    }
+    manager.contexts.clear();
+    log_panel.push_info("[JS] All JS contexts cleared for page reload");
+
+    match load_and_flatten_xml(&mut world.0, &url.0, &tokio_rt.0, &mut log_panel) {
+        Ok((new_nodes, new_dirty)) => {
+            let old_nodes: Vec<u32> = dom_data.nodes.keys().cloned().collect();
+            let mut to_delete = Vec::new();
+            for old_id in old_nodes {
+                if !new_nodes.contains_key(&old_id) {
+                    if let Some(ent) = entity_map.0.remove(&old_id) {
+                        commands.entity(ent).despawn_recursive();
+                    }
+                    to_delete.push(old_id);
+                }
+            }
+            let to_delete: Vec<_> = to_delete
+                .into_iter()
+                .map(|id| world.0.entities().entity(id))
+                .collect();
+            for ent in to_delete {
+                world.0.delete_entity(ent).ok();
+            }
+
+            dom_data.nodes = new_nodes;
+            dirty_nodes.0 = new_dirty;
+            reload_trigger.0 = false;
+            log_panel.push_info("XML reload complete.");
+        }
+        Err(e) => {
+            log_panel.push_error(format!("Error reloading XML: {e}"));
+            reload_trigger.0 = false;
+        }
+    }
+}
+
+// ─── Load & flatten ──────────────────────────────────────────────────────────
+
+pub fn load_and_flatten_xml(
+    world: &mut SpecWorld,
+    url: &str,
+    rt: &Runtime,
+    log_panel: &mut LogPanel,
+) -> Result<(HashMap<u32, SpecEntity>, Vec<u32>)> {
+    log_panel.push_info(format!("Loading document from: {url}"));
+
+    let xml_content = if crate::routes::VirtualRoutes::is_virtual_url(url) {
+        match VIRTUAL_ROUTES.resolve(url) {
+            Some(content) => {
+                log_panel.push_info(format!("Virtual route resolved: {url}"));
+                content
+            }
+            None => {
+                log_panel.push_error(format!("Virtual route not found: {url}"));
+                return Err(anyhow::anyhow!("Virtual route not found: {url}"));
+            }
+        }
+    } else {
+        match rt.block_on(load_xml_from_url(url)) {
+            Ok(c) => c,
+            Err(e) => return Err(anyhow::anyhow!("Error downloading XML from {url}: {e}")),
+        }
+    };
+
+    log_panel.push_info(format!("Content retrieved. Length: {} chars", xml_content.len()));
+
+    let root_node = parse_xml(world, &xml_content)
+        .map_err(|e| anyhow::anyhow!("Error parsing XML: {e}"))?;
+
+    let mut include_dirty = expand_includes(world, url, rt, log_panel).unwrap_or_default();
+
+    let mut map = HashMap::new();
+    let mut dirty = Vec::new();
+    let hierarchies = world.read_storage::<Hierarchy>();
+
+    fn flatten_dom(
+        node: SpecEntity,
+        map: &mut HashMap<u32, SpecEntity>,
+        dirty: &mut Vec<u32>,
+        hierarchies: &ReadStorage<Hierarchy>,
+    ) {
+        dirty.push(node.id());
+        map.insert(node.id(), node);
+        if let Some(h) = hierarchies.get(node) {
+            for &child in &h.children {
+                flatten_dom(child, map, dirty, hierarchies);
+            }
+        }
+    }
+
+    flatten_dom(root_node, &mut map, &mut dirty, &hierarchies);
+    dirty.extend(include_dirty.drain(..));
+    dirty.sort_unstable();
+    dirty.dedup();
+
+    log_panel.push_info(format!("DOM tree parsed. {} nodes found.", map.len()));
+    Ok((map, dirty))
+}
+
+pub fn collect_subtree_ids(world: &SpecWorld, root: SpecEntity, out: &mut Vec<u32>) {
+    let hier = world.read_storage::<Hierarchy>();
+    out.push(root.id());
+    if let Some(h) = hier.get(root) {
+        for &c in &h.children {
+            collect_subtree_ids(world, c, out);
+        }
+    }
+}
+
+pub fn expand_includes(
+    world: &mut SpecWorld,
+    base_url: &str,
+    rt: &Runtime,
+    log: &mut LogPanel,
+) -> anyhow::Result<Vec<u32>> {
+    let targets: Vec<(SpecEntity, String)> = {
+        let entities = world.entities();
+        let includes_r = world.read_storage::<Include>();
+        let mut v = Vec::new();
+        for (ent, inc) in (&entities, &includes_r).join() {
+            if let Some(ref src) = inc.src {
+                v.push((ent, src.clone()));
+            }
+        }
+        v
+    };
+
+    let mut new_dirty = Vec::new();
+
+    for (parent_ent, src) in targets {
+        let Some(final_url) = resolve_remote_path(base_url, &src) else {
+            log.push_warn(format!("include: cannot resolve src='{src}' against base='{base_url}'"));
+            continue;
+        };
+
+        let xml = if crate::routes::VirtualRoutes::is_virtual_url(&final_url) {
+            match VIRTUAL_ROUTES.resolve(&final_url) {
+                Some(content) => { log.push_info(format!("Virtual include: {}", final_url)); content }
+                None => { log.push_error(format!("Virtual include not found: {}", final_url)); continue; }
+            }
+        } else {
+            match rt.block_on(load_xml_from_url(&final_url)) {
+                Ok(x) => x,
+                Err(e) => { log.push_error(format!("include: download error {} -> {e}", final_url)); continue; }
+            }
+        };
+
+        let child_root = match parse_xml(world, &xml) {
+            Ok(r) => r,
+            Err(e) => { log.push_error(format!("include: parse error {} -> {e}", final_url)); continue; }
+        };
+
+        Hierarchy::add_child(world, parent_ent, child_root);
+        collect_subtree_ids(world, child_root, &mut new_dirty);
+    }
+
+    Ok(new_dirty)
+}
+
+// ─── Attribute updates ───────────────────────────────────────────────────────
+
+pub fn apply_attribute_updates(
+    mut attribute_updates: ResMut<AttributeUpdates>,
+    mut world: ResMut<ElemenetWorld>,
+    mut dirty_nodes: ResMut<DirtyNodes>,
+) {
+    let entities = world.0.entities();
+    let mut attrs_storage = world.0.write_storage::<Attrs>();
+    let mut tr_storage = world.0.write_storage::<Transform2>();
+    let mut model_storage = world.0.write_storage::<Model>();
+    let mut include_storage = world.0.write_storage::<Include>();
+
+    let (px, py, pz) = (TRANSFORM_POSITION[0], TRANSFORM_POSITION[1], TRANSFORM_POSITION[2]);
+    let (rx, ry, rz) = (TRANSFORM_ROTATION[0], TRANSFORM_ROTATION[1], TRANSFORM_ROTATION[2]);
+    let (sx, sy, sz) = (TRANSFORM_SCALE[0], TRANSFORM_SCALE[1], TRANSFORM_SCALE[2]);
+
+    for (ent_id, key, val) in attribute_updates.0.drain(..) {
+        let ent = entities.entity(ent_id);
+        if !entities.is_alive(ent) { continue; }
+
+        if attrs_storage.get(ent).is_none() {
+            let _ = attrs_storage.insert(ent, Attrs(HashMap::new()));
+        }
+
+        if let Some(a) = attrs_storage.get_mut(ent) {
+            if val == ATTR_DELETE_SENTINEL {
+                a.0.remove(&key);
+                if let Some(tr) = tr_storage.get_mut(ent) {
+                    match key.as_str() {
+                        "x" => tr.position.x = 0.0, "y" => tr.position.y = 0.0, "z" => tr.position.z = 0.0,
+                        "rx" => tr.rotation.x = 0.0, "ry" => tr.rotation.y = 0.0, "rz" => tr.rotation.z = 0.0,
+                        "sx" => tr.scale.x = 1.0, "sy" => tr.scale.y = 1.0, "sz" => tr.scale.z = 1.0,
+                        _ => {}
+                    }
+                }
+            } else {
+                a.0.insert(key.clone(), val.clone());
+            }
+        }
+
+        if let Some(tr) = tr_storage.get_mut(ent) {
+            let parse_f32 = || -> Option<f32> { val.trim().parse::<f32>().ok() };
+            match key.as_str() {
+                k if k == px || k == "x"  => if let Some(f) = parse_f32() { tr.position.x = f; },
+                k if k == py || k == "y"  => if let Some(f) = parse_f32() { tr.position.y = f; },
+                k if k == pz || k == "z"  => if let Some(f) = parse_f32() { tr.position.z = f; },
+                k if k == rx || k == "rx" => if let Some(f) = parse_f32() { tr.rotation.x = f; },
+                k if k == ry || k == "ry" => if let Some(f) = parse_f32() { tr.rotation.y = f; },
+                k if k == rz || k == "rz" => if let Some(f) = parse_f32() { tr.rotation.z = f; },
+                "s" => if let Some(f) = parse_f32() { tr.scale.x = f; tr.scale.y = f; tr.scale.z = f; },
+                k if k == sx || k == "sx" => if let Some(f) = parse_f32() { tr.scale.x = f; },
+                k if k == sy || k == "sy" => if let Some(f) = parse_f32() { tr.scale.y = f; },
+                k if k == sz || k == "sz" => if let Some(f) = parse_f32() { tr.scale.z = f; },
+                _ => {}
+            }
+        }
+
+        if key == "src" {
+            if let Some(m) = model_storage.get_mut(ent) {
+                m.src = (val != ATTR_DELETE_SENTINEL).then(|| val.clone());
+            }
+            if let Some(i) = include_storage.get_mut(ent) {
+                i.src = (val != ATTR_DELETE_SENTINEL).then(|| val.clone());
+            }
+        }
+
+        dirty_nodes.0.push(ent_id);
+    }
+}
+
+// ─── Delete ──────────────────────────────────────────────────────────────────
+
+pub fn process_delete_requests(
+    mut delete_requests: ResMut<DeleteRequests>,
+    mut world: ResMut<ElemenetWorld>,
+    mut entity_map: ResMut<EntityMap>,
+    mut commands: Commands,
+    mut log_panel: ResMut<LogPanel>,
+) {
+    for ent_id in delete_requests.0.drain(..) {
+        if let Some(bevy_ent) = entity_map.0.remove(&ent_id) {
+            commands.entity(bevy_ent).despawn_recursive();
+        }
+        let sp_ent = world.0.entities().entity(ent_id);
+        match world.0.delete_entity(sp_ent) {
+            Ok(_) => log_panel.push_info(format!("Entity (ID={}) deleted.", ent_id)),
+            Err(_) => log_panel.push_error(format!("Error deleting entity (ID={}).", ent_id)),
+        }
+    }
+}
+
+// ─── Mark dirty ──────────────────────────────────────────────────────────────
+
+pub fn mark_dirty_system(
+    world: Res<ElemenetWorld>,
+    mut commands: Commands,
+    entity_map: Res<EntityMap>,
+    dirty_nodes: ResMut<DirtyNodes>,
+) {
+    for node_id in dirty_nodes.0.iter().copied() {
+        if let Some(&ent) = entity_map.0.get(&node_id) {
+            commands.entity(ent).insert(Dirty);
+        }
+    }
+}
+
+// ─── DOM → Bevy sync ─────────────────────────────────────────────────────────
+
+pub fn dom_sync_system(
+    world: Res<ElemenetWorld>,
+    mut commands: Commands,
+    dom_data: Res<VirtualDomData>,
+    shared_resources: Res<SharedResources>,
+    mut entity_map: ResMut<EntityMap>,
+    mut dirty_nodes: ResMut<DirtyNodes>,
+    mut query: Query<(Entity, &mut Transform, Option<&Dirty>, Option<&mut Handle<StandardMaterial>>)>,
+    asset_server: Res<AssetServer>,
+    mut log_panel: ResMut<LogPanel>,
+    mut model_cache: ResMut<ModelCache>,
+    tokio_rt: Res<TokioRuntime>,
+    current_url: Res<CurrentUrl>,
+    mut perf_stats: ResMut<PerformanceStats>,
+    mut pending_scripts: ResMut<PendingScripts>,
+    mut text_render: TextRenderParams,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let start_time = Instant::now();
+    if dirty_nodes.0.is_empty() { return; }
+
+    let tags = world.0.read_storage::<Tag>();
+    let transforms = world.0.read_storage::<Transform2>();
+    let hierarchies = world.0.read_storage::<Hierarchy>();
+    let models = world.0.read_storage::<Model>();
+    let attrs_storage = world.0.read_storage::<Attrs>();
+
+    log_panel.push_info(format!("dom_sync: processing {} dirty nodes...", dirty_nodes.0.len()));
+
+    for node_id in dirty_nodes.0.drain(..) {
+        let Some(node) = dom_data.nodes.get(&node_id) else {
+            log_panel.push_error(format!("No dom node for id={}", node_id));
+            continue;
+        };
+
+        let tag = tags.get(*node).map(|t| t.0.clone()).unwrap_or_default();
+        let hierarchy = hierarchies.get(*node);
+        let parent_id = hierarchy.and_then(|h| h.parent);
+
+        let mut transform_b = Transform::default();
+        if let Some(tr2) = transforms.get(*node) {
+            apply_transform(tr2, &mut transform_b);
+        }
+
+        if let Some(&bevy_ent) = entity_map.0.get(&node_id) {
+            // --- Update existing entity ---
+            if tag == "model" {
+                commands.entity(bevy_ent).despawn_recursive();
+                entity_map.0.remove(&node_id);
+
+                let new_ent = spawn_model_entity(
+                    &mut commands, &models, *node, &current_url, &asset_server,
+                    &mut log_panel, &mut model_cache, &tokio_rt, transform_b, &shared_resources,
+                );
+                set_parent(&mut commands, new_ent, parent_id, &entity_map);
+                entity_map.0.insert(node_id, new_ent);
+                continue;
+            }
+
+            if tag == "text" {
+                let empty_map = HashMap::new();
+                let attrs_map = attrs_storage.get(*node).map(|a| &a.0).unwrap_or(&empty_map);
+                let (text_value, text_size, text_color) = parse_text_attrs(attrs_map);
+                let text_material = get_or_create_text_material(
+                    &mut text_render.text_material_cache, &mut text_render.materials,
+                    &mut text_render.images, &text_value, text_size, text_color,
+                );
+                let text_transform = build_text_transform(transform_b, &text_value, text_size);
+
+                let mut updated_in_place = false;
+                if let Ok((_, mut t, dirty, maybe_material)) = query.get_mut(bevy_ent) {
+                    *t = text_transform;
+                    if let Some(mut material_handle) = maybe_material {
+                        *material_handle = text_material.clone();
+                        if dirty.is_some() { commands.entity(bevy_ent).remove::<Dirty>(); }
+                        updated_in_place = true;
+                    }
+                }
+                if updated_in_place { continue; }
+
+                commands.entity(bevy_ent).despawn_recursive();
+                entity_map.0.remove(&node_id);
+                let new_ent = commands.spawn((PbrBundle {
+                    mesh: shared_resources.plane_mesh.clone(),
+                    material: text_material,
+                    transform: text_transform,
+                    ..Default::default()
+                }, Dirty)).id();
+                set_parent(&mut commands, new_ent, parent_id, &entity_map);
+                entity_map.0.insert(node_id, new_ent);
+                continue;
+            }
+
+            // Default: update transform if dirty
+            if let Ok((_, mut t, dirty, _)) = query.get_mut(bevy_ent) {
+                if dirty.is_some() {
+                    *t = transform_b;
+                    commands.entity(bevy_ent).remove::<Dirty>();
+                }
+            }
+        } else {
+            // --- Create new entity ---
+            if DOM_SYNC_VERBOSE_LOGS { log_panel.push_info("  Creating new entity..."); }
+
+            let new_ent = match tag.as_str() {
+                "model" => spawn_model_entity(
+                    &mut commands, &models, *node, &current_url, &asset_server,
+                    &mut log_panel, &mut model_cache, &tokio_rt, transform_b, &shared_resources,
+                ),
+                "script" => {
+                    let scripts_storage = world.0.read_storage::<Script>();
+                    if let Some(script_comp) = scripts_storage.get(*node) {
+                        if let Some(ref src) = script_comp.src {
+                            if let Some(final_url) = resolve_remote_path(&current_url.0, src) {
+                                let code_result = if crate::routes::VirtualRoutes::is_virtual_url(&final_url) {
+                                    match VIRTUAL_ROUTES.resolve(&final_url) {
+                                        Some(code) => { log_panel.push_info(format!("Virtual script: {}", final_url)); Ok(code) }
+                                        None => { log_panel.push_error(format!("Virtual script not found: {}", final_url)); Err(format!("Not found: {}", final_url)) }
+                                    }
+                                } else {
+                                    log_panel.push_info(format!("Downloading script: {}", final_url));
+                                    tokio_rt.0.block_on(async {
+                                        let resp = reqwest::get(&final_url).await.map_err(|e| format!("HTTP error: {}", e))?;
+                                        resp.text().await.map_err(|e| format!("Read error: {}", e))
+                                    })
+                                };
+
+                                match code_result {
+                                    Ok(code) => {
+                                        if let Some(space_id) = find_owner_space_id(&world.0, *node) {
+                                            pending_scripts.0.push((space_id, final_url, code));
+                                        } else {
+                                            log_panel.push_warn("script without <space> ancestor: skipping");
+                                        }
+                                    }
+                                    Err(e) => log_panel.push_error(format!("Script load error {}: {}", final_url, e)),
+                                }
+                            }
+                        }
+                    }
+                    commands.spawn((SpatialBundle { transform: transform_b, ..Default::default() }, Dirty)).id()
+                }
+                "space" | "include" => {
+                    commands.spawn((SpatialBundle { transform: transform_b, ..Default::default() }, Dirty)).id()
+                }
+                "box" => {
+                    let attrs_opt = attrs_storage.get(*node);
+                    let color = attrs_opt
+                        .and_then(|a| a.0.get("color"))
+                        .and_then(|c| parse_hex_color(c))
+                        .unwrap_or(Color::srgb(0.5, 0.5, 0.5));
+                    let border_radius: Option<f32> = attrs_opt
+                        .and_then(|a| a.0.get("border-radius"))
+                        .and_then(|v| v.parse().ok());
+
+                    let material = text_render.materials.add(StandardMaterial { base_color: color, ..Default::default() });
+                    let mesh = if let Some(radius) = border_radius {
+                        meshes.add(crate::utils::shapes::create_rounded_cube(radius, 6))
+                    } else {
+                        shared_resources.cube_mesh.clone()
+                    };
+                    commands.spawn((PbrBundle { mesh, material, transform: transform_b, ..Default::default() }, Dirty)).id()
+                }
+                "text" => {
+                    let empty_map = HashMap::new();
+                    let attrs_map = attrs_storage.get(*node).map(|a| &a.0).unwrap_or(&empty_map);
+                    let (text_value, text_size, text_color) = parse_text_attrs(attrs_map);
+                    let text_material = get_or_create_text_material(
+                        &mut text_render.text_material_cache, &mut text_render.materials,
+                        &mut text_render.images, &text_value, text_size, text_color,
+                    );
+                    let text_transform = build_text_transform(transform_b, &text_value, text_size);
+                    commands.spawn((PbrBundle {
+                        mesh: shared_resources.plane_mesh.clone(),
+                        material: text_material,
+                        transform: text_transform,
+                        ..Default::default()
+                    }, Dirty)).id()
+                }
+                _other => {
+                    commands.spawn((PbrBundle {
+                        mesh: shared_resources.cube_mesh.clone(),
+                        material: shared_resources.default_material.clone(),
+                        transform: transform_b,
+                        ..Default::default()
+                    }, Dirty)).id()
+                }
+            };
+
+            set_parent(&mut commands, new_ent, parent_id, &entity_map);
+            entity_map.0.insert(node_id, new_ent);
+        }
+    }
+
+    perf_stats.dom_sync_ms = start_time.elapsed().as_secs_f32() * 1000.0;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+fn set_parent(commands: &mut Commands, new_ent: Entity, parent_id: Option<u32>, entity_map: &EntityMap) {
+    if let Some(pid) = parent_id {
+        if let Some(&parent_bevy_ent) = entity_map.0.get(&pid) {
+            commands.entity(new_ent).set_parent(parent_bevy_ent);
+            return;
+        }
+    }
+    commands.entity(new_ent).remove_parent();
+}
+
+fn spawn_model_entity(
+    commands: &mut Commands,
+    models: &ReadStorage<Model>,
+    node: SpecEntity,
+    current_url: &CurrentUrl,
+    asset_server: &AssetServer,
+    log_panel: &mut LogPanel,
+    model_cache: &mut ModelCache,
+    tokio_rt: &TokioRuntime,
+    transform_b: Transform,
+    shared_resources: &SharedResources,
+) -> Entity {
+    if let Some(model_data) = models.get(node) {
+        if let Some(ref original_src) = model_data.src {
+            if let Some(final_url) = resolve_remote_path(&current_url.0, original_src) {
+                let scene_handle = apply_model_with_cache(
+                    &final_url, asset_server, log_panel, model_cache, &tokio_rt.0,
+                );
+                return commands.spawn((SceneBundle { scene: scene_handle, transform: transform_b, ..Default::default() }, Dirty)).id();
+            } else {
+                log_panel.push_error(format!("Cannot resolve '{}' against '{}'", original_src, current_url.0));
+            }
+        } else {
+            log_panel.push_warn("No src in <model>. Using default box.");
+        }
+    }
+    commands.spawn((PbrBundle {
+        mesh: shared_resources.cube_mesh.clone(),
+        material: shared_resources.default_material.clone(),
+        transform: transform_b,
+        ..default()
+    }, Dirty)).id()
+}

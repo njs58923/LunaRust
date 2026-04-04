@@ -7,7 +7,6 @@ repository.workspace = true
 license.workspace = true
 keywords = ["gamedev", "bevy", "Xr", "Vr", "OpenXR"]
 
-
 [features]
 default = ["vulkan", "d3d12", "passthrough"]
 vulkan = ["dep:ash"]
@@ -16,31 +15,18 @@ passthrough = []
 
 [dev-dependencies]
 bevy_xr_utils.path = "../bevy_xr_utils"
-bevy = { workspace = true, default-features = true}
-bevy_egui = { workspace = true, default-features = true}
+bevy = { workspace = true, default-features = true }
+bevy_egui = { workspace = true, default-features = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 ndk-context = "0.1"
 jni = "0.20"
 
-# bevy can't be placed behind target or proc macros won't work properly
 [dependencies]
 bevy.workspace = true
 bevy_egui.workspace = true
-virtual-dom = { path = "../../../debs/core" }
-js_runtime = { path = "../../../debs/js_runtime" }
 futures = "0.3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-specs = "0.20"
-specs-derive = "0.4"
-anyhow = "1.0"
-reqwest = { version = "0.11", features = ["json", "blocking"] }
-url = "2.3"
-base64 = "0.21"
-lazy_static = "1.4"
-fontdue = "0.9"
 
-# all other dependencies are placed under this since on wasm, this crate is completely empty
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 openxr = "0.18.0"
 thiserror = "1.0.57"

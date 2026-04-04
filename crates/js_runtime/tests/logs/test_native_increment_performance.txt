@@ -1,0 +1,1 @@
+Native increment: 1000000 iterations in 792.7173ms

@@ -878,28 +878,17 @@ dependencies = [
 name = "bevy_mod_openxr"
 version = "0.1.1"
 dependencies = [
- "anyhow",
  "ash",
- "base64 0.21.7",
  "bevy",
  "bevy_egui",
  "bevy_mod_xr",
  "bevy_xr_utils",
  "d3d12 0.20.0",
- "fontdue",
  "futures",
  "jni 0.20.0",
- "js_runtime",
- "lazy_static",
  "ndk-context",
  "openxr",
- "reqwest 0.11.27",
- "specs",
- "specs-derive",
  "thiserror",
- "tokio",
- "url",
- "virtual-dom",
  "wgpu 0.20.1",
  "wgpu-hal 0.21.1",
  "winapi",
@@ -3219,7 +3208,7 @@ dependencies = [
 
 [[package]]
 name = "js_runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "deno_core",
@@ -3228,6 +3217,7 @@ dependencies = [
  "serde_json",
  "specs",
  "specs-derive",
+ "tokio",
 ]
 
 [[package]]
@@ -3359,6 +3349,28 @@ name = "log"
 version = "0.4.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
+
+[[package]]
+name = "luna"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "base64 0.21.7",
+ "bevy",
+ "bevy_egui",
+ "bevy_mod_openxr",
+ "bevy_mod_xr",
+ "bevy_xr_utils",
+ "fontdue",
+ "js_runtime",
+ "lazy_static",
+ "reqwest 0.11.27",
+ "specs",
+ "specs-derive",
+ "tokio",
+ "url",
+ "virtual-dom",
+]
 
 [[package]]
 name = "lzma-rs"
@@ -4664,6 +4676,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust_exps"
+version = "0.1.1"
+dependencies = [
+ "specs",
+ "specs-derive",
+ "virtual-dom",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5747,7 +5768,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "virtual-dom"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "lazy_static",

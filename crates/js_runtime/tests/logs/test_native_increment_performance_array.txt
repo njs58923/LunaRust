@@ -1,0 +1,1 @@
+TypedArray increment: 1000000 iterations in 984.3229ms

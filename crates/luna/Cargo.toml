@@ -1,0 +1,31 @@
+[package]
+name = "luna"
+version.workspace = true
+edition.workspace = true
+description = "Luna - Spatial 3D Browser"
+
+[[bin]]
+name = "luna"
+path = "src/main.rs"
+
+[dependencies]
+bevy = { workspace = true, default-features = true }
+bevy_egui = { workspace = true, default-features = true }
+bevy_mod_openxr = { path = "../bevy_openxr" }
+bevy_mod_xr = { path = "../bevy_xr" }
+bevy_xr_utils = { path = "../bevy_xr_utils" }
+virtual-dom = { path = "../virtual_dom" }
+js_runtime = { path = "../js_runtime" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+specs = "0.20"
+specs-derive = "0.4"
+anyhow = "1.0"
+reqwest = { version = "0.11", features = ["json"] }
+url = "2.3"
+base64 = "0.21"
+lazy_static = "1.4"
+fontdue = "0.9"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"

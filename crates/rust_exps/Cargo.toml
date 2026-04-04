@@ -1,0 +1,9 @@
+[package]
+name = "rust_exps"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+virtual-dom = { path = "../virtual_dom" }
+specs = "0.20"
+specs-derive = "0.4"
