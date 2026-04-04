@@ -343,7 +343,7 @@ pub fn dom_sync_system(
     let models = world.0.read_storage::<Model>();
     let attrs_storage = world.0.read_storage::<Attrs>();
 
-    log_panel.push_info(format!("dom_sync: processing {} dirty nodes...", dirty_nodes.0.len()));
+    // log_panel.push_info(format!("dom_sync: processing {} dirty nodes...", dirty_nodes.0.len()));
 
     for node_id in dirty_nodes.0.drain(..) {
         let Some(node) = dom_data.nodes.get(&node_id) else {
