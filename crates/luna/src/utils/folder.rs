@@ -48,3 +48,39 @@ pub fn resolve_assets_and_cache_dirs() -> (PathBuf, PathBuf) {
 pub fn to_assets_relative(abs_path: &Path, assets_dir: &Path) -> Option<String> {
     abs_path.strip_prefix(assets_dir).ok().map(|p| p.to_string_lossy().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn to_assets_relative_strips_prefix() {
+        let assets = PathBuf::from("/project/assets");
+        let abs = PathBuf::from("/project/assets/cache/model.glb");
+        let rel = to_assets_relative(&abs, &assets).unwrap();
+        assert_eq!(rel, "cache/model.glb");
+    }
+
+    #[test]
+    fn to_assets_relative_wrong_prefix_returns_none() {
+        let assets = PathBuf::from("/project/assets");
+        let abs = PathBuf::from("/other/path/model.glb");
+        assert!(to_assets_relative(&abs, &assets).is_none());
+    }
+
+    #[test]
+    fn to_assets_relative_exact_match_returns_empty() {
+        let assets = PathBuf::from("/project/assets");
+        let result = to_assets_relative(&assets, &assets).unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn resolve_assets_dirs_returns_paths() {
+        let (assets_dir, cache_dir) = resolve_assets_and_cache_dirs();
+        assert!(assets_dir.ends_with("assets"));
+        assert!(cache_dir.ends_with("cache"));
+        assert!(cache_dir.starts_with(&assets_dir));
+    }
+}

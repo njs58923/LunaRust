@@ -290,3 +290,76 @@ fn generate_cache_stats(_path: &str) -> String {
   </space>
 </hsml>"##.to_string()
 }
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // is_virtual_url
+    #[test]
+    fn virtual_url_detected() {
+        assert!(VirtualRoutes::is_virtual_url("luna://home"));
+        assert!(VirtualRoutes::is_virtual_url("luna://demos"));
+        assert!(VirtualRoutes::is_virtual_url("luna://internal/home_navigation.js"));
+    }
+
+    #[test]
+    fn non_virtual_url_rejected() {
+        assert!(!VirtualRoutes::is_virtual_url("http://example.com"));
+        assert!(!VirtualRoutes::is_virtual_url("https://example.com"));
+        assert!(!VirtualRoutes::is_virtual_url("/relative/path.hsml"));
+        assert!(!VirtualRoutes::is_virtual_url(""));
+    }
+
+    // resolve — known routes return HSML content
+    #[test]
+    fn resolve_home_returns_hsml() {
+        let content = VIRTUAL_ROUTES.resolve("luna://home").unwrap();
+        assert!(content.contains("<hsml>"));
+        assert!(content.contains("Luna Home"));
+    }
+
+    #[test]
+    fn resolve_demos_returns_hsml() {
+        let content = VIRTUAL_ROUTES.resolve("luna://demos").unwrap();
+        assert!(content.contains("<hsml>"));
+    }
+
+    #[test]
+    fn resolve_settings_returns_hsml() {
+        let content = VIRTUAL_ROUTES.resolve("luna://settings").unwrap();
+        assert!(content.contains("<hsml>"));
+    }
+
+    #[test]
+    fn resolve_about_returns_hsml() {
+        let content = VIRTUAL_ROUTES.resolve("luna://about").unwrap();
+        assert!(content.contains("<hsml>"));
+    }
+
+    #[test]
+    fn resolve_internal_script_returns_js() {
+        let content = VIRTUAL_ROUTES.resolve("luna://internal/home_navigation.js").unwrap();
+        assert!(content.contains("luna://demos"));
+    }
+
+    #[test]
+    fn resolve_unknown_route_returns_404() {
+        let content = VIRTUAL_ROUTES.resolve("luna://does-not-exist").unwrap();
+        assert!(content.contains("404"));
+    }
+
+    #[test]
+    fn resolve_non_virtual_returns_none() {
+        assert!(VIRTUAL_ROUTES.resolve("http://example.com").is_none());
+        assert!(VIRTUAL_ROUTES.resolve("not-a-luna-url").is_none());
+    }
+
+    #[test]
+    fn resolve_cache_stats_returns_hsml() {
+        let content = VIRTUAL_ROUTES.resolve("luna://cache-stats").unwrap();
+        assert!(content.contains("<hsml>"));
+    }
+}

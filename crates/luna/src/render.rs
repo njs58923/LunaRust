@@ -275,3 +275,138 @@ pub fn resolve_remote_path(base_url: &str, remote_path: &str) -> Option<String> 
     let Ok(final_url) = base.join(remote_path) else { return None; };
     Some(final_url.to_string())
 }
+
+// ─── Tests ───────────────────────────────��───────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // parse_hex_color
+    #[test]
+    fn hex_color_basic() {
+        let c = parse_hex_color("#FF0000").unwrap();
+        let s = c.to_srgba();
+        assert!((s.red - 1.0).abs() < 0.01);
+        assert!(s.green < 0.01);
+        assert!(s.blue < 0.01);
+    }
+
+    #[test]
+    fn hex_color_without_hash() {
+        assert!(parse_hex_color("FF0000").is_none()); // must start with #
+    }
+
+    #[test]
+    fn hex_color_black_white() {
+        let black = parse_hex_color("#000000").unwrap().to_srgba();
+        assert!(black.red < 0.01 && black.green < 0.01 && black.blue < 0.01);
+
+        let white = parse_hex_color("#FFFFFF").unwrap().to_srgba();
+        assert!((white.red - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn hex_color_invalid_length() {
+        assert!(parse_hex_color("#FFF").is_none());
+        assert!(parse_hex_color("#FFFFFFF").is_none());
+        assert!(parse_hex_color("").is_none());
+    }
+
+    #[test]
+    fn hex_color_lowercase() {
+        assert!(parse_hex_color("#4caf50").is_some());
+    }
+
+    // get_attr_f32
+    #[test]
+    fn attr_f32_present() {
+        let mut m = HashMap::new();
+        m.insert("size".to_string(), "3.14".to_string());
+        assert!((get_attr_f32(&m, "size", 0.0) - 3.14).abs() < 0.001);
+    }
+
+    #[test]
+    fn attr_f32_missing_uses_default() {
+        let m = HashMap::new();
+        assert_eq!(get_attr_f32(&m, "size", 1.0), 1.0);
+    }
+
+    #[test]
+    fn attr_f32_invalid_uses_default() {
+        let mut m = HashMap::new();
+        m.insert("size".to_string(), "not_a_number".to_string());
+        assert_eq!(get_attr_f32(&m, "size", 5.0), 5.0);
+    }
+
+    // get_attr_string
+    #[test]
+    fn attr_string_present() {
+        let mut m = HashMap::new();
+        m.insert("value".to_string(), "hello".to_string());
+        assert_eq!(get_attr_string(&m, "value", "default"), "hello");
+    }
+
+    #[test]
+    fn attr_string_missing_uses_default() {
+        let m = HashMap::new();
+        assert_eq!(get_attr_string(&m, "value", "default"), "default");
+    }
+
+    // encode_url_to_filename
+    #[test]
+    fn encode_url_no_slashes_in_name() {
+        let name = encode_url_to_filename("http://example.com/model.glb");
+        assert!(!name.contains('/'));
+        assert!(name.ends_with(".glb"));
+    }
+
+    #[test]
+    fn encode_url_no_plus_in_name() {
+        let name = encode_url_to_filename("http://example.com/a+b.glb");
+        assert!(!name.contains('+'));
+    }
+
+    #[test]
+    fn encode_url_no_extension_uses_bin() {
+        let name = encode_url_to_filename("http://example.com/resource");
+        assert!(name.ends_with(".bin"));
+    }
+
+    #[test]
+    fn encode_url_deterministic() {
+        let url = "http://example.com/model.glb";
+        assert_eq!(encode_url_to_filename(url), encode_url_to_filename(url));
+    }
+
+    // resolve_remote_path
+    #[test]
+    fn resolve_absolute_http_passthrough() {
+        let result = resolve_remote_path("luna://home", "http://example.com/scene.hsml");
+        assert_eq!(result.unwrap(), "http://example.com/scene.hsml");
+    }
+
+    #[test]
+    fn resolve_absolute_https_passthrough() {
+        let result = resolve_remote_path("http://base.com/page", "https://cdn.com/model.glb");
+        assert_eq!(result.unwrap(), "https://cdn.com/model.glb");
+    }
+
+    #[test]
+    fn resolve_virtual_url_passthrough() {
+        let result = resolve_remote_path("http://base.com/", "luna://home");
+        assert_eq!(result.unwrap(), "luna://home");
+    }
+
+    #[test]
+    fn resolve_relative_path() {
+        let result = resolve_remote_path("http://base.com/spaces/", "models/tree.glb");
+        assert_eq!(result.unwrap(), "http://base.com/spaces/models/tree.glb");
+    }
+
+    #[test]
+    fn resolve_invalid_base_returns_none() {
+        let result = resolve_remote_path("not_a_url", "models/tree.glb");
+        assert!(result.is_none());
+    }
+}
