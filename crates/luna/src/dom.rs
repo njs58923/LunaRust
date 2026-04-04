@@ -1,4 +1,7 @@
-use std::{collections::{HashMap, HashSet}, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 
 use anyhow::Result;
 use bevy::prelude::*;
@@ -14,6 +17,13 @@ use virtual_dom::{
     load_xml_from_url, parse_xml,
 };
 
+use crate::io::{
+    clear_async_node_state, request_document_load, request_model_prepare, request_script_load,
+};
+use crate::render::{
+    apply_transform, build_text_transform, get_or_create_text_material, parse_hex_color,
+    parse_text_attrs, resolve_remote_path,
+};
 use crate::{
     ActiveDocumentLoad, AsyncDomParams, AttributeUpdates, CompletedDocumentLoad, CurrentUrl,
     DeleteRequests, Dirty, DirtyNodes, DocumentLoadState, ElemenetWorld, EntityMap, IoService,
@@ -22,14 +32,13 @@ use crate::{
     ScriptLoadStates, SharedResources, TextRenderParams, TokioRuntime, VirtualDomData,
     VIRTUAL_ROUTES,
 };
-use crate::render::{apply_transform, build_text_transform, get_or_create_text_material, parse_hex_color, parse_text_attrs, resolve_remote_path};
-use crate::io::{clear_async_node_state, request_document_load, request_model_prepare, request_script_load};
 
 const DOM_SYNC_VERBOSE_LOGS: bool = false;
 const ATTR_DELETE_SENTINEL: &str = "[DEL]";
 
 fn primitive_color(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> Color {
-    attrs_storage.get(node)
+    attrs_storage
+        .get(node)
         .and_then(|a| a.0.get("color"))
         .and_then(|c| parse_hex_color(c))
         .unwrap_or(Color::srgb(0.5, 0.5, 0.5))
@@ -48,12 +57,17 @@ fn spawn_colored_primitive(
         cull_mode: double_sided.then_some(None).flatten(),
         ..Default::default()
     });
-    commands.spawn((PbrBundle {
-        mesh,
-        material,
-        transform,
-        ..Default::default()
-    }, Dirty)).id()
+    commands
+        .spawn((
+            PbrBundle {
+                mesh,
+                material,
+                transform,
+                ..Default::default()
+            },
+            Dirty,
+        ))
+        .id()
 }
 
 // ─── Reload ──────────────────────────────────────────────────────────────────
@@ -108,20 +122,24 @@ pub fn commit_pending_document_load_system(
             Some(active) if active.epoch == epoch && active.url == url
         );
         if !is_active {
-            log_panel.push_info(format!("Dropping stale document load (epoch {epoch}): {url}"));
+            log_panel.push_info(format!(
+                "Dropping stale document load (epoch {epoch}): {url}"
+            ));
             continue;
         }
 
         match result {
             Ok(bundle) => {
                 let mut new_world = build_world();
-                match flatten_loaded_document_bundle(&mut new_world, &url, &bundle, &mut log_panel) {
+                match flatten_loaded_document_bundle(&mut new_world, &url, &bundle, &mut log_panel)
+                {
                     Ok((new_nodes, new_dirty)) => {
                         for worker in manager.contexts.values_mut() {
                             crate::js::stop_space_worker(worker);
                         }
                         manager.contexts.clear();
-                        log_panel.push_info("[JS] All JS contexts cleared for committed navigation");
+                        log_panel
+                            .push_info("[JS] All JS contexts cleared for committed navigation");
 
                         script_load_states.0.clear();
                         pending_model_loads.0.clear();
@@ -140,7 +158,8 @@ pub fn commit_pending_document_load_system(
                         dom_data.nodes = new_nodes;
                         dirty_nodes.0 = new_dirty;
                         document_load_state.0 = None;
-                        log_panel.push_info(format!("Document commit complete (epoch {epoch}): {url}"));
+                        log_panel
+                            .push_info(format!("Document commit complete (epoch {epoch}): {url}"));
                     }
                     Err(error) => {
                         document_load_state.0 = None;
@@ -194,10 +213,13 @@ pub fn flatten_loaded_xml(
     rt: &Runtime,
     log_panel: &mut LogPanel,
 ) -> Result<(HashMap<u32, SpecEntity>, Vec<u32>)> {
-    log_panel.push_info(format!("Content retrieved. Length: {} chars", xml_content.len()));
+    log_panel.push_info(format!(
+        "Content retrieved. Length: {} chars",
+        xml_content.len()
+    ));
 
-    let root_node = parse_xml(world, &xml_content)
-        .map_err(|e| anyhow::anyhow!("Error parsing XML: {e}"))?;
+    let root_node =
+        parse_xml(world, &xml_content).map_err(|e| anyhow::anyhow!("Error parsing XML: {e}"))?;
 
     let mut include_dirty = expand_includes(world, url, rt, log_panel).unwrap_or_default();
     finish_flatten(world, root_node, &mut include_dirty, log_panel)
@@ -360,7 +382,9 @@ where
         for (parent_ent, src) in targets {
             processed.insert(parent_ent.id());
             let Some(final_url) = resolve_remote_path(base_url, &src) else {
-                log.push_warn(format!("include: cannot resolve src='{src}' against base='{base_url}'"));
+                log.push_warn(format!(
+                    "include: cannot resolve src='{src}' against base='{base_url}'"
+                ));
                 continue;
             };
 
@@ -397,13 +421,23 @@ pub fn apply_attribute_updates(
     let mut model_storage = world.0.write_storage::<Model>();
     let mut include_storage = world.0.write_storage::<Include>();
 
-    let (px, py, pz) = (TRANSFORM_POSITION[0], TRANSFORM_POSITION[1], TRANSFORM_POSITION[2]);
-    let (rx, ry, rz) = (TRANSFORM_ROTATION[0], TRANSFORM_ROTATION[1], TRANSFORM_ROTATION[2]);
+    let (px, py, pz) = (
+        TRANSFORM_POSITION[0],
+        TRANSFORM_POSITION[1],
+        TRANSFORM_POSITION[2],
+    );
+    let (rx, ry, rz) = (
+        TRANSFORM_ROTATION[0],
+        TRANSFORM_ROTATION[1],
+        TRANSFORM_ROTATION[2],
+    );
     let (sx, sy, sz) = (TRANSFORM_SCALE[0], TRANSFORM_SCALE[1], TRANSFORM_SCALE[2]);
 
     for (ent_id, key, val) in attribute_updates.0.drain(..) {
         let ent = entities.entity(ent_id);
-        if !entities.is_alive(ent) { continue; }
+        if !entities.is_alive(ent) {
+            continue;
+        }
 
         if attrs_storage.get(ent).is_none() {
             let _ = attrs_storage.insert(ent, Attrs(HashMap::new()));
@@ -414,9 +448,15 @@ pub fn apply_attribute_updates(
                 a.0.remove(&key);
                 if let Some(tr) = tr_storage.get_mut(ent) {
                     match key.as_str() {
-                        "x" => tr.position.x = 0.0, "y" => tr.position.y = 0.0, "z" => tr.position.z = 0.0,
-                        "rx" => tr.rotation.x = 0.0, "ry" => tr.rotation.y = 0.0, "rz" => tr.rotation.z = 0.0,
-                        "sx" => tr.scale.x = 1.0, "sy" => tr.scale.y = 1.0, "sz" => tr.scale.z = 1.0,
+                        "x" => tr.position.x = 0.0,
+                        "y" => tr.position.y = 0.0,
+                        "z" => tr.position.z = 0.0,
+                        "rx" => tr.rotation.x = 0.0,
+                        "ry" => tr.rotation.y = 0.0,
+                        "rz" => tr.rotation.z = 0.0,
+                        "sx" => tr.scale.x = 1.0,
+                        "sy" => tr.scale.y = 1.0,
+                        "sz" => tr.scale.z = 1.0,
                         _ => {}
                     }
                 }
@@ -428,16 +468,58 @@ pub fn apply_attribute_updates(
         if let Some(tr) = tr_storage.get_mut(ent) {
             let parse_f32 = || -> Option<f32> { val.trim().parse::<f32>().ok() };
             match key.as_str() {
-                k if k == px || k == "x"  => if let Some(f) = parse_f32() { tr.position.x = f; },
-                k if k == py || k == "y"  => if let Some(f) = parse_f32() { tr.position.y = f; },
-                k if k == pz || k == "z"  => if let Some(f) = parse_f32() { tr.position.z = f; },
-                k if k == rx || k == "rx" => if let Some(f) = parse_f32() { tr.rotation.x = f; },
-                k if k == ry || k == "ry" => if let Some(f) = parse_f32() { tr.rotation.y = f; },
-                k if k == rz || k == "rz" => if let Some(f) = parse_f32() { tr.rotation.z = f; },
-                "s" => if let Some(f) = parse_f32() { tr.scale.x = f; tr.scale.y = f; tr.scale.z = f; },
-                k if k == sx || k == "sx" => if let Some(f) = parse_f32() { tr.scale.x = f; },
-                k if k == sy || k == "sy" => if let Some(f) = parse_f32() { tr.scale.y = f; },
-                k if k == sz || k == "sz" => if let Some(f) = parse_f32() { tr.scale.z = f; },
+                k if k == px || k == "x" => {
+                    if let Some(f) = parse_f32() {
+                        tr.position.x = f;
+                    }
+                }
+                k if k == py || k == "y" => {
+                    if let Some(f) = parse_f32() {
+                        tr.position.y = f;
+                    }
+                }
+                k if k == pz || k == "z" => {
+                    if let Some(f) = parse_f32() {
+                        tr.position.z = f;
+                    }
+                }
+                k if k == rx || k == "rx" => {
+                    if let Some(f) = parse_f32() {
+                        tr.rotation.x = f;
+                    }
+                }
+                k if k == ry || k == "ry" => {
+                    if let Some(f) = parse_f32() {
+                        tr.rotation.y = f;
+                    }
+                }
+                k if k == rz || k == "rz" => {
+                    if let Some(f) = parse_f32() {
+                        tr.rotation.z = f;
+                    }
+                }
+                "s" => {
+                    if let Some(f) = parse_f32() {
+                        tr.scale.x = f;
+                        tr.scale.y = f;
+                        tr.scale.z = f;
+                    }
+                }
+                k if k == sx || k == "sx" => {
+                    if let Some(f) = parse_f32() {
+                        tr.scale.x = f;
+                    }
+                }
+                k if k == sy || k == "sy" => {
+                    if let Some(f) = parse_f32() {
+                        tr.scale.y = f;
+                    }
+                }
+                k if k == sz || k == "sz" => {
+                    if let Some(f) = parse_f32() {
+                        tr.scale.z = f;
+                    }
+                }
                 _ => {}
             }
         }
@@ -518,10 +600,17 @@ fn queue_script_load_if_needed(
     io_service: &IoService,
     log_panel: &mut LogPanel,
 ) {
-    let Some(script_comp) = scripts_storage.get(node) else { return; };
-    let Some(src) = script_comp.src.as_ref() else { return; };
+    let Some(script_comp) = scripts_storage.get(node) else {
+        return;
+    };
+    let Some(src) = script_comp.src.as_ref() else {
+        return;
+    };
     let Some(final_url) = resolve_remote_path(&current_url.0, src) else {
-        log_panel.push_error(format!("Cannot resolve script src '{src}' against '{}'", current_url.0));
+        log_panel.push_error(format!(
+            "Cannot resolve script src '{src}' against '{}'",
+            current_url.0
+        ));
         return;
     };
 
@@ -583,7 +672,12 @@ pub fn dom_sync_system(
     shared_resources: Res<SharedResources>,
     mut entity_map: ResMut<EntityMap>,
     mut dirty_nodes: ResMut<DirtyNodes>,
-    mut query: Query<(Entity, &mut Transform, Option<&Dirty>, Option<&mut Handle<StandardMaterial>>)>,
+    mut query: Query<(
+        Entity,
+        &mut Transform,
+        Option<&Dirty>,
+        Option<&mut Handle<StandardMaterial>>,
+    )>,
     asset_server: Res<AssetServer>,
     mut log_panel: ResMut<LogPanel>,
     mut perf_stats: ResMut<PerformanceStats>,
@@ -592,7 +686,9 @@ pub fn dom_sync_system(
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let start_time = Instant::now();
-    if dirty_nodes.0.is_empty() { return; }
+    if dirty_nodes.0.is_empty() {
+        return;
+    }
     let tokio_rt = &async_dom.tokio_rt;
     let io_service = &async_dom.io_service;
     let current_url = &async_dom.current_url;
@@ -645,7 +741,8 @@ pub fn dom_sync_system(
             //   3. Llamar `commands.entity(bevy_ent).remove::<Dirty>()` solo si `dirty.is_some()`.
             //   4. Agregar `continue` para no caer en el default de transform-only.
             if tag == "model" {
-                let resolved_asset_path = models.get(*node)
+                let resolved_asset_path = models
+                    .get(*node)
                     .and_then(|model_data| model_data.src.as_ref())
                     .and_then(|original_src| resolve_remote_path(&current_url.0, original_src))
                     .and_then(|final_url| {
@@ -660,11 +757,15 @@ pub fn dom_sync_system(
                         );
 
                         match model_load_states.0.get(&node_id) {
-                            Some(ModelLoadState::Ready { url, asset_path }) if *url == final_url => {
+                            Some(ModelLoadState::Ready { url, asset_path })
+                                if *url == final_url =>
+                            {
                                 Some(asset_path.clone())
                             }
                             Some(ModelLoadState::Failed { url, error }) if *url == final_url => {
-                                log_panel.push_warn(format!("Model load failed for {final_url}: {error}"));
+                                log_panel.push_warn(format!(
+                                    "Model load failed for {final_url}: {error}"
+                                ));
                                 None
                             }
                             _ => None,
@@ -686,7 +787,9 @@ pub fn dom_sync_system(
                     entity_map.0.insert(node_id, new_ent);
                 } else if let Ok((_, mut t, dirty, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
-                    if dirty.is_some() { commands.entity(bevy_ent).remove::<Dirty>(); }
+                    if dirty.is_some() {
+                        commands.entity(bevy_ent).remove::<Dirty>();
+                    }
                 }
                 continue;
             }
@@ -696,8 +799,12 @@ pub fn dom_sync_system(
                 let attrs_map = attrs_storage.get(*node).map(|a| &a.0).unwrap_or(&empty_map);
                 let (text_value, text_size, text_color) = parse_text_attrs(attrs_map);
                 let text_material = get_or_create_text_material(
-                    &mut text_render.text_material_cache, &mut text_render.materials,
-                    &mut text_render.images, &text_value, text_size, text_color,
+                    &mut text_render.text_material_cache,
+                    &mut text_render.materials,
+                    &mut text_render.images,
+                    &text_value,
+                    text_size,
+                    text_color,
                 );
                 let text_transform = build_text_transform(transform_b, &text_value, text_size);
 
@@ -706,20 +813,29 @@ pub fn dom_sync_system(
                     *t = text_transform;
                     if let Some(mut material_handle) = maybe_material {
                         *material_handle = text_material.clone();
-                        if dirty.is_some() { commands.entity(bevy_ent).remove::<Dirty>(); }
+                        if dirty.is_some() {
+                            commands.entity(bevy_ent).remove::<Dirty>();
+                        }
                         updated_in_place = true;
                     }
                 }
-                if updated_in_place { continue; }
+                if updated_in_place {
+                    continue;
+                }
 
                 commands.entity(bevy_ent).despawn_recursive();
                 entity_map.0.remove(&node_id);
-                let new_ent = commands.spawn((PbrBundle {
-                    mesh: shared_resources.plane_mesh.clone(),
-                    material: text_material,
-                    transform: text_transform,
-                    ..Default::default()
-                }, Dirty)).id();
+                let new_ent = commands
+                    .spawn((
+                        PbrBundle {
+                            mesh: shared_resources.plane_mesh.clone(),
+                            material: text_material,
+                            transform: text_transform,
+                            ..Default::default()
+                        },
+                        Dirty,
+                    ))
+                    .id();
                 set_parent(&mut commands, new_ent, parent_id, &entity_map);
                 entity_map.0.insert(node_id, new_ent);
                 continue;
@@ -737,7 +853,9 @@ pub fn dom_sync_system(
                 );
                 if let Ok((_, mut t, dirty, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
-                    if dirty.is_some() { commands.entity(bevy_ent).remove::<Dirty>(); }
+                    if dirty.is_some() {
+                        commands.entity(bevy_ent).remove::<Dirty>();
+                    }
                 }
                 continue;
             }
@@ -751,7 +869,9 @@ pub fn dom_sync_system(
                             mat.base_color = color;
                         }
                     }
-                    if dirty.is_some() { commands.entity(bevy_ent).remove::<Dirty>(); }
+                    if dirty.is_some() {
+                        commands.entity(bevy_ent).remove::<Dirty>();
+                    }
                 }
                 continue;
             }
@@ -765,11 +885,14 @@ pub fn dom_sync_system(
             }
         } else {
             // --- Create new entity ---
-            if DOM_SYNC_VERBOSE_LOGS { log_panel.push_info("  Creating new entity..."); }
+            if DOM_SYNC_VERBOSE_LOGS {
+                log_panel.push_info("  Creating new entity...");
+            }
 
             let new_ent = match tag.as_str() {
                 "model" => {
-                    let resolved_asset_path = models.get(*node)
+                    let resolved_asset_path = models
+                        .get(*node)
                         .and_then(|model_data| model_data.src.as_ref())
                         .and_then(|original_src| resolve_remote_path(&current_url.0, original_src))
                         .and_then(|final_url| {
@@ -784,11 +907,17 @@ pub fn dom_sync_system(
                             );
 
                             match model_load_states.0.get(&node_id) {
-                                Some(ModelLoadState::Ready { url, asset_path }) if *url == final_url => {
+                                Some(ModelLoadState::Ready { url, asset_path })
+                                    if *url == final_url =>
+                                {
                                     Some(asset_path.clone())
                                 }
-                                Some(ModelLoadState::Failed { url, error }) if *url == final_url => {
-                                    log_panel.push_warn(format!("Model load failed for {final_url}: {error}"));
+                                Some(ModelLoadState::Failed { url, error })
+                                    if *url == final_url =>
+                                {
+                                    log_panel.push_warn(format!(
+                                        "Model load failed for {final_url}: {error}"
+                                    ));
                                     None
                                 }
                                 _ => None,
@@ -813,11 +942,25 @@ pub fn dom_sync_system(
                         io_service,
                         &mut log_panel,
                     );
-                    commands.spawn((SpatialBundle { transform: transform_b, ..Default::default() }, Dirty)).id()
+                    commands
+                        .spawn((
+                            SpatialBundle {
+                                transform: transform_b,
+                                ..Default::default()
+                            },
+                            Dirty,
+                        ))
+                        .id()
                 }
-                "space" | "include" => {
-                    commands.spawn((SpatialBundle { transform: transform_b, ..Default::default() }, Dirty)).id()
-                }
+                "space" | "include" => commands
+                    .spawn((
+                        SpatialBundle {
+                            transform: transform_b,
+                            ..Default::default()
+                        },
+                        Dirty,
+                    ))
+                    .id(),
                 "box" => {
                     let attrs_opt = attrs_storage.get(*node);
                     let color = primitive_color(&attrs_storage, *node);
@@ -839,60 +982,66 @@ pub fn dom_sync_system(
                         false,
                     )
                 }
-                "sphere" => {
-                    spawn_colored_primitive(
-                        &mut commands,
-                        &mut text_render.materials,
-                        shared_resources.sphere_mesh.clone(),
-                        primitive_color(&attrs_storage, *node),
-                        transform_b,
-                        false,
-                    )
-                }
-                "plane" => {
-                    spawn_colored_primitive(
-                        &mut commands,
-                        &mut text_render.materials,
-                        shared_resources.plane_mesh.clone(),
-                        primitive_color(&attrs_storage, *node),
-                        transform_b,
-                        true,
-                    )
-                }
-                "cylinder" => {
-                    spawn_colored_primitive(
-                        &mut commands,
-                        &mut text_render.materials,
-                        shared_resources.cylinder_mesh.clone(),
-                        primitive_color(&attrs_storage, *node),
-                        transform_b,
-                        false,
-                    )
-                }
+                "sphere" => spawn_colored_primitive(
+                    &mut commands,
+                    &mut text_render.materials,
+                    shared_resources.sphere_mesh.clone(),
+                    primitive_color(&attrs_storage, *node),
+                    transform_b,
+                    false,
+                ),
+                "plane" => spawn_colored_primitive(
+                    &mut commands,
+                    &mut text_render.materials,
+                    shared_resources.plane_mesh.clone(),
+                    primitive_color(&attrs_storage, *node),
+                    transform_b,
+                    true,
+                ),
+                "cylinder" => spawn_colored_primitive(
+                    &mut commands,
+                    &mut text_render.materials,
+                    shared_resources.cylinder_mesh.clone(),
+                    primitive_color(&attrs_storage, *node),
+                    transform_b,
+                    false,
+                ),
                 "text" => {
                     let empty_map = HashMap::new();
                     let attrs_map = attrs_storage.get(*node).map(|a| &a.0).unwrap_or(&empty_map);
                     let (text_value, text_size, text_color) = parse_text_attrs(attrs_map);
                     let text_material = get_or_create_text_material(
-                        &mut text_render.text_material_cache, &mut text_render.materials,
-                        &mut text_render.images, &text_value, text_size, text_color,
+                        &mut text_render.text_material_cache,
+                        &mut text_render.materials,
+                        &mut text_render.images,
+                        &text_value,
+                        text_size,
+                        text_color,
                     );
                     let text_transform = build_text_transform(transform_b, &text_value, text_size);
-                    commands.spawn((PbrBundle {
-                        mesh: shared_resources.plane_mesh.clone(),
-                        material: text_material,
-                        transform: text_transform,
-                        ..Default::default()
-                    }, Dirty)).id()
+                    commands
+                        .spawn((
+                            PbrBundle {
+                                mesh: shared_resources.plane_mesh.clone(),
+                                material: text_material,
+                                transform: text_transform,
+                                ..Default::default()
+                            },
+                            Dirty,
+                        ))
+                        .id()
                 }
-                _other => {
-                    commands.spawn((PbrBundle {
-                        mesh: shared_resources.cube_mesh.clone(),
-                        material: shared_resources.default_material.clone(),
-                        transform: transform_b,
-                        ..Default::default()
-                    }, Dirty)).id()
-                }
+                _other => commands
+                    .spawn((
+                        PbrBundle {
+                            mesh: shared_resources.cube_mesh.clone(),
+                            material: shared_resources.default_material.clone(),
+                            transform: transform_b,
+                            ..Default::default()
+                        },
+                        Dirty,
+                    ))
+                    .id(),
             };
 
             set_parent(&mut commands, new_ent, parent_id, &entity_map);
@@ -905,7 +1054,12 @@ pub fn dom_sync_system(
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-fn set_parent(commands: &mut Commands, new_ent: Entity, parent_id: Option<u32>, entity_map: &EntityMap) {
+fn set_parent(
+    commands: &mut Commands,
+    new_ent: Entity,
+    parent_id: Option<u32>,
+    entity_map: &EntityMap,
+) {
     if let Some(pid) = parent_id {
         if let Some(&parent_bevy_ent) = entity_map.0.get(&pid) {
             commands.entity(new_ent).set_parent(parent_bevy_ent);
@@ -928,20 +1082,27 @@ fn spawn_model_entity(
         } else {
             asset_server.load(asset_path.to_string())
         };
-        return commands.spawn((
-            SceneBundle {
-                scene: scene_handle,
-                transform: transform_b,
-                ..Default::default()
-            },
-            Dirty,
-        )).id();
+        return commands
+            .spawn((
+                SceneBundle {
+                    scene: scene_handle,
+                    transform: transform_b,
+                    ..Default::default()
+                },
+                Dirty,
+            ))
+            .id();
     }
 
-    commands.spawn((PbrBundle {
-        mesh: shared_resources.cube_mesh.clone(),
-        material: shared_resources.default_material.clone(),
-        transform: transform_b,
-        ..default()
-    }, Dirty)).id()
+    commands
+        .spawn((
+            PbrBundle {
+                mesh: shared_resources.cube_mesh.clone(),
+                material: shared_resources.default_material.clone(),
+                transform: transform_b,
+                ..default()
+            },
+            Dirty,
+        ))
+        .id()
 }

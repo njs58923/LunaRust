@@ -1,13 +1,18 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fs, path::PathBuf};
 
 use bevy::{ecs::system::SystemParam, prelude::*};
+use serde::{Deserialize, Serialize};
 use specs::{Entity as SpecEntity, World as SpecWorld};
 use tokio::runtime::Runtime;
 
 // ─── Log ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy)]
-pub enum LogLevel { Error, Warn, Info }
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+}
 
 #[derive(Debug, Clone)]
 pub struct LogEntry {
@@ -17,7 +22,10 @@ pub struct LogEntry {
 
 impl LogEntry {
     pub fn new(level: LogLevel, message: impl Into<String>) -> Self {
-        Self { level, message: message.into() }
+        Self {
+            level,
+            message: message.into(),
+        }
     }
 }
 
@@ -27,15 +35,25 @@ pub struct LogPanel {
 }
 
 impl LogPanel {
-    pub fn push_error(&mut self, msg: impl Into<String>) { self.push(LogLevel::Error, msg); }
-    pub fn push_warn(&mut self, msg: impl Into<String>) { self.push(LogLevel::Warn, msg); }
-    pub fn push_info(&mut self, msg: impl Into<String>) { self.push(LogLevel::Info, msg); }
+    pub fn push_error(&mut self, msg: impl Into<String>) {
+        self.push(LogLevel::Error, msg);
+    }
+    pub fn push_warn(&mut self, msg: impl Into<String>) {
+        self.push(LogLevel::Warn, msg);
+    }
+    pub fn push_info(&mut self, msg: impl Into<String>) {
+        self.push(LogLevel::Info, msg);
+    }
     pub fn push(&mut self, level: LogLevel, msg: impl Into<String>) {
         const MAX_LOGS: usize = 300;
-        if self.logs.len() >= MAX_LOGS { self.logs.remove(0); }
+        if self.logs.len() >= MAX_LOGS {
+            self.logs.remove(0);
+        }
         self.logs.push(LogEntry::new(level, msg));
     }
-    pub fn clear(&mut self) { self.logs.clear(); }
+    pub fn clear(&mut self) {
+        self.logs.clear();
+    }
 }
 
 // ─── Resources & Components ──────────────────────────────────────────────────
@@ -55,7 +73,9 @@ pub struct ElemenetWorld(pub SpecWorld);
 pub struct EntityMap(pub HashMap<u32, Entity>);
 
 #[derive(Resource, Default)]
-pub struct EntityCounter { pub count: usize }
+pub struct EntityCounter {
+    pub count: usize,
+}
 
 #[derive(Resource)]
 pub struct FpsCounter {
@@ -65,26 +85,71 @@ pub struct FpsCounter {
 }
 impl Default for FpsCounter {
     fn default() -> Self {
-        Self { timer: Timer::from_seconds(1.0, TimerMode::Repeating), frame_count: 0, fps: 0 }
+        Self {
+            timer: Timer::from_seconds(1.0, TimerMode::Repeating),
+            frame_count: 0,
+            fps: 0,
+        }
     }
 }
 
 #[derive(Resource, Default)]
 pub struct CurrentUrl(pub String);
 
-#[derive(Resource)]
-pub struct AutoLoadConfig {
-    pub enabled: bool,
-    pub start_url: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PreferredRenderMode {
+    #[default]
+    Desktop,
+    Vr,
 }
-impl Default for AutoLoadConfig {
+
+#[derive(Debug, Clone, Serialize, Deserialize, Resource)]
+pub struct RootConfig {
+    pub auto_load_home: bool,
+    pub home_url: String,
+    pub preferred_render_mode: PreferredRenderMode,
+}
+
+impl Default for RootConfig {
     fn default() -> Self {
-        Self { enabled: true, start_url: "luna://home".to_string() }
+        Self {
+            auto_load_home: true,
+            home_url: "luna://home".to_string(),
+            preferred_render_mode: PreferredRenderMode::Desktop,
+        }
+    }
+}
+
+impl RootConfig {
+    pub fn path() -> PathBuf {
+        crate::utils::folder::resolve_root_config_path()
+    }
+
+    pub fn load() -> Self {
+        let path = Self::path();
+        let Ok(contents) = fs::read_to_string(&path) else {
+            return Self::default();
+        };
+        serde_json::from_str(&contents).unwrap_or_else(|_| Self::default())
+    }
+
+    pub fn save(&self) -> Result<PathBuf, String> {
+        let path = Self::path();
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("Invalid root config path: {}", path.display()))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Create config dir failed: {e}"))?;
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Serialize root config failed: {e}"))?;
+        fs::write(&path, json).map_err(|e| format!("Write root config failed: {e}"))?;
+        Ok(path)
     }
 }
 
 #[derive(Resource)]
-pub struct RenderMode { pub is_vr: bool }
+pub struct RenderMode {
+    pub is_vr: bool,
+}
 
 #[derive(Component)]
 pub struct DesktopCamera;
@@ -132,7 +197,9 @@ pub struct SharedResources {
 pub struct TokioRuntime(pub Runtime);
 
 #[derive(Resource, Default)]
-pub struct ModelCache { pub cache: HashMap<String, String> }
+pub struct ModelCache {
+    pub cache: HashMap<String, String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TextMaterialKey {
@@ -147,18 +214,31 @@ pub struct TextMaterialCache {
 }
 
 #[derive(Resource, Default)]
-pub struct PerformanceStats { pub dom_sync_ms: f32 }
+pub struct PerformanceStats {
+    pub dom_sync_ms: f32,
+}
 
 #[derive(Resource, Default)]
 pub struct PendingScripts(pub Vec<(u32, String, String)>);
 
 #[derive(PartialEq, Eq)]
-pub enum DevtoolTab { Status, Hsml, Logs, Redes }
+pub enum DevtoolTab {
+    Status,
+    Hsml,
+    Logs,
+    Redes,
+}
 
 #[derive(Resource)]
-pub struct DevtoolState { pub active_tab: DevtoolTab }
+pub struct DevtoolState {
+    pub active_tab: DevtoolTab,
+}
 impl Default for DevtoolState {
-    fn default() -> Self { DevtoolState { active_tab: DevtoolTab::Status } }
+    fn default() -> Self {
+        DevtoolState {
+            active_tab: DevtoolTab::Status,
+        }
+    }
 }
 
 // ─── SystemParam bundles ─────────────────────────────────────────────────────
@@ -168,7 +248,7 @@ pub struct UiSystemParams<'w> {
     pub entity_counter: Res<'w, EntityCounter>,
     pub fps_counter: Res<'w, FpsCounter>,
     pub perf_stats: Res<'w, PerformanceStats>,
-    pub auto_load_config: ResMut<'w, AutoLoadConfig>,
+    pub root_config: ResMut<'w, RootConfig>,
 }
 
 #[derive(SystemParam)]

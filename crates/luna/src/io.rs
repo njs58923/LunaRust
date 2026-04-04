@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{mpsc, Mutex},
+    time::Instant,
 };
 
 use bevy::prelude::*;
@@ -20,30 +21,97 @@ use crate::{
 
 pub enum IoResult {
     DocumentLoaded {
+        network_id: u64,
         epoch: u64,
         url: String,
         result: Result<LoadedDocumentBundle, String>,
     },
     FetchCompleted {
+        network_id: u64,
         space_id: u32,
         request_id: i32,
         result: Result<String, String>,
     },
     ScriptLoaded {
+        network_id: u64,
         node_id: u32,
         url: String,
         result: Result<String, String>,
     },
     ModelPrepared {
+        network_id: u64,
         url: String,
         result: Result<String, String>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkRequestKind {
+    Document,
+    Fetch,
+    Script,
+    Model,
+}
+
+impl NetworkRequestKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Document => "document",
+            Self::Fetch => "fetch",
+            Self::Script => "script",
+            Self::Model => "model",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkRequestStatus {
+    Queued,
+    Ok,
+    Error,
+}
+
+impl NetworkRequestStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Ok => "ok",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NetworkRequestEntry {
+    pub id: u64,
+    pub kind: NetworkRequestKind,
+    pub url: String,
+    pub owner: String,
+    pub status: NetworkRequestStatus,
+    pub started_at: Instant,
+    pub finished_at: Option<Instant>,
+    pub detail: Option<String>,
+}
+
+struct NetworkTracker {
+    next_id: u64,
+    entries: VecDeque<NetworkRequestEntry>,
+}
+
+impl Default for NetworkTracker {
+    fn default() -> Self {
+        Self {
+            next_id: 1,
+            entries: VecDeque::new(),
+        }
+    }
 }
 
 #[derive(Resource)]
 pub struct IoService {
     result_tx: mpsc::Sender<IoResult>,
     result_rx: Mutex<mpsc::Receiver<IoResult>>,
+    network_tracker: Mutex<NetworkTracker>,
 }
 
 impl Default for IoService {
@@ -52,6 +120,7 @@ impl Default for IoService {
         Self {
             result_tx,
             result_rx: Mutex::new(result_rx),
+            network_tracker: Mutex::new(NetworkTracker::default()),
         }
     }
 }
@@ -59,6 +128,62 @@ impl Default for IoService {
 impl IoService {
     fn sender(&self) -> mpsc::Sender<IoResult> {
         self.result_tx.clone()
+    }
+
+    pub fn begin_request(
+        &self,
+        kind: NetworkRequestKind,
+        url: impl Into<String>,
+        owner: impl Into<String>,
+    ) -> u64 {
+        const MAX_NETWORK_ENTRIES: usize = 200;
+        let Ok(mut tracker) = self.network_tracker.lock() else {
+            return 0;
+        };
+        let id = tracker.next_id;
+        tracker.next_id += 1;
+        if tracker.entries.len() >= MAX_NETWORK_ENTRIES {
+            tracker.entries.pop_front();
+        }
+        tracker.entries.push_back(NetworkRequestEntry {
+            id,
+            kind,
+            url: url.into(),
+            owner: owner.into(),
+            status: NetworkRequestStatus::Queued,
+            started_at: Instant::now(),
+            finished_at: None,
+            detail: None,
+        });
+        id
+    }
+
+    pub fn finish_request(&self, id: u64, status: NetworkRequestStatus, detail: Option<String>) {
+        if id == 0 {
+            return;
+        }
+        let Ok(mut tracker) = self.network_tracker.lock() else {
+            return;
+        };
+        if let Some(entry) = tracker.entries.iter_mut().find(|entry| entry.id == id) {
+            entry.status = status;
+            entry.finished_at = Some(Instant::now());
+            entry.detail = detail;
+        }
+    }
+
+    pub fn network_entries(&self) -> Vec<NetworkRequestEntry> {
+        let Ok(tracker) = self.network_tracker.lock() else {
+            return Vec::new();
+        };
+        tracker.entries.iter().cloned().collect()
+    }
+
+    pub fn clear_network_entries(&self) {
+        let Ok(mut tracker) = self.network_tracker.lock() else {
+            return;
+        };
+        tracker.entries.clear();
     }
 }
 
@@ -123,7 +248,8 @@ impl PendingModelLoads {
     }
 
     pub fn take_waiters(&mut self, url: &str) -> Vec<u32> {
-        self.0.remove(url)
+        self.0
+            .remove(url)
             .map(|waiters| waiters.into_iter().collect())
             .unwrap_or_default()
     }
@@ -154,10 +280,16 @@ pub fn request_fetch_text(
     request_id: i32,
     url: String,
 ) {
+    let network_id = io_service.begin_request(
+        NetworkRequestKind::Fetch,
+        url.clone(),
+        format!("space:{space_id}"),
+    );
     let tx = io_service.sender();
     rt.spawn(async move {
         let result = load_text_resource(&url).await;
         let _ = tx.send(IoResult::FetchCompleted {
+            network_id,
             space_id,
             request_id,
             result,
@@ -165,29 +297,35 @@ pub fn request_fetch_text(
     });
 }
 
-pub fn request_document_load(
-    rt: &Runtime,
-    io_service: &IoService,
-    epoch: u64,
-    url: String,
-) {
+pub fn request_document_load(rt: &Runtime, io_service: &IoService, epoch: u64, url: String) {
+    let network_id = io_service.begin_request(
+        NetworkRequestKind::Document,
+        url.clone(),
+        format!("epoch:{epoch}"),
+    );
     let tx = io_service.sender();
     rt.spawn(async move {
         let result = load_document_bundle(&url).await;
-        let _ = tx.send(IoResult::DocumentLoaded { epoch, url, result });
+        let _ = tx.send(IoResult::DocumentLoaded {
+            network_id,
+            epoch,
+            url,
+            result,
+        });
     });
 }
 
-pub fn request_script_load(
-    rt: &Runtime,
-    io_service: &IoService,
-    node_id: u32,
-    url: String,
-) {
+pub fn request_script_load(rt: &Runtime, io_service: &IoService, node_id: u32, url: String) {
+    let network_id = io_service.begin_request(
+        NetworkRequestKind::Script,
+        url.clone(),
+        format!("node:{node_id}"),
+    );
     let tx = io_service.sender();
     rt.spawn(async move {
         let result = load_text_resource(&url).await;
         let _ = tx.send(IoResult::ScriptLoaded {
+            network_id,
             node_id,
             url,
             result,
@@ -195,15 +333,17 @@ pub fn request_script_load(
     });
 }
 
-pub fn request_model_prepare(
-    rt: &Runtime,
-    io_service: &IoService,
-    url: String,
-) {
+pub fn request_model_prepare(rt: &Runtime, io_service: &IoService, url: String) {
+    let network_id =
+        io_service.begin_request(NetworkRequestKind::Model, url.clone(), "model-cache");
     let tx = io_service.sender();
     rt.spawn(async move {
         let result = prepare_model_asset(&url).await;
-        let _ = tx.send(IoResult::ModelPrepared { url, result });
+        let _ = tx.send(IoResult::ModelPrepared {
+            network_id,
+            url,
+            result,
+        });
     });
 }
 
@@ -268,9 +408,9 @@ async fn load_document_bundle(url: &str) -> Result<LoadedDocumentBundle, String>
         let include_sources = match extract_include_sources(&xml) {
             Ok(sources) => sources,
             Err(error) => {
-                bundle.warnings.push(format!(
-                    "include scan failed for {base_url}: {error}"
-                ));
+                bundle
+                    .warnings
+                    .push(format!("include scan failed for {base_url}: {error}"));
                 continue;
             }
         };
@@ -292,9 +432,9 @@ async fn load_document_bundle(url: &str) -> Result<LoadedDocumentBundle, String>
                     bundle.includes.insert(final_url, include_xml);
                 }
                 Err(error) => {
-                    bundle.warnings.push(format!(
-                        "include: load error {final_url} -> {error}"
-                    ));
+                    bundle
+                        .warnings
+                        .push(format!("include: load error {final_url} -> {error}"));
                 }
             }
         }
@@ -342,7 +482,12 @@ async fn prepare_model_asset(url: &str) -> Result<String, String> {
 
     to_assets_relative(&local_path, &assets_dir)
         .map(|path| path.replace('\\', "/"))
-        .ok_or_else(|| format!("Cached model path is outside assets dir: {}", local_path.display()))
+        .ok_or_else(|| {
+            format!(
+                "Cached model path is outside assets dir: {}",
+                local_path.display()
+            )
+        })
 }
 
 fn matches_current_script_url(
@@ -381,7 +526,9 @@ pub fn poll_io_results_system(
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut manager: NonSendMut<ScriptRuntimeManager>,
 ) {
-    let Ok(rx) = io_service.result_rx.lock() else { return; };
+    let Ok(rx) = io_service.result_rx.lock() else {
+        return;
+    };
 
     loop {
         let result = match rx.try_recv() {
@@ -390,18 +537,39 @@ pub fn poll_io_results_system(
         };
 
         match result {
-            IoResult::DocumentLoaded { epoch, url, result } => {
-                pending_document_loads.0.push(CompletedDocumentLoad { epoch, url, result });
+            IoResult::DocumentLoaded {
+                network_id,
+                epoch,
+                url,
+                result,
+            } => {
+                let status = if result.is_ok() {
+                    NetworkRequestStatus::Ok
+                } else {
+                    NetworkRequestStatus::Error
+                };
+                let detail = result.as_ref().err().cloned();
+                io_service.finish_request(network_id, status, detail);
+                pending_document_loads
+                    .0
+                    .push(CompletedDocumentLoad { epoch, url, result });
             }
             IoResult::FetchCompleted {
+                network_id,
                 space_id,
                 request_id,
                 result,
             } => {
+                let status = if result.is_ok() {
+                    NetworkRequestStatus::Ok
+                } else {
+                    NetworkRequestStatus::Error
+                };
+                let detail = result.as_ref().err().cloned();
+                io_service.finish_request(network_id, status, detail);
                 if let Some(worker) = manager.contexts.get_mut(&space_id) {
                     let _ = worker.cmd_tx.send(JsWorkerCommand::PushFetchResults(vec![(
-                        request_id,
-                        result,
+                        request_id, result,
                     )]));
                 } else {
                     log_panel.push_warn(format!(
@@ -410,20 +578,27 @@ pub fn poll_io_results_system(
                 }
             }
             IoResult::ScriptLoaded {
+                network_id,
                 node_id,
                 url,
                 result,
             } => {
+                let status = if result.is_ok() {
+                    NetworkRequestStatus::Ok
+                } else {
+                    NetworkRequestStatus::Error
+                };
+                let detail = result.as_ref().err().cloned();
+                io_service.finish_request(network_id, status, detail);
                 match result {
                     Ok(code) => {
                         if let Some(space_id) =
                             matches_current_script_url(&world.0, &current_url.0, node_id, &url)
                         {
                             pending_scripts.0.push((space_id, url.clone(), code));
-                            script_load_states.0.insert(
-                                node_id,
-                                ScriptLoadState::Loaded { url: url.clone() },
-                            );
+                            script_load_states
+                                .0
+                                .insert(node_id, ScriptLoadState::Loaded { url: url.clone() });
                             log_panel.push_info(format!(
                                 "[JS][space:{space_id}] Script loaded asynchronously: {url}"
                             ));
@@ -445,7 +620,18 @@ pub fn poll_io_results_system(
                     }
                 }
             }
-            IoResult::ModelPrepared { url, result } => {
+            IoResult::ModelPrepared {
+                network_id,
+                url,
+                result,
+            } => {
+                let status = if result.is_ok() {
+                    NetworkRequestStatus::Ok
+                } else {
+                    NetworkRequestStatus::Error
+                };
+                let detail = result.as_ref().err().cloned();
+                io_service.finish_request(network_id, status, detail);
                 let waiters = pending_model_loads.take_waiters(&url);
                 if waiters.is_empty() {
                     continue;

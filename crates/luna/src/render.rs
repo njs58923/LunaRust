@@ -40,11 +40,17 @@ pub fn parse_hex_color(hex: &str) -> Option<Color> {
 }
 
 pub fn get_attr_f32(attrs: &HashMap<String, String>, key: &str, default: f32) -> f32 {
-    attrs.get(key).and_then(|s| s.parse::<f32>().ok()).unwrap_or(default)
+    attrs
+        .get(key)
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(default)
 }
 
 pub fn get_attr_string(attrs: &HashMap<String, String>, key: &str, default: &str) -> String {
-    attrs.get(key).map(|s| s.to_string()).unwrap_or_else(|| default.to_string())
+    attrs
+        .get(key)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| default.to_string())
 }
 
 // ─── Font & text texture ─────────────────────────────────────────────────────
@@ -65,7 +71,11 @@ pub fn create_text_texture(text: &str, color: Color, images: &mut Assets<Image>)
     let padding = 4u32;
 
     let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
-    layout.reset(&LayoutSettings { x: 0.0, y: 0.0, ..LayoutSettings::default() });
+    layout.reset(&LayoutSettings {
+        x: 0.0,
+        y: 0.0,
+        ..LayoutSettings::default()
+    });
     layout.append(&[text_font], &TextStyle::new(normalized_text, font_px, 0));
 
     let glyphs = layout.glyphs();
@@ -91,18 +101,29 @@ pub fn create_text_texture(text: &str, color: Color, images: &mut Assets<Image>)
         for gy in 0..glyph.height {
             for gx in 0..glyph.width {
                 let alpha = bitmap[gy * glyph.width + gx];
-                if alpha == 0 { continue; }
+                if alpha == 0 {
+                    continue;
+                }
                 let x = base_x + gx as i32;
                 let y = base_y + gy as i32;
-                if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 { continue; }
+                if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+                    continue;
+                }
                 let idx = ((y as u32 * width + x as u32) * 4) as usize;
-                data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = alpha;
+                data[idx] = r;
+                data[idx + 1] = g;
+                data[idx + 2] = b;
+                data[idx + 3] = alpha;
             }
         }
     }
 
     images.add(Image::new(
-        bevy::render::render_resource::Extent3d { width, height, depth_or_array_layers: 1 },
+        bevy::render::render_resource::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
         bevy::render::render_resource::TextureDimension::D2,
         data,
         bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
@@ -120,7 +141,11 @@ pub fn parse_text_attrs(attrs_map: &HashMap<String, String>) -> (String, f32, Co
     (text_value, text_size, text_color)
 }
 
-pub fn build_text_transform(mut base_transform: Transform, text_value: &str, text_size: f32) -> Transform {
+pub fn build_text_transform(
+    mut base_transform: Transform,
+    text_value: &str,
+    text_size: f32,
+) -> Transform {
     let text_width = text_size * text_value.chars().count() as f32 * 0.6;
     let text_height = text_size;
     base_transform.scale = Vec3::new(text_width.max(0.01), text_height.max(0.01), 1.0);
@@ -154,7 +179,9 @@ pub fn get_or_create_text_material(
         ..Default::default()
     });
 
-    text_cache.materials.insert(cache_key, text_material.clone());
+    text_cache
+        .materials
+        .insert(cache_key, text_material.clone());
     text_material
 }
 
@@ -173,7 +200,11 @@ pub fn encode_url_to_filename(url: &str) -> String {
 pub async fn load_bytes_from_url(url: &str) -> Result<Vec<u8>> {
     let resp = reqwest::get(url).await?;
     if !resp.status().is_success() {
-        return Err(anyhow::anyhow!("Status {} downloading {}", resp.status(), url));
+        return Err(anyhow::anyhow!(
+            "Status {} downloading {}",
+            resp.status(),
+            url
+        ));
     }
     Ok(resp.bytes().await?.to_vec())
 }
@@ -189,7 +220,10 @@ pub fn download_model_if_needed(
             log_panel.push_info(format!("Cache hit: {} -> {}", url, cached_path));
             return Ok(cached_path.clone());
         }
-        log_panel.push_warn(format!("Cache stale: {} -> {}. Re-downloading.", url, cached_path));
+        log_panel.push_warn(format!(
+            "Cache stale: {} -> {}. Re-downloading.",
+            url, cached_path
+        ));
     } else {
         log_panel.push_info(format!("Cache miss, downloading: {}", url));
     }
@@ -207,15 +241,13 @@ pub fn download_model_if_needed(
         let bytes = rt
             .block_on(load_bytes_from_url(url))
             .map_err(|e| anyhow::anyhow!("Download failed: {e}"))?;
-        std::fs::write(&local_path, bytes)
-            .map_err(|e| anyhow::anyhow!("Write failed: {e}"))?;
+        std::fs::write(&local_path, bytes).map_err(|e| anyhow::anyhow!("Write failed: {e}"))?;
     } else {
         let from = std::path::PathBuf::from(url);
         if !from.exists() {
             return Err(anyhow::anyhow!("Local file not found: {url}"));
         }
-        std::fs::copy(&from, &local_path)
-            .map_err(|e| anyhow::anyhow!("Copy failed: {e}"))?;
+        std::fs::copy(&from, &local_path).map_err(|e| anyhow::anyhow!("Copy failed: {e}"))?;
     }
 
     cache.cache.insert(url.to_string(), local_path.clone());
@@ -261,8 +293,8 @@ pub fn apply_model_with_cache(
 
 // ─── URL resolution ──────────────────────────────────────────────────────────
 
-use url::Url;
 use crate::routes::VirtualRoutes;
+use url::Url;
 
 pub fn resolve_remote_path(base_url: &str, remote_path: &str) -> Option<String> {
     if VirtualRoutes::is_virtual_url(remote_path) {
@@ -271,8 +303,12 @@ pub fn resolve_remote_path(base_url: &str, remote_path: &str) -> Option<String> 
     if remote_path.starts_with("http://") || remote_path.starts_with("https://") {
         return Some(remote_path.to_string());
     }
-    let Ok(base) = Url::parse(base_url) else { return None; };
-    let Ok(final_url) = base.join(remote_path) else { return None; };
+    let Ok(base) = Url::parse(base_url) else {
+        return None;
+    };
+    let Ok(final_url) = base.join(remote_path) else {
+        return None;
+    };
     Some(final_url.to_string())
 }
 

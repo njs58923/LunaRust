@@ -16,8 +16,8 @@ use bevy_mod_xr::session::{
     XrRequestExitEvent, XrSessionPlugin, XrState, XrStateChanged,
 };
 
-use luna::{dom, io, js, ui, utils};
 use luna::*;
+use luna::{dom, io, js, ui, utils};
 
 // ─── main ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +28,17 @@ fn main() {
     println!("Args: {:?}", &args[1..]);
 
     let ar_on = args.iter().any(|a| a == "--ar");
+    let root_config = RootConfig::load();
+    let initial_url = if root_config.auto_load_home {
+        root_config.home_url.clone()
+    } else {
+        "luna://home".to_string()
+    };
+    let initial_render_mode = if ar_on {
+        true
+    } else {
+        root_config.preferred_render_mode == PreferredRenderMode::Vr
+    };
 
     let default_plugins = DefaultPlugins
         .set(AssetPlugin {
@@ -43,21 +54,13 @@ fn main() {
             ..default()
         });
 
-    app.add_plugins(
-        add_xr_plugins(default_plugins).set(XrSessionPlugin { auto_handle: false }),
-    );
+    app.add_plugins(add_xr_plugins(default_plugins).set(XrSessionPlugin { auto_handle: false }));
     app.add_plugins(bevy_xr_utils::hand_gizmos::HandGizmosPlugin);
-    app.insert_resource(RenderMode { is_vr: ar_on });
+    app.insert_resource(RenderMode {
+        is_vr: initial_render_mode,
+    });
     app.add_plugins(EguiPlugin);
     app.add_plugins(FrameTimeDiagnosticsPlugin);
-
-    // Resources
-    let auto_load_config = AutoLoadConfig::default();
-    let initial_url = if auto_load_config.enabled {
-        auto_load_config.start_url.clone()
-    } else {
-        "luna://home".to_string()
-    };
 
     app.insert_resource(VirtualDomData::default());
     app.insert_resource(DirtyNodes::default());
@@ -66,14 +69,16 @@ fn main() {
     app.insert_resource(EntityCounter::default());
     app.insert_resource(FpsCounter::default());
     app.insert_resource(CurrentUrl(initial_url));
-    app.insert_resource(AutoLoadConfig::default());
+    app.insert_resource(root_config);
     app.insert_resource(ReloadTrigger(false));
     app.insert_resource(AttributeUpdates::default());
     app.insert_resource(DeleteRequests::default());
     app.insert_resource(SpaceHandleTables::default());
     app.insert_resource(DevtoolVisible(false));
     app.insert_resource(LogPanel::default());
-    app.insert_resource(TokioRuntime(Runtime::new().expect("Failed to create Tokio runtime")));
+    app.insert_resource(TokioRuntime(
+        Runtime::new().expect("Failed to create Tokio runtime"),
+    ));
     app.insert_resource(ModelCache::default());
     app.insert_resource(TextMaterialCache::default());
     app.insert_resource(PerformanceStats::default());
@@ -95,7 +100,8 @@ fn main() {
         (
             io::poll_io_results_system,
             dom::request_navigation_system.run_if(|r: Res<ReloadTrigger>| r.0),
-            dom::commit_pending_document_load_system.run_if(|p: Res<PendingDocumentLoads>| !p.0.is_empty()),
+            dom::commit_pending_document_load_system
+                .run_if(|p: Res<PendingDocumentLoads>| !p.0.is_empty()),
             dom::apply_attribute_updates.run_if(|a: Res<AttributeUpdates>| !a.0.is_empty()),
             dom::mark_dirty_system,
             dom::dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
@@ -104,9 +110,15 @@ fn main() {
     );
 
     app.add_systems(Update, ui::ui_system);
-    app.add_systems(Update, update_entity_counter.run_if(|m: Res<EntityMap>| m.is_changed()));
+    app.add_systems(
+        Update,
+        update_entity_counter.run_if(|m: Res<EntityMap>| m.is_changed()),
+    );
     app.add_systems(Update, update_fps_counter);
-    app.add_systems(Update, camera_keyboard_movement_system.run_if(|rm: Res<RenderMode>| !rm.is_vr));
+    app.add_systems(
+        Update,
+        camera_keyboard_movement_system.run_if(|rm: Res<RenderMode>| !rm.is_vr),
+    );
     app.add_systems(Update, (xr_session_handler, toggle_render_mode));
 
     app.add_systems(
@@ -115,7 +127,8 @@ fn main() {
             js::js_update_snapshots_system,
             js::js_eval_pending_scripts,
             js::js_tick_system,
-        ).chain(),
+        )
+            .chain(),
     );
 
     app.run();
@@ -129,18 +142,24 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut log_panel: ResMut<LogPanel>,
     mut reload_trigger: ResMut<ReloadTrigger>,
-    auto_load_config: Res<AutoLoadConfig>,
+    root_config: Res<RootConfig>,
 ) {
     commands.spawn((
         Camera3dBundle {
-            camera: Camera { order: 0, ..default() },
+            camera: Camera {
+                order: 0,
+                ..default()
+            },
             transform: Transform::from_xyz(0.0, 3.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
             ..default()
         },
         DesktopCamera,
     ));
     commands.spawn(Camera2dBundle {
-        camera: Camera { order: 1, ..default() },
+        camera: Camera {
+            order: 1,
+            ..default()
+        },
         ..default()
     });
     commands.spawn(PointLightBundle {
@@ -164,11 +183,11 @@ fn setup(
         default_material,
     });
 
-    if auto_load_config.enabled {
+    if root_config.auto_load_home {
         reload_trigger.0 = true;
         log_panel.push_info(format!(
             "Auto-load enabled. Queued initial navigation: {}",
-            auto_load_config.start_url
+            root_config.home_url
         ));
     } else {
         log_panel.push_info("Auto-load disabled.");
@@ -194,19 +213,33 @@ fn camera_keyboard_movement_system(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut query: Query<&mut Transform, With<Camera3d>>,
 ) {
-    let Ok(mut transform) = query.get_single_mut() else { return; };
+    let Ok(mut transform) = query.get_single_mut() else {
+        return;
+    };
     let mut direction = Vec3::ZERO;
     let forward = transform.forward().as_vec3();
     let right = transform.right().as_vec3();
     let up = Vec3::Y;
     let speed = 5.0;
 
-    if keyboard.pressed(KeyCode::KeyW) { direction += forward; }
-    if keyboard.pressed(KeyCode::KeyS) { direction -= forward; }
-    if keyboard.pressed(KeyCode::KeyD) { direction += right; }
-    if keyboard.pressed(KeyCode::KeyA) { direction -= right; }
-    if keyboard.pressed(KeyCode::KeyE) { direction += up; }
-    if keyboard.pressed(KeyCode::KeyQ) { direction -= up; }
+    if keyboard.pressed(KeyCode::KeyW) {
+        direction += forward;
+    }
+    if keyboard.pressed(KeyCode::KeyS) {
+        direction -= forward;
+    }
+    if keyboard.pressed(KeyCode::KeyD) {
+        direction += right;
+    }
+    if keyboard.pressed(KeyCode::KeyA) {
+        direction -= right;
+    }
+    if keyboard.pressed(KeyCode::KeyE) {
+        direction += up;
+    }
+    if keyboard.pressed(KeyCode::KeyQ) {
+        direction -= up;
+    }
 
     if direction.length_squared() > 0.0 {
         direction = direction.normalize();
@@ -224,10 +257,22 @@ fn xr_session_handler(
 ) {
     for XrStateChanged(state) in state_changed.read() {
         match state {
-            XrState::Available => { if render_mode.is_vr { create_session.send_default(); } }
-            XrState::Ready => { if render_mode.is_vr { begin_session.send_default(); } }
-            XrState::Stopping => { end_session.send_default(); }
-            XrState::Exiting { .. } => { destroy_session.send_default(); }
+            XrState::Available => {
+                if render_mode.is_vr {
+                    create_session.send_default();
+                }
+            }
+            XrState::Ready => {
+                if render_mode.is_vr {
+                    begin_session.send_default();
+                }
+            }
+            XrState::Stopping => {
+                end_session.send_default();
+            }
+            XrState::Exiting { .. } => {
+                destroy_session.send_default();
+            }
             _ => {}
         }
     }
@@ -240,13 +285,21 @@ fn toggle_render_mode(
     mut request_exit: EventWriter<XrRequestExitEvent>,
     mut desktop_cameras: Query<&mut Camera, With<DesktopCamera>>,
 ) {
-    if !render_mode.is_changed() { return; }
+    if !render_mode.is_changed() {
+        return;
+    }
 
     if render_mode.is_vr {
-        for mut cam in desktop_cameras.iter_mut() { cam.is_active = false; }
-        if *xr_state == XrState::Available { create_session.send_default(); }
+        for mut cam in desktop_cameras.iter_mut() {
+            cam.is_active = false;
+        }
+        if *xr_state == XrState::Available {
+            create_session.send_default();
+        }
     } else {
-        for mut cam in desktop_cameras.iter_mut() { cam.is_active = true; }
+        for mut cam in desktop_cameras.iter_mut() {
+            cam.is_active = true;
+        }
         if *xr_state == XrState::Running || *xr_state == XrState::Ready {
             request_exit.send_default();
         }

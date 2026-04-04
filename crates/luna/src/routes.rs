@@ -6,8 +6,8 @@ pub struct VirtualRoutes {
 }
 
 enum RouteHandler {
-    Static(&'static str),              // HSML/JS estáticos
-    Dynamic(fn(&str) -> String),       // Contenido generado (ej: cache stats)
+    Static(&'static str),        // HSML/JS estáticos
+    Dynamic(fn(&str) -> String), // Contenido generado (ej: cache stats)
 }
 
 lazy_static! {
@@ -26,11 +26,16 @@ impl VirtualRoutes {
         routes.insert("error/404".to_string(), RouteHandler::Static(LUNA_404));
 
         // Registrar rutas dinámicas
-        routes.insert("cache-stats".to_string(), RouteHandler::Dynamic(generate_cache_stats));
+        routes.insert(
+            "cache-stats".to_string(),
+            RouteHandler::Dynamic(generate_cache_stats),
+        );
 
         // Registrar scripts internos
-        routes.insert("internal/home_navigation.js".to_string(),
-            RouteHandler::Static(SCRIPT_HOME_NAV));
+        routes.insert(
+            "internal/home_navigation.js".to_string(),
+            RouteHandler::Static(SCRIPT_HOME_NAV),
+        );
 
         Self { routes }
     }
@@ -38,14 +43,20 @@ impl VirtualRoutes {
     pub fn resolve(&self, url: &str) -> Option<String> {
         let route_path = url.strip_prefix("luna://")?.trim_start_matches('/');
 
-        println!("[VirtualRoutes] Resolving: '{}' -> route_path: '{}'", url, route_path);
+        println!(
+            "[VirtualRoutes] Resolving: '{}' -> route_path: '{}'",
+            url, route_path
+        );
 
         if let Some(handler) = self.routes.get(route_path) {
             let content = match handler {
                 RouteHandler::Static(content) => content.to_string(),
                 RouteHandler::Dynamic(generator) => generator(route_path),
             };
-            println!("[VirtualRoutes] ✓ Found route, content length: {}", content.len());
+            println!(
+                "[VirtualRoutes] ✓ Found route, content length: {}",
+                content.len()
+            );
             return Some(content);
         }
 
@@ -302,7 +313,9 @@ mod tests {
     fn virtual_url_detected() {
         assert!(VirtualRoutes::is_virtual_url("luna://home"));
         assert!(VirtualRoutes::is_virtual_url("luna://demos"));
-        assert!(VirtualRoutes::is_virtual_url("luna://internal/home_navigation.js"));
+        assert!(VirtualRoutes::is_virtual_url(
+            "luna://internal/home_navigation.js"
+        ));
     }
 
     #[test]
@@ -341,7 +354,9 @@ mod tests {
 
     #[test]
     fn resolve_internal_script_returns_js() {
-        let content = VIRTUAL_ROUTES.resolve("luna://internal/home_navigation.js").unwrap();
+        let content = VIRTUAL_ROUTES
+            .resolve("luna://internal/home_navigation.js")
+            .unwrap();
         assert!(content.contains("luna://demos"));
     }
 

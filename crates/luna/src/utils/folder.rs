@@ -1,4 +1,7 @@
-use std::{env, path::{Path, PathBuf}};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 fn find_cargo_root_from(start: &Path) -> Option<PathBuf> {
     for anc in start.ancestors() {
@@ -45,8 +48,45 @@ pub fn resolve_assets_and_cache_dirs() -> (PathBuf, PathBuf) {
     (assets_dir, cache_dir)
 }
 
+pub fn resolve_luna_state_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = env::var("APPDATA") {
+            return PathBuf::from(appdata).join("LunaBrowser");
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(xdg_state_home) = env::var("XDG_STATE_HOME") {
+            return PathBuf::from(xdg_state_home).join("luna");
+        }
+        if let Ok(home) = env::var("HOME") {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("state")
+                .join("luna");
+        }
+    }
+
+    if let Some(root) = find_cargo_root() {
+        return root.join(".luna");
+    }
+
+    env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".luna")
+}
+
+pub fn resolve_root_config_path() -> PathBuf {
+    resolve_luna_state_dir().join("root-config.json")
+}
+
 pub fn to_assets_relative(abs_path: &Path, assets_dir: &Path) -> Option<String> {
-    abs_path.strip_prefix(assets_dir).ok().map(|p| p.to_string_lossy().to_string())
+    abs_path
+        .strip_prefix(assets_dir)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
 }
 
 #[cfg(test)]
@@ -82,5 +122,10 @@ mod tests {
         assert!(assets_dir.ends_with("assets"));
         assert!(cache_dir.ends_with("cache"));
         assert!(cache_dir.starts_with(&assets_dir));
+    }
+
+    #[test]
+    fn root_config_path_ends_with_expected_filename() {
+        assert!(resolve_root_config_path().ends_with("root-config.json"));
     }
 }

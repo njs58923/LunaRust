@@ -1,14 +1,12 @@
-use std::collections::HashMap;
-
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use specs::{Entity as SpecEntity, Join, World as SpecWorld, WorldExt};
 use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
 
 use crate::{
-    AttributeUpdates, CurrentUrl, DeleteRequests, DesktopCamera, DevtoolState, DevtoolTab,
-    DevtoolVisible, EntityMap, LogLevel, LogPanel, ReloadTrigger, RenderMode, UiSystemParams,
-    VirtualDomData,
+    AttributeUpdates, CurrentUrl, DeleteRequests, DevtoolState, DevtoolTab, DevtoolVisible,
+    EntityMap, IoService, LogLevel, LogPanel, PreferredRenderMode, ReloadTrigger, RenderMode,
+    RootConfig, UiSystemParams, VirtualDomData,
 };
 
 pub fn ui_system(
@@ -27,9 +25,14 @@ pub fn ui_system(
     mut log_panel: ResMut<LogPanel>,
     mut ui_params: UiSystemParams,
     mut render_mode: ResMut<RenderMode>,
+    io_service: Res<IoService>,
 ) {
     egui::Window::new("Navegador").show(contexts.ctx_mut(), |ui| {
         ui.horizontal(|ui| {
+            if ui.button("Home").clicked() {
+                url.0 = ui_params.root_config.home_url.clone();
+                reload_trigger.0 = true;
+            }
             ui.label("URL:");
             let resp = ui.text_edit_singleline(&mut url.0);
             if resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -38,12 +41,28 @@ pub fn ui_system(
             if ui.button("Go").clicked() || ui.button("Reload").clicked() {
                 reload_trigger.0 = true;
             }
+            if ui.button("Set Current as Home").clicked() {
+                ui_params.root_config.home_url = url.0.clone();
+                match ui_params.root_config.save() {
+                    Ok(path) => {
+                        log_panel.push_info(format!("Home URL saved to {}", path.display()))
+                    }
+                    Err(error) => log_panel.push_error(format!("Failed saving home URL: {error}")),
+                }
+            }
         });
 
-        let label = if render_mode.is_vr { "Switch to Desktop" } else { "Switch to VR" };
+        let label = if render_mode.is_vr {
+            "Switch to Desktop"
+        } else {
+            "Switch to VR"
+        };
         if ui.button(label).clicked() {
             render_mode.is_vr = !render_mode.is_vr;
-            log_panel.push_info(format!("Mode: {}", if render_mode.is_vr { "VR" } else { "Desktop" }));
+            log_panel.push_info(format!(
+                "Mode: {}",
+                if render_mode.is_vr { "VR" } else { "Desktop" }
+            ));
         }
 
         if ui.button("Toggle Devtool").clicked() {
@@ -56,16 +75,28 @@ pub fn ui_system(
             .id(egui::Id::new("devtool_window"))
             .show(contexts.ctx_mut(), |ui| {
                 ui.horizontal(|ui| {
-                    if ui.selectable_label(devtool_state.active_tab == DevtoolTab::Status, "Status").clicked() {
+                    if ui
+                        .selectable_label(devtool_state.active_tab == DevtoolTab::Status, "Status")
+                        .clicked()
+                    {
                         devtool_state.active_tab = DevtoolTab::Status;
                     }
-                    if ui.selectable_label(devtool_state.active_tab == DevtoolTab::Hsml, "HSML").clicked() {
+                    if ui
+                        .selectable_label(devtool_state.active_tab == DevtoolTab::Hsml, "HSML")
+                        .clicked()
+                    {
                         devtool_state.active_tab = DevtoolTab::Hsml;
                     }
-                    if ui.selectable_label(devtool_state.active_tab == DevtoolTab::Logs, "Console").clicked() {
+                    if ui
+                        .selectable_label(devtool_state.active_tab == DevtoolTab::Logs, "Console")
+                        .clicked()
+                    {
                         devtool_state.active_tab = DevtoolTab::Logs;
                     }
-                    if ui.selectable_label(devtool_state.active_tab == DevtoolTab::Redes, "Network").clicked() {
+                    if ui
+                        .selectable_label(devtool_state.active_tab == DevtoolTab::Redes, "Network")
+                        .clicked()
+                    {
                         devtool_state.active_tab = DevtoolTab::Redes;
                     }
                 });
@@ -77,18 +108,50 @@ pub fn ui_system(
                         ui.separator();
                         ui.label(format!("Entities: {}", ui_params.entity_counter.count));
                         ui.label(format!("FPS: {}", ui_params.fps_counter.fps));
-                        ui.label(format!("Last dom_sync: {:.2} ms", ui_params.perf_stats.dom_sync_ms));
+                        ui.label(format!(
+                            "Last dom_sync: {:.2} ms",
+                            ui_params.perf_stats.dom_sync_ms
+                        ));
                         ui.separator();
-                        ui.heading("Config");
-                        let mut auto_load_enabled = ui_params.auto_load_config.enabled;
-                        if ui.checkbox(&mut auto_load_enabled, "Auto-load on startup").changed() {
-                            ui_params.auto_load_config.enabled = auto_load_enabled;
+                        ui.heading("Root Config");
+                        let mut auto_load_home = ui_params.root_config.auto_load_home;
+                        if ui
+                            .checkbox(&mut auto_load_home, "Auto-load home on startup")
+                            .changed()
+                        {
+                            ui_params.root_config.auto_load_home = auto_load_home;
                         }
                         ui.horizontal(|ui| {
-                            ui.label("Start URL:");
-                            ui.text_edit_singleline(&mut ui_params.auto_load_config.start_url);
+                            ui.label("Home URL:");
+                            ui.text_edit_singleline(&mut ui_params.root_config.home_url);
                         });
+                        egui::ComboBox::from_label("Preferred render mode")
+                            .selected_text(match ui_params.root_config.preferred_render_mode {
+                                PreferredRenderMode::Desktop => "Desktop",
+                                PreferredRenderMode::Vr => "VR",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut ui_params.root_config.preferred_render_mode,
+                                    PreferredRenderMode::Desktop,
+                                    "Desktop",
+                                );
+                                ui.selectable_value(
+                                    &mut ui_params.root_config.preferred_render_mode,
+                                    PreferredRenderMode::Vr,
+                                    "VR",
+                                );
+                            });
                         ui.label(format!("Current URL: {}", url.0));
+                        ui.label(format!("Config path: {}", RootConfig::path().display()));
+                        if ui.button("Save Config").clicked() {
+                            match ui_params.root_config.save() {
+                                Ok(path) => log_panel
+                                    .push_info(format!("Root config saved to {}", path.display())),
+                                Err(error) => log_panel
+                                    .push_error(format!("Failed saving root config: {error}")),
+                            }
+                        }
                     }
                     DevtoolTab::Hsml => {
                         ui.heading("Element Tree (HSML)");
@@ -102,9 +165,16 @@ pub fn ui_system(
                             .show(ui, |ui| {
                                 if let Some(root) = get_root_entity(&world.0) {
                                     show_element_tree(
-                                        ui, root, &world.0, &entity_map, &mut commands,
-                                        &mut camera_query, &dom_data, &mut attribute_updates,
-                                        &mut delete_requests, &mut log_panel,
+                                        ui,
+                                        root,
+                                        &world.0,
+                                        &entity_map,
+                                        &mut commands,
+                                        &mut camera_query,
+                                        &dom_data,
+                                        &mut attribute_updates,
+                                        &mut delete_requests,
+                                        &mut log_panel,
                                     );
                                 } else {
                                     ui.label("No elements in scene.");
@@ -123,16 +193,26 @@ pub fn ui_system(
                             .show(ui, |ui| {
                                 for entry in &log_panel.logs {
                                     match entry.level {
-                                        LogLevel::Error => { ui.colored_label(egui::Color32::RED, &entry.message); }
-                                        LogLevel::Warn => { ui.colored_label(egui::Color32::YELLOW, &entry.message); }
-                                        LogLevel::Info => { ui.label(&entry.message); }
+                                        LogLevel::Error => {
+                                            ui.colored_label(egui::Color32::RED, &entry.message);
+                                        }
+                                        LogLevel::Warn => {
+                                            ui.colored_label(egui::Color32::YELLOW, &entry.message);
+                                        }
+                                        LogLevel::Info => {
+                                            ui.label(&entry.message);
+                                        }
                                     }
                                 }
                             });
                         ui.horizontal(|ui| {
-                            if ui.button("Clear logs").clicked() { log_panel.clear(); }
+                            if ui.button("Clear logs").clicked() {
+                                log_panel.clear();
+                            }
                             if ui.button("Copy logs").clicked() {
-                                let logs_text: String = log_panel.logs.iter()
+                                let logs_text: String = log_panel
+                                    .logs
+                                    .iter()
                                     .map(|entry| {
                                         let prefix = match entry.level {
                                             LogLevel::Error => "[ERROR] ",
@@ -150,7 +230,43 @@ pub fn ui_system(
                     DevtoolTab::Redes => {
                         ui.heading("Network");
                         ui.separator();
-                        ui.label("Coming soon...");
+                        let entries = io_service.network_entries();
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Requests: {}", entries.len()));
+                            if ui.button("Clear").clicked() {
+                                io_service.clear_network_entries();
+                            }
+                        });
+                        ui.separator();
+                        if entries.is_empty() {
+                            ui.label("No network activity yet.");
+                        } else {
+                            egui::ScrollArea::vertical()
+                                .id_source("network_scroll_area")
+                                .max_height(260.0)
+                                .show(ui, |ui| {
+                                    for entry in entries.iter().rev() {
+                                        let elapsed_ms = entry
+                                            .finished_at
+                                            .unwrap_or_else(std::time::Instant::now)
+                                            .duration_since(entry.started_at)
+                                            .as_millis();
+                                        ui.group(|ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.label(format!("#{}", entry.id));
+                                                ui.label(entry.kind.label());
+                                                ui.label(entry.status.label());
+                                                ui.label(format!("{elapsed_ms} ms"));
+                                            });
+                                            ui.label(&entry.url);
+                                            ui.label(format!("Owner: {}", entry.owner));
+                                            if let Some(detail) = &entry.detail {
+                                                ui.label(format!("Detail: {detail}"));
+                                            }
+                                        });
+                                    }
+                                });
+                        }
                     }
                 }
             });
@@ -167,8 +283,12 @@ fn get_root_entity(world: &SpecWorld) -> Option<SpecEntity> {
             roots.push((ent, tag_name.to_string()));
         }
     }
-    if let Some((ent, _)) = roots.iter().find(|(_, tag)| tag == "hsml") { return Some(*ent); }
-    if let Some((ent, _)) = roots.iter().find(|(_, tag)| tag == "space") { return Some(*ent); }
+    if let Some((ent, _)) = roots.iter().find(|(_, tag)| tag == "hsml") {
+        return Some(*ent);
+    }
+    if let Some((ent, _)) = roots.iter().find(|(_, tag)| tag == "space") {
+        return Some(*ent);
+    }
     roots.into_iter().next().map(|(ent, _)| ent)
 }
 
@@ -198,12 +318,20 @@ fn show_element_tree(
                         ui.label(k);
                         let mut val = v.clone();
                         if ui.text_edit_singleline(&mut val).changed() {
-                            attribute_updates.0.push((entity.id(), k.clone(), val.clone()));
-                            log_panel.push_info(format!("Attr change: Entity({:?}) [{}] = {}", entity, k, val));
+                            attribute_updates
+                                .0
+                                .push((entity.id(), k.clone(), val.clone()));
+                            log_panel.push_info(format!(
+                                "Attr change: Entity({:?}) [{}] = {}",
+                                entity, k, val
+                            ));
                         }
                         if ui.button("🗑").on_hover_text("Delete attribute").clicked() {
-                            attribute_updates.0.push((entity.id(), k.clone(), "[DEL]".to_string()));
-                            log_panel.push_warn(format!("Delete attr: Entity({:?}) [{}]", entity, k));
+                            attribute_updates
+                                .0
+                                .push((entity.id(), k.clone(), "[DEL]".to_string()));
+                            log_panel
+                                .push_warn(format!("Delete attr: Entity({:?}) [{}]", entity, k));
                         }
                     });
                 }
@@ -216,7 +344,9 @@ fn show_element_tree(
                 let te_resp = ui.text_edit_singleline(&mut key);
                 ui.data_mut(|d| d.insert_persisted(id, key.clone()));
                 if ui.button("Create").clicked() && !key.trim().is_empty() {
-                    attribute_updates.0.push((entity.id(), key.clone(), String::new()));
+                    attribute_updates
+                        .0
+                        .push((entity.id(), key.clone(), String::new()));
                     log_panel.push_info(format!("Create attr: Entity({:?}) [{}]", entity, key));
                     key.clear();
                     ui.data_mut(|d| d.insert_persisted(id, key));
@@ -229,7 +359,8 @@ fn show_element_tree(
                     if let Some(tr) = transforms.get(entity) {
                         if let Ok(mut cam) = camera_query.get_single_mut() {
                             let pos = Vec3::new(tr.position.x, tr.position.y, tr.position.z);
-                            *cam = Transform::from_translation(pos + Vec3::new(0.0, 3.0, 8.0)).looking_at(pos, Vec3::Y);
+                            *cam = Transform::from_translation(pos + Vec3::new(0.0, 3.0, 8.0))
+                                .looking_at(pos, Vec3::Y);
                             log_panel.push_info(format!("Camera focused on entity: {:?}", entity));
                         }
                     }
@@ -242,7 +373,18 @@ fn show_element_tree(
 
             if let Some(h) = hierarchies.get(entity) {
                 for child in &h.children {
-                    show_element_tree(ui, *child, world, entity_map, commands, camera_query, dom_data, attribute_updates, delete_requests, log_panel);
+                    show_element_tree(
+                        ui,
+                        *child,
+                        world,
+                        entity_map,
+                        commands,
+                        camera_query,
+                        dom_data,
+                        attribute_updates,
+                        delete_requests,
+                        log_panel,
+                    );
                 }
             }
         });
