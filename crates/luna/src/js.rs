@@ -538,10 +538,10 @@ pub fn js_tick_system(world: &mut World) {
     // Element creation
     for (space_id, creation_queue) in creation_batches {
         use virtual_dom::dom::element::Vec3 as DomVec3;
-        let (creation_results, created_node_ids, log_messages) = {
+        let (creation_results, created_entities, log_messages) = {
             let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else { return; };
             let mut creation_results = Vec::new();
-            let mut created_node_ids = Vec::new();
+            let mut created_entities: Vec<(u32, specs::Entity)> = Vec::new();
             let mut log_messages = Vec::new();
 
             for (request_id, tag_name) in creation_queue {
@@ -562,14 +562,19 @@ pub fn js_tick_system(world: &mut World) {
                     new_ent.id()
                 };
                 creation_results.push((request_id, new_ent_id as i32));
-                created_node_ids.push(new_ent_id);
+                created_entities.push((new_ent_id, new_ent));
                 log_messages.push(format!("[JS][space:{}] createElement('{}') -> node_id={}", space_id, tag_name, new_ent_id));
             }
-            (creation_results, created_node_ids, log_messages)
+            (creation_results, created_entities, log_messages)
         };
 
+        if let Some(mut dom_data) = world.get_resource_mut::<crate::VirtualDomData>() {
+            for &(id, ent) in &created_entities {
+                dom_data.nodes.insert(id, ent);
+            }
+        }
         if let Some(mut dirty_nodes) = world.get_resource_mut::<DirtyNodes>() {
-            dirty_nodes.0.extend(created_node_ids);
+            dirty_nodes.0.extend(created_entities.iter().map(|&(id, _)| id));
         }
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
             for msg in log_messages { log_panel.push_info(msg); }
