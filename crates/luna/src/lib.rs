@@ -1,0 +1,17 @@
+// Luna - biblioteca interna
+// Los módulos aquí son testeables sin depender de bevy_mod_openxr (openxr_sys).
+// El binario (main.rs) importa desde aquí con `use luna::*`.
+
+pub mod dom;
+pub mod js;
+pub mod render;
+pub mod routes;
+pub mod types;
+pub mod ui;
+pub mod utils;
+
+// Re-exportar todos los tipos públicos para que main.rs pueda hacer `use luna::*`
+pub use dom::*;
+pub use render::{apply_transform, resolve_remote_path};
+pub use routes::VIRTUAL_ROUTES;
+pub use types::*;

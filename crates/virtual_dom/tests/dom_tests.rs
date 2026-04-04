@@ -54,7 +54,7 @@ fn parse_text_element_has_tag() {
 #[test]
 fn parse_attributes_stored_in_attrs() {
     let mut world = make_world();
-    let xml = r#"<hsml><box color="#FF0000" x="1"/></hsml>"#;
+    let xml = r##"<hsml><box color="#FF0000" x="1"/></hsml>"##;
     let root = parse_xml(&mut world, xml).expect("parse failed");
 
     let hier = world.read_storage::<Hierarchy>();

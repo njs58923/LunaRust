@@ -29,7 +29,7 @@ pub fn apply_transform(node: &Transform2, transform: &mut Transform) {
 // ─── Attribute helpers ───────────────────────────────────────────────────────
 
 pub fn parse_hex_color(hex: &str) -> Option<Color> {
-    let hex = hex.trim_start_matches('#');
+    let hex = hex.strip_prefix('#')?;
     if hex.len() != 6 {
         return None;
     }
