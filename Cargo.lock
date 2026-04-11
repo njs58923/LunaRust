@@ -3361,6 +3361,7 @@ dependencies = [
  "bevy_mod_openxr",
  "bevy_mod_xr",
  "bevy_xr_utils",
+ "bitflags 2.6.0",
  "fontdue",
  "js_runtime",
  "lazy_static",

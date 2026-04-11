@@ -5,6 +5,7 @@
 pub mod dom;
 pub mod io;
 pub mod js;
+pub mod permissions;
 pub mod render;
 pub mod routes;
 pub mod touch;
@@ -16,6 +17,7 @@ pub mod vr_locomotion;
 // Re-exportar todos los tipos públicos para que main.rs pueda hacer `use luna::*`
 pub use dom::*;
 pub use io::*;
+pub use permissions::*;
 pub use render::{apply_transform, resolve_remote_path};
 pub use routes::VIRTUAL_ROUTES;
 pub use types::*;

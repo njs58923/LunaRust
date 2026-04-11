@@ -41,6 +41,10 @@ impl VirtualRoutes {
             "internal/root_api.js".to_string(),
             RouteHandler::Static(SCRIPT_ROOT_API),
         );
+        routes.insert(
+            "internal/controller_toque.js".to_string(),
+            RouteHandler::Static(SCRIPT_CONTROLLER_TOQUE),
+        );
 
         // UX and Controller routes
         routes.insert("ux_desktop".to_string(), RouteHandler::Static(LUNA_UX_DESKTOP));
@@ -92,8 +96,7 @@ const LUNA_ROOT: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space id="luna_root">
-    <script src="luna://internal/root_api.js" />
+  <space id="luna_root" system-space="root" resources="root">
   </space>
 </hsml>"##;
 
@@ -105,7 +108,7 @@ const LUNA_HOME: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space>
+  <space resources="controller_desktop,controller_vr,navigate_self">
     <text x="0" y="1.5" z="-2" value="Luna Browser - Home" size="0.3" />
     <text x="0" y="1.2" z="-2" value="Welcome to Luna 3D Browser" size="0.15" />
 
@@ -129,7 +132,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space>
+  <space resources="controller_desktop,controller_vr,navigate_self">
     <text x="0" y="1.5" z="-2" value="Luna Demos" size="0.3" />
     <text x="0" y="1.2" z="-2" value="Interactive 3D Demonstrations" size="0.15" />
 
@@ -147,13 +150,13 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
   <script>
     const btnHome = hiperspace.dimention.getElementById('btn_home');
-    if (btnHome) btnHome.addEventListener('click', () => { location.href = 'luna://home'; });
+    if (btnHome) btnHome.addEventListener('toque', () => { location.href = 'luna://home'; });
 
     // Demo placeholders - implement actual demo logic later
     const demos = ['demo_cube', 'demo_colors', 'demo_buttons'];
     demos.forEach(id => {
       const elem = hiperspace.dimention.getElementById(id);
-      if (elem) elem.addEventListener('click', () => {
+      if (elem) elem.addEventListener('toque', () => {
         console.log('Demo clicked:', id, '- Implementation pending');
       });
     });
@@ -199,8 +202,8 @@ const LUNA_SETTINGS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     const btnHome = hiperspace.dimention.getElementById('btn_home');
     const btnCache = hiperspace.dimention.getElementById('btn_cache');
 
-    if (btnHome) btnHome.addEventListener('click', () => { location.href = 'luna://home'; });
-    if (btnCache) btnCache.addEventListener('click', () => { location.href = 'luna://cache-stats'; });
+    if (btnHome) btnHome.addEventListener('toque', () => { location.href = 'luna://home'; });
+    if (btnCache) btnCache.addEventListener('toque', () => { location.href = 'luna://cache-stats'; });
 
     console.log('[luna://settings] Settings page loaded');
   </script>
@@ -236,7 +239,7 @@ const LUNA_ABOUT: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
   <script>
     const btnHome = hiperspace.dimention.getElementById('btn_home');
-    if (btnHome) btnHome.addEventListener('click', () => { location.href = 'luna://home'; });
+    if (btnHome) btnHome.addEventListener('toque', () => { location.href = 'luna://home'; });
 
     console.log('[luna://about] About page loaded');
   </script>
@@ -267,7 +270,7 @@ const LUNA_404: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
   <script>
     const btn = hiperspace.dimention.getElementById('btn_home');
-    if (btn) btn.addEventListener('click', () => { location.href = 'luna://home'; });
+    if (btn) btn.addEventListener('toque', () => { location.href = 'luna://home'; });
     console.log('[luna://404] Error page loaded');
   </script>
   </space>
@@ -282,9 +285,9 @@ const btnDemos = hiperspace.dimention.getElementById('btn_demos');
 const btnSettings = hiperspace.dimention.getElementById('btn_settings');
 const btnAbout = hiperspace.dimention.getElementById('btn_about');
 
-if (btnDemos) btnDemos.addEventListener('click', () => { location.href = 'luna://demos'; });
-if (btnSettings) btnSettings.addEventListener('click', () => { location.href = 'luna://settings'; });
-if (btnAbout) btnAbout.addEventListener('click', () => { location.href = 'luna://about'; });
+if (btnDemos) btnDemos.addEventListener('toque', () => { location.href = 'luna://demos'; });
+if (btnSettings) btnSettings.addEventListener('toque', () => { location.href = 'luna://settings'; });
+if (btnAbout) btnAbout.addEventListener('toque', () => { location.href = 'luna://about'; });
 
 console.log('[luna://home] Navigation ready');
 "##;
@@ -448,8 +451,12 @@ const SCRIPT_ROOT_API: &str = r##"
 
       space.setAttribute('visible', options.visible === false ? 'false' : 'true');
       space.setAttribute('managed-by', 'dimension.luna');
-      applySpaceOptions(entry, { ...options, url });
       root.appendChild(space);
+      const include = ensureInclude(entry);
+      if (Array.isArray(options.grants)) {
+        include.setAttribute('resources', options.grants.join(','));
+      }
+      applySpaceOptions(entry, { ...options, url });
       return publicId;
     },
 
@@ -483,6 +490,24 @@ const SCRIPT_ROOT_API: &str = r##"
       return mounted;
     },
 
+    regrantMountedSpaces(mode) {
+      const grants = mode === 'vr'
+        ? ['controller_vr', 'navigate_self']
+        : ['controller_desktop', 'navigate_self'];
+
+      discoverDirectSpaces();
+      cleanupRegistry();
+
+      for (const [publicId, entry] of registry) {
+        if (publicId === this._uxSpaceId) continue;
+        if (!isDirectRootChild(entry.space)) continue;
+        const include = ensureInclude(entry);
+        include.setAttribute('resources', grants.join(','));
+      }
+
+      return true;
+    },
+
     switchMode(mode) {
       if (mode !== 'desktop' && mode !== 'vr') {
         console.error('[root] Invalid mode:', mode);
@@ -496,7 +521,10 @@ const SCRIPT_ROOT_API: &str = r##"
       }
 
       const uxUrl = mode === 'vr' ? 'luna://ux_vr' : 'luna://ux_desktop';
-      this._uxSpaceId = this.mountSpace(uxUrl, { visible: true });
+      const grants = mode === 'vr'
+        ? ['controller_vr', 'navigate_self', 'vr_locomotion']
+        : ['controller_desktop', 'navigate_self', 'desktop_camera_control'];
+      this._uxSpaceId = this.mountSpace(uxUrl, { visible: true, grants });
       this._currentMode = mode;
       console.log('[root] Switched to mode:', mode, 'ux space:', this._uxSpaceId);
       return true;
@@ -539,7 +567,7 @@ fn generate_cache_stats(_path: &str) -> String {
 
   <script>
     const btn = hiperspace.dimention.getElementById('btn_back');
-    if (btn) btn.addEventListener('click', () => { location.href = 'luna://settings'; });
+    if (btn) btn.addEventListener('toque', () => { location.href = 'luna://settings'; });
     console.log('[luna://cache-stats] Stats page loaded (placeholder)');
   </script>
   </space>
@@ -558,10 +586,9 @@ const LUNA_UX_DESKTOP: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space id="ux_desktop">
-    <include src="luna://controller_desktop" />
+  <space id="ux_desktop" resources="desktop_camera_control">
     <script>
-      console.log('[ux_desktop] Desktop UX loaded (controller included via HSML)');
+      console.log('[ux_desktop] Desktop UX loaded');
     </script>
   </space>
 </hsml>"##;
@@ -574,10 +601,9 @@ const LUNA_UX_VR: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space id="ux_vr">
-    <include src="luna://controller_vr" />
+  <space id="ux_vr" resources="vr_locomotion">
     <script>
-      console.log('[ux_vr] VR UX loaded (controller included via HSML)');
+      console.log('[ux_vr] VR UX loaded');
     </script>
   </space>
 </hsml>"##;
@@ -669,6 +695,39 @@ const LUNA_CONTROLLER_VR: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     </script>
   </space>
 </hsml>"##;
+
+const SCRIPT_CONTROLLER_TOQUE: &str = r##"
+(function () {
+  function findNode(el, targetId) {
+    if (el.nodeId === targetId) return el;
+    var ch = el.children;
+    for (var i = 0; i < ch.length; i++) {
+      var found = findNode(ch[i], targetId);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function pollToqueRaw() {
+    // compat temporal con el runtime actual
+    var events = Deno.core.ops.op_poll_touch_events();
+    var root = globalThis.hiperspace && globalThis.hiperspace.dimention;
+    if (root) {
+      for (var i = 0; i < events.length; i++) {
+        var evt = events[i];
+        var target = findNode(root, evt.nodeId);
+        if (target) {
+          target.dispatchEvent({ type: 'toque', nodeId: evt.nodeId, x: evt.x, y: evt.y, z: evt.z });
+        }
+      }
+    }
+    requestAnimationFrame(pollToqueRaw);
+  }
+
+  requestAnimationFrame(pollToqueRaw);
+  console.log('[controller_toque] active');
+})();
+"##;
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 

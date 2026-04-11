@@ -86,6 +86,29 @@ pub(crate) fn resolve_node_relative_url(
     resolve_remote_path(&base_url, remote_path)
 }
 
+pub(crate) fn find_nearest_ancestor_include(
+    world: &SpecWorld,
+    node: SpecEntity,
+) -> Option<SpecEntity> {
+    let entities = world.entities();
+    let hierarchies = world.read_storage::<Hierarchy>();
+    let tags = world.read_storage::<Tag>();
+
+    let mut current = Some(node);
+    while let Some(ent) = current {
+        let parent_id = hierarchies.get(ent).and_then(|h| h.parent)?;
+        let parent = entities.entity(parent_id);
+        if !entities.is_alive(parent) {
+            return None;
+        }
+        if matches!(tags.get(parent), Some(tag) if tag.0 == "include") {
+            return Some(parent);
+        }
+        current = Some(parent);
+    }
+    None
+}
+
 fn include_ancestor_chain_contains(
     world: &SpecWorld,
     node: SpecEntity,
@@ -179,7 +202,7 @@ fn spawn_colored_primitive(
         Dirty,
     ));
     if let Some(node_id) = touchable_node_id {
-        entity_commands.insert(crate::touch::Touchable(node_id));
+        entity_commands.insert(crate::touch::Toqueable(node_id));
     }
     entity_commands.id()
 }
@@ -218,6 +241,7 @@ pub fn commit_pending_document_load_system(
     mut log_panel: ResMut<LogPanel>,
     mut manager: NonSendMut<crate::js::ScriptRuntimeManager>,
     mut commit: crate::DocumentCommitParams,
+    mut space_policies: ResMut<crate::permissions::SpacePolicies>,
 ) {
     let pending = pending_document_loads.0.drain(..).collect::<Vec<_>>();
     if pending.is_empty() {
@@ -271,6 +295,7 @@ pub fn commit_pending_document_load_system(
                         dirty_nodes.0 = new_dirty;
                         document_load_state.0 = None;
                         commit.js_snapshot_state.dirty = true;
+                        space_policies.dirty = true;
                         log_panel
                             .push_info(format!("Document commit complete (epoch {epoch}): {url}"));
                     }
@@ -642,6 +667,7 @@ pub fn apply_attribute_updates(
     mut world: ResMut<ElemenetWorld>,
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
+    mut space_policies: ResMut<crate::permissions::SpacePolicies>,
 ) {
     if attribute_updates.0.is_empty() {
         return;
@@ -772,6 +798,10 @@ pub fn apply_attribute_updates(
         }
 
         dirty_nodes.0.push(ent_id);
+
+        if matches!(key.as_str(), "resources" | "system-space") {
+            space_policies.dirty = true;
+        }
     }
 }
 
@@ -790,6 +820,7 @@ pub fn process_delete_requests(
     mut dom_data: ResMut<VirtualDomData>,
     mut include_load_states: ResMut<crate::IncludeLoadStates>,
     mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
+    mut space_policies: ResMut<crate::permissions::SpacePolicies>,
 ) {
     for ent_id in delete_requests.0.drain(..) {
         let sp_ent = world.0.entities().entity(ent_id);
@@ -819,6 +850,7 @@ pub fn process_delete_requests(
             ent_id, deleted
         ));
         js_snapshot_state.dirty = true;
+        space_policies.dirty = true;
     }
 }
 
@@ -913,6 +945,7 @@ pub fn commit_pending_includes_system(
     mut model_load_states: ResMut<ModelLoadStates>,
     mut space_handle_tables: ResMut<crate::SpaceHandleTables>,
     mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
+    mut space_policies: ResMut<crate::permissions::SpacePolicies>,
 ) {
     let pending: Vec<_> = pending_includes.0.drain(..).collect();
     if pending.is_empty() {
@@ -998,6 +1031,7 @@ pub fn commit_pending_includes_system(
                 }
                 dirty_nodes.0.extend(new_dirty);
                 js_snapshot_state.dirty = true;
+                space_policies.dirty = true;
 
                 include_load_states.0.insert(
                     inc.parent_node_id,
@@ -1363,7 +1397,7 @@ pub fn dom_sync_system(
             if tag == "box" || tag == "sphere" || tag == "plane" || tag == "cylinder" {
                 commands
                     .entity(bevy_ent)
-                    .insert(crate::touch::Touchable(node_id));
+                    .insert(crate::touch::Toqueable(node_id));
                 let color = primitive_color(&attrs_storage, *node);
                 let double_sided = tag == "plane";
                 let material = get_or_create_primitive_material(
@@ -1720,6 +1754,7 @@ mod tests {
         app.insert_resource(ModelLoadStates::default());
         app.insert_resource(SpaceHandleTables::default());
         app.insert_resource(JsSnapshotState::default());
+        app.insert_resource(crate::permissions::SpacePolicies::default());
 
         let mut include_states = IncludeLoadStates::default();
         include_states.0.insert(

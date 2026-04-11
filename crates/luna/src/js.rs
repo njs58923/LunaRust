@@ -9,6 +9,8 @@ use bevy::prelude::*;
 use specs::{Join, WorldExt};
 
 use js_runtime::Engine as JsEngine;
+use crate::dom::{find_nearest_ancestor_include, resolve_node_relative_url};
+use crate::permissions::{CapabilityBits, SpacePolicies};
 use virtual_dom::dom::{
     element::{Attrs, Hierarchy, Tag, Transform2},
     hsml::{Include, Model, Script},
@@ -25,6 +27,7 @@ use crate::{
 pub struct SpaceScriptContext {
     pub engine: JsEngine,
     pub loaded_scripts: HashSet<String>,
+    pub capabilities_bits: u64,
 }
 
 #[derive(Clone)]
@@ -53,12 +56,13 @@ pub struct JsTickData {
 }
 
 pub enum JsWorkerCommand {
+    SetCapabilities(u64),
     UpdateSnapshots(SpaceSnapshots),
     EvalScript { url: String, code: String },
     Tick { elapsed_ms: f64 },
     PushElementCreationResults(Vec<(i32, i32)>),
     PushFetchResults(Vec<(i32, std::result::Result<String, String>)>),
-    PushTouchEvents(Vec<(i32, f32, f32, f32)>),
+    PushToqueRawEvents(Vec<(i32, f32, f32, f32)>),
     Shutdown,
 }
 
@@ -78,6 +82,8 @@ pub struct SpaceScriptWorker {
     pub snapshot_in_flight: bool,
     pub tick_in_flight: bool,
     pub join: Option<JoinHandle<()>>,
+    pub bootstrap_scripts_enqueued: HashSet<String>,
+    pub last_capabilities_bits: u64,
 }
 
 #[derive(Default)]
@@ -125,6 +131,7 @@ fn create_space_context(space_id: u32) -> std::result::Result<SpaceScriptContext
     Ok(SpaceScriptContext {
         engine,
         loaded_scripts: HashSet::new(),
+        capabilities_bits: 0,
     })
 }
 
@@ -145,6 +152,9 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
 
             while let Ok(cmd) = cmd_rx.recv() {
                 match cmd {
+                    JsWorkerCommand::SetCapabilities(bits) => {
+                        ctx.capabilities_bits = bits;
+                    }
                     JsWorkerCommand::UpdateSnapshots(snap) => {
                         ctx.engine.update_attr_snapshot(snap.attr_snap);
                         ctx.engine.update_tag_snapshot(snap.tag_snap);
@@ -214,7 +224,7 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                             ctx.engine.push_fetch_result(request_id, result);
                         }
                     }
-                    JsWorkerCommand::PushTouchEvents(events) => {
+                    JsWorkerCommand::PushToqueRawEvents(events) => {
                         for (node_id, x, y, z) in events {
                             ctx.engine.push_touch_event(node_id, x, y, z);
                         }
@@ -231,6 +241,8 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
         snapshot_in_flight: false,
         tick_in_flight: false,
         join: Some(join),
+        bootstrap_scripts_enqueued: HashSet::new(),
+        last_capabilities_bits: 0,
     })
 }
 
@@ -450,6 +462,132 @@ pub fn find_owner_space_id(world: &specs::World, mut node: specs::Entity) -> Opt
         }
         let parent_id = hier.get(node).and_then(|h| h.parent)?;
         node = entities.entity(parent_id);
+    }
+}
+
+fn space_capabilities_snapshot(world: &World) -> HashMap<u32, CapabilityBits> {
+    world
+        .get_resource::<SpacePolicies>()
+        .map(|policies| {
+            policies
+                .by_space
+                .iter()
+                .map(|(&space_id, policy)| (space_id, policy.effective_caps))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default()
+}
+
+enum NavigationPlan {
+    SelfNav { include_id: u32, url: String },
+    GlobalNav { url: String },
+    Blocked { url: String, reason: String },
+}
+
+fn plan_navigation_for_space(
+    specs_world: &specs::World,
+    current_url: &str,
+    space_id: u32,
+    requested_url: &str,
+    caps: CapabilityBits,
+) -> NavigationPlan {
+    let entities = specs_world.entities();
+    let space_ent = entities.entity(space_id);
+    if !entities.is_alive(space_ent) {
+        return NavigationPlan::Blocked {
+            url: requested_url.to_string(),
+            reason: "space not alive".to_string(),
+        };
+    }
+
+    let final_url = resolve_node_relative_url(specs_world, space_ent, current_url, requested_url)
+        .unwrap_or_else(|| requested_url.to_string());
+
+    if caps.contains(CapabilityBits::NAVIGATE_SELF) {
+        if let Some(include_ent) = find_nearest_ancestor_include(specs_world, space_ent) {
+            return NavigationPlan::SelfNav {
+                include_id: include_ent.id(),
+                url: final_url,
+            };
+        }
+    }
+
+    if caps.contains(CapabilityBits::NAVIGATE_GLOBAL) {
+        return NavigationPlan::GlobalNav { url: final_url };
+    }
+
+    NavigationPlan::Blocked {
+        url: final_url,
+        reason: "missing navigate_self / navigate_global capability".to_string(),
+    }
+}
+
+pub fn js_sync_space_permissions_system(world: &mut World) {
+    let desired: Vec<(u32, u64)> = {
+        let Some(policies) = world.get_resource::<SpacePolicies>() else {
+            return;
+        };
+        policies
+            .by_space
+            .iter()
+            .map(|(&space_id, policy)| (space_id, policy.effective_caps.bits()))
+            .collect()
+    };
+
+    let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
+        return;
+    };
+
+    for (space_id, bits) in desired {
+        if let Some(worker) = manager.contexts.get_mut(&space_id) {
+            if worker.last_capabilities_bits != bits {
+                let _ = worker.cmd_tx.send(JsWorkerCommand::SetCapabilities(bits));
+                worker.last_capabilities_bits = bits;
+            }
+        }
+    }
+}
+
+pub fn js_auto_inject_resource_scripts_system(world: &mut World) {
+    let desired: Vec<(u32, Vec<String>)> = {
+        let Some(policies) = world.get_resource::<SpacePolicies>() else {
+            return;
+        };
+        policies
+            .by_space
+            .iter()
+            .map(|(&space_id, policy)| (space_id, policy.auto_scripts.clone()))
+            .collect()
+    };
+
+    if desired.is_empty() {
+        return;
+    }
+
+    let mut queued = Vec::new();
+    {
+        let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
+            return;
+        };
+        for (space_id, scripts) in desired {
+            let Some(worker) = manager.contexts.get_mut(&space_id) else {
+                continue;
+            };
+            for script_url in scripts {
+                if !worker.bootstrap_scripts_enqueued.insert(script_url.clone()) {
+                    continue;
+                }
+                if let Some(code) = crate::VIRTUAL_ROUTES.resolve(&script_url) {
+                    queued.push((space_id, script_url, code));
+                }
+            }
+        }
+    }
+
+    if !queued.is_empty() {
+        if let Some(mut pending_scripts) = world.get_resource_mut::<PendingScripts>() {
+            pending_scripts.0.extend(queued);
+        }
     }
 }
 
@@ -919,6 +1057,11 @@ pub fn js_tick_system(world: &mut World) {
     let mut fetch_batches = Vec::new();
     let mut navigate_batches = Vec::new();
     let mut snapshot_dirty = false;
+
+    let had_creation = !creation_batches.is_empty();
+    let had_hierarchy = !hierarchy_batches.is_empty();
+    let had_remove = !remove_batches.is_empty();
+    let capabilities_by_space = space_capabilities_snapshot(world);
 
     for (space_id, data) in tick_batches {
         if !data.logs.is_empty() {
@@ -1404,6 +1547,22 @@ pub fn js_tick_system(world: &mut World) {
 
     // Fetch
     for (space_id, fetch_queue) in fetch_batches {
+        let can_fetch = capabilities_by_space
+            .get(&space_id)
+            .map(|caps| caps.contains(CapabilityBits::FETCH_TEXT))
+            .unwrap_or(false);
+        if !can_fetch {
+            if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
+                for (_, url) in &fetch_queue {
+                    log_panel.push_warn(format!(
+                        "[JS][space:{}] blocked fetch (missing fetch_text): {}",
+                        space_id, url
+                    ));
+                }
+            }
+            continue;
+        }
+
         let Some(tokio_rt) = world.get_resource::<crate::TokioRuntime>() else {
             return;
         };
@@ -1420,21 +1579,72 @@ pub fn js_tick_system(world: &mut World) {
         }
     }
 
-    // Navigate
-    if !navigate_batches.is_empty() {
+    // Navigate (self include if allowed; otherwise global if allowed)
+    let navigation_plans = {
+        let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
+            return;
+        };
+        let current_url = world
+            .get_resource::<crate::CurrentUrl>()
+            .map(|u| u.0.clone())
+            .unwrap_or_default();
+
+        let mut plans = Vec::new();
+        for (space_id, urls) in navigate_batches {
+            let caps = capabilities_by_space
+                .get(&space_id)
+                .copied()
+                .unwrap_or_default();
+            for requested_url in urls {
+                plans.push((
+                    space_id,
+                    plan_navigation_for_space(&specs_world.0, &current_url, space_id, &requested_url, caps),
+                ));
+            }
+        }
+        plans
+    };
+
+    let mut last_global_navigation: Option<String> = None;
+    for (space_id, plan) in navigation_plans {
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
-            for (space_id, urls) in &navigate_batches {
-                for url in urls {
-                    log_panel.push_warn(format!("[JS][space:{}] navigate: {}", space_id, url));
+            match &plan {
+                NavigationPlan::SelfNav { include_id, url } => {
+                    log_panel.push_info(format!(
+                        "[JS][space:{}] self-navigate include={} -> {}",
+                        space_id, include_id, url
+                    ));
+                }
+                NavigationPlan::GlobalNav { url } => {
+                    log_panel.push_warn(format!("[JS][space:{}] global navigate: {}", space_id, url));
+                }
+                NavigationPlan::Blocked { url, reason } => {
+                    log_panel.push_warn(format!(
+                        "[JS][space:{}] blocked navigate {} ({})",
+                        space_id, url, reason
+                    ));
                 }
             }
         }
-        if let Some(mut current_url) = world.get_resource_mut::<crate::CurrentUrl>() {
-            if let Some((_, urls)) = navigate_batches.first() {
-                if let Some(url) = urls.first() {
-                    current_url.0 = url.clone();
+
+        match plan {
+            NavigationPlan::SelfNav { include_id, url } => {
+                if let Some(mut attribute_updates) = world.get_resource_mut::<AttributeUpdates>() {
+                    attribute_updates
+                        .0
+                        .push((include_id, "src".to_string(), url));
                 }
             }
+            NavigationPlan::GlobalNav { url } => {
+                last_global_navigation = Some(url);
+            }
+            NavigationPlan::Blocked { .. } => {}
+        }
+    }
+
+    if let Some(url) = last_global_navigation {
+        if let Some(mut current_url) = world.get_resource_mut::<crate::CurrentUrl>() {
+            current_url.0 = url;
         }
         if let Some(mut reload_trigger) = world.get_resource_mut::<ReloadTrigger>() {
             reload_trigger.0 = true;
@@ -1444,6 +1654,12 @@ pub fn js_tick_system(world: &mut World) {
     if snapshot_dirty {
         if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
             snapshot_state.dirty = true;
+        }
+    }
+
+    if had_creation || had_hierarchy || had_remove {
+        if let Some(mut policies) = world.get_resource_mut::<SpacePolicies>() {
+            policies.dirty = true;
         }
     }
 }

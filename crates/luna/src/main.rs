@@ -22,7 +22,7 @@ use bevy_xr_utils::tracking_utils::{
 use luna::vr_locomotion::VrLocomotionPlugin;
 
 use luna::*;
-use luna::{dom, io, js, touch, ui, utils};
+use luna::{dom, io, js, permissions, touch, ui, utils};
 
 // ─── main ────────────────────────────────────────────────────────────────────
 
@@ -102,7 +102,9 @@ fn main() {
     app.insert_resource(ScriptLoadStates::default());
     app.insert_resource(PendingModelLoads::default());
     app.insert_resource(ModelLoadStates::default());
-    app.insert_resource(touch::TouchEvents::default());
+    app.insert_resource(touch::ToqueRawEvents::default());
+    app.insert_resource(SpacePolicies::default());
+    app.insert_resource(ActiveNativeServices::default());
     app.insert_resource(PendingIncludes::default());
     app.insert_resource(IncludeLoadStates::default());
     app.insert_resource(SpaceMountQueue(vec!["luna://home".to_string()]));
@@ -125,10 +127,12 @@ fn main() {
             dom::commit_pending_document_load_system
                 .run_if(|p: Res<PendingDocumentLoads>| !p.0.is_empty()),
             dom::apply_attribute_updates.run_if(|a: Res<AttributeUpdates>| !a.0.is_empty()),
-            dom::mark_dirty_system,
-            dom::dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
             dom::process_delete_requests.run_if(|del: Res<DeleteRequests>| !del.0.is_empty()),
             dom::commit_pending_includes_system.run_if(|p: Res<PendingIncludes>| !p.0.is_empty()),
+            permissions::rebuild_space_policies_system.run_if(|p: Res<SpacePolicies>| p.dirty),
+            permissions::update_active_native_services_system,
+            dom::mark_dirty_system,
+            dom::dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
         ),
     );
 
@@ -140,20 +144,25 @@ fn main() {
     app.add_systems(Update, update_fps_counter);
     app.add_systems(
         Update,
-        camera_keyboard_movement_system.run_if(|rm: Res<RenderMode>| !rm.is_vr),
+        camera_keyboard_movement_system
+            .run_if(|rm: Res<RenderMode>| !rm.is_vr)
+            .run_if(permissions::desktop_camera_control_enabled),
     );
-    app.add_systems(Update, (xr_session_handler, toggle_render_mode));
+    app.add_systems(Update, (xr_session_handler, toggle_render_mode, sync_root_mode_resources));
     app.add_systems(
         Update,
-        touch::desktop_raycast_system.run_if(|rm: Res<RenderMode>| !rm.is_vr),
+        touch::desktop_toque_raycast_system
+            .run_if(|rm: Res<RenderMode>| !rm.is_vr)
+            .run_if(permissions::desktop_toque_source_enabled),
     );
     app.add_systems(
         Update,
-        touch::vr_raycast_system
+        touch::vr_toque_raycast_system
             .run_if(bevy_mod_openxr::openxr_session_running)
-            .run_if(resource_exists::<luna::vr_locomotion::LunaLocomotionActions>),
+            .run_if(resource_exists::<luna::vr_locomotion::LunaLocomotionActions>)
+            .run_if(permissions::vr_toque_source_enabled),
     );
-    app.add_systems(Update, dispatch_touch_events_to_js);
+    app.add_systems(Update, touch::dispatch_toque_raw_events_to_js);
     app.add_systems(
         Update,
         process_space_mount_queue.run_if(|q: Res<SpaceMountQueue>| !q.0.is_empty()),
@@ -167,6 +176,8 @@ fn main() {
         Update,
         (
             js::js_update_snapshots_system,
+            js::js_sync_space_permissions_system,
+            js::js_auto_inject_resource_scripts_system,
             js::js_eval_pending_scripts,
             js::js_tick_system,
         )
@@ -353,40 +364,6 @@ fn spawn_controllers(
     }
 }
 
-/// Drains TouchEvents and pushes them to JS workers via push_touch_event,
-/// mapping global node_ids to local IDs per space.
-fn dispatch_touch_events_to_js(
-    mut touch_events: ResMut<touch::TouchEvents>,
-    mut manager: NonSendMut<js::ScriptRuntimeManager>,
-    space_handle_tables: Res<SpaceHandleTables>,
-) {
-    if touch_events.0.is_empty() {
-        return;
-    }
-
-    let events: Vec<(u32, f32, f32, f32)> = touch_events.0.drain(..).collect();
-
-    for (node_id, x, y, z) in &events {
-        // Find which space this node belongs to by checking all space handle tables
-        for (space_id, table) in &space_handle_tables.by_space {
-            if let Some(&local_id) = table.global_to_local.get(&(*node_id)) {
-                // Push to the worker for this space
-                if let Some(worker) = manager.contexts.get(space_id) {
-                    // We can't call push_touch_event on the Engine directly (it's in a thread).
-                    // Instead we'll use a command approach - but the worker uses channels.
-                    // For now, push to ALL workers that have a mapping for this node.
-                    // The JS controller script will pick up events via op_poll_touch_events.
-                    let _ = worker
-                        .cmd_tx
-                        .send(js::JsWorkerCommand::PushTouchEvents(vec![(
-                            local_id, *x, *y, *z,
-                        )]));
-                }
-            }
-        }
-    }
-}
-
 /// Finds the root space worker (space with id="luna_root") and returns its space_id.
 fn find_root_worker_space_id(
     specs_world: &specs::World,
@@ -410,6 +387,7 @@ fn process_space_mount_queue(
     mut mount_queue: ResMut<SpaceMountQueue>,
     manager: NonSendMut<js::ScriptRuntimeManager>,
     specs_world: Res<ElemenetWorld>,
+    render_mode: Res<RenderMode>,
 ) {
     let Some(root_id) = find_root_worker_space_id(&specs_world.0, &manager) else {
         return;
@@ -418,9 +396,17 @@ fn process_space_mount_queue(
         return;
     };
     let urls: Vec<String> = mount_queue.0.drain(..).collect();
+    let grants = if render_mode.is_vr {
+        "['controller_vr','navigate_self']"
+    } else {
+        "['controller_desktop','navigate_self']"
+    };
     for url in urls {
         let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
-        let code = format!("dimension.luna.mountSpace('{}');", escaped);
+        let code = format!(
+            "dimension.luna.mountSpace('{}', {{ grants: {} }});",
+            escaped, grants
+        );
         let _ = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
             url: format!("eval://mount/{}", url),
             code,
@@ -479,4 +465,30 @@ fn toggle_render_mode(
             request_exit.send_default();
         }
     }
+}
+
+fn sync_root_mode_resources(
+    render_mode: Res<RenderMode>,
+    manager: NonSendMut<js::ScriptRuntimeManager>,
+    specs_world: Res<ElemenetWorld>,
+) {
+    if !render_mode.is_changed() {
+        return;
+    }
+
+    let Some(root_id) = find_root_worker_space_id(&specs_world.0, &manager) else {
+        return;
+    };
+    let Some(worker) = manager.contexts.get(&root_id) else {
+        return;
+    };
+
+    let mode = if render_mode.is_vr { "vr" } else { "desktop" };
+    let code = format!(
+        "dimension.luna.switchMode('{mode}'); dimension.luna.regrantMountedSpaces('{mode}');"
+    );
+    let _ = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
+        url: format!("eval://mode/{}", mode),
+        code,
+    });
 }

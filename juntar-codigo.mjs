@@ -29,7 +29,7 @@ const IGNORE_DIRS = new Set([
 
 const IGNORE_EXTENSIONS = new Set([
 ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".txt",
-".mp3", ".wav", ".ogg", ".mp4", ".mov",
+".mp3", ".wav", ".ogg", ".mp4", ".mov", ".glb", ".gltf",
 ".zip", ".rar", ".7z", ".gz",
 ".pdf", ".exe", ".dll", ".so", ".class",
 ".ttf", ".otf", ".woff", ".woff2",

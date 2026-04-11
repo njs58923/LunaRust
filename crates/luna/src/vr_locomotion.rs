@@ -72,6 +72,7 @@ impl Plugin for VrLocomotionPlugin {
                 Update,
                 (handle_smooth_locomotion, handle_snap_turn, log_buttons)
                     .run_if(openxr_session_running)
+                    .run_if(crate::permissions::vr_locomotion_enabled)
                     .run_if(resource_exists::<LunaLocomotionActions>),
             );
     }

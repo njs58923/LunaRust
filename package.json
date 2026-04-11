@@ -37,6 +37,6 @@
     "deps:outdated": "cargo outdated -p luna",
     "deps:audit":    "cargo audit",
     "docker": "docker compose up -d",
-    "plane": "node juntar-codigo.mjs \"***\\bevy_oxr\\codigo-completo.txt\" \"***\\bevy_oxr\\crates\\luna\" \"***\\bevy_oxr\\crates\\virtual_dom\""
+    "plane": "node juntar-codigo.mjs \"***\\bevy_oxr\\codigo-completo.txt\" \"***\\bevy_oxr\\crates\\luna\" \"***\\bevy_oxr\\crates\\virtual_dom\" \"***\\bevy_oxr\\crates\\js_runtime\""
   }
 }
