@@ -114,7 +114,7 @@ impl Default for RootConfig {
     fn default() -> Self {
         Self {
             auto_load_home: true,
-            home_url: "luna://home".to_string(),
+            home_url: "luna://root".to_string(),
             preferred_render_mode: PreferredRenderMode::Desktop,
         }
     }

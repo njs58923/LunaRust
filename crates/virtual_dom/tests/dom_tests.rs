@@ -172,6 +172,51 @@ fn parse_script_with_src_has_no_inline() {
 }
 
 #[test]
+fn parse_inline_script_with_arrow_functions() {
+    use virtual_dom::dom::hsml::Script;
+    let mut world = make_world();
+    let xml = r#"<hsml><space><script>
+    const btn = hiperspace.dimention.getElementById('btn');
+    if (btn) btn.addEventListener('click', () => { location.href = 'luna://home'; });
+    console.log('[test] loaded');
+    </script></space></hsml>"#;
+    let root = parse_xml(&mut world, xml).expect("parse failed");
+
+    let hier = world.read_storage::<Hierarchy>();
+    let scripts = world.read_storage::<Script>();
+    // root -> space -> script
+    let space = hier.get(root).unwrap().children[0];
+    let script_ent = hier.get(space).unwrap().children[0];
+    let s = scripts.get(script_ent).expect("no Script component");
+    assert!(s.src.is_none());
+    let code = s.inline.as_ref().expect("should have inline code");
+    assert!(code.contains("getElementById"));
+    assert!(code.contains("luna://home"));
+    assert!(code.contains("=>"));
+}
+
+#[test]
+fn parse_inline_script_with_xml_entities() {
+    use virtual_dom::dom::hsml::Script;
+    let mut world = make_world();
+    let xml = r#"<hsml><space><script>
+    for (var i = 0; i &lt; 10; i++) { console.log(i); }
+    var x = true &amp;&amp; false;
+    </script></space></hsml>"#;
+    let root = parse_xml(&mut world, xml).expect("parse failed");
+
+    let hier = world.read_storage::<Hierarchy>();
+    let scripts = world.read_storage::<Script>();
+    let space = hier.get(root).unwrap().children[0];
+    let script_ent = hier.get(space).unwrap().children[0];
+    let s = scripts.get(script_ent).expect("no Script component");
+    let code = s.inline.as_ref().expect("should have inline code");
+    // XML entities should be unescaped
+    assert!(code.contains("i < 10"), "should unescape &lt; to <, got: {}", code);
+    assert!(code.contains("&&"), "should unescape &amp;&amp; to &&, got: {}", code);
+}
+
+#[test]
 fn parse_malformed_xml_returns_error() {
     let mut world = make_world();
     let result = parse_xml(&mut world, "<unclosed");
