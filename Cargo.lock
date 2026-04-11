@@ -3364,6 +3364,7 @@ dependencies = [
  "fontdue",
  "js_runtime",
  "lazy_static",
+ "openxr",
  "quick-xml 0.27.1",
  "reqwest 0.11.27",
  "serde",
