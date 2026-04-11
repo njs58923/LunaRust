@@ -232,13 +232,9 @@ pub fn encode_url_to_filename(url: &str) -> String {
 
 pub async fn load_bytes_from_url(url: &str) -> Result<Vec<u8>> {
     let resp = reqwest::get(url).await?;
-    if !resp.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "Status {} downloading {}",
-            resp.status(),
-            url
-        ));
-    }
+    let resp = resp.error_for_status()?;
+    Ok(resp.bytes().await?.to_vec())
+}
     Ok(resp.bytes().await?.to_vec())
 }
 

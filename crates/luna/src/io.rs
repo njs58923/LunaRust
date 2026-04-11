@@ -1,8 +1,9 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    path::PathBuf,
-    sync::{mpsc, Mutex},
-    time::Instant,
+   collections::{HashMap, HashSet, VecDeque},
+   path::PathBuf,
+   sync::{mpsc, Mutex},
+   time::Duration,
+   time::Instant,
 };
 
 use bevy::prelude::*;
@@ -119,24 +120,40 @@ impl Default for NetworkTracker {
 pub struct IoService {
     result_tx: mpsc::Sender<IoResult>,
     result_rx: Mutex<mpsc::Receiver<IoResult>>,
+    http_client: reqwest::Client,
     network_tracker: Mutex<NetworkTracker>,
 }
 
 impl Default for IoService {
-    fn default() -> Self {
-        let (result_tx, result_rx) = mpsc::channel();
-        Self {
-            result_tx,
-            result_rx: Mutex::new(result_rx),
-            network_tracker: Mutex::new(NetworkTracker::default()),
-        }
+fn default() -> Self {
+    let (result_tx, result_rx) = mpsc::channel();
+
+    let http_client = reqwest::Client::builder()
+        .user_agent("Luna/0.1")
+        .timeout(Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(10))
+        .pool_idle_timeout(Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    Self {
+        result_tx,
+        result_rx: Mutex::new(result_rx),
+        http_client,
+        network_tracker: Mutex::new(NetworkTracker::default()),
+    }
+}
     }
 }
 
 impl IoService {
-    fn sender(&self) -> mpsc::Sender<IoResult> {
-        self.result_tx.clone()
-    }
+fn sender(&self) -> mpsc::Sender<IoResult> {
+    self.result_tx.clone()
+}
+
+pub fn http_client(&self) -> reqwest::Client {
+    self.http_client.clone()
+}
 
     pub fn begin_request(
         &self,
@@ -293,16 +310,17 @@ pub fn request_fetch_text(
         url.clone(),
         format!("space:{space_id}"),
     );
-    let tx = io_service.sender();
-    rt.spawn(async move {
-        let result = load_text_resource(&url).await;
-        let _ = tx.send(IoResult::FetchCompleted {
-            network_id,
-            space_id,
-            request_id,
-            result,
-        });
+let tx = io_service.sender();
+let client = io_service.http_client();
+rt.spawn(async move {
+    let result = load_text_resource(&url, &client).await;
+    let _ = tx.send(IoResult::FetchCompleted {
+        network_id,
+        space_id,
+        request_id,
+        result,
     });
+});
 }
 
 pub fn request_document_load(rt: &Runtime, io_service: &IoService, epoch: u64, url: String) {
@@ -311,15 +329,17 @@ pub fn request_document_load(rt: &Runtime, io_service: &IoService, epoch: u64, u
         url.clone(),
         format!("epoch:{epoch}"),
     );
-    let tx = io_service.sender();
-    rt.spawn(async move {
-        let result = load_document_bundle(&url).await;
-        let _ = tx.send(IoResult::DocumentLoaded {
-            network_id,
-            epoch,
-            url,
-            result,
-        });
+let tx = io_service.sender();
+let client = io_service.http_client();
+rt.spawn(async move {
+    let result = load_document_bundle(&url, &client).await;
+    let _ = tx.send(IoResult::DocumentLoaded {
+        network_id,
+        epoch,
+        url: url.clone(),
+        result,
+    });
+});
     });
 }
 
@@ -329,15 +349,17 @@ pub fn request_script_load(rt: &Runtime, io_service: &IoService, node_id: u32, u
         url.clone(),
         format!("node:{node_id}"),
     );
-    let tx = io_service.sender();
-    rt.spawn(async move {
-        let result = load_text_resource(&url).await;
-        let _ = tx.send(IoResult::ScriptLoaded {
-            network_id,
-            node_id,
-            url,
-            result,
-        });
+let tx = io_service.sender();
+let client = io_service.http_client();
+rt.spawn(async move {
+    let result = load_text_resource(&url, &client).await;
+    let _ = tx.send(IoResult::ScriptLoaded {
+        network_id,
+        node_id,
+        url: url.clone(),
+        result,
+    });
+});
     });
 }
 
@@ -352,38 +374,55 @@ pub fn request_include_load(
         url.clone(),
         format!("include-parent:{parent_node_id}"),
     );
-    let tx = io_service.sender();
-    rt.spawn(async move {
-        let result = load_text_resource(&url).await;
-        let _ = tx.send(IoResult::IncludeLoaded {
-            network_id,
-            parent_node_id,
-            url,
-            result,
-        });
+let tx = io_service.sender();
+let client = io_service.http_client();
+rt.spawn(async move {
+    let result = load_text_resource(&url, &client).await;
+    let _ = tx.send(IoResult::IncludeLoaded {
+        network_id,
+        parent_node_id,
+        url: url.clone(),
+        result,
+    });
+});
     });
 }
 
 pub fn request_model_prepare(rt: &Runtime, io_service: &IoService, url: String) {
     let network_id =
         io_service.begin_request(NetworkRequestKind::Model, url.clone(), "model-cache");
-    let tx = io_service.sender();
-    rt.spawn(async move {
-        let result = prepare_model_asset(&url).await;
-        let _ = tx.send(IoResult::ModelPrepared {
-            network_id,
-            url,
-            result,
-        });
+let tx = io_service.sender();
+let client = io_service.http_client();
+rt.spawn(async move {
+    let result = prepare_model_asset(&url, &client).await;
+    let _ = tx.send(IoResult::ModelPrepared {
+        network_id,
+        url: url.clone(),
+        result,
+    });
+});
     });
 }
 
-async fn load_text_resource(url: &str) -> Result<String, String> {
+async fn load_text_resource(url: &str, client: &reqwest::Client) -> Result<String, String> {
     if crate::routes::VirtualRoutes::is_virtual_url(url) {
         return VIRTUAL_ROUTES
             .resolve(url)
-            .ok_or_else(|| format!("Virtual route not found: {url}"));
+            .ok_or_else(|| format!("Virtual URL not found: {url}"));
     }
+
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP error: {e}"))?;
+    response
+        .error_for_status()
+        .map_err(|e| format!("HTTP status error: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("Read error: {e}"))
+}
 
     let response = reqwest::get(url)
         .await
@@ -425,25 +464,34 @@ fn extract_include_sources(xml: &str) -> Result<Vec<String>, String> {
     Ok(includes)
 }
 
-async fn load_document_bundle(url: &str) -> Result<LoadedDocumentBundle, String> {
-    let root_xml = load_text_resource(url).await?;
+async fn load_document_bundle(url: &str, client: &reqwest::Client) -> Result<LoadedDocumentBundle, String> {
+    let root_xml = load_text_resource(url, client).await?;
     let mut bundle = LoadedDocumentBundle {
         root_xml: root_xml.clone(),
         includes: HashMap::new(),
-        warnings: Vec::new(),
     };
-    let mut queue = VecDeque::from([(url.to_string(), root_xml)]);
-    let mut visited = HashSet::new();
-
-    while let Some((base_url, xml)) = queue.pop_front() {
-        let include_sources = match extract_include_sources(&xml) {
-            Ok(sources) => sources,
-            Err(error) => {
-                bundle
-                    .warnings
-                    .push(format!("include scan failed for {base_url}: {error}"));
+    let mut queue = VecDeque::new();
+    queue.push_back((url.to_string(), root_xml));
+    while let Some((cur_url, cur_xml)) = queue.pop_front() {
+        let includes = extract_include_sources(&cur_xml)?;
+        for include_src in includes {
+            let final_url = resolve_remote_path(&cur_url, &include_src);
+            if bundle.includes.contains_key(&final_url) {
                 continue;
             }
+            match load_text_resource(&final_url, client).await {
+                Ok(include_xml) => {
+                    queue.push_back((final_url.clone(), include_xml.clone()));
+                    bundle.includes.insert(final_url, include_xml);
+                }
+                Err(e) => {
+                    eprintln!("Failed loading include {final_url}: {e}");
+                }
+            }
+        }
+    }
+    Ok(bundle)
+}
         };
 
         for src in include_sources {
@@ -474,35 +522,76 @@ async fn load_document_bundle(url: &str) -> Result<LoadedDocumentBundle, String>
     Ok(bundle)
 }
 
-async fn prepare_model_asset(url: &str) -> Result<String, String> {
+async fn write_bytes_atomic(path: PathBuf, bytes: Vec<u8>) -> Result<(), String> {
+    let tmp_path = PathBuf::from(format!("{}.tmp", path.display()));
+    task::spawn_blocking(move || {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _ = std::fs::remove_file(&tmp_path);
+        std::fs::write(&tmp_path, bytes)?;
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+        std::fs::rename(&tmp_path, &path)?;
+        Ok::<(), std::io::Error>(())
+    })
+    .await
+    .map_err(|e| format!("Join error writing cache file: {e}"))?
+    .map_err(|e| format!("Write cache file failed: {e}"))
+}
+
+async fn copy_file_atomic(from: PathBuf, to: PathBuf) -> Result<(), String> {
+    let tmp_path = PathBuf::from(format!("{}.tmp", to.display()));
+    task::spawn_blocking(move || {
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _ = std::fs::remove_file(&tmp_path);
+        std::fs::copy(&from, &tmp_path)?;
+        if to.exists() {
+            let _ = std::fs::remove_file(&to);
+        }
+        std::fs::rename(&tmp_path, &to)?;
+        Ok::<(), std::io::Error>(())
+    })
+    .await
+    .map_err(|e| format!("Join error copying cache file: {e}"))?
+    .map_err(|e| format!("Copy cache file failed: {e}"))
+}
+
+async fn prepare_model_asset(url: &str, client: &reqwest::Client) -> Result<String, String> {
     let (assets_dir, cache_dir) = resolve_assets_and_cache_dirs();
     let filename = encode_url_to_filename(url);
     let local_path = cache_dir.join(filename);
 
-    if !local_path.exists() {
-        let cache_dir_for_create = cache_dir.clone();
-        task::spawn_blocking(move || std::fs::create_dir_all(cache_dir_for_create))
-            .await
-            .map_err(|e| format!("Join error creating cache dir: {e}"))?
-            .map_err(|e| format!("Create cache dir failed: {e}"))?;
+    if !cache_dir.exists() {
+        std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Create cache dir failed: {e}"))?;
+    }
 
-        if url.starts_with("http://") || url.starts_with("https://") {
-            let bytes = reqwest::get(url)
-                .await
-                .map_err(|e| format!("HTTP error: {e}"))?
-                .bytes()
-                .await
-                .map_err(|e| format!("Read bytes error: {e}"))?;
-            let path_for_write = local_path.clone();
-            task::spawn_blocking(move || std::fs::write(path_for_write, bytes))
-                .await
-                .map_err(|e| format!("Join error writing cache file: {e}"))?
-                .map_err(|e| format!("Write cache file failed: {e}"))?;
-        } else {
-            let from = PathBuf::from(url);
-            if !from.exists() {
-                return Err(format!("Local file not found: {url}"));
-            }
+    if url.starts_with("http://") || url.starts_with("https://") {
+        let bytes = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP error: {e}"))?
+            .error_for_status()
+            .map_err(|e| format!("HTTP status error: {e}"))?
+            .bytes()
+            .await
+            .map_err(|e| format!("Read bytes error: {e}"))?
+            .to_vec();
+        write_bytes_atomic(local_path.clone(), bytes).await?;
+    } else {
+        let from = PathBuf::from(url);
+        if !from.exists() {
+            return Err(format!("Local file not found: {url}"));
+        }
+        copy_file_atomic(from, local_path.clone()).await?;
+    }
+
+    Ok(local_path.to_string_lossy().into_owned())
+}
             let to = local_path.clone();
             task::spawn_blocking(move || std::fs::copy(from, to))
                 .await

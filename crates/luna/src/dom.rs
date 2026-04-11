@@ -23,8 +23,7 @@ use crate::io::{
 };
 use crate::render::{
     apply_transform, build_text_transform, get_or_create_primitive_material,
-    get_or_create_text_material, parse_hex_color,
-    parse_text_attrs, resolve_remote_path,
+    get_or_create_text_material, parse_hex_color, parse_text_attrs, resolve_remote_path,
 };
 use crate::{
     ActiveDocumentLoad, AsyncDomParams, AttributeUpdates, CompletedDocumentLoad, CurrentUrl,
@@ -39,7 +38,10 @@ const DOM_SYNC_VERBOSE_LOGS: bool = false;
 const ATTR_DELETE_SENTINEL: &str = "[DEL]";
 
 fn is_structural_tag(tag: &str) -> bool {
-    matches!(tag, "" | "hsml" | "head" | "name" | "meta" | "state" | "div")
+    matches!(
+        tag,
+        "" | "hsml" | "head" | "name" | "meta" | "state" | "div"
+    )
 }
 
 fn include_ancestor_chain_contains(
@@ -67,7 +69,8 @@ fn include_ancestor_chain_contains(
 
         if matches!(tags.get(parent), Some(tag) if tag.0 == "include") {
             if let Some(src) = attrs.get(parent).and_then(|a| a.0.get("src")) {
-                let ancestor_url = resolve_remote_path(base_url, src).unwrap_or_else(|| src.clone());
+                let ancestor_url =
+                    resolve_remote_path(base_url, src).unwrap_or_else(|| src.clone());
                 if ancestor_url == candidate_url {
                     return true;
                 }
@@ -80,8 +83,14 @@ fn include_ancestor_chain_contains(
     false
 }
 
-fn include_would_cycle(world: &SpecWorld, include_node: SpecEntity, candidate_url: &str, base_url: &str) -> bool {
-    candidate_url == base_url || include_ancestor_chain_contains(world, include_node, candidate_url, base_url)
+fn include_would_cycle(
+    world: &SpecWorld,
+    include_node: SpecEntity,
+    candidate_url: &str,
+    base_url: &str,
+) -> bool {
+    candidate_url == base_url
+        || include_ancestor_chain_contains(world, include_node, candidate_url, base_url)
 }
 
 fn primitive_color(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> Color {
@@ -115,12 +124,8 @@ fn spawn_colored_primitive(
     double_sided: bool,
     touchable_node_id: Option<u32>,
 ) -> Entity {
-    let material = get_or_create_primitive_material(
-        primitive_material_cache,
-        materials,
-        color,
-        double_sided,
-    );
+    let material =
+        get_or_create_primitive_material(primitive_material_cache, materials, color, double_sided);
     let mut entity_commands = commands.spawn((
         PbrBundle {
             mesh,
@@ -642,67 +647,21 @@ pub fn process_delete_requests(
             continue;
         }
 
-        let mut subtree_ids = Vec::new();
-        collect_subtree_ids(&world.0, sp_ent, &mut subtree_ids);
-        let subtree_set: HashSet<u32> = subtree_ids.iter().copied().collect();
+        let deleted = remove_dom_subtree(
+            &mut world.0,
+            sp_ent,
+            &mut entity_map,
+            &mut commands,
+            &mut dom_data,
+            &mut include_load_states,
+            &mut script_load_states,
+            &mut pending_model_loads,
+            &mut model_load_states,
+            &mut space_handle_tables,
+        );
 
-        let bevy_roots = {
-            let entities = world.0.entities();
-            let hierarchies = world.0.read_storage::<Hierarchy>();
-
-            subtree_ids
-                .iter()
-                .filter_map(|node_id| {
-                    let bevy_ent = entity_map.0.get(node_id).copied()?;
-                    let parent_id = hierarchies
-                        .get(entities.entity(*node_id))
-                        .and_then(|h| h.parent);
-                    let parent_in_subtree = parent_id
-                        .map(|pid| subtree_set.contains(&pid))
-                        .unwrap_or(false);
-                    let parent_has_bevy = parent_id
-                        .and_then(|pid| entity_map.0.get(&pid))
-                        .is_some();
-
-                    if !parent_in_subtree || !parent_has_bevy {
-                        Some(bevy_ent)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-        };
-
-        for node_id in &subtree_ids {
-            clear_async_node_state(
-                *node_id,
-                &mut script_load_states,
-                &mut pending_model_loads,
-                &mut model_load_states,
-            );
-            include_load_states.0.remove(node_id);
-            dom_data.nodes.remove(node_id);
-
-            for table in space_handle_tables.by_space.values_mut() {
-                if let Some(local_id) = table.global_to_local.remove(node_id) {
-                    table.local_to_global.remove(&local_id);
-                }
-                table.detached_globals.remove(node_id);
-            }
-
-            entity_map.0.remove(node_id);
-        }
-
-        for bevy_ent in bevy_roots {
-            commands.entity(bevy_ent).despawn_recursive();
-        }
-
-        let mut deleted = 0usize;
-        for node_id in &subtree_ids {
-            let ent = world.0.entities().entity(*node_id);
-            if world.0.entities().is_alive(ent) && world.0.delete_entity(ent).is_ok() {
-                deleted += 1;
-            }
+        if deleted == 0 {
+            continue;
         }
 
         log_panel.push_info(format!(
@@ -789,13 +748,15 @@ fn queue_include_load_if_needed(
 }
 
 pub fn commit_pending_includes_system(
-    mut world: ResMut<ElemenetWorld>,
-    mut pending_includes: ResMut<crate::PendingIncludes>,
-    mut dom_data: ResMut<VirtualDomData>,
-    mut dirty_nodes: ResMut<DirtyNodes>,
     mut log_panel: ResMut<LogPanel>,
     mut include_load_states: ResMut<crate::IncludeLoadStates>,
     current_url: Res<CurrentUrl>,
+    mut entity_map: ResMut<EntityMap>,
+    mut commands: Commands,
+    mut script_load_states: ResMut<ScriptLoadStates>,
+    mut pending_model_loads: ResMut<PendingModelLoads>,
+    mut model_load_states: ResMut<ModelLoadStates>,
+    mut space_handle_tables: ResMut<crate::SpaceHandleTables>,
     mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
 ) {
     let pending: Vec<_> = pending_includes.0.drain(..).collect();
@@ -820,12 +781,9 @@ pub fn commit_pending_includes_system(
                 "Include cycle blocked during commit: {} -> parent {}",
                 url, inc.parent_node_id
             ));
-            include_load_states.0.insert(
-                inc.parent_node_id,
-                crate::IncludeLoadState::Failed {
-                    url,
-                },
-            );
+            include_load_states
+                .0
+                .insert(inc.parent_node_id, crate::IncludeLoadState::Failed { url });
             continue;
         }
 
@@ -850,9 +808,7 @@ pub fn commit_pending_includes_system(
 
                 include_load_states.0.insert(
                     inc.parent_node_id,
-                    crate::IncludeLoadState::Loaded {
-                        url: inc.url,
-                    },
+                    crate::IncludeLoadState::Loaded { url: inc.url },
                 );
             }
             Err(e) => {
@@ -862,9 +818,7 @@ pub fn commit_pending_includes_system(
                 ));
                 include_load_states.0.insert(
                     inc.parent_node_id,
-                    crate::IncludeLoadState::Failed {
-                        url: inc.url,
-                    },
+                    crate::IncludeLoadState::Failed { url: inc.url },
                 );
             }
         }
@@ -903,11 +857,12 @@ fn queue_script_load_if_needed(
             }
 
             if let Some(space_id) = crate::js::find_owner_space_id(specs_world, node) {
-                pending_scripts.0.push((space_id, inline_url.clone(), code.clone()));
-                script_load_states.0.insert(
-                    node_id,
-                    ScriptLoadState::Loaded { url: inline_url },
-                );
+                pending_scripts
+                    .0
+                    .push((space_id, inline_url.clone(), code.clone()));
+                script_load_states
+                    .0
+                    .insert(node_id, ScriptLoadState::Loaded { url: inline_url });
                 log_panel.push_info(format!(
                     "[JS][space:{space_id}] Inline script queued (node {node_id})"
                 ));
@@ -1209,7 +1164,9 @@ pub fn dom_sync_system(
             }
 
             if tag == "box" || tag == "sphere" || tag == "plane" || tag == "cylinder" {
-                commands.entity(bevy_ent).insert(crate::touch::Touchable(node_id));
+                commands
+                    .entity(bevy_ent)
+                    .insert(crate::touch::Touchable(node_id));
                 let color = primitive_color(&attrs_storage, *node);
                 let double_sided = tag == "plane";
                 let material = get_or_create_primitive_material(
