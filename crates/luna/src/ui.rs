@@ -29,6 +29,7 @@ pub fn ui_system(
     mut global_devtool: ResMut<GlobalDevtoolVisible>,
 ) {
     let mut pending_unmounts: Vec<usize> = Vec::new();
+    let prev_active = active_space.0;
 
     egui::Window::new("Navegador")
         .default_width(600.0)
@@ -40,34 +41,31 @@ pub fn ui_system(
                     let is_active = active_space.0 == Some(idx);
                     let label = short_title(&entry.title, 20);
 
-                    let btn = ui.selectable_label(is_active, &label);
-                    if btn.clicked() {
-                        active_space.0 = Some(idx);
-                    }
-                    // Right-click to close
-                    if btn.secondary_clicked() {
-                        pending_unmounts.push(idx);
-                    }
+                    ui.horizontal(|ui| {
+                        let btn = ui.selectable_label(is_active, &label);
+                        if btn.clicked() {
+                            active_space.0 = Some(idx);
+                        }
+                        if ui.small_button("x").clicked() {
+                            pending_unmounts.push(idx);
+                        }
+                    });
                 }
 
-                // [+] button to mount new space
+                // [+] creates an empty tab
                 if ui.small_button("+").clicked() {
-                    let space_url = url.0.trim().to_string();
-                    if !space_url.is_empty() {
-                        space_params.mount_queue.0.push(space_url.clone());
-                        space_params.mounted_spaces.0.push(MountedSpaceEntry {
-                            url: space_url.clone(),
-                            title: space_url.clone(),
-                        });
-                        active_space.0 = Some(tab_count);
-                        log_panel.push_info(format!("Mounting space: {}", space_url));
-                    }
+                    space_params.mounted_spaces.0.push(MountedSpaceEntry {
+                        url: String::new(),
+                        title: "New Tab".to_string(),
+                    });
+                    active_space.0 = Some(tab_count);
+                    url.0 = String::new();
                 }
             });
 
             ui.separator();
 
-            // ═══ Row 2: URL bar + actions (for active tab) ═══
+            // ═══ Row 2: [Home] [URL bar] [Go] [Reload] [Set Home] ═══
             ui.horizontal(|ui| {
                 if ui.button("Home").clicked() {
                     url.0 = ui_params.root_config.home_url.clone();
@@ -75,40 +73,41 @@ pub fn ui_system(
                     log_panel.push_info("Reloading root document");
                 }
 
-                // Show URL of active space, or the global URL input
-                if let Some(idx) = active_space.0 {
-                    if let Some(entry) = space_params.mounted_spaces.0.get(idx) {
-                        let mut active_url = entry.url.clone();
-                        ui.add(
-                            egui::TextEdit::singleline(&mut active_url)
-                                .desired_width(ui.available_width() - 180.0),
-                        );
-                        // Update global url for [+] button
-                        url.0 = active_url;
-                    } else {
-                        ui.text_edit_singleline(&mut url.0);
-                    }
-                } else {
-                    let resp = ui.text_edit_singleline(&mut url.0);
-                    if resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
-                        let space_url = url.0.trim().to_string();
-                        if !space_url.is_empty() {
-                            let new_idx = space_params.mounted_spaces.0.len();
-                            space_params.mount_queue.0.push(space_url.clone());
-                            space_params.mounted_spaces.0.push(MountedSpaceEntry {
-                                url: space_url.clone(),
-                                title: space_url.clone(),
-                            });
-                            active_space.0 = Some(new_idx);
-                            log_panel.push_info(format!("Mounting space: {}", space_url));
+                // URL bar — editable draft, not committed until "Go"
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut url.0)
+                        .desired_width(ui.available_width() - 200.0),
+                );
+                let enter_pressed =
+                    resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
+
+                // "Go" commits the URL to the active tab
+                if ui.button("Go").clicked() || enter_pressed {
+                    if let Some(idx) = active_space.0 {
+                        let new_url = url.0.trim().to_string();
+                        if !new_url.is_empty() {
+                            let old_url = space_params.mounted_spaces.0[idx].url.clone();
+                            // Unmount old if it had a URL
+                            if !old_url.is_empty() {
+                                space_params.unmount_queue.0.push(old_url);
+                            }
+                            // Mount new
+                            space_params.mount_queue.0.push(new_url.clone());
+                            space_params.mounted_spaces.0[idx].url = new_url.clone();
+                            space_params.mounted_spaces.0[idx].title = new_url.clone();
+                            log_panel.push_info(format!("Navigating tab to: {}", new_url));
                         }
                     }
                 }
 
-                // Close active tab
-                if active_space.0.is_some() {
-                    if ui.button("x").on_hover_text("Close tab").clicked() {
-                        pending_unmounts.push(active_space.0.unwrap());
+                if ui.button("Reload").clicked() {
+                    if let Some(idx) = active_space.0 {
+                        let tab_url = space_params.mounted_spaces.0[idx].url.clone();
+                        if !tab_url.is_empty() {
+                            space_params.unmount_queue.0.push(tab_url.clone());
+                            space_params.mount_queue.0.push(tab_url.clone());
+                            log_panel.push_info(format!("Reloading: {}", tab_url));
+                        }
                     }
                 }
 
@@ -152,7 +151,6 @@ pub fn ui_system(
                     global_devtool.0 = !global_devtool.0;
                 }
 
-                // Status info on the right
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!(
                         "FPS: {} | Ent: {}",
@@ -161,6 +159,15 @@ pub fn ui_system(
                 });
             });
         });
+
+    // When switching tabs, load the tab's committed URL into the draft (discard edits)
+    if active_space.0 != prev_active {
+        if let Some(idx) = active_space.0 {
+            if let Some(entry) = space_params.mounted_spaces.0.get(idx) {
+                url.0 = entry.url.clone();
+            }
+        }
+    }
 
     // Process unmounts (reverse order to keep indices valid)
     pending_unmounts.sort_unstable();

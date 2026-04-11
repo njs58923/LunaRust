@@ -101,10 +101,13 @@ fn main() {
     app.insert_resource(PendingModelLoads::default());
     app.insert_resource(ModelLoadStates::default());
     app.insert_resource(touch::TouchEvents::default());
-    app.insert_resource(SpaceMountQueue::default());
+    app.insert_resource(SpaceMountQueue(vec!["luna://home".to_string()]));
     app.insert_resource(SpaceUnmountQueue::default());
-    app.insert_resource(MountedSpaceList::default());
-    app.insert_resource(ActiveSpaceIndex::default());
+    app.insert_resource(MountedSpaceList(vec![MountedSpaceEntry {
+        url: "luna://home".to_string(),
+        title: "luna://home".to_string(),
+    }]));
+    app.insert_resource(ActiveSpaceIndex(Some(0)));
     app.insert_resource(GlobalDevtoolVisible::default());
 
     // Systems
