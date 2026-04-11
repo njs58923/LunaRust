@@ -177,17 +177,15 @@ fn main() {
     app.add_systems(
         Update,
         touch::desktop_toque_raycast_system
-            .run_if(|rm: Res<RenderMode>| !rm.is_vr)
-            .run_if(permissions::desktop_toque_source_enabled),
+            .run_if(|rm: Res<RenderMode>| !rm.is_vr),
     );
     app.add_systems(
         Update,
         touch::vr_toque_raycast_system
             .run_if(bevy_mod_openxr::openxr_session_running)
-            .run_if(resource_exists::<luna::vr_locomotion::LunaLocomotionActions>)
-            .run_if(permissions::vr_toque_source_enabled),
+            .run_if(resource_exists::<luna::vr_locomotion::LunaLocomotionActions>),
     );
-    app.add_systems(Update, touch::dispatch_toque_raw_events_to_js);
+    app.add_systems(Update, touch::dispatch_toque_events_to_js);
 
     app.add_systems(
         Update,
@@ -409,7 +407,6 @@ fn process_space_mount_queue(
     mut mount_queue: ResMut<SpaceMountQueue>,
     manager: NonSendMut<js::ScriptRuntimeManager>,
     specs_world: Res<ElemenetWorld>,
-    render_mode: Res<RenderMode>,
     mut log_panel: ResMut<LogPanel>,
 ) {
     let Some(root_id) = find_root_worker_space_id(&specs_world.0, &manager) else {
@@ -422,11 +419,7 @@ fn process_space_mount_queue(
         return;
     };
     let urls: Vec<String> = mount_queue.0.drain(..).collect();
-    let grants = if render_mode.is_vr {
-        "['controller_vr','navigate_self']"
-    } else {
-        "['controller_desktop','navigate_self']"
-    };
+    let grants = "['navigate_self']";
     for url in urls {
         let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
         let code = format!(

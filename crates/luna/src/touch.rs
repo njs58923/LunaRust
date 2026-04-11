@@ -167,8 +167,8 @@ pub fn vr_toque_raycast_system(
     }
 }
 
-/// Enruta el raw input únicamente al worker del space dueño del nodo.
-pub fn dispatch_toque_raw_events_to_js(
+/// Enruta `toque` DOM siempre al owner del target y raw solo si el space tiene READ_TOQUE_RAW.
+pub fn dispatch_toque_events_to_js(
     mut toque_events: ResMut<ToqueRawEvents>,
     world: Res<ElemenetWorld>,
     mut manager: NonSendMut<ScriptRuntimeManager>,
@@ -191,10 +191,6 @@ pub fn dispatch_toque_raw_events_to_js(
             continue;
         };
 
-        if !space_has_capability(space_id, CapabilityBits::READ_TOQUE_RAW, &space_policies) {
-            continue;
-        }
-
         let Some(table) = space_handle_tables.by_space.get(&space_id) else {
             continue;
         };
@@ -202,12 +198,23 @@ pub fn dispatch_toque_raw_events_to_js(
             continue;
         };
 
+        let allow_raw =
+            space_has_capability(space_id, CapabilityBits::READ_TOQUE_RAW, &space_policies);
+
         if let Some(worker) = manager.contexts.get(&space_id) {
             let _ = worker
                 .cmd_tx
-                .send(JsWorkerCommand::PushToqueRawEvents(vec![(
+                .send(JsWorkerCommand::PushDomToqueEvents(vec![(
                     local_id, evt.x, evt.y, evt.z,
                 )]));
+
+            if allow_raw {
+                let _ = worker
+                    .cmd_tx
+                    .send(JsWorkerCommand::PushToqueRawEvents(vec![(
+                        local_id, evt.x, evt.y, evt.z,
+                    )]));
+            }
         }
     }
 }

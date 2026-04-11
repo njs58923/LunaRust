@@ -108,7 +108,7 @@ const LUNA_HOME: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space resources="controller_desktop,controller_vr,navigate_self">
+  <space resources="navigate_self">
     <text x="0" y="1.5" z="-2" value="Luna Browser - Home" size="0.3" />
     <text x="0" y="1.2" z="-2" value="Welcome to Luna 3D Browser" size="0.15" />
 
@@ -132,7 +132,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space resources="controller_desktop,controller_vr,navigate_self">
+  <space resources="navigate_self">
     <text x="0" y="1.5" z="-2" value="Luna Demos" size="0.3" />
     <text x="0" y="1.2" z="-2" value="Interactive 3D Demonstrations" size="0.15" />
 
@@ -174,7 +174,7 @@ const LUNA_SETTINGS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space>
+  <space resources="navigate_self">
   <text x="0" y="3.5" z="-5" value="Luna Settings" size="0.4" />
   <text x="0" y="3" z="-5" value="Browser Configuration" size="0.18" />
 
@@ -218,7 +218,7 @@ const LUNA_ABOUT: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space>
+  <space resources="navigate_self">
   <text x="0" y="3.5" z="-5" value="About Luna Browser" size="0.4" />
   <text x="0" y="2.9" z="-5" value="Spatial 3D Web Browser" size="0.18" />
 
@@ -254,7 +254,7 @@ const LUNA_404: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space>
+  <space resources="navigate_self">
   <text x="0" y="3" z="-5" value="404 - Page Not Found" size="0.35" color="#F44336" />
   <text x="0" y="2.5" z="-5" value="The requested luna:// page does not exist" size="0.15" />
 
@@ -498,9 +498,7 @@ const SCRIPT_ROOT_API: &str = r##"
     },
 
     regrantMountedSpaces(mode) {
-      const grants = mode === 'vr'
-        ? ['controller_vr', 'navigate_self']
-        : ['controller_desktop', 'navigate_self'];
+      const grants = ['navigate_self'];
 
       discoverDirectSpaces();
       cleanupRegistry();
@@ -530,8 +528,8 @@ const SCRIPT_ROOT_API: &str = r##"
 
       const uxUrl = mode === 'vr' ? 'luna://ux_vr' : 'luna://ux_desktop';
       const grants = mode === 'vr'
-        ? ['controller_vr', 'navigate_self', 'vr_locomotion']
-        : ['controller_desktop', 'navigate_self', 'desktop_camera_control'];
+        ? ['navigate_self', 'vr_locomotion']
+        : ['navigate_self', 'desktop_camera_control'];
       this._uxSpaceId = this.mountSpace(uxUrl, { visible: true, grants });
       this._currentMode = mode;
       console.log('[root] ux mounted id=', this._uxSpaceId, 'url=', uxUrl);
@@ -559,7 +557,7 @@ fn generate_cache_stats(_path: &str) -> String {
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space>
+  <space resources="navigate_self">
   <text x="0" y="3.5" z="-5" value="HTTP Cache Statistics" size="0.35" />
   <text x="0" y="2.9" z="-5" value="Real-time cache monitoring" size="0.16" />
 

@@ -334,6 +334,27 @@ impl Default for ControllerRegistration {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct DomEvent {
+    pub event_type: String,
+    pub node_id: i32,
+    pub x: Option<f32>,
+    pub y: Option<f32>,
+    pub z: Option<f32>,
+}
+
+/// DOM events normalizados host -> JS runtime (default-on)
+pub struct DomEventQueue {
+    pub events: Arc<Mutex<Vec<DomEvent>>>,
+}
+impl Default for DomEventQueue {
+    fn default() -> Self {
+        Self {
+            events: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
 /// Touch events pushed from Rust into JS: Vec<(node_id, x, y, z)>
 pub struct TouchEventQueue {
     pub events: Arc<Mutex<Vec<(i32, f32, f32, f32)>>>,
@@ -664,6 +685,29 @@ fn op_register_controller(state: &mut OpState, #[string] mode: &str) {
 
 #[op2]
 #[serde]
+fn op_poll_dom_events(state: &mut OpState) -> serde_json::Value {
+    let queue = state.borrow::<DomEventQueue>();
+    let mut events = queue.events.lock().unwrap();
+    if events.is_empty() {
+        return serde_json::json!([]);
+    }
+    let result: Vec<serde_json::Value> = events
+        .drain(..)
+        .map(|evt| {
+            serde_json::json!({
+                "type": evt.event_type,
+                "nodeId": evt.node_id,
+                "x": evt.x,
+                "y": evt.y,
+                "z": evt.z,
+            })
+        })
+        .collect();
+    serde_json::Value::Array(result)
+}
+
+#[op2]
+#[serde]
 fn op_poll_touch_events(state: &mut OpState) -> serde_json::Value {
     let queue = state.borrow::<TouchEventQueue>();
     let mut events = queue.events.lock().unwrap();
@@ -749,7 +793,8 @@ pub struct Engine {
     ws_status_map: Arc<Mutex<HashMap<i32, String>>>,
     ws_close_queue: Arc<Mutex<Vec<i32>>>,
 
-    // Controller + Touch
+    // DOM events + Controller raw
+    dom_events: Arc<Mutex<Vec<DomEvent>>>,
     controller_mode: Arc<Mutex<String>>,
     touch_events: Arc<Mutex<Vec<(i32, f32, f32, f32)>>>,
 
@@ -783,6 +828,7 @@ impl Engine {
         let ws_send_queue = WsSendQueue::default();
         let ws_status_map = WsStatusMap::default();
         let ws_close_queue = WsCloseQueue::default();
+        let dom_event_queue = DomEventQueue::default();
         let controller_registration = ControllerRegistration::default();
         let touch_event_queue = TouchEventQueue::default();
 
@@ -863,6 +909,9 @@ impl Engine {
         let ws_close_queue_for_state = WsCloseQueue {
             queue: ws_close_queue.queue.clone(),
         };
+        let dom_event_queue_for_state = DomEventQueue {
+            events: dom_event_queue.events.clone(),
+        };
         let controller_registration_for_state = ControllerRegistration {
             mode: controller_registration.mode.clone(),
         };
@@ -919,7 +968,8 @@ impl Engine {
                 op_ws_recv::decl(),
                 op_ws_get_status::decl(),
                 op_ws_close::decl(),
-                // Controller + Touch
+                // DOM events + Controller raw
+                op_poll_dom_events::decl(),
                 op_register_controller::decl(),
                 op_poll_touch_events::decl(),
             ])
@@ -1001,6 +1051,9 @@ impl Engine {
                 state.put::<WsCloseQueue>(WsCloseQueue {
                     queue: ws_close_queue_for_state.queue.clone(),
                 });
+                state.put::<DomEventQueue>(DomEventQueue {
+                    events: dom_event_queue_for_state.events.clone(),
+                });
                 state.put::<ControllerRegistration>(ControllerRegistration {
                     mode: controller_registration_for_state.mode.clone(),
                 });
@@ -1058,6 +1111,7 @@ impl Engine {
             ws_send_queue: ws_send_queue.queue,
             ws_status_map: ws_status_map.status,
             ws_close_queue: ws_close_queue.queue,
+            dom_events: dom_event_queue.events,
             controller_mode: controller_registration.mode,
             touch_events: touch_event_queue.events,
             // HTTP Cache & Security (initialized with defaults)
@@ -1215,6 +1269,30 @@ impl Engine {
         self.ws_status_map.lock().unwrap().remove(&conn_id);
     }
 
+    // --- DOM events ---
+
+    /// Push a normalized DOM event into this engine's JS-visible queue
+    pub fn push_dom_event(
+        &self,
+        event_type: impl Into<String>,
+        node_id: i32,
+        x: Option<f32>,
+        y: Option<f32>,
+        z: Option<f32>,
+    ) {
+        self.dom_events.lock().unwrap().push(DomEvent {
+            event_type: event_type.into(),
+            node_id,
+            x,
+            y,
+            z,
+        });
+    }
+
+    pub fn push_dom_toque_event(&self, node_id: i32, x: f32, y: f32, z: f32) {
+        self.push_dom_event("toque", node_id, Some(x), Some(y), Some(z));
+    }
+
     // --- Controller + Touch ---
 
     /// Get the registered controller mode for this engine ("desktop" | "vr" | "")
@@ -1362,6 +1440,13 @@ const BOOTSTRAP_JS: &str = r#"
       if (fn_) {
         rafCallbacks.delete(id);
         try { fn_(ts); } catch (e) { console.error(e); }
+      }
+    }
+
+    if (typeof global.__luna_dispatch_dom_events === 'function') {
+      const domEvents = core.ops.op_poll_dom_events();
+      if (domEvents && domEvents.length > 0) {
+        try { global.__luna_dispatch_dom_events(domEvents); } catch (e) { console.error(e); }
       }
     }
   }

@@ -62,18 +62,18 @@ lazy_static! {
         m.insert(
             "controller_desktop",
             ResourceBundleDef {
-                capabilities: CapabilityBits::READ_TOQUE_RAW | CapabilityBits::DISPATCH_LOCAL_TOQUE,
-                native_services: NativeServiceBits::DESKTOP_TOQUE_SOURCE,
-                auto_scripts: &["luna://internal/controller_toque.js"],
+                capabilities: CapabilityBits::READ_TOQUE_RAW,
+                native_services: NativeServiceBits::empty(),
+                auto_scripts: &[],
             },
         );
 
         m.insert(
             "controller_vr",
             ResourceBundleDef {
-                capabilities: CapabilityBits::READ_TOQUE_RAW | CapabilityBits::DISPATCH_LOCAL_TOQUE,
-                native_services: NativeServiceBits::VR_TOQUE_SOURCE,
-                auto_scripts: &["luna://internal/controller_toque.js"],
+                capabilities: CapabilityBits::READ_TOQUE_RAW,
+                native_services: NativeServiceBits::empty(),
+                auto_scripts: &[],
             },
         );
 

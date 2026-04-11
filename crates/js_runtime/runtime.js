@@ -7,6 +7,37 @@
 
   const core = Deno.core;
 
+  function _findNodeById(el, targetId) {
+    if (!el) return null;
+    if (el.nodeId === targetId) return el;
+    const children = el.children || [];
+    for (const child of children) {
+      const found = _findNodeById(child, targetId);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  global.__luna_dispatch_dom_events = function(events) {
+    const root = global.hiperspace && global.hiperspace.dimention;
+    if (!root) return;
+
+    for (const evt of events) {
+      const target = _findNodeById(root, evt.nodeId);
+      if (!target) continue;
+
+      const normalized = {
+        type: String(evt.type || ''),
+        nodeId: evt.nodeId,
+      };
+      if (evt.x != null) normalized.x = evt.x;
+      if (evt.y != null) normalized.y = evt.y;
+      if (evt.z != null) normalized.z = evt.z;
+
+      target.dispatchEvent(normalized);
+    }
+  };
+
   // ---------------------------------------------------------------------------
   // Helper: Poll async ops (createElement, fetch)
   // ---------------------------------------------------------------------------
