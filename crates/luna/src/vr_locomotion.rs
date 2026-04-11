@@ -211,10 +211,13 @@ fn handle_smooth_locomotion(
     let Ok(mut root_tf) = root.get_single_mut() else { return };
     let speed = 3.0;
 
+    // view.pose.orientation is in tracking space; root rotation is tracking→world.
+    // Compose both so locomotion follows where the player is actually looking.
     let dir = if let Some(view) = views.first() {
-        let mut fwd = view.pose.orientation.to_quat().mul_vec3(input);
-        fwd.y = 0.0;
-        fwd.normalize_or_zero()
+        let hmd_dir = view.pose.orientation.to_quat().mul_vec3(input);
+        let mut world_dir = root_tf.rotation.mul_vec3(hmd_dir);
+        world_dir.y = 0.0;
+        world_dir.normalize_or_zero()
     } else {
         input.normalize_or_zero()
     };
