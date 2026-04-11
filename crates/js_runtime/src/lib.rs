@@ -320,6 +320,32 @@ impl Default for WsCloseQueue {
     }
 }
 
+// --- Controller registration + touch events ---
+
+/// Stores the registered controller mode ("desktop" | "vr" | "")
+pub struct ControllerRegistration {
+    pub mode: Arc<Mutex<String>>,
+}
+impl Default for ControllerRegistration {
+    fn default() -> Self {
+        Self {
+            mode: Arc::new(Mutex::new(String::new())),
+        }
+    }
+}
+
+/// Touch events pushed from Rust into JS: Vec<(node_id, x, y, z)>
+pub struct TouchEventQueue {
+    pub events: Arc<Mutex<Vec<(i32, f32, f32, f32)>>>,
+}
+impl Default for TouchEventQueue {
+    fn default() -> Self {
+        Self {
+            events: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Ops
 // ---------------------------------------------------------------------------
@@ -628,6 +654,31 @@ fn op_ws_close(state: &mut OpState, #[smi] conn_id: i32) {
     status_map.status.lock().unwrap().insert(conn_id, "closed".to_string());
 }
 
+// --- Controller + Touch ops ---
+
+#[op2(fast)]
+fn op_register_controller(state: &mut OpState, #[string] mode: &str) {
+    let reg = state.borrow::<ControllerRegistration>();
+    *reg.mode.lock().unwrap() = mode.to_string();
+}
+
+#[op2]
+#[serde]
+fn op_poll_touch_events(state: &mut OpState) -> serde_json::Value {
+    let queue = state.borrow::<TouchEventQueue>();
+    let mut events = queue.events.lock().unwrap();
+    if events.is_empty() {
+        return serde_json::json!([]);
+    }
+    let result: Vec<serde_json::Value> = events
+        .drain(..)
+        .map(|(node_id, x, y, z)| {
+            serde_json::json!({"nodeId": node_id, "x": x, "y": y, "z": z})
+        })
+        .collect();
+    serde_json::Value::Array(result)
+}
+
 // ---------------------------------------------------------------------------
 // V8 Platform Initialization
 // ---------------------------------------------------------------------------
@@ -698,6 +749,10 @@ pub struct Engine {
     ws_status_map: Arc<Mutex<HashMap<i32, String>>>,
     ws_close_queue: Arc<Mutex<Vec<i32>>>,
 
+    // Controller + Touch
+    controller_mode: Arc<Mutex<String>>,
+    touch_events: Arc<Mutex<Vec<(i32, f32, f32, f32)>>>,
+
     // HTTP Cache & Security
     script_cache: Arc<Mutex<ScriptCache>>,
     fetch_cache: Arc<Mutex<FetchCache>>,
@@ -728,6 +783,8 @@ impl Engine {
         let ws_send_queue = WsSendQueue::default();
         let ws_status_map = WsStatusMap::default();
         let ws_close_queue = WsCloseQueue::default();
+        let controller_registration = ControllerRegistration::default();
+        let touch_event_queue = TouchEventQueue::default();
 
         // Clone Arcs for OpState
         let timers_for_state = Timers {
@@ -806,6 +863,12 @@ impl Engine {
         let ws_close_queue_for_state = WsCloseQueue {
             queue: ws_close_queue.queue.clone(),
         };
+        let controller_registration_for_state = ControllerRegistration {
+            mode: controller_registration.mode.clone(),
+        };
+        let touch_event_queue_for_state = TouchEventQueue {
+            events: touch_event_queue.events.clone(),
+        };
 
         let ext = Extension::builder("luna_runtime")
             .ops(vec![
@@ -856,6 +919,9 @@ impl Engine {
                 op_ws_recv::decl(),
                 op_ws_get_status::decl(),
                 op_ws_close::decl(),
+                // Controller + Touch
+                op_register_controller::decl(),
+                op_poll_touch_events::decl(),
             ])
             .state(move |state| {
                 state.put::<PerfState>(PerfState::default());
@@ -935,6 +1001,12 @@ impl Engine {
                 state.put::<WsCloseQueue>(WsCloseQueue {
                     queue: ws_close_queue_for_state.queue.clone(),
                 });
+                state.put::<ControllerRegistration>(ControllerRegistration {
+                    mode: controller_registration_for_state.mode.clone(),
+                });
+                state.put::<TouchEventQueue>(TouchEventQueue {
+                    events: touch_event_queue_for_state.events.clone(),
+                });
             })
             .build();
 
@@ -986,6 +1058,8 @@ impl Engine {
             ws_send_queue: ws_send_queue.queue,
             ws_status_map: ws_status_map.status,
             ws_close_queue: ws_close_queue.queue,
+            controller_mode: controller_registration.mode,
+            touch_events: touch_event_queue.events,
             // HTTP Cache & Security (initialized with defaults)
             script_cache: Arc::new(Mutex::new(ScriptCache::new(100))), // Max 100 scripts
             fetch_cache: Arc::new(Mutex::new(FetchCache::new(200))),   // Max 200 responses
@@ -1139,6 +1213,18 @@ impl Engine {
     pub fn remove_ws_connection(&self, conn_id: i32) {
         self.ws_inbox.lock().unwrap().remove(&conn_id);
         self.ws_status_map.lock().unwrap().remove(&conn_id);
+    }
+
+    // --- Controller + Touch ---
+
+    /// Get the registered controller mode for this engine ("desktop" | "vr" | "")
+    pub fn get_controller_mode(&self) -> String {
+        self.controller_mode.lock().unwrap().clone()
+    }
+
+    /// Push a touch event into this engine's JS-visible queue
+    pub fn push_touch_event(&self, node_id: i32, x: f32, y: f32, z: f32) {
+        self.touch_events.lock().unwrap().push((node_id, x, y, z));
     }
 
     // -------------------------------------------------------------------------

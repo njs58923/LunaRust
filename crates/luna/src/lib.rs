@@ -7,6 +7,7 @@ pub mod io;
 pub mod js;
 pub mod render;
 pub mod routes;
+pub mod touch;
 pub mod types;
 pub mod ui;
 pub mod utils;

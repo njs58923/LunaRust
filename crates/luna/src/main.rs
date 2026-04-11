@@ -22,7 +22,7 @@ use bevy_xr_utils::tracking_utils::{
 use luna::vr_locomotion::VrLocomotionPlugin;
 
 use luna::*;
-use luna::{dom, io, js, ui, utils};
+use luna::{dom, io, js, touch, ui, utils};
 
 // ─── main ────────────────────────────────────────────────────────────────────
 
@@ -100,6 +100,7 @@ fn main() {
     app.insert_resource(ScriptLoadStates::default());
     app.insert_resource(PendingModelLoads::default());
     app.insert_resource(ModelLoadStates::default());
+    app.insert_resource(touch::TouchEvents::default());
 
     // Systems
     app.add_systems(Startup, (setup, js::init_js_runtime).chain());
@@ -129,6 +130,17 @@ fn main() {
         camera_keyboard_movement_system.run_if(|rm: Res<RenderMode>| !rm.is_vr),
     );
     app.add_systems(Update, (xr_session_handler, toggle_render_mode));
+    app.add_systems(
+        Update,
+        touch::desktop_raycast_system.run_if(|rm: Res<RenderMode>| !rm.is_vr),
+    );
+    app.add_systems(
+        Update,
+        touch::vr_raycast_system
+            .run_if(bevy_mod_openxr::openxr_session_running)
+            .run_if(resource_exists::<luna::vr_locomotion::LunaLocomotionActions>),
+    );
+    app.add_systems(Update, dispatch_touch_events_to_js);
 
     app.add_systems(
         Update,
@@ -299,6 +311,39 @@ fn spawn_controllers(
     let right = cmds.spawn((PbrBundle { mesh, material: mat, ..default() }, XrTrackedRightGrip)).id();
     if let Ok(root_entity) = root.get_single() {
         cmds.entity(root_entity).push_children(&[left, right]);
+    }
+}
+
+/// Drains TouchEvents and pushes them to JS workers via push_touch_event,
+/// mapping global node_ids to local IDs per space.
+fn dispatch_touch_events_to_js(
+    mut touch_events: ResMut<touch::TouchEvents>,
+    mut manager: NonSendMut<js::ScriptRuntimeManager>,
+    space_handle_tables: Res<SpaceHandleTables>,
+    entity_map: Res<EntityMap>,
+) {
+    if touch_events.0.is_empty() {
+        return;
+    }
+
+    let events: Vec<(u32, f32, f32, f32)> = touch_events.0.drain(..).collect();
+
+    for (node_id, x, y, z) in &events {
+        // Find which space this node belongs to by checking all space handle tables
+        for (space_id, table) in &space_handle_tables.by_space {
+            if let Some(&local_id) = table.global_to_local.get(&(*node_id)) {
+                // Push to the worker for this space
+                if let Some(worker) = manager.contexts.get(space_id) {
+                    // We can't call push_touch_event on the Engine directly (it's in a thread).
+                    // Instead we'll use a command approach - but the worker uses channels.
+                    // For now, push to ALL workers that have a mapping for this node.
+                    // The JS controller script will pick up events via op_poll_touch_events.
+                    let _ = worker.cmd_tx.send(js::JsWorkerCommand::PushTouchEvents(
+                        vec![(local_id, *x, *y, *z)],
+                    ));
+                }
+            }
+        }
     }
 }
 

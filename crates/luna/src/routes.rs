@@ -42,6 +42,28 @@ impl VirtualRoutes {
             RouteHandler::Static(SCRIPT_ROOT_API),
         );
 
+        // UX and Controller routes
+        routes.insert("ux_desktop".to_string(), RouteHandler::Static(LUNA_UX_DESKTOP));
+        routes.insert("ux_vr".to_string(), RouteHandler::Static(LUNA_UX_VR));
+        routes.insert("controller_desktop".to_string(), RouteHandler::Static(LUNA_CONTROLLER_DESKTOP));
+        routes.insert("controller_vr".to_string(), RouteHandler::Static(LUNA_CONTROLLER_VR));
+        routes.insert(
+            "internal/ux_desktop.js".to_string(),
+            RouteHandler::Static(SCRIPT_UX_DESKTOP),
+        );
+        routes.insert(
+            "internal/ux_vr.js".to_string(),
+            RouteHandler::Static(SCRIPT_UX_VR),
+        );
+        routes.insert(
+            "internal/controller_desktop.js".to_string(),
+            RouteHandler::Static(SCRIPT_CONTROLLER_DESKTOP),
+        );
+        routes.insert(
+            "internal/controller_vr.js".to_string(),
+            RouteHandler::Static(SCRIPT_CONTROLLER_VR),
+        );
+
         Self { routes }
     }
 
@@ -88,9 +110,6 @@ const LUNA_ROOT: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
   <space id="luna_root">
-    <text x="0" y="1.6" z="-2" value="Luna Root" size="0.28" />
-    <text x="0" y="1.25" z="-2" value="Root compositor ready. Use dimension.luna.* from scripts." size="0.12" />
-    <text x="0" y="0.95" z="-2" value="mountSpace / updateSpace / setSpaceVisible / unmountSpace / listMountedSpaces" size="0.08" />
     <script src="luna://internal/root_api.js" />
   </space>
 </hsml>"##;
@@ -432,6 +451,9 @@ const SCRIPT_ROOT_API: &str = r##"
   }
 
   dimension.luna = {
+    _uxSpaceId: null,
+    _currentMode: null,
+
     mountSpace(url, options = {}) {
       discoverDirectSpaces();
       cleanupRegistry();
@@ -477,7 +499,29 @@ const SCRIPT_ROOT_API: &str = r##"
       }
       return mounted;
     },
+
+    switchMode(mode) {
+      if (mode !== 'desktop' && mode !== 'vr') {
+        console.error('[root] Invalid mode:', mode);
+        return false;
+      }
+      if (mode === this._currentMode) return true;
+
+      if (this._uxSpaceId != null) {
+        this.unmountSpace(this._uxSpaceId);
+        this._uxSpaceId = null;
+      }
+
+      const uxUrl = mode === 'vr' ? 'luna://ux_vr' : 'luna://ux_desktop';
+      this._uxSpaceId = this.mountSpace(uxUrl, { visible: true });
+      this._currentMode = mode;
+      console.log('[root] Switched to mode:', mode, 'ux space:', this._uxSpaceId);
+      return true;
+    },
   };
+
+  // Auto-mount desktop UX on startup
+  dimension.luna.switchMode('desktop');
 
   console.log('[luna://root] dimension.luna ready');
 })(globalThis);
@@ -518,6 +562,154 @@ fn generate_cache_stats(_path: &str) -> String {
   </space>
 </hsml>"##.to_string()
 }
+
+// ============================================================================
+// UX DOCUMENTS
+// ============================================================================
+
+const LUNA_UX_DESKTOP: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head>
+    <name>UX Desktop</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space id="ux_desktop">
+    <include src="luna://controller_desktop" />
+    <script src="luna://internal/ux_desktop.js" />
+  </space>
+</hsml>"##;
+
+const LUNA_UX_VR: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head>
+    <name>UX VR</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space id="ux_vr">
+    <include src="luna://controller_vr" />
+    <script src="luna://internal/ux_vr.js" />
+  </space>
+</hsml>"##;
+
+// ============================================================================
+// CONTROLLER DOCUMENTS
+// ============================================================================
+
+const LUNA_CONTROLLER_DESKTOP: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head>
+    <name>Controller Desktop</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space id="controller_desktop">
+    <script src="luna://internal/controller_desktop.js" />
+  </space>
+</hsml>"##;
+
+const LUNA_CONTROLLER_VR: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head>
+    <name>Controller VR</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space id="controller_vr">
+    <script src="luna://internal/controller_vr.js" />
+  </space>
+</hsml>"##;
+
+// ============================================================================
+// UX + CONTROLLER SCRIPTS
+// ============================================================================
+
+const SCRIPT_UX_DESKTOP: &str = r##"
+(function() {
+  console.log('[ux_desktop] Desktop UX loaded (controller included via HSML)');
+})();
+"##;
+
+const SCRIPT_UX_VR: &str = r##"
+(function() {
+  console.log('[ux_vr] VR UX loaded (controller included via HSML)');
+})();
+"##;
+
+const SCRIPT_CONTROLLER_DESKTOP: &str = r##"
+(function() {
+  Deno.core.ops.op_register_controller('desktop');
+
+  function pollTouch() {
+    const events = Deno.core.ops.op_poll_touch_events();
+    for (const evt of events) {
+      const root = globalThis.hiperspace && globalThis.hiperspace.dimention;
+      if (!root) continue;
+      function findNode(el, targetId) {
+        if (el.nodeId === targetId) return el;
+        for (const child of el.children) {
+          const found = findNode(child, targetId);
+          if (found) return found;
+        }
+        return null;
+      }
+      const target = findNode(root, evt.nodeId);
+      if (target) {
+        target.dispatchEvent({
+          type: 'touch',
+          nodeId: evt.nodeId,
+          x: evt.x, y: evt.y, z: evt.z,
+        });
+        target.dispatchEvent({ type: 'click' });
+      }
+    }
+    requestAnimationFrame(pollTouch);
+  }
+  requestAnimationFrame(pollTouch);
+
+  console.log('[controller_desktop] Desktop controller active');
+})();
+"##;
+
+const SCRIPT_CONTROLLER_VR: &str = r##"
+(function() {
+  Deno.core.ops.op_register_controller('vr');
+
+  function pollTouch() {
+    const events = Deno.core.ops.op_poll_touch_events();
+    for (const evt of events) {
+      const root = globalThis.hiperspace && globalThis.hiperspace.dimention;
+      if (!root) continue;
+      function findNode(el, targetId) {
+        if (el.nodeId === targetId) return el;
+        for (const child of el.children) {
+          const found = findNode(child, targetId);
+          if (found) return found;
+        }
+        return null;
+      }
+      const target = findNode(root, evt.nodeId);
+      if (target) {
+        target.dispatchEvent({
+          type: 'touch',
+          nodeId: evt.nodeId,
+          x: evt.x, y: evt.y, z: evt.z,
+        });
+        target.dispatchEvent({ type: 'click' });
+      }
+    }
+    requestAnimationFrame(pollTouch);
+  }
+  requestAnimationFrame(pollTouch);
+
+  console.log('[controller_vr] VR controller active');
+})();
+"##;
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -609,5 +801,43 @@ mod tests {
     fn resolve_cache_stats_returns_hsml() {
         let content = VIRTUAL_ROUTES.resolve("luna://cache-stats").unwrap();
         assert!(content.contains("<hsml>"));
+    }
+
+    #[test]
+    fn resolve_ux_desktop_returns_hsml() {
+        let content = VIRTUAL_ROUTES.resolve("luna://ux_desktop").unwrap();
+        assert!(content.contains("<hsml>"));
+        assert!(content.contains("ux_desktop"));
+    }
+
+    #[test]
+    fn resolve_ux_vr_returns_hsml() {
+        let content = VIRTUAL_ROUTES.resolve("luna://ux_vr").unwrap();
+        assert!(content.contains("<hsml>"));
+        assert!(content.contains("ux_vr"));
+    }
+
+    #[test]
+    fn resolve_controller_desktop_returns_hsml() {
+        let content = VIRTUAL_ROUTES.resolve("luna://controller_desktop").unwrap();
+        assert!(content.contains("<hsml>"));
+        assert!(content.contains("controller_desktop"));
+    }
+
+    #[test]
+    fn resolve_controller_vr_returns_hsml() {
+        let content = VIRTUAL_ROUTES.resolve("luna://controller_vr").unwrap();
+        assert!(content.contains("<hsml>"));
+        assert!(content.contains("controller_vr"));
+    }
+
+    #[test]
+    fn root_api_has_switch_mode() {
+        let content = VIRTUAL_ROUTES
+            .resolve("luna://internal/root_api.js")
+            .unwrap();
+        assert!(content.contains("switchMode"));
+        assert!(content.contains("luna://ux_desktop"));
+        assert!(content.contains("luna://ux_vr"));
     }
 }

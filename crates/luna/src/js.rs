@@ -55,6 +55,7 @@ pub enum JsWorkerCommand {
     Tick { elapsed_ms: f64 },
     PushElementCreationResults(Vec<(i32, i32)>),
     PushFetchResults(Vec<(i32, std::result::Result<String, String>)>),
+    PushTouchEvents(Vec<(i32, f32, f32, f32)>),
     Shutdown,
 }
 
@@ -204,6 +205,11 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                     JsWorkerCommand::PushFetchResults(results) => {
                         for (request_id, result) in results {
                             ctx.engine.push_fetch_result(request_id, result);
+                        }
+                    }
+                    JsWorkerCommand::PushTouchEvents(events) => {
+                        for (node_id, x, y, z) in events {
+                            ctx.engine.push_touch_event(node_id, x, y, z);
                         }
                     }
                     JsWorkerCommand::Shutdown => break,
