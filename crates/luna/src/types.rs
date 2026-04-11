@@ -169,6 +169,21 @@ pub struct Dirty;
 #[derive(Resource, Default)]
 pub struct DeleteRequests(pub Vec<u32>);
 
+#[derive(Debug, Clone)]
+pub struct MountedSpaceEntry {
+    pub url: String,
+    pub title: String,
+}
+
+#[derive(Resource, Default)]
+pub struct SpaceMountQueue(pub Vec<String>);
+
+#[derive(Resource, Default)]
+pub struct SpaceUnmountQueue(pub Vec<String>);
+
+#[derive(Resource, Default)]
+pub struct MountedSpaceList(pub Vec<MountedSpaceEntry>);
+
 #[derive(Default)]
 pub struct SpaceHandleTable {
     pub runtime_id: u64,
@@ -256,6 +271,21 @@ pub struct TextRenderParams<'w> {
     pub materials: ResMut<'w, Assets<StandardMaterial>>,
     pub images: ResMut<'w, Assets<Image>>,
     pub text_material_cache: ResMut<'w, TextMaterialCache>,
+}
+
+#[derive(SystemParam)]
+pub struct SpaceParams<'w> {
+    pub mount_queue: ResMut<'w, SpaceMountQueue>,
+    pub unmount_queue: ResMut<'w, SpaceUnmountQueue>,
+    pub mounted_spaces: ResMut<'w, MountedSpaceList>,
+}
+
+#[derive(SystemParam)]
+pub struct DevtoolParams<'w> {
+    pub visible: ResMut<'w, DevtoolVisible>,
+    pub state: ResMut<'w, DevtoolState>,
+    pub attribute_updates: ResMut<'w, AttributeUpdates>,
+    pub delete_requests: ResMut<'w, DeleteRequests>,
 }
 
 #[derive(SystemParam)]

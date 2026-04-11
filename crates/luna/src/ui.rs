@@ -4,42 +4,52 @@ use specs::{Entity as SpecEntity, Join, World as SpecWorld, WorldExt};
 use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
 
 use crate::{
-    AttributeUpdates, CurrentUrl, DeleteRequests, DevtoolState, DevtoolTab, DevtoolVisible,
-    EntityMap, IoService, LogLevel, LogPanel, PreferredRenderMode, ReloadTrigger, RenderMode,
-    RootConfig, UiSystemParams, VirtualDomData,
+    AttributeUpdates, CurrentUrl, DeleteRequests, DevtoolParams, DevtoolTab, EntityMap, IoService,
+    LogLevel, LogPanel, MountedSpaceEntry, PreferredRenderMode, ReloadTrigger, RenderMode,
+    RootConfig, SpaceParams, UiSystemParams, VirtualDomData,
 };
 
 pub fn ui_system(
     mut contexts: EguiContexts,
     mut url: ResMut<CurrentUrl>,
     mut reload_trigger: ResMut<ReloadTrigger>,
-    mut devtool_visible: ResMut<DevtoolVisible>,
-    mut devtool_state: ResMut<DevtoolState>,
     world: Res<crate::ElemenetWorld>,
     entity_map: Res<EntityMap>,
     mut commands: Commands,
     mut camera_query: Query<&mut Transform, With<Camera3d>>,
     dom_data: Res<VirtualDomData>,
-    mut attribute_updates: ResMut<AttributeUpdates>,
-    mut delete_requests: ResMut<DeleteRequests>,
     mut log_panel: ResMut<LogPanel>,
     mut ui_params: UiSystemParams,
     mut render_mode: ResMut<RenderMode>,
     io_service: Res<IoService>,
+    mut space_params: SpaceParams,
+    mut devtool: DevtoolParams,
 ) {
+    // Track which spaces to unmount (collected during UI rendering)
+    let mut pending_unmounts: Vec<usize> = Vec::new();
+
     egui::Window::new("Navegador").show(contexts.ctx_mut(), |ui| {
+        // ── URL bar: mount a space ──
         ui.horizontal(|ui| {
             if ui.button("Home").clicked() {
                 url.0 = ui_params.root_config.home_url.clone();
                 reload_trigger.0 = true;
+                log_panel.push_info("Reloading root document");
             }
             ui.label("URL:");
             let resp = ui.text_edit_singleline(&mut url.0);
-            if resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
-                reload_trigger.0 = true;
-            }
-            if ui.button("Go").clicked() || ui.button("Reload").clicked() {
-                reload_trigger.0 = true;
+            let enter_pressed =
+                resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
+            if ui.button("Mount").clicked() || enter_pressed {
+                let space_url = url.0.trim().to_string();
+                if !space_url.is_empty() {
+                    space_params.mount_queue.0.push(space_url.clone());
+                    space_params.mounted_spaces.0.push(MountedSpaceEntry {
+                        url: space_url.clone(),
+                        title: space_url.clone(),
+                    });
+                    log_panel.push_info(format!("Mounting space: {}", space_url));
+                }
             }
             if ui.button("Set Current as Home").clicked() {
                 ui_params.root_config.home_url = url.0.clone();
@@ -52,57 +62,88 @@ pub fn ui_system(
             }
         });
 
-        let label = if render_mode.is_vr {
-            "Switch to Desktop"
-        } else {
-            "Switch to VR"
-        };
-        if ui.button(label).clicked() {
-            render_mode.is_vr = !render_mode.is_vr;
-            log_panel.push_info(format!(
-                "Mode: {}",
-                if render_mode.is_vr { "VR" } else { "Desktop" }
-            ));
+        // ── Mounted spaces (tab bar) ──
+        if !space_params.mounted_spaces.0.is_empty() {
+            ui.separator();
+            ui.horizontal_wrapped(|ui| {
+                for (idx, entry) in space_params.mounted_spaces.0.iter().enumerate() {
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(&entry.title);
+                            if ui.small_button("x").clicked() {
+                                pending_unmounts.push(idx);
+                            }
+                        });
+                    });
+                }
+            });
         }
 
-        if ui.button("Toggle Devtool").clicked() {
-            devtool_visible.0 = !devtool_visible.0;
-        }
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            let label = if render_mode.is_vr {
+                "Switch to Desktop"
+            } else {
+                "Switch to VR"
+            };
+            if ui.button(label).clicked() {
+                render_mode.is_vr = !render_mode.is_vr;
+                log_panel.push_info(format!(
+                    "Mode: {}",
+                    if render_mode.is_vr { "VR" } else { "Desktop" }
+                ));
+            }
+
+            if ui.button("Toggle Devtool").clicked() {
+                devtool.visible.0 = !devtool.visible.0;
+            }
+        });
     });
 
-    if devtool_visible.0 {
+    // Process unmounts (reverse order to keep indices valid)
+    pending_unmounts.sort_unstable();
+    for idx in pending_unmounts.into_iter().rev() {
+        if idx < space_params.mounted_spaces.0.len() {
+            let removed = space_params.mounted_spaces.0.remove(idx);
+            space_params.unmount_queue.0.push(removed.url.clone());
+            log_panel.push_info(format!("Unmounting space: {}", removed.url));
+        }
+    }
+
+    if devtool.visible.0 {
         egui::Window::new("Devtool")
             .id(egui::Id::new("devtool_window"))
             .show(contexts.ctx_mut(), |ui| {
                 ui.horizontal(|ui| {
                     if ui
-                        .selectable_label(devtool_state.active_tab == DevtoolTab::Status, "Status")
+                        .selectable_label(devtool.state.active_tab == DevtoolTab::Status, "Status")
                         .clicked()
                     {
-                        devtool_state.active_tab = DevtoolTab::Status;
+                        devtool.state.active_tab = DevtoolTab::Status;
                     }
                     if ui
-                        .selectable_label(devtool_state.active_tab == DevtoolTab::Hsml, "HSML")
+                        .selectable_label(devtool.state.active_tab == DevtoolTab::Hsml, "HSML")
                         .clicked()
                     {
-                        devtool_state.active_tab = DevtoolTab::Hsml;
+                        devtool.state.active_tab = DevtoolTab::Hsml;
                     }
                     if ui
-                        .selectable_label(devtool_state.active_tab == DevtoolTab::Logs, "Console")
+                        .selectable_label(devtool.state.active_tab == DevtoolTab::Logs, "Console")
                         .clicked()
                     {
-                        devtool_state.active_tab = DevtoolTab::Logs;
+                        devtool.state.active_tab = DevtoolTab::Logs;
                     }
                     if ui
-                        .selectable_label(devtool_state.active_tab == DevtoolTab::Redes, "Network")
+                        .selectable_label(devtool.state.active_tab == DevtoolTab::Redes, "Network")
                         .clicked()
                     {
-                        devtool_state.active_tab = DevtoolTab::Redes;
+                        devtool.state.active_tab = DevtoolTab::Redes;
                     }
                 });
                 ui.separator();
 
-                match devtool_state.active_tab {
+                match devtool.state.active_tab {
                     DevtoolTab::Status => {
                         ui.heading("General Status");
                         ui.separator();
@@ -172,8 +213,8 @@ pub fn ui_system(
                                         &mut commands,
                                         &mut camera_query,
                                         &dom_data,
-                                        &mut attribute_updates,
-                                        &mut delete_requests,
+                                        &mut devtool.attribute_updates,
+                                        &mut devtool.delete_requests,
                                         &mut log_panel,
                                     );
                                 } else {

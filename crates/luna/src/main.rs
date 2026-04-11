@@ -101,6 +101,9 @@ fn main() {
     app.insert_resource(PendingModelLoads::default());
     app.insert_resource(ModelLoadStates::default());
     app.insert_resource(touch::TouchEvents::default());
+    app.insert_resource(SpaceMountQueue::default());
+    app.insert_resource(SpaceUnmountQueue::default());
+    app.insert_resource(MountedSpaceList::default());
 
     // Systems
     app.add_systems(Startup, (setup, js::init_js_runtime).chain());
@@ -141,6 +144,14 @@ fn main() {
             .run_if(resource_exists::<luna::vr_locomotion::LunaLocomotionActions>),
     );
     app.add_systems(Update, dispatch_touch_events_to_js);
+    app.add_systems(
+        Update,
+        process_space_mount_queue.run_if(|q: Res<SpaceMountQueue>| !q.0.is_empty()),
+    );
+    app.add_systems(
+        Update,
+        process_space_unmount_queue.run_if(|q: Res<SpaceUnmountQueue>| !q.0.is_empty()),
+    );
 
     app.add_systems(
         Update,
@@ -344,6 +355,76 @@ fn dispatch_touch_events_to_js(
                 }
             }
         }
+    }
+}
+
+/// Finds the root space worker (space with id="luna_root") and returns its space_id.
+fn find_root_worker_space_id(
+    specs_world: &specs::World,
+    manager: &js::ScriptRuntimeManager,
+) -> Option<u32> {
+    use specs::WorldExt;
+    use virtual_dom::dom::element::Attrs;
+    let attrs = specs_world.read_storage::<Attrs>();
+    for &space_id in manager.contexts.keys() {
+        let ent = specs_world.entities().entity(space_id);
+        if let Some(a) = attrs.get(ent) {
+            if a.0.get("id").map(|v| v.as_str()) == Some("luna_root") {
+                return Some(space_id);
+            }
+        }
+    }
+    None
+}
+
+fn process_space_mount_queue(
+    mut mount_queue: ResMut<SpaceMountQueue>,
+    manager: NonSendMut<js::ScriptRuntimeManager>,
+    specs_world: Res<ElemenetWorld>,
+    mut log_panel: ResMut<LogPanel>,
+) {
+    let urls: Vec<String> = mount_queue.0.drain(..).collect();
+    let Some(root_id) = find_root_worker_space_id(&specs_world.0, &manager) else {
+        log_panel.push_warn("Cannot mount spaces: root worker not found (luna://root not loaded?)");
+        return;
+    };
+    let Some(worker) = manager.contexts.get(&root_id) else {
+        return;
+    };
+    for url in urls {
+        let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
+        let code = format!("dimension.luna.mountSpace('{}');", escaped);
+        let _ = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
+            url: format!("eval://mount/{}", url),
+            code,
+        });
+    }
+}
+
+fn process_space_unmount_queue(
+    mut unmount_queue: ResMut<SpaceUnmountQueue>,
+    manager: NonSendMut<js::ScriptRuntimeManager>,
+    specs_world: Res<ElemenetWorld>,
+    mut log_panel: ResMut<LogPanel>,
+) {
+    let urls: Vec<String> = unmount_queue.0.drain(..).collect();
+    let Some(root_id) = find_root_worker_space_id(&specs_world.0, &manager) else {
+        log_panel.push_warn("Cannot unmount spaces: root worker not found");
+        return;
+    };
+    let Some(worker) = manager.contexts.get(&root_id) else {
+        return;
+    };
+    for url in urls {
+        let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
+        let code = format!(
+            "(() => {{ var list = dimension.luna.listMountedSpaces(); for (var i = 0; i < list.length; i++) {{ if (list[i].url === '{}') {{ dimension.luna.unmountSpace(list[i].id); break; }} }} }})()",
+            escaped
+        );
+        let _ = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
+            url: format!("eval://unmount/{}", url),
+            code,
+        });
     }
 }
 
