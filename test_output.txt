@@ -1,0 +1,453 @@
+warning: hiding a lifetime that's named elsewhere is confusing
+  --> crates\bevy_openxr\src\openxr\layer_builder.rs:12:58
+   |
+12 |     fn get<'a>(&'a self, world: &'a World) -> Option<Box<dyn CompositionLayer + '_>>;
+   |                 --               --                      ^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+   |                 |                |
+   |                 |                the lifetime is named here
+   |                 the lifetime is named here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: consistently use `'a`
+   |
+12 |     fn get<'a>(&'a self, world: &'a World) -> Option<Box<dyn CompositionLayer<'a> + '_>>;
+   |                                                                              ++++
+
+warning: hiding a lifetime that's named elsewhere is confusing
+  --> crates\bevy_openxr\src\openxr\layer_builder.rs:66:58
+   |
+66 |     fn get<'a>(&'a self, world: &'a World) -> Option<Box<dyn CompositionLayer + '_>> {
+   |                 --               --                      ^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+   |                 |                |
+   |                 |                the lifetime is named here
+   |                 the lifetime is named here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: consistently use `'a`
+   |
+66 |     fn get<'a>(&'a self, world: &'a World) -> Option<Box<dyn CompositionLayer<'a> + '_>> {
+   |                                                                              ++++
+
+warning: `bevy_mod_openxr` (lib) generated 2 warnings (run `cargo fix --lib -p bevy_mod_openxr` to apply 2 suggestions)
+warning: unused import: `OxrSendActionBindings`
+ --> crates\bevy_xr_utils\src\tracking_utils.rs:3:22
+  |
+3 |     action_binding::{OxrSendActionBindings, OxrSuggestActionBinding}, action_set_attaching::OxrAttachActionSet, action_set_syncing::{OxrActionSetSyncSet, OxrSyncActionSet}, help...
+  |                      ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `session_available` and `session_running`
+ --> crates\bevy_xr_utils\src\tracking_utils.rs:6:15
+  |
+6 |     session::{session_available, session_running, XrSessionCreated, XrTrackingRoot},
+  |               ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unnecessary parentheses around pattern
+  --> crates\bevy_xr_utils\src\tracking_utils.rs:83:17
+   |
+83 |             for (mut transform) in &mut stage_query {
+   |                 ^             ^
+   |
+   = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+   |
+83 -             for (mut transform) in &mut stage_query {
+83 +             for mut transform  in &mut stage_query {
+   |
+
+warning: unnecessary parentheses around pattern
+   --> crates\bevy_xr_utils\src\tracking_utils.rs:133:17
+    |
+133 |             for (mut transform) in &mut view_query {
+    |                 ^             ^
+    |
+help: remove these parentheses
+    |
+133 -             for (mut transform) in &mut view_query {
+133 +             for mut transform  in &mut view_query {
+    |
+
+warning: unnecessary parentheses around pattern
+   --> crates\bevy_xr_utils\src\tracking_utils.rs:155:17
+    |
+155 |             for (mut transform) in &mut local_floor {
+    |                 ^             ^
+    |
+help: remove these parentheses
+    |
+155 -             for (mut transform) in &mut local_floor {
+155 +             for mut transform  in &mut local_floor {
+    |
+
+warning: unnecessary parentheses around pattern
+   --> crates\bevy_xr_utils\src\tracking_utils.rs:174:17
+    |
+174 |             for (mut transform) in &mut tracked_left_grip {
+    |                 ^             ^
+    |
+help: remove these parentheses
+    |
+174 -             for (mut transform) in &mut tracked_left_grip {
+174 +             for mut transform  in &mut tracked_left_grip {
+    |
+
+warning: unnecessary parentheses around pattern
+   --> crates\bevy_xr_utils\src\tracking_utils.rs:193:17
+    |
+193 |             for (mut transform) in &mut tracked_right_grip {
+    |                 ^             ^
+    |
+help: remove these parentheses
+    |
+193 -             for (mut transform) in &mut tracked_right_grip {
+193 +             for mut transform  in &mut tracked_right_grip {
+    |
+
+warning: unused variable: `x`
+   --> crates\bevy_xr_utils\src\tracking_utils.rs:152:21
+    |
+152 |             let (y, x, z) = calc_floor.rotation.to_euler(EulerRot::YXZ);
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_x`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `z`
+   --> crates\bevy_xr_utils\src\tracking_utils.rs:152:24
+    |
+152 |             let (y, x, z) = calc_floor.rotation.to_euler(EulerRot::YXZ);
+    |                        ^ help: if this is intentional, prefix it with an underscore: `_z`
+
+warning: `bevy_xr_utils` (lib) generated 9 warnings (run `cargo fix --lib -p bevy_xr_utils` to apply 9 suggestions)
+warning: unused import: `default`
+ --> crates\virtual_dom\src\dom\element.rs:3:33
+  |
+3 | use std::{collections::HashMap, default};
+  |                                 ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `dom::tags`
+  --> crates\virtual_dom\src\lib.rs:17:5
+   |
+17 | use dom::tags;
+   |     ^^^^^^^^^
+
+warning: function `read_str` is never used
+  --> crates\virtual_dom\src\lib.rs:61:4
+   |
+61 | fn read_str(attributes: &HashMap<String, String>, key: &String, default: &String) -> String {
+   |    ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ElementTest` is never constructed
+  --> crates\virtual_dom\src\dom\element.rs:94:8
+   |
+94 | struct ElementTest {
+   |        ^^^^^^^^^^^
+
+warning: function `main` is never used
+   --> crates\virtual_dom\src\dom\element.rs:133:4
+    |
+133 | fn main() {
+    |    ^^^^
+
+warning: associated function `default` is never used
+ --> crates\virtual_dom\src\dom\hsml\mod.rs:9:8
+  |
+8 | impl Model {
+  | ---------- associated function in this implementation
+9 |     fn default() -> Model {
+  |        ^^^^^^^
+
+warning: associated function `default` is never used
+  --> crates\virtual_dom\src\dom\hsml\mod.rs:20:8
+   |
+19 | impl Script {
+   | ----------- associated function in this implementation
+20 |     fn default() -> Script {
+   |        ^^^^^^^
+
+warning: associated function `default` is never used
+  --> crates\virtual_dom\src\dom\hsml\mod.rs:32:8
+   |
+31 | impl Include {
+   | ------------ associated function in this implementation
+32 |     fn default() -> Include {
+   |        ^^^^^^^
+
+warning: use of deprecated associated function `deno_core::Extension::builder`: Use Extension { ..., ..Default::default() }
+   --> crates\js_runtime\src\lib.rs:873:30
+    |
+873 |         let ext = Extension::builder("luna_runtime")
+    |                              ^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated associated function `op_console_log::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:876:33
+    |
+876 |                 op_console_log::decl(),
+    |                                 ^^^^
+
+warning: use of deprecated associated function `op_console_warn::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:877:34
+    |
+877 |                 op_console_warn::decl(),
+    |                                  ^^^^
+
+warning: use of deprecated associated function `op_console_error::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:878:35
+    |
+878 |                 op_console_error::decl(),
+    |                                   ^^^^
+
+warning: use of deprecated associated function `op_now::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:880:25
+    |
+880 |                 op_now::decl(),
+    |                         ^^^^
+
+warning: use of deprecated associated function `op_set_timeout::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:882:33
+    |
+882 |                 op_set_timeout::decl(),
+    |                                 ^^^^
+
+warning: use of deprecated associated function `op_clear_timeout::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:883:35
+    |
+883 |                 op_clear_timeout::decl(),
+    |                                   ^^^^
+
+warning: use of deprecated associated function `op_timers_poll::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:884:33
+    |
+884 |                 op_timers_poll::decl(),
+    |                                 ^^^^
+
+warning: use of deprecated associated function `op_raf_register::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:886:34
+    |
+886 |                 op_raf_register::decl(),
+    |                                  ^^^^
+
+warning: use of deprecated associated function `op_raf_poll::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:887:30
+    |
+887 |                 op_raf_poll::decl(),
+    |                              ^^^^
+
+warning: use of deprecated associated function `op_hsml_set_attr::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:889:35
+    |
+889 |                 op_hsml_set_attr::decl(),
+    |                                   ^^^^
+
+warning: use of deprecated associated function `op_hsml_get_attr::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:890:35
+    |
+890 |                 op_hsml_get_attr::decl(),
+    |                                   ^^^^
+
+warning: use of deprecated associated function `op_hsml_create_element::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:892:41
+    |
+892 |                 op_hsml_create_element::decl(),
+    |                                         ^^^^
+
+warning: use of deprecated associated function `op_hsml_poll_created_element::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:893:47
+    |
+893 |                 op_hsml_poll_created_element::decl(),
+    |                                               ^^^^
+
+warning: use of deprecated associated function `op_hsml_append_child::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:895:39
+    |
+895 |                 op_hsml_append_child::decl(),
+    |                                       ^^^^
+
+warning: use of deprecated associated function `op_hsml_remove::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:896:33
+    |
+896 |                 op_hsml_remove::decl(),
+    |                                 ^^^^
+
+warning: use of deprecated associated function `op_hsml_get_children::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:897:39
+    |
+897 |                 op_hsml_get_children::decl(),
+    |                                       ^^^^
+
+warning: use of deprecated associated function `op_hsml_get_parent::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:898:37
+    |
+898 |                 op_hsml_get_parent::decl(),
+    |                                     ^^^^
+
+warning: use of deprecated associated function `op_hsml_get_tag::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:900:34
+    |
+900 |                 op_hsml_get_tag::decl(),
+    |                                  ^^^^
+
+warning: use of deprecated associated function `op_hsml_get_position::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:902:39
+    |
+902 |                 op_hsml_get_position::decl(),
+    |                                       ^^^^
+
+warning: use of deprecated associated function `op_hsml_get_rotation::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:903:39
+    |
+903 |                 op_hsml_get_rotation::decl(),
+    |                                       ^^^^
+
+warning: use of deprecated associated function `op_hsml_get_scale::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:904:36
+    |
+904 |                 op_hsml_get_scale::decl(),
+    |                                    ^^^^
+
+warning: use of deprecated associated function `op_hsml_get_global_position::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:905:46
+    |
+905 |                 op_hsml_get_global_position::decl(),
+    |                                              ^^^^
+
+warning: use of deprecated associated function `op_hsml_set_position::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:907:39
+    |
+907 |                 op_hsml_set_position::decl(),
+    |                                       ^^^^
+
+warning: use of deprecated associated function `op_hsml_set_rotation::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:908:39
+    |
+908 |                 op_hsml_set_rotation::decl(),
+    |                                       ^^^^
+
+warning: use of deprecated associated function `op_hsml_set_scale::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:909:36
+    |
+909 |                 op_hsml_set_scale::decl(),
+    |                                    ^^^^
+
+warning: use of deprecated associated function `op_hsml_set_global_position::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:910:46
+    |
+910 |                 op_hsml_set_global_position::decl(),
+    |                                              ^^^^
+
+warning: use of deprecated associated function `op_fetch_request::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:912:35
+    |
+912 |                 op_fetch_request::decl(),
+    |                                   ^^^^
+
+warning: use of deprecated associated function `op_fetch_poll::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:913:32
+    |
+913 |                 op_fetch_poll::decl(),
+    |                                ^^^^
+
+warning: use of deprecated associated function `op_navigate::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:915:30
+    |
+915 |                 op_navigate::decl(),
+    |                              ^^^^
+
+warning: use of deprecated associated function `op_ws_connect::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:917:32
+    |
+917 |                 op_ws_connect::decl(),
+    |                                ^^^^
+
+warning: use of deprecated associated function `op_ws_send::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:918:29
+    |
+918 |                 op_ws_send::decl(),
+    |                             ^^^^
+
+warning: use of deprecated associated function `op_ws_recv::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:919:29
+    |
+919 |                 op_ws_recv::decl(),
+    |                             ^^^^
+
+warning: use of deprecated associated function `op_ws_get_status::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:920:35
+    |
+920 |                 op_ws_get_status::decl(),
+    |                                   ^^^^
+
+warning: use of deprecated associated function `op_ws_close::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:921:30
+    |
+921 |                 op_ws_close::decl(),
+    |                              ^^^^
+
+warning: use of deprecated associated function `op_register_controller::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:923:41
+    |
+923 |                 op_register_controller::decl(),
+    |                                         ^^^^
+
+warning: use of deprecated associated function `op_poll_touch_events::decl`: Use the const op::DECL instead
+   --> crates\js_runtime\src\lib.rs:924:39
+    |
+924 |                 op_poll_touch_events::decl(),
+    |                                       ^^^^
+
+warning: `virtual-dom` (lib) generated 8 warnings (run `cargo fix --lib -p virtual-dom` to apply 2 suggestions)
+warning: `js_runtime` (lib) generated 37 warnings
+   Compiling luna v0.1.1 (***\bevy_oxr\crates\luna)
+warning: unused import: `ReloadTrigger`
+ --> crates\luna\src\ui.rs:9:26
+  |
+9 |     PreferredRenderMode, ReloadTrigger, RenderMode, RootConfig, SpaceParams, UiSystemParams,
+  |                          ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates\luna\src\dom.rs:667:5
+    |
+667 |     mut world: ResMut<ElemenetWorld>,
+    |     ----^^^^^
+    |     |
+    |     help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates\luna\src\touch.rs:166:5
+    |
+166 |     mut manager: NonSendMut<ScriptRuntimeManager>,
+    |     ----^^^^^^^
+    |     |
+    |     help: remove this `mut`
+
+error[E0382]: borrow of moved value: `old_url`
+   --> crates\luna\src\ui.rs:432:8
+    |
+426 |     let old_url = mounted_spaces[idx].url.clone();
+    |         ------- move occurs because `old_url` has type `std::string::String`, which does not implement the `Copy` trait
+...
+429 |         unmount_queue.push(old_url);
+    |                            ------- value moved here
+...
+432 |     if old_url != new_url || old_url.is_empty() {
+    |        ^^^^^^^ value borrowed here after move
+    |
+help: consider cloning the value if the performance cost is acceptable
+    |
+429 |         unmount_queue.push(old_url.clone());
+    |                                   ++++++++
+
+For more information about this error, try `rustc --explain E0382`.
+warning: `luna` (lib test) generated 3 warnings
+error: could not compile `luna` (lib test) due to 1 previous error; 3 warnings emitted

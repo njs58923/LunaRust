@@ -34,11 +34,8 @@ fn main() {
 
     let ar_on = args.iter().any(|a| a == "--ar");
     let root_config = RootConfig::load();
-    let initial_url = if root_config.auto_load_home {
-        root_config.home_url.clone()
-    } else {
-        "luna://home".to_string()
-    };
+    let root_shell_url = "luna://root".to_string();
+    let initial_home_url = root_config.home_url.clone();
     let initial_render_mode = if ar_on {
         true
     } else {
@@ -77,8 +74,15 @@ fn main() {
     app.insert_resource(ElemenetWorld(build_world()));
     app.insert_resource(EntityCounter::default());
     app.insert_resource(FpsCounter::default());
-    app.insert_resource(CurrentUrl(initial_url));
-    app.insert_resource(root_config);
+    app.insert_resource(CurrentUrl(root_shell_url));
+    app.insert_resource(AddressBarState(
+        if root_config.auto_load_home {
+            initial_home_url.clone()
+        } else {
+            String::new()
+        }
+    ));
+    app.insert_resource(root_config.clone());
     app.insert_resource(ReloadTrigger(false));
     app.insert_resource(AttributeUpdates::default());
     app.insert_resource(DeleteRequests::default());
@@ -107,13 +111,28 @@ fn main() {
     app.insert_resource(ActiveNativeServices::default());
     app.insert_resource(PendingIncludes::default());
     app.insert_resource(IncludeLoadStates::default());
-    app.insert_resource(SpaceMountQueue(vec!["luna://home".to_string()]));
+    app.insert_resource(SpaceMountQueue(
+        if root_config.auto_load_home {
+            vec![initial_home_url.clone()]
+        } else {
+            Vec::new()
+        }
+    ));
     app.insert_resource(SpaceUnmountQueue::default());
-    app.insert_resource(MountedSpaceList(vec![MountedSpaceEntry {
-        url: "luna://home".to_string(),
-        title: "luna://home".to_string(),
-    }]));
-    app.insert_resource(ActiveSpaceIndex(Some(0)));
+    app.insert_resource(MountedSpaceList(
+        if root_config.auto_load_home {
+            vec![MountedSpaceEntry {
+                url: initial_home_url.clone(),
+                title: initial_home_url.clone(),
+                is_home: true,
+            }]
+        } else {
+            Vec::new()
+        }
+    ));
+    app.insert_resource(ActiveSpaceIndex(
+        if root_config.auto_load_home { Some(0) } else { None }
+    ));
     app.insert_resource(GlobalDevtoolVisible::default());
 
     // Systems
@@ -231,14 +250,16 @@ fn setup(
         default_material,
     });
 
+    reload_trigger.0 = true;
+    log_panel.push_info("Queued initial root shell load: luna://root");
+
     if root_config.auto_load_home {
-        reload_trigger.0 = true;
         log_panel.push_info(format!(
-            "Auto-load enabled. Queued initial navigation: {}",
+            "Queued initial home tab mount: {}",
             root_config.home_url
         ));
     } else {
-        log_panel.push_info("Auto-load disabled.");
+        log_panel.push_info("Auto-load home tab disabled.");
     }
 }
 

@@ -6,14 +6,14 @@ use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
 use crate::{
     ActiveSpaceIndex, AttributeUpdates, CurrentUrl, DeleteRequests, DevtoolParams, DevtoolTab,
     EntityMap, GlobalDevtoolVisible, IoService, LogLevel, LogPanel, MountedSpaceEntry,
-    PreferredRenderMode, ReloadTrigger, RenderMode, RootConfig, SpaceParams, UiSystemParams,
+    PreferredRenderMode, RenderMode, RootConfig, SpaceParams, UiSystemParams,
     VirtualDomData,
 };
 
 pub fn ui_system(
     mut contexts: EguiContexts,
-    mut url: ResMut<CurrentUrl>,
-    mut reload_trigger: ResMut<ReloadTrigger>,
+    root_url: Res<CurrentUrl>,
+    mut address_bar: ResMut<crate::AddressBarState>,
     world: Res<crate::ElemenetWorld>,
     entity_map: Res<EntityMap>,
     mut commands: Commands,
@@ -39,14 +39,18 @@ pub fn ui_system(
                 let tab_count = space_params.mounted_spaces.0.len();
                 for (idx, entry) in space_params.mounted_spaces.0.iter().enumerate() {
                     let is_active = active_space.0 == Some(idx);
-                    let label = short_title(&entry.title, 20);
+                    let label = if entry.is_home {
+                        format!("🏠 {}", short_title(&entry.title, 18))
+                    } else {
+                        short_title(&entry.title, 20)
+                    };
 
                     ui.horizontal(|ui| {
                         let btn = ui.selectable_label(is_active, &label);
                         if btn.clicked() {
                             active_space.0 = Some(idx);
                         }
-                        if ui.small_button("x").clicked() {
+                        if !entry.is_home && ui.small_button("x").clicked() {
                             pending_unmounts.push(idx);
                         }
                     });
@@ -57,9 +61,10 @@ pub fn ui_system(
                     space_params.mounted_spaces.0.push(MountedSpaceEntry {
                         url: String::new(),
                         title: "New Tab".to_string(),
+                        is_home: false,
                     });
                     active_space.0 = Some(tab_count);
-                    url.0 = String::new();
+                    address_bar.0 = String::new();
                 }
             });
 
@@ -68,14 +73,21 @@ pub fn ui_system(
             // ═══ Row 2: [Home] [URL bar] [Go] [Reload] [Set Home] ═══
             ui.horizontal(|ui| {
                 if ui.button("Home").clicked() {
-                    url.0 = ui_params.root_config.home_url.clone();
-                    reload_trigger.0 = true;
-                    log_panel.push_info("Reloading root document");
+                    let target = ui_params.root_config.home_url.clone();
+                    let home_idx = ensure_home_tab(
+                        &mut space_params.mounted_spaces.0,
+                        &mut space_params.mount_queue.0,
+                        &mut space_params.unmount_queue.0,
+                        target.clone(),
+                    );
+                    active_space.0 = Some(home_idx);
+                    address_bar.0 = target.clone();
+                    log_panel.push_info(format!("Activated home tab: {}", target));
                 }
 
                 // URL bar — editable draft, not committed until "Go"
                 let resp = ui.add(
-                    egui::TextEdit::singleline(&mut url.0)
+                    egui::TextEdit::singleline(&mut address_bar.0)
                         .desired_width(ui.available_width() - 200.0),
                 );
                 let enter_pressed =
@@ -84,17 +96,15 @@ pub fn ui_system(
                 // "Go" commits the URL to the active tab
                 if ui.button("Go").clicked() || enter_pressed {
                     if let Some(idx) = active_space.0 {
-                        let new_url = url.0.trim().to_string();
+                        let new_url = address_bar.0.trim().to_string();
                         if !new_url.is_empty() {
-                            let old_url = space_params.mounted_spaces.0[idx].url.clone();
-                            // Unmount old if it had a URL
-                            if !old_url.is_empty() {
-                                space_params.unmount_queue.0.push(old_url);
-                            }
-                            // Mount new
-                            space_params.mount_queue.0.push(new_url.clone());
-                            space_params.mounted_spaces.0[idx].url = new_url.clone();
-                            space_params.mounted_spaces.0[idx].title = new_url.clone();
+                            navigate_tab_to_url(
+                                &mut space_params.mounted_spaces.0,
+                                &mut space_params.mount_queue.0,
+                                &mut space_params.unmount_queue.0,
+                                idx,
+                                new_url.clone(),
+                            );
                             log_panel.push_info(format!("Navigating tab to: {}", new_url));
                         }
                     }
@@ -103,21 +113,43 @@ pub fn ui_system(
                 if ui.button("Reload").clicked() {
                     if let Some(idx) = active_space.0 {
                         let tab_url = space_params.mounted_spaces.0[idx].url.clone();
+                        reload_tab(
+                            &space_params.mounted_spaces.0,
+                            &mut space_params.mount_queue.0,
+                            &mut space_params.unmount_queue.0,
+                            idx,
+                        );
                         if !tab_url.is_empty() {
-                            space_params.unmount_queue.0.push(tab_url.clone());
-                            space_params.mount_queue.0.push(tab_url.clone());
-                            log_panel.push_info(format!("Reloading: {}", tab_url));
+                            log_panel.push_info(format!("Reloading tab: {}", tab_url));
                         }
                     }
                 }
 
                 if ui.button("Set Home").on_hover_text("Set current URL as home").clicked() {
-                    ui_params.root_config.home_url = url.0.clone();
-                    match ui_params.root_config.save() {
-                        Ok(path) => {
-                            log_panel.push_info(format!("Home URL saved to {}", path.display()))
+                    let new_home = address_bar.0.trim().to_string();
+                    if !new_home.is_empty() {
+                        ui_params.root_config.home_url = new_home.clone();
+
+                        let home_idx = ensure_home_tab(
+                            &mut space_params.mounted_spaces.0,
+                            &mut space_params.mount_queue.0,
+                            &mut space_params.unmount_queue.0,
+                            new_home.clone(),
+                        );
+
+                        // Si quieres que Set Home también te lleve al home-tab inmediatamente:
+                        active_space.0 = Some(home_idx);
+                        address_bar.0 = new_home.clone();
+
+                        match ui_params.root_config.save() {
+                            Ok(path) => {
+                                log_panel.push_info(format!(
+                                    "Home tab URL saved to {}",
+                                    path.display()
+                                ));
+                            }
+                            Err(e) => log_panel.push_error(format!("Failed saving home URL: {e}")),
                         }
-                        Err(e) => log_panel.push_error(format!("Failed saving home URL: {e}")),
                     }
                 }
             });
@@ -164,7 +196,7 @@ pub fn ui_system(
     if active_space.0 != prev_active {
         if let Some(idx) = active_space.0 {
             if let Some(entry) = space_params.mounted_spaces.0.get(idx) {
-                url.0 = entry.url.clone();
+                address_bar.0 = entry.url.clone();
             }
         }
     }
@@ -314,7 +346,8 @@ pub fn ui_system(
                                 "VR",
                             );
                         });
-                    ui.label(format!("Current URL: {}", url.0));
+                    ui.label(format!("Root shell URL: {}", root_url.0));
+                    ui.label(format!("Configured home tab URL: {}", ui_params.root_config.home_url));
                     ui.label(format!("Config path: {}", RootConfig::path().display()));
                     if ui.button("Save Config").clicked() {
                         match ui_params.root_config.save() {
@@ -374,6 +407,71 @@ pub fn ui_system(
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+fn find_home_tab_index(spaces: &[MountedSpaceEntry]) -> Option<usize> {
+    spaces.iter().position(|entry| entry.is_home)
+}
+
+fn navigate_tab_to_url(
+    mounted_spaces: &mut Vec<MountedSpaceEntry>,
+    mount_queue: &mut Vec<String>,
+    unmount_queue: &mut Vec<String>,
+    idx: usize,
+    new_url: String,
+) {
+    if new_url.trim().is_empty() {
+        return;
+    }
+
+    let old_url = mounted_spaces[idx].url.clone();
+
+    if !old_url.is_empty() && old_url != new_url {
+        unmount_queue.push(old_url.clone());
+    }
+
+    if old_url != new_url || old_url.is_empty() {
+        mount_queue.push(new_url.clone());
+    }
+
+    mounted_spaces[idx].url = new_url.clone();
+    mounted_spaces[idx].title = new_url;
+}
+
+fn reload_tab(
+    mounted_spaces: &[MountedSpaceEntry],
+    mount_queue: &mut Vec<String>,
+    unmount_queue: &mut Vec<String>,
+    idx: usize,
+) {
+    let url = mounted_spaces[idx].url.clone();
+    if url.trim().is_empty() {
+        return;
+    }
+    unmount_queue.push(url.clone());
+    mount_queue.push(url);
+}
+
+fn ensure_home_tab(
+    mounted_spaces: &mut Vec<MountedSpaceEntry>,
+    mount_queue: &mut Vec<String>,
+    unmount_queue: &mut Vec<String>,
+    home_url: String,
+) -> usize {
+    if let Some(idx) = find_home_tab_index(mounted_spaces) {
+        navigate_tab_to_url(mounted_spaces, mount_queue, unmount_queue, idx, home_url);
+        return idx;
+    }
+
+    let idx = mounted_spaces.len();
+    mounted_spaces.push(MountedSpaceEntry {
+        url: String::new(),
+        title: "Home".to_string(),
+        is_home: true,
+    });
+
+    navigate_tab_to_url(mounted_spaces, mount_queue, unmount_queue, idx, home_url);
+    idx
+}
 
 fn short_title(title: &str, max: usize) -> String {
     if title.len() <= max {

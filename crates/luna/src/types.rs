@@ -142,7 +142,7 @@ impl Default for RootConfig {
     fn default() -> Self {
         Self {
             auto_load_home: true,
-            home_url: "luna://root".to_string(),
+            home_url: "luna://home".to_string(),
             preferred_render_mode: PreferredRenderMode::Desktop,
         }
     }
@@ -158,7 +158,15 @@ impl RootConfig {
         let Ok(contents) = fs::read_to_string(&path) else {
             return Self::default();
         };
-        serde_json::from_str(&contents).unwrap_or_else(|_| Self::default())
+        let mut cfg = serde_json::from_str(&contents).unwrap_or_else(|_| Self::default());
+
+        // Migración de configs viejas:
+        // antes home_url podía estar apuntando al root shell.
+        if cfg.home_url.trim().is_empty() || cfg.home_url == "luna://root" {
+            cfg.home_url = "luna://home".to_string();
+        }
+
+        cfg
     }
 
     pub fn save(&self) -> Result<PathBuf, String> {
@@ -214,7 +222,11 @@ pub struct DeleteRequests(pub Vec<u32>);
 pub struct MountedSpaceEntry {
     pub url: String,
     pub title: String,
+    pub is_home: bool,
 }
+
+#[derive(Resource, Default)]
+pub struct AddressBarState(pub String);
 
 #[derive(Resource, Default)]
 pub struct SpaceMountQueue(pub Vec<String>);
