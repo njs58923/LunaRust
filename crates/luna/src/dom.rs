@@ -10,7 +10,7 @@ use tokio::runtime::Runtime;
 
 use virtual_dom::{
     dom::{
-        element::{build_world, Attrs, Hierarchy, Tag, Transform2},
+        element::{build_world, Attrs, BaseUrl, Hierarchy, Tag, Transform2},
         hsml::{Include, Model, Script},
         TRANSFORM_POSITION, TRANSFORM_ROTATION, TRANSFORM_SCALE,
     },
@@ -44,11 +44,53 @@ fn is_structural_tag(tag: &str) -> bool {
     )
 }
 
+fn set_node_base_url(world: &mut SpecWorld, node: SpecEntity, base_url: &str) {
+    let mut base_urls = world.write_storage::<BaseUrl>();
+    let _ = base_urls.insert(node, BaseUrl(base_url.to_string()));
+}
+
+pub(crate) fn find_node_base_url(
+    world: &SpecWorld,
+    node: SpecEntity,
+    fallback_base_url: &str,
+) -> String {
+    let entities = world.entities();
+    let hierarchies = world.read_storage::<Hierarchy>();
+    let base_urls = world.read_storage::<BaseUrl>();
+
+    let mut current = Some(node);
+    while let Some(ent) = current {
+        if let Some(base) = base_urls.get(ent) {
+            return base.0.clone();
+        }
+
+        current = hierarchies
+            .get(ent)
+            .and_then(|h| h.parent)
+            .and_then(|parent_id| {
+                let parent = entities.entity(parent_id);
+                entities.is_alive(parent).then_some(parent)
+            });
+    }
+
+    fallback_base_url.to_string()
+}
+
+pub(crate) fn resolve_node_relative_url(
+    world: &SpecWorld,
+    node: SpecEntity,
+    fallback_base_url: &str,
+    remote_path: &str,
+) -> Option<String> {
+    let base_url = find_node_base_url(world, node, fallback_base_url);
+    resolve_remote_path(&base_url, remote_path)
+}
+
 fn include_ancestor_chain_contains(
     world: &SpecWorld,
     node: SpecEntity,
     candidate_url: &str,
-    base_url: &str,
+    fallback_base_url: &str,
 ) -> bool {
     let entities = world.entities();
     let hierarchies = world.read_storage::<Hierarchy>();
@@ -69,8 +111,9 @@ fn include_ancestor_chain_contains(
 
         if matches!(tags.get(parent), Some(tag) if tag.0 == "include") {
             if let Some(src) = attrs.get(parent).and_then(|a| a.0.get("src")) {
+                let parent_base = find_node_base_url(world, parent, fallback_base_url);
                 let ancestor_url =
-                    resolve_remote_path(base_url, src).unwrap_or_else(|| src.clone());
+                    resolve_remote_path(&parent_base, src).unwrap_or_else(|| src.clone());
                 if ancestor_url == candidate_url {
                     return true;
                 }
@@ -87,10 +130,10 @@ fn include_would_cycle(
     world: &SpecWorld,
     include_node: SpecEntity,
     candidate_url: &str,
-    base_url: &str,
+    fallback_base_url: &str,
 ) -> bool {
-    candidate_url == base_url
-        || include_ancestor_chain_contains(world, include_node, candidate_url, base_url)
+    candidate_url == find_node_base_url(world, include_node, fallback_base_url)
+        || include_ancestor_chain_contains(world, include_node, candidate_url, fallback_base_url)
 }
 
 fn primitive_color(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> Color {
@@ -290,6 +333,7 @@ pub fn flatten_loaded_xml(
 
     let root_node =
         parse_xml(world, &xml_content).map_err(|e| anyhow::anyhow!("Error parsing XML: {e}"))?;
+    set_node_base_url(world, root_node, url);
 
     let mut include_dirty = expand_includes(world, url, rt, log_panel).unwrap_or_default();
     finish_flatten(world, root_node, &mut include_dirty, log_panel)
@@ -311,6 +355,7 @@ pub fn flatten_loaded_document_bundle(
 
     let root_node = parse_xml(world, &bundle.root_xml)
         .map_err(|e| anyhow::anyhow!("Error parsing XML: {e}"))?;
+    set_node_base_url(world, root_node, url);
 
     let mut include_dirty = expand_includes_from_bundle(world, url, bundle, log_panel)?;
     finish_flatten(world, root_node, &mut include_dirty, log_panel)
@@ -552,7 +597,9 @@ where
 
         for (parent_ent, src) in targets {
             processed.insert(parent_ent.id());
-            let Some(final_url) = resolve_remote_path(base_url, &src) else {
+            let Some(final_url) =
+                resolve_node_relative_url(world, parent_ent, base_url, &src)
+            else {
                 log.push_warn(format!(
                     "include: cannot resolve src='{src}' against base='{base_url}'"
                 ));
@@ -578,6 +625,7 @@ where
                     continue;
                 }
             };
+            set_node_base_url(world, child_root, &final_url);
 
             Hierarchy::add_child(world, parent_ent, child_root);
             collect_subtree_ids(world, child_root, &mut new_dirty);
@@ -606,6 +654,7 @@ pub fn apply_attribute_updates(
     let mut tr_storage = world.0.write_storage::<Transform2>();
     let mut model_storage = world.0.write_storage::<Model>();
     let mut include_storage = world.0.write_storage::<Include>();
+    let mut script_storage = world.0.write_storage::<Script>();
 
     let (px, py, pz) = (
         TRANSFORM_POSITION[0],
@@ -717,6 +766,9 @@ pub fn apply_attribute_updates(
             if let Some(i) = include_storage.get_mut(ent) {
                 i.src = (val != ATTR_DELETE_SENTINEL).then(|| val.clone());
             }
+            if let Some(s) = script_storage.get_mut(ent) {
+                s.src = (val != ATTR_DELETE_SENTINEL).then(|| val.clone());
+            }
         }
 
         dirty_nodes.0.push(ent_id);
@@ -808,7 +860,9 @@ fn queue_include_load_if_needed(
     if src.is_empty() {
         return;
     }
-    let Some(final_url) = resolve_remote_path(&current_url.0, &src) else {
+    let Some(final_url) =
+        resolve_node_relative_url(specs_world, node, &current_url.0, &src)
+    else {
         log_panel.push_warn(format!("include: cannot resolve src='{src}'"));
         return;
     };
@@ -902,6 +956,8 @@ pub fn commit_pending_includes_system(
 
         match parse_xml(&mut world.0, &inc.xml) {
             Ok(child_root) => {
+                set_node_base_url(&mut world.0, child_root, &inc.url);
+
                 let previous_children = {
                     let hierarchies = world.0.read_storage::<Hierarchy>();
                     hierarchies
@@ -1009,7 +1065,9 @@ fn queue_script_load_if_needed(
     }
 
     let src = script_comp.src.as_ref().unwrap();
-    let Some(final_url) = resolve_remote_path(&current_url.0, src) else {
+    let Some(final_url) =
+        resolve_node_relative_url(specs_world, node, &current_url.0, src)
+    else {
         log_panel.push_error(format!(
             "Cannot resolve script src '{src}' against '{}'",
             current_url.0
@@ -1151,7 +1209,9 @@ pub fn dom_sync_system(
                 let resolved_asset_path = models
                     .get(*node)
                     .and_then(|model_data| model_data.src.as_ref())
-                    .and_then(|original_src| resolve_remote_path(&current_url.0, original_src))
+                    .and_then(|original_src| {
+                        resolve_node_relative_url(&world.0, *node, &current_url.0, original_src)
+                    })
                     .and_then(|final_url| {
                         queue_model_prepare_if_needed(
                             node_id,
@@ -1597,4 +1657,116 @@ fn spawn_model_entity(
             Dirty,
         ))
         .id()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::prelude::App;
+    use specs::{Join, WorldExt};
+    use virtual_dom::{
+        dom::{
+            element::{build_world, Hierarchy, Tag},
+            hsml::Model,
+        },
+        parse_xml,
+    };
+    use crate::{IncludeLoadState, IncludeLoadStates, JsSnapshotState, PendingInclude, PendingIncludes, SpaceHandleTables};
+
+    fn collect_all_nodes(world: &SpecWorld, root: SpecEntity) -> HashMap<u32, SpecEntity> {
+        let mut ids = Vec::new();
+        collect_subtree_ids(world, root, &mut ids);
+        let entities = world.entities();
+        ids.into_iter()
+            .map(|id| (id, entities.entity(id)))
+            .collect::<HashMap<_, _>>()
+    }
+
+    #[test]
+    fn runtime_include_uses_include_document_base_for_model_src() {
+        let mut specs_world = build_world();
+
+        let root = parse_xml(
+            &mut specs_world,
+            r#"
+            <hsml>
+              <space>
+                <include src="http://localhost:2052/demo/index.hsml" />
+              </space>
+            </hsml>
+            "#,
+        )
+        .expect("root parse failed");
+
+        set_node_base_url(&mut specs_world, root, "luna://root");
+
+        let outer_include = {
+            let hier = specs_world.read_storage::<Hierarchy>();
+            let space = hier.get(root).unwrap().children[0];
+            hier.get(space).unwrap().children[0]
+        };
+
+        let mut app = App::new();
+        app.insert_resource(ElemenetWorld(specs_world));
+        app.insert_resource(VirtualDomData {
+            nodes: collect_all_nodes(&app.world().resource::<ElemenetWorld>().0, root),
+        });
+        app.insert_resource(DirtyNodes::default());
+        app.insert_resource(LogPanel::default());
+        app.insert_resource(CurrentUrl("luna://root".to_string()));
+        app.insert_resource(EntityMap::default());
+        app.insert_resource(ScriptLoadStates::default());
+        app.insert_resource(PendingModelLoads::default());
+        app.insert_resource(ModelLoadStates::default());
+        app.insert_resource(SpaceHandleTables::default());
+        app.insert_resource(JsSnapshotState::default());
+
+        let mut include_states = IncludeLoadStates::default();
+        include_states.0.insert(
+            outer_include.id(),
+            IncludeLoadState::Loading {
+                url: "http://localhost:2052/demo/index.hsml".to_string(),
+            },
+        );
+        app.insert_resource(include_states);
+
+        app.insert_resource(PendingIncludes(vec![PendingInclude {
+            parent_node_id: outer_include.id(),
+            url: "http://localhost:2052/demo/index.hsml".to_string(),
+            xml: r#"
+                <hsml>
+                  <space>
+                    <model src="models/tree.glb" />
+                  </space>
+                </hsml>
+            "#
+            .to_string(),
+        }]));
+
+        app.add_systems(Update, commit_pending_includes_system);
+        app.update();
+
+        let specs_world = &app.world().resource::<ElemenetWorld>().0;
+        let entities = specs_world.entities();
+        let tags = specs_world.read_storage::<Tag>();
+        let models = specs_world.read_storage::<Model>();
+
+        let model_ent = (&entities, &tags, &models)
+            .join()
+            .find_map(|(ent, tag, _)| (tag.0 == "model").then_some(ent))
+            .expect("model node from runtime include not found");
+
+        let resolved = resolve_node_relative_url(
+            specs_world,
+            model_ent,
+            "luna://root",
+            "models/tree.glb",
+        )
+        .expect("model url should resolve");
+
+        assert_eq!(
+            resolved,
+            "http://localhost:2052/demo/models/tree.glb"
+        );
+    }
 }

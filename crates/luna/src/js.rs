@@ -9,7 +9,10 @@ use bevy::prelude::*;
 use specs::{Join, WorldExt};
 
 use js_runtime::Engine as JsEngine;
-use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
+use virtual_dom::dom::{
+    element::{Attrs, Hierarchy, Tag, Transform2},
+    hsml::{Include, Model, Script},
+};
 
 use crate::{
     request_fetch_text, AttributeUpdates, DirtyNodes, ElemenetWorld, IoService, JsSnapshotState,
@@ -299,6 +302,34 @@ fn resolve_global_id(
         .by_space
         .get(&space_id)
         .and_then(|table| table.local_to_global.get(&local_id).copied())
+}
+
+fn insert_tag_specific_components(
+    world: &mut specs::World,
+    entity: specs::Entity,
+    tag_name: &str,
+) {
+    match tag_name {
+        "model" => {
+            let mut storage = world.write_storage::<Model>();
+            let _ = storage.insert(entity, Model { src: None });
+        }
+        "include" => {
+            let mut storage = world.write_storage::<Include>();
+            let _ = storage.insert(entity, Include { src: None });
+        }
+        "script" => {
+            let mut storage = world.write_storage::<Script>();
+            let _ = storage.insert(
+                entity,
+                Script {
+                    src: None,
+                    inline: None,
+                },
+            );
+        }
+        _ => {}
+    }
 }
 
 fn sync_space_handle_table(table: &mut SpaceHandleTable, space_id: u32, allowed: &HashSet<i32>) {
@@ -1039,45 +1070,48 @@ pub fn js_tick_system(world: &mut World) {
             for (request_id, tag_name) in creation_queue {
                 let new_ent = { specs_world.0.entities().create() };
                 let new_ent_id = {
-                    let mut tags_storage = specs_world.0.write_storage::<Tag>();
-                    let mut attrs_storage = specs_world.0.write_storage::<Attrs>();
-                    let mut transform_storage = specs_world.0.write_storage::<Transform2>();
-                    let mut hier_storage = specs_world.0.write_storage::<Hierarchy>();
-                    tags_storage.insert(new_ent, Tag(tag_name.clone())).ok();
-                    attrs_storage
-                        .insert(new_ent, Attrs(std::collections::HashMap::new()))
-                        .ok();
-                    transform_storage
-                        .insert(
-                            new_ent,
-                            Transform2 {
-                                position: DomVec3 {
-                                    x: 0.0,
-                                    y: 0.0,
-                                    z: 0.0,
+                    {
+                        let mut tags_storage = specs_world.0.write_storage::<Tag>();
+                        let mut attrs_storage = specs_world.0.write_storage::<Attrs>();
+                        let mut transform_storage = specs_world.0.write_storage::<Transform2>();
+                        let mut hier_storage = specs_world.0.write_storage::<Hierarchy>();
+                        tags_storage.insert(new_ent, Tag(tag_name.clone())).ok();
+                        attrs_storage
+                            .insert(new_ent, Attrs(std::collections::HashMap::new()))
+                            .ok();
+                        transform_storage
+                            .insert(
+                                new_ent,
+                                Transform2 {
+                                    position: DomVec3 {
+                                        x: 0.0,
+                                        y: 0.0,
+                                        z: 0.0,
+                                    },
+                                    rotation: DomVec3 {
+                                        x: 0.0,
+                                        y: 0.0,
+                                        z: 0.0,
+                                    },
+                                    scale: DomVec3 {
+                                        x: 1.0,
+                                        y: 1.0,
+                                        z: 1.0,
+                                    },
                                 },
-                                rotation: DomVec3 {
-                                    x: 0.0,
-                                    y: 0.0,
-                                    z: 0.0,
+                            )
+                            .ok();
+                        hier_storage
+                            .insert(
+                                new_ent,
+                                Hierarchy {
+                                    parent: None,
+                                    children: Vec::new(),
                                 },
-                                scale: DomVec3 {
-                                    x: 1.0,
-                                    y: 1.0,
-                                    z: 1.0,
-                                },
-                            },
-                        )
-                        .ok();
-                    hier_storage
-                        .insert(
-                            new_ent,
-                            Hierarchy {
-                                parent: None,
-                                children: Vec::new(),
-                            },
-                        )
-                        .ok();
+                            )
+                            .ok();
+                    }
+                    insert_tag_specific_components(&mut specs_world.0, new_ent, &tag_name);
                     new_ent.id()
                 };
                 created_nodes.push((request_id, new_ent_id, new_ent));

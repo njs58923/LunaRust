@@ -12,6 +12,7 @@ use tokio::{runtime::Runtime, task};
 use virtual_dom::dom::hsml::Script;
 
 use crate::{
+    dom::resolve_node_relative_url,
     js::{find_owner_space_id, JsWorkerCommand, ScriptRuntimeManager},
     render::{encode_url_to_filename, resolve_remote_path},
     routes::VIRTUAL_ROUTES,
@@ -588,7 +589,7 @@ fn matches_current_script_url(
     let scripts = specs_world.read_storage::<Script>();
     let script = scripts.get(ent)?;
     let src = script.src.as_ref()?;
-    let current_resolved = resolve_remote_path(current_url, src)?;
+    let current_resolved = resolve_node_relative_url(specs_world, ent, current_url, src)?;
     if current_resolved != resolved_url {
         return None;
     }

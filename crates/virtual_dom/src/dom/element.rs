@@ -64,6 +64,9 @@ pub struct Transform2 {
 #[derive(Component, Debug, Clone)]
 pub struct Attrs(pub HashMap<String, String>);
 
+#[derive(Component, Debug, Clone)]
+pub struct BaseUrl(pub String);
+
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElementType {
     Node,
@@ -79,6 +82,7 @@ pub fn build_world() -> World {
     world.register::<Tag>();
     world.register::<Transform2>();
     world.register::<Attrs>();
+    world.register::<BaseUrl>();
     world.register::<Text>();
     world.register::<Model>();
     world.register::<Script>();
