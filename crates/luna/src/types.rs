@@ -18,6 +18,7 @@ pub enum LogLevel {
 pub struct LogEntry {
     pub level: LogLevel,
     pub message: String,
+    pub space_id: Option<u32>,
 }
 
 impl LogEntry {
@@ -25,6 +26,14 @@ impl LogEntry {
         Self {
             level,
             message: message.into(),
+            space_id: None,
+        }
+    }
+    pub fn with_space(level: LogLevel, message: impl Into<String>, space_id: u32) -> Self {
+        Self {
+            level,
+            message: message.into(),
+            space_id: Some(space_id),
         }
     }
 }
@@ -50,6 +59,13 @@ impl LogPanel {
             self.logs.remove(0);
         }
         self.logs.push(LogEntry::new(level, msg));
+    }
+    pub fn push_for_space(&mut self, level: LogLevel, msg: impl Into<String>, space_id: u32) {
+        const MAX_LOGS: usize = 300;
+        if self.logs.len() >= MAX_LOGS {
+            self.logs.remove(0);
+        }
+        self.logs.push(LogEntry::with_space(level, msg, space_id));
     }
     pub fn clear(&mut self) {
         self.logs.clear();
@@ -183,6 +199,12 @@ pub struct SpaceUnmountQueue(pub Vec<String>);
 
 #[derive(Resource, Default)]
 pub struct MountedSpaceList(pub Vec<MountedSpaceEntry>);
+
+#[derive(Resource, Default)]
+pub struct ActiveSpaceIndex(pub Option<usize>);
+
+#[derive(Resource, Default)]
+pub struct GlobalDevtoolVisible(pub bool);
 
 #[derive(Default)]
 pub struct SpaceHandleTable {

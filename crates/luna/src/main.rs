@@ -104,6 +104,8 @@ fn main() {
     app.insert_resource(SpaceMountQueue::default());
     app.insert_resource(SpaceUnmountQueue::default());
     app.insert_resource(MountedSpaceList::default());
+    app.insert_resource(ActiveSpaceIndex::default());
+    app.insert_resource(GlobalDevtoolVisible::default());
 
     // Systems
     app.add_systems(Startup, (setup, js::init_js_runtime).chain());

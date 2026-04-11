@@ -883,11 +883,12 @@ pub fn js_tick_system(world: &mut World) {
         };
         for (space_id, logs) in logs_by_context {
             for (level, msg) in logs {
-                match level.as_str() {
-                    "warn" => log_panel.push_warn(format!("[JS][space:{}] {}", space_id, msg)),
-                    "error" => log_panel.push_error(format!("[JS][space:{}] {}", space_id, msg)),
-                    _ => log_panel.push_info(format!("[JS][space:{}] {}", space_id, msg)),
-                }
+                let log_level = match level.as_str() {
+                    "warn" => LogLevel::Warn,
+                    "error" => LogLevel::Error,
+                    _ => LogLevel::Info,
+                };
+                log_panel.push_for_space(log_level, format!("[JS][space:{}] {}", space_id, msg), space_id);
             }
         }
     }

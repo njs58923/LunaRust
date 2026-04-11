@@ -4,9 +4,10 @@ use specs::{Entity as SpecEntity, Join, World as SpecWorld, WorldExt};
 use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
 
 use crate::{
-    AttributeUpdates, CurrentUrl, DeleteRequests, DevtoolParams, DevtoolTab, EntityMap, IoService,
-    LogLevel, LogPanel, MountedSpaceEntry, PreferredRenderMode, ReloadTrigger, RenderMode,
-    RootConfig, SpaceParams, UiSystemParams, VirtualDomData,
+    ActiveSpaceIndex, AttributeUpdates, CurrentUrl, DeleteRequests, DevtoolParams, DevtoolTab,
+    EntityMap, GlobalDevtoolVisible, IoService, LogLevel, LogPanel, MountedSpaceEntry,
+    PreferredRenderMode, ReloadTrigger, RenderMode, RootConfig, SpaceParams, UiSystemParams,
+    VirtualDomData,
 };
 
 pub fn ui_system(
@@ -24,183 +25,214 @@ pub fn ui_system(
     io_service: Res<IoService>,
     mut space_params: SpaceParams,
     mut devtool: DevtoolParams,
+    mut active_space: ResMut<ActiveSpaceIndex>,
+    mut global_devtool: ResMut<GlobalDevtoolVisible>,
 ) {
-    // Track which spaces to unmount (collected during UI rendering)
     let mut pending_unmounts: Vec<usize> = Vec::new();
 
-    egui::Window::new("Navegador").show(contexts.ctx_mut(), |ui| {
-        // ── URL bar: mount a space ──
-        ui.horizontal(|ui| {
-            if ui.button("Home").clicked() {
-                url.0 = ui_params.root_config.home_url.clone();
-                reload_trigger.0 = true;
-                log_panel.push_info("Reloading root document");
-            }
-            ui.label("URL:");
-            let resp = ui.text_edit_singleline(&mut url.0);
-            let enter_pressed =
-                resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
-            if ui.button("Mount").clicked() || enter_pressed {
-                let space_url = url.0.trim().to_string();
-                if !space_url.is_empty() {
-                    space_params.mount_queue.0.push(space_url.clone());
-                    space_params.mounted_spaces.0.push(MountedSpaceEntry {
-                        url: space_url.clone(),
-                        title: space_url.clone(),
-                    });
-                    log_panel.push_info(format!("Mounting space: {}", space_url));
-                }
-            }
-            if ui.button("Set Current as Home").clicked() {
-                ui_params.root_config.home_url = url.0.clone();
-                match ui_params.root_config.save() {
-                    Ok(path) => {
-                        log_panel.push_info(format!("Home URL saved to {}", path.display()))
-                    }
-                    Err(error) => log_panel.push_error(format!("Failed saving home URL: {error}")),
-                }
-            }
-        });
-
-        // ── Mounted spaces (tab bar) ──
-        if !space_params.mounted_spaces.0.is_empty() {
-            ui.separator();
+    egui::Window::new("Navegador")
+        .default_width(600.0)
+        .show(contexts.ctx_mut(), |ui| {
+            // ═══ Row 1: Tab bar ═══
             ui.horizontal_wrapped(|ui| {
+                let tab_count = space_params.mounted_spaces.0.len();
                 for (idx, entry) in space_params.mounted_spaces.0.iter().enumerate() {
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(&entry.title);
-                            if ui.small_button("x").clicked() {
-                                pending_unmounts.push(idx);
-                            }
+                    let is_active = active_space.0 == Some(idx);
+                    let label = short_title(&entry.title, 20);
+
+                    let btn = ui.selectable_label(is_active, &label);
+                    if btn.clicked() {
+                        active_space.0 = Some(idx);
+                    }
+                    // Right-click to close
+                    if btn.secondary_clicked() {
+                        pending_unmounts.push(idx);
+                    }
+                }
+
+                // [+] button to mount new space
+                if ui.small_button("+").clicked() {
+                    let space_url = url.0.trim().to_string();
+                    if !space_url.is_empty() {
+                        space_params.mount_queue.0.push(space_url.clone());
+                        space_params.mounted_spaces.0.push(MountedSpaceEntry {
+                            url: space_url.clone(),
+                            title: space_url.clone(),
                         });
-                    });
+                        active_space.0 = Some(tab_count);
+                        log_panel.push_info(format!("Mounting space: {}", space_url));
+                    }
                 }
             });
-        }
 
-        ui.separator();
+            ui.separator();
 
-        ui.horizontal(|ui| {
-            let label = if render_mode.is_vr {
-                "Switch to Desktop"
-            } else {
-                "Switch to VR"
-            };
-            if ui.button(label).clicked() {
-                render_mode.is_vr = !render_mode.is_vr;
-                log_panel.push_info(format!(
-                    "Mode: {}",
-                    if render_mode.is_vr { "VR" } else { "Desktop" }
-                ));
-            }
+            // ═══ Row 2: URL bar + actions (for active tab) ═══
+            ui.horizontal(|ui| {
+                if ui.button("Home").clicked() {
+                    url.0 = ui_params.root_config.home_url.clone();
+                    reload_trigger.0 = true;
+                    log_panel.push_info("Reloading root document");
+                }
 
-            if ui.button("Toggle Devtool").clicked() {
-                devtool.visible.0 = !devtool.visible.0;
-            }
+                // Show URL of active space, or the global URL input
+                if let Some(idx) = active_space.0 {
+                    if let Some(entry) = space_params.mounted_spaces.0.get(idx) {
+                        let mut active_url = entry.url.clone();
+                        ui.add(
+                            egui::TextEdit::singleline(&mut active_url)
+                                .desired_width(ui.available_width() - 180.0),
+                        );
+                        // Update global url for [+] button
+                        url.0 = active_url;
+                    } else {
+                        ui.text_edit_singleline(&mut url.0);
+                    }
+                } else {
+                    let resp = ui.text_edit_singleline(&mut url.0);
+                    if resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
+                        let space_url = url.0.trim().to_string();
+                        if !space_url.is_empty() {
+                            let new_idx = space_params.mounted_spaces.0.len();
+                            space_params.mount_queue.0.push(space_url.clone());
+                            space_params.mounted_spaces.0.push(MountedSpaceEntry {
+                                url: space_url.clone(),
+                                title: space_url.clone(),
+                            });
+                            active_space.0 = Some(new_idx);
+                            log_panel.push_info(format!("Mounting space: {}", space_url));
+                        }
+                    }
+                }
+
+                // Close active tab
+                if active_space.0.is_some() {
+                    if ui.button("x").on_hover_text("Close tab").clicked() {
+                        pending_unmounts.push(active_space.0.unwrap());
+                    }
+                }
+
+                if ui.button("Set Home").on_hover_text("Set current URL as home").clicked() {
+                    ui_params.root_config.home_url = url.0.clone();
+                    match ui_params.root_config.save() {
+                        Ok(path) => {
+                            log_panel.push_info(format!("Home URL saved to {}", path.display()))
+                        }
+                        Err(e) => log_panel.push_error(format!("Failed saving home URL: {e}")),
+                    }
+                }
+            });
+
+            ui.separator();
+
+            // ═══ Row 3: Mode + devtools ═══
+            ui.horizontal(|ui| {
+                let label = if render_mode.is_vr {
+                    "Desktop"
+                } else {
+                    "VR"
+                };
+                if ui.button(label).on_hover_text("Switch render mode").clicked() {
+                    render_mode.is_vr = !render_mode.is_vr;
+                    log_panel.push_info(format!(
+                        "Mode: {}",
+                        if render_mode.is_vr { "VR" } else { "Desktop" }
+                    ));
+                }
+
+                if ui.button("Devtool").on_hover_text("Devtool for active space").clicked() {
+                    devtool.visible.0 = !devtool.visible.0;
+                }
+
+                if ui
+                    .button("Global")
+                    .on_hover_text("Global devtool (full DOM)")
+                    .clicked()
+                {
+                    global_devtool.0 = !global_devtool.0;
+                }
+
+                // Status info on the right
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(format!(
+                        "FPS: {} | Ent: {}",
+                        ui_params.fps_counter.fps, ui_params.entity_counter.count
+                    ));
+                });
+            });
         });
-    });
 
     // Process unmounts (reverse order to keep indices valid)
     pending_unmounts.sort_unstable();
+    pending_unmounts.dedup();
     for idx in pending_unmounts.into_iter().rev() {
         if idx < space_params.mounted_spaces.0.len() {
             let removed = space_params.mounted_spaces.0.remove(idx);
             space_params.unmount_queue.0.push(removed.url.clone());
             log_panel.push_info(format!("Unmounting space: {}", removed.url));
+            // Adjust active index
+            match active_space.0 {
+                Some(a) if a == idx => {
+                    if space_params.mounted_spaces.0.is_empty() {
+                        active_space.0 = None;
+                    } else {
+                        active_space.0 = Some(a.min(space_params.mounted_spaces.0.len() - 1));
+                    }
+                }
+                Some(a) if a > idx => active_space.0 = Some(a - 1),
+                _ => {}
+            }
         }
     }
 
+    // ═══ Per-space Devtool window ═══
     if devtool.visible.0 {
-        egui::Window::new("Devtool")
-            .id(egui::Id::new("devtool_window"))
+        let devtool_title = if let Some(idx) = active_space.0 {
+            if let Some(entry) = space_params.mounted_spaces.0.get(idx) {
+                format!("Devtool - {}", short_title(&entry.title, 30))
+            } else {
+                "Devtool".to_string()
+            }
+        } else {
+            "Devtool (no tab selected)".to_string()
+        };
+
+        egui::Window::new(devtool_title)
+            .id(egui::Id::new("devtool_space_window"))
             .show(contexts.ctx_mut(), |ui| {
+                // Tab bar
                 ui.horizontal(|ui| {
-                    if ui
-                        .selectable_label(devtool.state.active_tab == DevtoolTab::Status, "Status")
-                        .clicked()
-                    {
+                    if ui.selectable_label(devtool.state.active_tab == DevtoolTab::Status, "Status").clicked() {
                         devtool.state.active_tab = DevtoolTab::Status;
                     }
-                    if ui
-                        .selectable_label(devtool.state.active_tab == DevtoolTab::Hsml, "HSML")
-                        .clicked()
-                    {
+                    if ui.selectable_label(devtool.state.active_tab == DevtoolTab::Hsml, "HSML").clicked() {
                         devtool.state.active_tab = DevtoolTab::Hsml;
                     }
-                    if ui
-                        .selectable_label(devtool.state.active_tab == DevtoolTab::Logs, "Console")
-                        .clicked()
-                    {
+                    if ui.selectable_label(devtool.state.active_tab == DevtoolTab::Logs, "Console").clicked() {
                         devtool.state.active_tab = DevtoolTab::Logs;
                     }
-                    if ui
-                        .selectable_label(devtool.state.active_tab == DevtoolTab::Redes, "Network")
-                        .clicked()
-                    {
+                    if ui.selectable_label(devtool.state.active_tab == DevtoolTab::Redes, "Network").clicked() {
                         devtool.state.active_tab = DevtoolTab::Redes;
                     }
                 });
                 ui.separator();
 
+                // TODO: filter by active space's space_id once we track it
+                // For now, show all content (same as before) but with space_id filter on logs
+
                 match devtool.state.active_tab {
                     DevtoolTab::Status => {
-                        ui.heading("General Status");
-                        ui.separator();
                         ui.label(format!("Entities: {}", ui_params.entity_counter.count));
                         ui.label(format!("FPS: {}", ui_params.fps_counter.fps));
                         ui.label(format!(
                             "Last dom_sync: {:.2} ms",
                             ui_params.perf_stats.dom_sync_ms
                         ));
-                        ui.separator();
-                        ui.heading("Root Config");
-                        let mut auto_load_home = ui_params.root_config.auto_load_home;
-                        if ui
-                            .checkbox(&mut auto_load_home, "Auto-load home on startup")
-                            .changed()
-                        {
-                            ui_params.root_config.auto_load_home = auto_load_home;
-                        }
-                        ui.horizontal(|ui| {
-                            ui.label("Home URL:");
-                            ui.text_edit_singleline(&mut ui_params.root_config.home_url);
-                        });
-                        egui::ComboBox::from_label("Preferred render mode")
-                            .selected_text(match ui_params.root_config.preferred_render_mode {
-                                PreferredRenderMode::Desktop => "Desktop",
-                                PreferredRenderMode::Vr => "VR",
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut ui_params.root_config.preferred_render_mode,
-                                    PreferredRenderMode::Desktop,
-                                    "Desktop",
-                                );
-                                ui.selectable_value(
-                                    &mut ui_params.root_config.preferred_render_mode,
-                                    PreferredRenderMode::Vr,
-                                    "VR",
-                                );
-                            });
-                        ui.label(format!("Current URL: {}", url.0));
-                        ui.label(format!("Config path: {}", RootConfig::path().display()));
-                        if ui.button("Save Config").clicked() {
-                            match ui_params.root_config.save() {
-                                Ok(path) => log_panel
-                                    .push_info(format!("Root config saved to {}", path.display())),
-                                Err(error) => log_panel
-                                    .push_error(format!("Failed saving root config: {error}")),
-                            }
-                        }
                     }
                     DevtoolTab::Hsml => {
-                        ui.heading("Element Tree (HSML)");
-                        ui.separator();
                         let w = ui.available_width();
-                        ui.set_width(w);
                         egui::ScrollArea::vertical()
-                            .id_source("tree_scroll_area")
+                            .id_source("tree_space_scroll")
                             .max_width(w)
                             .max_height(300.0)
                             .show(ui, |ui| {
@@ -223,92 +255,202 @@ pub fn ui_system(
                             });
                     }
                     DevtoolTab::Logs => {
-                        ui.heading("Console");
-                        ui.separator();
-                        let w2 = ui.available_width();
-                        ui.set_width(w2);
-                        egui::ScrollArea::vertical()
-                            .id_source("logs_scroll_area")
-                            .max_width(w2)
-                            .max_height(200.0)
-                            .show(ui, |ui| {
-                                for entry in &log_panel.logs {
-                                    match entry.level {
-                                        LogLevel::Error => {
-                                            ui.colored_label(egui::Color32::RED, &entry.message);
-                                        }
-                                        LogLevel::Warn => {
-                                            ui.colored_label(egui::Color32::YELLOW, &entry.message);
-                                        }
-                                        LogLevel::Info => {
-                                            ui.label(&entry.message);
-                                        }
-                                    }
-                                }
-                            });
+                        render_logs(ui, &log_panel, None);
                         ui.horizontal(|ui| {
-                            if ui.button("Clear logs").clicked() {
+                            if ui.button("Clear").clicked() {
                                 log_panel.clear();
                             }
-                            if ui.button("Copy logs").clicked() {
-                                let logs_text: String = log_panel
-                                    .logs
-                                    .iter()
-                                    .map(|entry| {
-                                        let prefix = match entry.level {
-                                            LogLevel::Error => "[ERROR] ",
-                                            LogLevel::Warn => "[WARN] ",
-                                            LogLevel::Info => "[INFO] ",
-                                        };
-                                        format!("{}{}", prefix, entry.message)
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                ui.output_mut(|o| o.copied_text = logs_text);
+                            if ui.button("Copy").clicked() {
+                                let text = copy_logs(&log_panel, None);
+                                ui.output_mut(|o| o.copied_text = text);
                             }
                         });
                     }
                     DevtoolTab::Redes => {
-                        ui.heading("Network");
-                        ui.separator();
-                        let entries = io_service.network_entries();
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Requests: {}", entries.len()));
-                            if ui.button("Clear").clicked() {
-                                io_service.clear_network_entries();
-                            }
+                        render_network(ui, &io_service, None);
+                    }
+                }
+            });
+    }
+
+    // ═══ Global Devtool window ═══
+    if global_devtool.0 {
+        egui::Window::new("Global Devtool")
+            .id(egui::Id::new("devtool_global_window"))
+            .show(contexts.ctx_mut(), |ui| {
+                egui::CollapsingHeader::new("Root Config").show(ui, |ui| {
+                    let mut auto_load_home = ui_params.root_config.auto_load_home;
+                    if ui
+                        .checkbox(&mut auto_load_home, "Auto-load home on startup")
+                        .changed()
+                    {
+                        ui_params.root_config.auto_load_home = auto_load_home;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Home URL:");
+                        ui.text_edit_singleline(&mut ui_params.root_config.home_url);
+                    });
+                    egui::ComboBox::from_label("Preferred render mode")
+                        .selected_text(match ui_params.root_config.preferred_render_mode {
+                            PreferredRenderMode::Desktop => "Desktop",
+                            PreferredRenderMode::Vr => "VR",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut ui_params.root_config.preferred_render_mode,
+                                PreferredRenderMode::Desktop,
+                                "Desktop",
+                            );
+                            ui.selectable_value(
+                                &mut ui_params.root_config.preferred_render_mode,
+                                PreferredRenderMode::Vr,
+                                "VR",
+                            );
                         });
-                        ui.separator();
-                        if entries.is_empty() {
-                            ui.label("No network activity yet.");
-                        } else {
-                            egui::ScrollArea::vertical()
-                                .id_source("network_scroll_area")
-                                .max_height(260.0)
-                                .show(ui, |ui| {
-                                    for entry in entries.iter().rev() {
-                                        let elapsed_ms = entry
-                                            .finished_at
-                                            .unwrap_or_else(std::time::Instant::now)
-                                            .duration_since(entry.started_at)
-                                            .as_millis();
-                                        ui.group(|ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.label(format!("#{}", entry.id));
-                                                ui.label(entry.kind.label());
-                                                ui.label(entry.status.label());
-                                                ui.label(format!("{elapsed_ms} ms"));
-                                            });
-                                            ui.label(&entry.url);
-                                            ui.label(format!("Owner: {}", entry.owner));
-                                            if let Some(detail) = &entry.detail {
-                                                ui.label(format!("Detail: {detail}"));
-                                            }
-                                        });
-                                    }
-                                });
+                    ui.label(format!("Current URL: {}", url.0));
+                    ui.label(format!("Config path: {}", RootConfig::path().display()));
+                    if ui.button("Save Config").clicked() {
+                        match ui_params.root_config.save() {
+                            Ok(path) => log_panel
+                                .push_info(format!("Root config saved to {}", path.display())),
+                            Err(e) => {
+                                log_panel.push_error(format!("Failed saving root config: {e}"))
+                            }
                         }
                     }
+                });
+
+                egui::CollapsingHeader::new("Full HSML Tree").show(ui, |ui| {
+                    let w = ui.available_width();
+                    egui::ScrollArea::vertical()
+                        .id_source("tree_global_scroll")
+                        .max_width(w)
+                        .max_height(300.0)
+                        .show(ui, |ui| {
+                            if let Some(root) = get_root_entity(&world.0) {
+                                show_element_tree(
+                                    ui,
+                                    root,
+                                    &world.0,
+                                    &entity_map,
+                                    &mut commands,
+                                    &mut camera_query,
+                                    &dom_data,
+                                    &mut devtool.attribute_updates,
+                                    &mut devtool.delete_requests,
+                                    &mut log_panel,
+                                );
+                            } else {
+                                ui.label("No elements in scene.");
+                            }
+                        });
+                });
+
+                egui::CollapsingHeader::new("All Logs").show(ui, |ui| {
+                    render_logs(ui, &log_panel, None);
+                    ui.horizontal(|ui| {
+                        if ui.button("Clear").clicked() {
+                            log_panel.clear();
+                        }
+                        if ui.button("Copy").clicked() {
+                            let text = copy_logs(&log_panel, None);
+                            ui.output_mut(|o| o.copied_text = text);
+                        }
+                    });
+                });
+
+                egui::CollapsingHeader::new("All Network").show(ui, |ui| {
+                    render_network(ui, &io_service, None);
+                });
+            });
+    }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+fn short_title(title: &str, max: usize) -> String {
+    if title.len() <= max {
+        title.to_string()
+    } else {
+        format!("{}...", &title[..max - 3])
+    }
+}
+
+fn render_logs(ui: &mut egui::Ui, log_panel: &LogPanel, _filter_space: Option<u32>) {
+    let w = ui.available_width();
+    egui::ScrollArea::vertical()
+        .id_source(format!("logs_{:?}", _filter_space))
+        .max_width(w)
+        .max_height(200.0)
+        .show(ui, |ui| {
+            for entry in &log_panel.logs {
+                // TODO: filter by _filter_space when space_id tracking is complete
+                match entry.level {
+                    LogLevel::Error => {
+                        ui.colored_label(egui::Color32::RED, &entry.message);
+                    }
+                    LogLevel::Warn => {
+                        ui.colored_label(egui::Color32::YELLOW, &entry.message);
+                    }
+                    LogLevel::Info => {
+                        ui.label(&entry.message);
+                    }
+                }
+            }
+        });
+}
+
+fn copy_logs(log_panel: &LogPanel, _filter_space: Option<u32>) -> String {
+    log_panel
+        .logs
+        .iter()
+        .map(|entry| {
+            let prefix = match entry.level {
+                LogLevel::Error => "[ERROR] ",
+                LogLevel::Warn => "[WARN] ",
+                LogLevel::Info => "[INFO] ",
+            };
+            format!("{}{}", prefix, entry.message)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_network(ui: &mut egui::Ui, io_service: &IoService, _filter_space: Option<u32>) {
+    let entries = io_service.network_entries();
+    ui.horizontal(|ui| {
+        ui.label(format!("Requests: {}", entries.len()));
+        if ui.button("Clear").clicked() {
+            io_service.clear_network_entries();
+        }
+    });
+    ui.separator();
+    if entries.is_empty() {
+        ui.label("No network activity yet.");
+    } else {
+        egui::ScrollArea::vertical()
+            .id_source(format!("network_{:?}", _filter_space))
+            .max_height(260.0)
+            .show(ui, |ui| {
+                for entry in entries.iter().rev() {
+                    let elapsed_ms = entry
+                        .finished_at
+                        .unwrap_or_else(std::time::Instant::now)
+                        .duration_since(entry.started_at)
+                        .as_millis();
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("#{}", entry.id));
+                            ui.label(entry.kind.label());
+                            ui.label(entry.status.label());
+                            ui.label(format!("{elapsed_ms} ms"));
+                        });
+                        ui.label(&entry.url);
+                        ui.label(format!("Owner: {}", entry.owner));
+                        if let Some(detail) = &entry.detail {
+                            ui.label(format!("Detail: {detail}"));
+                        }
+                    });
                 }
             });
     }
@@ -367,7 +509,7 @@ fn show_element_tree(
                                 entity, k, val
                             ));
                         }
-                        if ui.button("🗑").on_hover_text("Delete attribute").clicked() {
+                        if ui.button("x").on_hover_text("Delete attribute").clicked() {
                             attribute_updates
                                 .0
                                 .push((entity.id(), k.clone(), "[DEL]".to_string()));
