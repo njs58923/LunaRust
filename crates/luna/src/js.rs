@@ -1058,9 +1058,6 @@ pub fn js_tick_system(world: &mut World) {
     let mut navigate_batches = Vec::new();
     let mut snapshot_dirty = false;
 
-    let had_creation = !creation_batches.is_empty();
-    let had_hierarchy = !hierarchy_batches.is_empty();
-    let had_remove = !remove_batches.is_empty();
     let capabilities_by_space = space_capabilities_snapshot(world);
 
     for (space_id, data) in tick_batches {
@@ -1095,6 +1092,9 @@ pub fn js_tick_system(world: &mut World) {
             scale_update_batches.push((space_id, data.scale_updates));
         }
     }
+
+    let dom_structure_changed =
+        !creation_batches.is_empty() || !hierarchy_batches.is_empty() || !remove_batches.is_empty();
 
     {
         let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
@@ -1657,7 +1657,7 @@ pub fn js_tick_system(world: &mut World) {
         }
     }
 
-    if had_creation || had_hierarchy || had_remove {
+    if dom_structure_changed {
         if let Some(mut policies) = world.get_resource_mut::<SpacePolicies>() {
             policies.dirty = true;
         }

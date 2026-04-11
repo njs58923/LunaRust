@@ -148,7 +148,7 @@ fn main() {
             .run_if(|rm: Res<RenderMode>| !rm.is_vr)
             .run_if(permissions::desktop_camera_control_enabled),
     );
-    app.add_systems(Update, (xr_session_handler, toggle_render_mode, sync_root_mode_resources));
+    app.add_systems(Update, (xr_session_handler, toggle_render_mode));
     app.add_systems(
         Update,
         touch::desktop_toque_raycast_system
@@ -163,14 +163,6 @@ fn main() {
             .run_if(permissions::vr_toque_source_enabled),
     );
     app.add_systems(Update, touch::dispatch_toque_raw_events_to_js);
-    app.add_systems(
-        Update,
-        process_space_mount_queue.run_if(|q: Res<SpaceMountQueue>| !q.0.is_empty()),
-    );
-    app.add_systems(
-        Update,
-        process_space_unmount_queue.run_if(|q: Res<SpaceUnmountQueue>| !q.0.is_empty()),
-    );
 
     app.add_systems(
         Update,
@@ -180,6 +172,9 @@ fn main() {
             js::js_auto_inject_resource_scripts_system,
             js::js_eval_pending_scripts,
             js::js_tick_system,
+            sync_root_mode_resources,
+            process_space_unmount_queue.run_if(|q: Res<SpaceUnmountQueue>| !q.0.is_empty()),
+            process_space_mount_queue.run_if(|q: Res<SpaceMountQueue>| !q.0.is_empty()),
         )
             .chain(),
     );
@@ -388,8 +383,12 @@ fn process_space_mount_queue(
     manager: NonSendMut<js::ScriptRuntimeManager>,
     specs_world: Res<ElemenetWorld>,
     render_mode: Res<RenderMode>,
+    mut log_panel: ResMut<LogPanel>,
 ) {
     let Some(root_id) = find_root_worker_space_id(&specs_world.0, &manager) else {
+        if !mount_queue.0.is_empty() {
+            log_panel.push_info("[mount-queue] waiting for root worker...");
+        }
         return;
     };
     let Some(worker) = manager.contexts.get(&root_id) else {
@@ -418,8 +417,12 @@ fn process_space_unmount_queue(
     mut unmount_queue: ResMut<SpaceUnmountQueue>,
     manager: NonSendMut<js::ScriptRuntimeManager>,
     specs_world: Res<ElemenetWorld>,
+    mut log_panel: ResMut<LogPanel>,
 ) {
     let Some(root_id) = find_root_worker_space_id(&specs_world.0, &manager) else {
+        if !unmount_queue.0.is_empty() {
+            log_panel.push_info("[unmount-queue] waiting for root worker...");
+        }
         return;
     };
     let Some(worker) = manager.contexts.get(&root_id) else {
@@ -471,8 +474,10 @@ fn sync_root_mode_resources(
     render_mode: Res<RenderMode>,
     manager: NonSendMut<js::ScriptRuntimeManager>,
     specs_world: Res<ElemenetWorld>,
+    mut ran_once: Local<bool>,
 ) {
-    if !render_mode.is_changed() {
+    let should_run = !*ran_once || render_mode.is_changed();
+    if !should_run {
         return;
     }
 
@@ -491,4 +496,6 @@ fn sync_root_mode_resources(
         url: format!("eval://mode/{}", mode),
         code,
     });
+
+    *ran_once = true;
 }

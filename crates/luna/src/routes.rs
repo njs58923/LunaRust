@@ -451,7 +451,13 @@ const SCRIPT_ROOT_API: &str = r##"
 
       space.setAttribute('visible', options.visible === false ? 'false' : 'true');
       space.setAttribute('managed-by', 'dimension.luna');
+
+      if (Array.isArray(options.grants) && options.grants.length) {
+        space.setAttribute('resources', options.grants.join(','));
+      }
+
       root.appendChild(space);
+      console.log('[root] mountSpace url=', url, 'grants=', Array.isArray(options.grants) ? options.grants.join(',') : '(none)');
       const include = ensureInclude(entry);
       if (Array.isArray(options.grants)) {
         include.setAttribute('resources', options.grants.join(','));
@@ -474,6 +480,7 @@ const SCRIPT_ROOT_API: &str = r##"
     unmountSpace(id) {
       const entry = getMountedEntry(id);
       if (!entry) return false;
+      console.log('[root] unmountSpace id=', id);
       registry.delete(id);
       entry.space.remove();
       return true;
@@ -509,6 +516,7 @@ const SCRIPT_ROOT_API: &str = r##"
     },
 
     switchMode(mode) {
+      console.log('[root] switchMode ->', mode);
       if (mode !== 'desktop' && mode !== 'vr') {
         console.error('[root] Invalid mode:', mode);
         return false;
@@ -526,7 +534,7 @@ const SCRIPT_ROOT_API: &str = r##"
         : ['controller_desktop', 'navigate_self', 'desktop_camera_control'];
       this._uxSpaceId = this.mountSpace(uxUrl, { visible: true, grants });
       this._currentMode = mode;
-      console.log('[root] Switched to mode:', mode, 'ux space:', this._uxSpaceId);
+      console.log('[root] ux mounted id=', this._uxSpaceId, 'url=', uxUrl);
       return true;
     },
   };
@@ -587,6 +595,7 @@ const LUNA_UX_DESKTOP: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
   <space id="ux_desktop" resources="desktop_camera_control">
+    <text x="0" y="2.0" z="-3" value="UX Desktop Mounted" size="0.15" color="#00FF00" />
     <script>
       console.log('[ux_desktop] Desktop UX loaded');
     </script>
@@ -602,6 +611,7 @@ const LUNA_UX_VR: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
   <space id="ux_vr" resources="vr_locomotion">
+    <text x="0" y="2.0" z="-3" value="UX VR Mounted" size="0.15" color="#00FF00" />
     <script>
       console.log('[ux_vr] VR UX loaded');
     </script>
