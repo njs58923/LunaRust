@@ -253,6 +253,9 @@ pub fn ui_system(
                     if ui.selectable_label(devtool.state.active_tab == DevtoolTab::Redes, "Network").clicked() {
                         devtool.state.active_tab = DevtoolTab::Redes;
                     }
+                    if ui.selectable_label(devtool.state.active_tab == DevtoolTab::Resources, "Resources").clicked() {
+                        devtool.state.active_tab = DevtoolTab::Resources;
+                    }
                 });
                 ui.separator();
 
@@ -307,6 +310,23 @@ pub fn ui_system(
                     }
                     DevtoolTab::Redes => {
                         render_network(ui, &io_service, None);
+                    }
+                    DevtoolTab::Resources => {
+                        if let Some(idx) = active_space.0 {
+                            if let Some(entry) = space_params.mounted_spaces.0.get(idx) {
+                                ui.label(format!("Tab URL: {}", entry.url));
+                                if let Some(space_id) = find_mounted_space_by_url(&world.0, &entry.url) {
+                                    ui.label(format!("DOM Space ID: {}", space_id));
+                                    if let Some(spaces) = find_root_managed_spaces(&world.0).iter().find(|s| s.id() == space_id) {
+                                        ui.label(format!("Space Title: {}", get_space_debug_title(&world.0, *spaces)));
+                                    }
+                                } else {
+                                    ui.label("Space not found in DOM");
+                                }
+                            }
+                        } else {
+                            ui.label("No tab selected");
+                        }
                     }
                 }
             });
@@ -402,6 +422,32 @@ pub fn ui_system(
                 egui::CollapsingHeader::new("All Network").show(ui, |ui| {
                     render_network(ui, &io_service, None);
                 });
+
+                egui::CollapsingHeader::new("Mounted Spaces / Policies").show(ui, |ui| {
+                    ui.label(format!("Total tabs in UI: {}", space_params.mounted_spaces.0.len()));
+                    for (idx, entry) in space_params.mounted_spaces.0.iter().enumerate() {
+                        let is_active = active_space.0 == Some(idx);
+                        let home_mark = if entry.is_home { " [HOME]" } else { "" };
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "{}[{}] {}{}",
+                                if is_active { "▶ " } else { "  " },
+                                idx,
+                                short_title(&entry.url, 40),
+                                home_mark
+                            ));
+                        });
+                        if let Some(space_id) = find_mounted_space_by_url(&world.0, &entry.url) {
+                            ui.indent(format!("mounted_{}", idx), |ui| {
+                                ui.label(format!("  DOM space_id: {}", space_id));
+                            });
+                        } else if !entry.url.is_empty() {
+                            ui.indent(format!("mounted_{}", idx), |ui| {
+                                ui.colored_label(egui::Color32::YELLOW, "  ⚠ Not found in DOM");
+                            });
+                        }
+                    }
+                });
             });
     }
 }
@@ -473,6 +519,160 @@ fn ensure_home_tab(
     idx
 }
 
+fn find_root_space_entity(world: &SpecWorld) -> Option<SpecEntity> {
+    let hier = world.read_storage::<Hierarchy>();
+    let tags = world.read_storage::<Tag>();
+    let attrs = world.read_storage::<Attrs>();
+
+    for (ent, h) in (&world.entities(), &hier).join() {
+        if h.parent.is_none() {
+            if let Some(tag) = tags.get(ent) {
+                if tag.0 == "space" {
+                    if let Some(attr) = attrs.get(ent) {
+                        if attr.0.get("id").map(|v| v.as_str()) == Some("luna_root") {
+                            return Some(ent);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn find_primary_include_child(world: &SpecWorld, space: SpecEntity) -> Option<SpecEntity> {
+    let hier = world.read_storage::<Hierarchy>();
+    let tags = world.read_storage::<Tag>();
+
+    if let Some(h) = hier.get(space) {
+        for &child in &h.children {
+            if let Some(tag) = tags.get(child) {
+                if tag.0 == "include" {
+                    return Some(child);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn find_root_managed_spaces(world: &SpecWorld) -> Vec<SpecEntity> {
+    let mut result = Vec::new();
+    let hier = world.read_storage::<Hierarchy>();
+    let tags = world.read_storage::<Tag>();
+    let attrs = world.read_storage::<Attrs>();
+
+    if let Some(root) = find_root_space_entity(world) {
+        if let Some(h) = hier.get(root) {
+            for &child in &h.children {
+                if let Some(tag) = tags.get(child) {
+                    if tag.0 == "space" {
+                        if let Some(attr) = attrs.get(child) {
+                            if attr.0.get("managed-by").is_some() {
+                                result.push(child);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+fn find_mounted_space_by_url(world: &SpecWorld, url: &str) -> Option<u32> {
+    for space_ent in find_root_managed_spaces(world) {
+        if let Some(include_ent) = find_primary_include_child(world, space_ent) {
+            let attrs = world.read_storage::<Attrs>();
+            if let Some(attr) = attrs.get(include_ent) {
+                if attr.0.get("src").map(|v| v.as_str()) == Some(url) {
+                    return Some(space_ent.id());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn get_space_debug_url(world: &SpecWorld, space: SpecEntity) -> Option<String> {
+    if let Some(include_ent) = find_primary_include_child(world, space) {
+        let attrs = world.read_storage::<Attrs>();
+        if let Some(attr) = attrs.get(include_ent) {
+            return attr.0.get("src").cloned();
+        }
+    }
+    None
+}
+
+fn get_space_debug_title(world: &SpecWorld, space: SpecEntity) -> String {
+    let attrs = world.read_storage::<Attrs>();
+    if let Some(attr) = attrs.get(space) {
+        if let Some(id) = attr.0.get("id") {
+            return id.clone();
+        }
+    }
+    format!("space:{}", space.id())
+}
+
+fn build_space_resource_report(
+    world: &SpecWorld,
+    active_tab_url: &str,
+    policies: &crate::permissions::SpacePolicies,
+    active_native: crate::permissions::ActiveNativeServices,
+    history: Option<&crate::permissions::SpacePolicyHistory>,
+) -> String {
+    let mut report = String::new();
+    report.push_str("=== Space Resources Report ===\n\n");
+    report.push_str(&format!("Current Tab URL: {}\n", active_tab_url));
+
+    if let Some(space_id) = find_mounted_space_by_url(world, active_tab_url) {
+        report.push_str(&format!("Matched DOM Space ID: {}\n\n", space_id));
+
+        if let Some(policy) = policies.by_space.get(&space_id) {
+            report.push_str("=== Policy ===\n");
+            report.push_str(&format!("Requested Resources: {}\n", policy.requested_resources.join(", ")));
+            report.push_str(&format!(
+                "Effective Capabilities: {}\n",
+                crate::permissions::describe_capability_bits(policy.effective_caps)
+            ));
+            report.push_str(&format!(
+                "Effective Native Services: {}\n",
+                crate::permissions::describe_native_service_bits(policy.effective_native)
+            ));
+            report.push_str(&format!("Auto Scripts: {}\n", policy.auto_scripts.join(", ")));
+        } else {
+            report.push_str("No policy found for space\n");
+        }
+    } else {
+        report.push_str("Space not found in DOM\n");
+    }
+
+    report.push_str("\n=== Active Native Services (Global) ===\n");
+    report.push_str(&format!(
+        "{}\n",
+        crate::permissions::describe_native_service_bits(active_native.0)
+    ));
+
+    report.push_str("\n=== Policy Generation ===\n");
+    report.push_str(&format!("Generation: {}\n", policies.generation));
+
+    if let Some(hist) = history {
+        report.push_str(&format!("Total Snapshots: {}\n\n", hist.entries.len()));
+        report.push_str("=== Recent Snapshots ===\n");
+        for entry in hist.entries.iter().rev().take(5) {
+            report.push_str(&format!(
+                "[Gen {}] space:{} caps=[{}] native=[{}]\n",
+                entry.generation,
+                entry.space_id,
+                crate::permissions::describe_capability_bits(entry.effective_caps),
+                crate::permissions::describe_native_service_bits(entry.effective_native)
+            ));
+        }
+    }
+
+    report
+}
+
 fn short_title(title: &str, max: usize) -> String {
     if title.len() <= max {
         title.to_string()
@@ -481,15 +681,19 @@ fn short_title(title: &str, max: usize) -> String {
     }
 }
 
-fn render_logs(ui: &mut egui::Ui, log_panel: &LogPanel, _filter_space: Option<u32>) {
+fn render_logs(ui: &mut egui::Ui, log_panel: &LogPanel, filter_space: Option<u32>) {
     let w = ui.available_width();
     egui::ScrollArea::vertical()
-        .id_source(format!("logs_{:?}", _filter_space))
+        .id_source(format!("logs_{:?}", filter_space))
         .max_width(w)
         .max_height(200.0)
         .show(ui, |ui| {
             for entry in &log_panel.logs {
-                // TODO: filter by _filter_space when space_id tracking is complete
+                if let Some(filter_id) = filter_space {
+                    if entry.space_id != Some(filter_id) && entry.space_id.is_some() {
+                        continue;
+                    }
+                }
                 match entry.level {
                     LogLevel::Error => {
                         ui.colored_label(egui::Color32::RED, &entry.message);
@@ -505,10 +709,17 @@ fn render_logs(ui: &mut egui::Ui, log_panel: &LogPanel, _filter_space: Option<u3
         });
 }
 
-fn copy_logs(log_panel: &LogPanel, _filter_space: Option<u32>) -> String {
+fn copy_logs(log_panel: &LogPanel, filter_space: Option<u32>) -> String {
     log_panel
         .logs
         .iter()
+        .filter(|entry| {
+            if let Some(filter_id) = filter_space {
+                entry.space_id == Some(filter_id) || entry.space_id.is_none()
+            } else {
+                true
+            }
+        })
         .map(|entry| {
             let prefix = match entry.level {
                 LogLevel::Error => "[ERROR] ",
@@ -521,23 +732,33 @@ fn copy_logs(log_panel: &LogPanel, _filter_space: Option<u32>) -> String {
         .join("\n")
 }
 
-fn render_network(ui: &mut egui::Ui, io_service: &IoService, _filter_space: Option<u32>) {
+fn render_network(ui: &mut egui::Ui, io_service: &IoService, filter_space: Option<u32>) {
     let entries = io_service.network_entries();
+    let filter_owner = filter_space.map(|id| format!("space:{}", id));
+    let filtered: Vec<_> = if let Some(ref owner_pattern) = filter_owner {
+        entries
+            .iter()
+            .filter(|e| e.owner.contains(owner_pattern) || !e.owner.contains("space:"))
+            .collect()
+    } else {
+        entries.iter().collect()
+    };
+
     ui.horizontal(|ui| {
-        ui.label(format!("Requests: {}", entries.len()));
+        ui.label(format!("Requests: {}", filtered.len()));
         if ui.button("Clear").clicked() {
             io_service.clear_network_entries();
         }
     });
     ui.separator();
-    if entries.is_empty() {
+    if filtered.is_empty() {
         ui.label("No network activity yet.");
     } else {
         egui::ScrollArea::vertical()
-            .id_source(format!("network_{:?}", _filter_space))
+            .id_source(format!("network_{:?}", filter_space))
             .max_height(260.0)
             .show(ui, |ui| {
-                for entry in entries.iter().rev() {
+                for entry in filtered.iter().rev() {
                     let elapsed_ms = entry
                         .finished_at
                         .unwrap_or_else(std::time::Instant::now)
@@ -598,9 +819,42 @@ fn show_element_tree(
     let transforms = world.read_storage::<Transform2>();
 
     if let Some(tg) = tags.get(entity) {
-        ui.collapsing(format!("{} (ID: {:?})", tg.0, entity), |ui| {
+        let tag_name = tg.0.as_str();
+        let label = if tag_name == "space" || tag_name == "include" {
+            format!("[{}] (ID: {:?})", tag_name.to_uppercase(), entity)
+        } else {
+            format!("{} (ID: {:?})", tag_name, entity)
+        };
+
+        ui.collapsing(label, |ui| {
             if let Some(a) = attrs.get(entity) {
                 ui.label("Attributes:");
+
+                // Highlight important attributes for space/include
+                if tag_name == "space" {
+                    if let Some(id) = a.0.get("id") {
+                        ui.colored_label(egui::Color32::from_rgb(128, 255, 255), format!("  id = {}", id));
+                    }
+                    if let Some(resources) = a.0.get("resources") {
+                        ui.colored_label(egui::Color32::from_rgb(144, 238, 144), format!("  resources = {}", resources));
+                    }
+                    if let Some(managed_by) = a.0.get("managed-by") {
+                        ui.colored_label(egui::Color32::from_rgb(255, 255, 153), format!("  managed-by = {}", managed_by));
+                    }
+                    if let Some(sys_space) = a.0.get("system-space") {
+                        ui.colored_label(egui::Color32::from_rgb(255, 255, 153), format!("  system-space = {}", sys_space));
+                    }
+                } else if tag_name == "include" {
+                    if let Some(src) = a.0.get("src") {
+                        ui.colored_label(egui::Color32::from_rgb(173, 216, 230), format!("  src = {}", src));
+                    }
+                    if let Some(resources) = a.0.get("resources") {
+                        ui.colored_label(egui::Color32::from_rgb(144, 238, 144), format!("  resources = {}", resources));
+                    }
+                }
+
+                ui.separator();
+                ui.label("All Attributes:");
                 for (k, v) in &a.0 {
                     ui.horizontal(|ui| {
                         ui.label(k);

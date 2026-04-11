@@ -109,6 +109,10 @@ fn main() {
     app.insert_resource(touch::ToqueRawEvents::default());
     app.insert_resource(SpacePolicies::default());
     app.insert_resource(ActiveNativeServices::default());
+    app.insert_resource(permissions::SpacePolicyHistory {
+        entries: Vec::new(),
+        max_entries: 300,
+    });
     app.insert_resource(PendingIncludes::default());
     app.insert_resource(IncludeLoadStates::default());
     app.insert_resource(SpaceMountQueue(

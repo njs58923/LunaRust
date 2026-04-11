@@ -202,6 +202,84 @@ pub fn parse_resource_tokens(raw: &str) -> Vec<String> {
         .collect()
 }
 
+pub fn capability_labels(bits: CapabilityBits) -> Vec<&'static str> {
+    [
+        ("ROOT", CapabilityBits::ROOT),
+        ("READ_TOQUE_RAW", CapabilityBits::READ_TOQUE_RAW),
+        ("DISPATCH_LOCAL_TOQUE", CapabilityBits::DISPATCH_LOCAL_TOQUE),
+        ("NAVIGATE_SELF", CapabilityBits::NAVIGATE_SELF),
+        ("NAVIGATE_GLOBAL", CapabilityBits::NAVIGATE_GLOBAL),
+        ("FETCH_TEXT", CapabilityBits::FETCH_TEXT),
+        ("LIST_ROOT_SPACES", CapabilityBits::LIST_ROOT_SPACES),
+        ("MOUNT_ROOT_SPACE", CapabilityBits::MOUNT_ROOT_SPACE),
+        ("UPDATE_ROOT_SPACE", CapabilityBits::UPDATE_ROOT_SPACE),
+        ("UNMOUNT_ROOT_SPACE", CapabilityBits::UNMOUNT_ROOT_SPACE),
+        ("READ_CAMERA_POSE", CapabilityBits::READ_CAMERA_POSE),
+        ("READ_HMD_POSE", CapabilityBits::READ_HMD_POSE),
+        ("READ_CONTROLLER_POSE", CapabilityBits::READ_CONTROLLER_POSE),
+        ("DEVTOOLS_READ", CapabilityBits::DEVTOOLS_READ),
+        ("DEVTOOLS_WRITE", CapabilityBits::DEVTOOLS_WRITE),
+    ]
+    .iter()
+    .filter(|(_, flag)| bits.contains(*flag))
+    .map(|(label, _)| *label)
+    .collect()
+}
+
+pub fn native_service_labels(bits: NativeServiceBits) -> Vec<&'static str> {
+    [
+        ("DESKTOP_TOQUE_SOURCE", NativeServiceBits::DESKTOP_TOQUE_SOURCE),
+        ("VR_TOQUE_SOURCE", NativeServiceBits::VR_TOQUE_SOURCE),
+        ("DESKTOP_CAMERA_CONTROL", NativeServiceBits::DESKTOP_CAMERA_CONTROL),
+        ("VR_LOCOMOTION", NativeServiceBits::VR_LOCOMOTION),
+    ]
+    .iter()
+    .filter(|(_, flag)| bits.contains(*flag))
+    .map(|(label, _)| *label)
+    .collect()
+}
+
+pub fn describe_resource_tokens(tokens: &[String]) -> Vec<String> {
+    tokens
+        .iter()
+        .filter_map(|token| {
+            RESOURCE_BUNDLES.get(token.as_str()).map(|bundle| {
+                let caps = capability_labels(bundle.capabilities);
+                let native = native_service_labels(bundle.native_services);
+                let mut parts = vec![token.to_string()];
+                if !caps.is_empty() {
+                    parts.push(format!("caps:[{}]", caps.join(",")));
+                }
+                if !native.is_empty() {
+                    parts.push(format!("native:[{}]", native.join(",")));
+                }
+                if !bundle.auto_scripts.is_empty() {
+                    parts.push(format!("auto_scripts:[{}]", bundle.auto_scripts.join(",")));
+                }
+                parts.join(" -> ")
+            })
+        })
+        .collect()
+}
+
+pub fn describe_capability_bits(bits: CapabilityBits) -> String {
+    let labels = capability_labels(bits);
+    if labels.is_empty() {
+        "none".to_string()
+    } else {
+        labels.join(" | ")
+    }
+}
+
+pub fn describe_native_service_bits(bits: NativeServiceBits) -> String {
+    let labels = native_service_labels(bits);
+    if labels.is_empty() {
+        "none".to_string()
+    } else {
+        labels.join(" | ")
+    }
+}
+
 fn resolve_resource_set(tokens: &[String]) -> (CapabilityBits, NativeServiceBits, Vec<String>) {
     let mut caps = CapabilityBits::empty();
     let mut native = NativeServiceBits::empty();
@@ -262,6 +340,8 @@ pub fn vr_locomotion_enabled(active: Res<ActiveNativeServices>) -> bool {
 pub fn rebuild_space_policies_system(
     world: Res<ElemenetWorld>,
     mut policies: ResMut<SpacePolicies>,
+    mut log_panel: ResMut<crate::LogPanel>,
+    mut history: ResMut<SpacePolicyHistory>,
 ) {
     if !policies.dirty {
         return;
@@ -321,14 +401,26 @@ pub fn rebuild_space_policies_system(
                 requested_native & inherited_native
             };
 
+            let grant_ceiling = if root_space {
+                CapabilityBits::all()
+            } else {
+                inherited_caps
+            };
+
+            let grant_native_ceiling = if root_space {
+                NativeServiceBits::all()
+            } else {
+                inherited_native
+            };
+
             out.insert(
                 ent.id(),
                 SpacePolicy {
                     requested_resources,
                     requested_caps,
                     requested_native,
-                    grant_ceiling: inherited_caps,
-                    grant_native_ceiling: inherited_native,
+                    grant_ceiling,
+                    grant_native_ceiling,
                     effective_caps,
                     effective_native,
                     auto_scripts,
@@ -336,7 +428,11 @@ pub fn rebuild_space_policies_system(
             );
 
             child_caps = effective_caps;
-            child_native = effective_native;
+            child_native = if root_space {
+                NativeServiceBits::all()
+            } else {
+                effective_native
+            };
         }
 
         if let Some(h) = hierarchies.get(ent) {
@@ -373,14 +469,49 @@ pub fn rebuild_space_policies_system(
         );
     }
 
+    let old_gen = policies.generation;
     policies.by_space = next;
     policies.dirty = false;
     policies.generation += 1;
+
+    // Log changes and save snapshots
+    for (space_id, policy) in policies.by_space.iter() {
+        let snapshot = SpacePolicySnapshotEntry {
+            generation: policies.generation,
+            space_id: *space_id,
+            requested_resources: policy.requested_resources.clone(),
+            effective_caps: policy.effective_caps,
+            effective_native: policy.effective_native,
+            auto_scripts: policy.auto_scripts.clone(),
+        };
+
+        history.entries.push(snapshot.clone());
+        if history.entries.len() > history.max_entries {
+            history.entries.remove(0);
+        }
+
+        log_panel.push_info(format!(
+            "[perm][space:{}] requested=[{}] effective_caps=[{}] effective_native=[{}]",
+            space_id,
+            policy.requested_resources.join(","),
+            describe_capability_bits(policy.effective_caps),
+            describe_native_service_bits(policy.effective_native)
+        ));
+    }
+
+    if policies.generation != old_gen {
+        log_panel.push_info(format!(
+            "[perm] generation={} rebuilt spaces={}",
+            policies.generation,
+            policies.by_space.len()
+        ));
+    }
 }
 
 pub fn update_active_native_services_system(
     policies: Res<SpacePolicies>,
     mut active: ResMut<ActiveNativeServices>,
+    mut log_panel: ResMut<crate::LogPanel>,
 ) {
     let mut enabled = NativeServiceBits::empty();
     for policy in policies.by_space.values() {
@@ -389,5 +520,25 @@ pub fn update_active_native_services_system(
 
     if active.0 != enabled {
         active.0 = enabled;
+        log_panel.push_info(format!(
+            "[perm] active native services = {}",
+            describe_native_service_bits(enabled)
+        ));
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct SpacePolicySnapshotEntry {
+    pub generation: u64,
+    pub space_id: u32,
+    pub requested_resources: Vec<String>,
+    pub effective_caps: CapabilityBits,
+    pub effective_native: NativeServiceBits,
+    pub auto_scripts: Vec<String>,
+}
+
+#[derive(Resource, Default)]
+pub struct SpacePolicyHistory {
+    pub entries: Vec<SpacePolicySnapshotEntry>,
+    pub max_entries: usize,
 }

@@ -664,7 +664,7 @@ where
 
 pub fn apply_attribute_updates(
     mut attribute_updates: ResMut<AttributeUpdates>,
-    mut world: ResMut<ElemenetWorld>,
+    world: ResMut<ElemenetWorld>,
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
     mut space_policies: ResMut<crate::permissions::SpacePolicies>,

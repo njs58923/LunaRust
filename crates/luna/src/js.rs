@@ -63,6 +63,7 @@ pub enum JsWorkerCommand {
     PushElementCreationResults(Vec<(i32, i32)>),
     PushFetchResults(Vec<(i32, std::result::Result<String, String>)>),
     PushToqueRawEvents(Vec<(i32, f32, f32, f32)>),
+    RequestDebugState,
     Shutdown,
 }
 
@@ -73,6 +74,12 @@ pub enum JsWorkerEvent {
         error: Option<String>,
     },
     TickData(JsTickData),
+    DebugState {
+        space_id: u32,
+        controller_mode: String,
+        loaded_scripts: Vec<String>,
+        capabilities_bits: u64,
+    },
     WorkerError(String),
 }
 
@@ -228,6 +235,14 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                         for (node_id, x, y, z) in events {
                             ctx.engine.push_touch_event(node_id, x, y, z);
                         }
+                    }
+                    JsWorkerCommand::RequestDebugState => {
+                        let _ = event_tx.send(JsWorkerEvent::DebugState {
+                            space_id,
+                            controller_mode: ctx.engine.get_controller_mode(),
+                            loaded_scripts: ctx.loaded_scripts.iter().cloned().collect(),
+                            capabilities_bits: ctx.capabilities_bits,
+                        });
                     }
                     JsWorkerCommand::Shutdown => break,
                 }
@@ -991,6 +1006,14 @@ pub fn js_tick_system(world: &mut World) {
                         worker.snapshot_in_flight = false;
                         worker.tick_in_flight = false;
                         tick_batches.push((*space_id, data));
+                    }
+                    Ok(JsWorkerEvent::DebugState {
+                        space_id: _debug_space_id,
+                        controller_mode: _controller_mode,
+                        loaded_scripts: _loaded_scripts,
+                        capabilities_bits: _capabilities_bits,
+                    }) => {
+                        // TODO: guardar en resource de debug si se va a mostrar en UI
                     }
                     Ok(JsWorkerEvent::WorkerError(err)) => {
                         worker.snapshot_in_flight = false;

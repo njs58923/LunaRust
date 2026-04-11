@@ -344,6 +344,7 @@ pub enum DevtoolTab {
     Hsml,
     Logs,
     Redes,
+    Resources,
 }
 
 #[derive(Resource)]

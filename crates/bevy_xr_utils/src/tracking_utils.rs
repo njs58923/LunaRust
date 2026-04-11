@@ -149,7 +149,7 @@ fn update_local_floor_transforms(
             let mut calc_floor = head.clone();
             calc_floor.translation.y = 0.0;
             //TODO: use yaw
-            let (y, x, z) = calc_floor.rotation.to_euler(EulerRot::YXZ);
+            let (y, x, _z) = calc_floor.rotation.to_euler(EulerRot::YXZ);
             let new_rot = Quat::from_rotation_y(y);
             calc_floor.rotation = new_rot;
             for (mut transform) in &mut local_floor {
