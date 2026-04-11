@@ -15,7 +15,10 @@ use bevy_mod_xr::session::{
     XrBeginSessionEvent, XrCreateSessionEvent, XrDestroySessionEvent, XrEndSessionEvent,
     XrRequestExitEvent, XrSessionCreated, XrSessionPlugin, XrState, XrStateChanged,
 };
-use bevy_xr_utils::tracking_utils::{TrackingUtilitiesPlugin, XrTrackedLeftGrip, XrTrackedRightGrip};
+use bevy_mod_openxr::action_binding::OxrSendActionBindings;
+use bevy_xr_utils::tracking_utils::{
+    suggest_action_bindings, TrackingUtilitiesPlugin, XrTrackedLeftGrip, XrTrackedRightGrip,
+};
 use luna::vr_locomotion::VrLocomotionPlugin;
 
 use luna::*;
@@ -59,6 +62,7 @@ fn main() {
     app.add_plugins(add_xr_plugins(default_plugins).set(XrSessionPlugin { auto_handle: false }));
     app.add_plugins(bevy_xr_utils::hand_gizmos::HandGizmosPlugin);
     app.add_plugins(TrackingUtilitiesPlugin);
+    app.add_systems(OxrSendActionBindings, suggest_action_bindings);
     app.add_plugins(VrLocomotionPlugin);
     app.add_systems(XrSessionCreated, spawn_controllers);
     app.insert_resource(RenderMode {
