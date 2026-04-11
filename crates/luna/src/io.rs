@@ -1,9 +1,8 @@
 use std::{
-   collections::{HashMap, HashSet, VecDeque},
-   path::PathBuf,
-   sync::{mpsc, Mutex},
-   time::Duration,
-   time::Instant,
+    collections::{HashMap, HashSet, VecDeque},
+    path::PathBuf,
+    sync::{mpsc, Mutex},
+    time::{Duration, Instant},
 };
 
 use bevy::prelude::*;
@@ -125,35 +124,33 @@ pub struct IoService {
 }
 
 impl Default for IoService {
-fn default() -> Self {
-    let (result_tx, result_rx) = mpsc::channel();
+    fn default() -> Self {
+        let (result_tx, result_rx) = mpsc::channel();
+        let http_client = reqwest::Client::builder()
+            .user_agent("Luna/0.1")
+            .timeout(Duration::from_secs(20))
+            .connect_timeout(Duration::from_secs(10))
+            .pool_idle_timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
 
-    let http_client = reqwest::Client::builder()
-        .user_agent("Luna/0.1")
-        .timeout(Duration::from_secs(20))
-        .connect_timeout(Duration::from_secs(10))
-        .pool_idle_timeout(Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
-
-    Self {
-        result_tx,
-        result_rx: Mutex::new(result_rx),
-        http_client,
-        network_tracker: Mutex::new(NetworkTracker::default()),
-    }
-}
+        Self {
+            result_tx,
+            result_rx: Mutex::new(result_rx),
+            http_client,
+            network_tracker: Mutex::new(NetworkTracker::default()),
+        }
     }
 }
 
 impl IoService {
-fn sender(&self) -> mpsc::Sender<IoResult> {
-    self.result_tx.clone()
-}
+    fn sender(&self) -> mpsc::Sender<IoResult> {
+        self.result_tx.clone()
+    }
 
-pub fn http_client(&self) -> reqwest::Client {
-    self.http_client.clone()
-}
+    pub fn http_client(&self) -> reqwest::Client {
+        self.http_client.clone()
+    }
 
     pub fn begin_request(
         &self,
@@ -162,9 +159,11 @@ pub fn http_client(&self) -> reqwest::Client {
         owner: impl Into<String>,
     ) -> u64 {
         const MAX_NETWORK_ENTRIES: usize = 200;
+
         let Ok(mut tracker) = self.network_tracker.lock() else {
             return 0;
         };
+
         let id = tracker.next_id;
         tracker.next_id += 1;
         if tracker.entries.len() >= MAX_NETWORK_ENTRIES {
@@ -187,9 +186,11 @@ pub fn http_client(&self) -> reqwest::Client {
         if id == 0 {
             return;
         }
+
         let Ok(mut tracker) = self.network_tracker.lock() else {
             return;
         };
+
         if let Some(entry) = tracker.entries.iter_mut().find(|entry| entry.id == id) {
             entry.status = status;
             entry.finished_at = Some(Instant::now());
@@ -310,17 +311,17 @@ pub fn request_fetch_text(
         url.clone(),
         format!("space:{space_id}"),
     );
-let tx = io_service.sender();
-let client = io_service.http_client();
-rt.spawn(async move {
-    let result = load_text_resource(&url, &client).await;
-    let _ = tx.send(IoResult::FetchCompleted {
-        network_id,
-        space_id,
-        request_id,
-        result,
+    let tx = io_service.sender();
+    let client = io_service.http_client();
+    rt.spawn(async move {
+        let result = load_text_resource(&url, &client).await;
+        let _ = tx.send(IoResult::FetchCompleted {
+            network_id,
+            space_id,
+            request_id,
+            result,
+        });
     });
-});
 }
 
 pub fn request_document_load(rt: &Runtime, io_service: &IoService, epoch: u64, url: String) {
@@ -329,17 +330,16 @@ pub fn request_document_load(rt: &Runtime, io_service: &IoService, epoch: u64, u
         url.clone(),
         format!("epoch:{epoch}"),
     );
-let tx = io_service.sender();
-let client = io_service.http_client();
-rt.spawn(async move {
-    let result = load_document_bundle(&url, &client).await;
-    let _ = tx.send(IoResult::DocumentLoaded {
-        network_id,
-        epoch,
-        url: url.clone(),
-        result,
-    });
-});
+    let tx = io_service.sender();
+    let client = io_service.http_client();
+    rt.spawn(async move {
+        let result = load_document_bundle(&url, &client).await;
+        let _ = tx.send(IoResult::DocumentLoaded {
+            network_id,
+            epoch,
+            url,
+            result,
+        });
     });
 }
 
@@ -349,17 +349,16 @@ pub fn request_script_load(rt: &Runtime, io_service: &IoService, node_id: u32, u
         url.clone(),
         format!("node:{node_id}"),
     );
-let tx = io_service.sender();
-let client = io_service.http_client();
-rt.spawn(async move {
-    let result = load_text_resource(&url, &client).await;
-    let _ = tx.send(IoResult::ScriptLoaded {
-        network_id,
-        node_id,
-        url: url.clone(),
-        result,
-    });
-});
+    let tx = io_service.sender();
+    let client = io_service.http_client();
+    rt.spawn(async move {
+        let result = load_text_resource(&url, &client).await;
+        let _ = tx.send(IoResult::ScriptLoaded {
+            network_id,
+            node_id,
+            url,
+            result,
+        });
     });
 }
 
@@ -374,33 +373,31 @@ pub fn request_include_load(
         url.clone(),
         format!("include-parent:{parent_node_id}"),
     );
-let tx = io_service.sender();
-let client = io_service.http_client();
-rt.spawn(async move {
-    let result = load_text_resource(&url, &client).await;
-    let _ = tx.send(IoResult::IncludeLoaded {
-        network_id,
-        parent_node_id,
-        url: url.clone(),
-        result,
-    });
-});
+    let tx = io_service.sender();
+    let client = io_service.http_client();
+    rt.spawn(async move {
+        let result = load_text_resource(&url, &client).await;
+        let _ = tx.send(IoResult::IncludeLoaded {
+            network_id,
+            parent_node_id,
+            url,
+            result,
+        });
     });
 }
 
 pub fn request_model_prepare(rt: &Runtime, io_service: &IoService, url: String) {
     let network_id =
         io_service.begin_request(NetworkRequestKind::Model, url.clone(), "model-cache");
-let tx = io_service.sender();
-let client = io_service.http_client();
-rt.spawn(async move {
-    let result = prepare_model_asset(&url, &client).await;
-    let _ = tx.send(IoResult::ModelPrepared {
-        network_id,
-        url: url.clone(),
-        result,
-    });
-});
+    let tx = io_service.sender();
+    let client = io_service.http_client();
+    rt.spawn(async move {
+        let result = prepare_model_asset(&url, &client).await;
+        let _ = tx.send(IoResult::ModelPrepared {
+            network_id,
+            url,
+            result,
+        });
     });
 }
 
@@ -411,23 +408,13 @@ async fn load_text_resource(url: &str, client: &reqwest::Client) -> Result<Strin
             .ok_or_else(|| format!("Virtual URL not found: {url}"));
     }
 
-    let response = client
+    client
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("HTTP error: {e}"))?;
-    response
+        .map_err(|e| format!("HTTP error: {e}"))?
         .error_for_status()
         .map_err(|e| format!("HTTP status error: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("Read error: {e}"))
-}
-
-    let response = reqwest::get(url)
-        .await
-        .map_err(|e| format!("HTTP error: {e}"))?;
-    response
         .text()
         .await
         .map_err(|e| format!("Read error: {e}"))
@@ -464,35 +451,21 @@ fn extract_include_sources(xml: &str) -> Result<Vec<String>, String> {
     Ok(includes)
 }
 
-async fn load_document_bundle(url: &str, client: &reqwest::Client) -> Result<LoadedDocumentBundle, String> {
+async fn load_document_bundle(
+    url: &str,
+    client: &reqwest::Client,
+) -> Result<LoadedDocumentBundle, String> {
     let root_xml = load_text_resource(url, client).await?;
     let mut bundle = LoadedDocumentBundle {
         root_xml: root_xml.clone(),
         includes: HashMap::new(),
+        warnings: Vec::new(),
     };
-    let mut queue = VecDeque::new();
-    queue.push_back((url.to_string(), root_xml));
-    while let Some((cur_url, cur_xml)) = queue.pop_front() {
-        let includes = extract_include_sources(&cur_xml)?;
-        for include_src in includes {
-            let final_url = resolve_remote_path(&cur_url, &include_src);
-            if bundle.includes.contains_key(&final_url) {
-                continue;
-            }
-            match load_text_resource(&final_url, client).await {
-                Ok(include_xml) => {
-                    queue.push_back((final_url.clone(), include_xml.clone()));
-                    bundle.includes.insert(final_url, include_xml);
-                }
-                Err(e) => {
-                    eprintln!("Failed loading include {final_url}: {e}");
-                }
-            }
-        }
-    }
-    Ok(bundle)
-}
-        };
+    let mut queue = VecDeque::from([(url.to_string(), root_xml)]);
+    let mut visited = HashSet::from([url.to_string()]);
+
+    while let Some((base_url, xml)) = queue.pop_front() {
+        let include_sources = extract_include_sources(&xml)?;
 
         for src in include_sources {
             let Some(final_url) = resolve_remote_path(&base_url, &src) else {
@@ -505,7 +478,7 @@ async fn load_document_bundle(url: &str, client: &reqwest::Client) -> Result<Loa
                 continue;
             }
 
-            match load_text_resource(&final_url).await {
+            match load_text_resource(&final_url, client).await {
                 Ok(include_xml) => {
                     queue.push_back((final_url.clone(), include_xml.clone()));
                     bundle.includes.insert(final_url, include_xml);
@@ -590,16 +563,6 @@ async fn prepare_model_asset(url: &str, client: &reqwest::Client) -> Result<Stri
         copy_file_atomic(from, local_path.clone()).await?;
     }
 
-    Ok(local_path.to_string_lossy().into_owned())
-}
-            let to = local_path.clone();
-            task::spawn_blocking(move || std::fs::copy(from, to))
-                .await
-                .map_err(|e| format!("Join error copying cache file: {e}"))?
-                .map_err(|e| format!("Copy cache file failed: {e}"))?;
-        }
-    }
-
     to_assets_relative(&local_path, &assets_dir)
         .map(|path| path.replace('\\', "/"))
         .ok_or_else(|| {
@@ -646,6 +609,7 @@ pub fn poll_io_results_system(
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut manager: NonSendMut<ScriptRuntimeManager>,
     mut pending_includes: ResMut<crate::PendingIncludes>,
+    mut include_load_states: ResMut<crate::IncludeLoadStates>,
 ) {
     let Ok(rx) = io_service.result_rx.lock() else {
         return;
@@ -814,9 +778,6 @@ pub fn poll_io_results_system(
                         log_panel.push_info(format!(
                             "Include loaded: {url} -> parent node {parent_node_id}"
                         ));
-                        // Parse and attach to parent in specs world
-                        // We need mutable access to the specs world, but we only have Res<>.
-                        // Store the result for processing in a dedicated system.
                         pending_includes.0.push(crate::PendingInclude {
                             parent_node_id,
                             url,
@@ -824,6 +785,10 @@ pub fn poll_io_results_system(
                         });
                     }
                     Err(error) => {
+                        include_load_states.0.insert(
+                            parent_node_id,
+                            crate::IncludeLoadState::Failed { url: url.clone() },
+                        );
                         log_panel.push_error(format!(
                             "Include load failed: {url} (parent {parent_node_id}): {error}"
                         ));

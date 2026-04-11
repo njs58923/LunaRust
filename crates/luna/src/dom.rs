@@ -172,16 +172,9 @@ pub fn commit_pending_document_load_system(
     mut entity_map: ResMut<EntityMap>,
     mut pending_document_loads: ResMut<PendingDocumentLoads>,
     mut document_load_state: ResMut<DocumentLoadState>,
-    mut attribute_updates: ResMut<AttributeUpdates>,
-    mut delete_requests: ResMut<DeleteRequests>,
-    mut pending_scripts: ResMut<crate::PendingScripts>,
     mut log_panel: ResMut<LogPanel>,
     mut manager: NonSendMut<crate::js::ScriptRuntimeManager>,
-    mut script_load_states: ResMut<ScriptLoadStates>,
-    mut pending_model_loads: ResMut<PendingModelLoads>,
-    mut model_load_states: ResMut<ModelLoadStates>,
-    mut space_handle_tables: ResMut<crate::SpaceHandleTables>,
-    mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
+    mut commit: crate::DocumentCommitParams,
 ) {
     let pending = pending_document_loads.0.drain(..).collect::<Vec<_>>();
     if pending.is_empty() {
@@ -213,14 +206,18 @@ pub fn commit_pending_document_load_system(
                         log_panel
                             .push_info("[JS] All JS contexts cleared for committed navigation");
 
-                        script_load_states.0.clear();
-                        pending_model_loads.0.clear();
-                        model_load_states.0.clear();
-                        attribute_updates.0.clear();
-                        delete_requests.0.clear();
-                        pending_scripts.0.clear();
-                        space_handle_tables.by_space.clear();
-                        space_handle_tables.next_runtime_id = 0;
+                        commit.script_load_states.0.clear();
+                        commit.pending_model_loads.0.clear();
+                        commit.model_load_states.0.clear();
+                        commit.pending_includes.0.clear();
+                        commit.include_load_states.0.clear();
+                        commit.attribute_updates.0.clear();
+                        commit.delete_requests.0.clear();
+                        commit.pending_scripts.0.clear();
+                        commit.space_handle_tables.by_space.clear();
+                        commit.space_handle_tables.next_runtime_id = 0;
+                        commit.text_material_cache.materials.clear();
+                        commit.primitive_material_cache.materials.clear();
 
                         for bevy_ent in entity_map.0.drain().map(|(_, ent)| ent) {
                             commands.entity(bevy_ent).despawn_recursive();
@@ -230,7 +227,7 @@ pub fn commit_pending_document_load_system(
                         dom_data.nodes = new_nodes;
                         dirty_nodes.0 = new_dirty;
                         document_load_state.0 = None;
-                        js_snapshot_state.dirty = true;
+                        commit.js_snapshot_state.dirty = true;
                         log_panel
                             .push_info(format!("Document commit complete (epoch {epoch}): {url}"));
                     }
@@ -361,6 +358,107 @@ pub fn collect_subtree_ids(world: &SpecWorld, root: SpecEntity, out: &mut Vec<u3
             collect_subtree_ids(world, c, out);
         }
     }
+}
+
+fn collect_bevy_subtree_roots(
+    world: &SpecWorld,
+    subtree_ids: &[u32],
+    entity_map: &EntityMap,
+) -> Vec<Entity> {
+    let entities = world.entities();
+    let hierarchies = world.read_storage::<Hierarchy>();
+    let subtree_id_set: HashSet<u32> = subtree_ids.iter().copied().collect();
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+
+    for &node_id in subtree_ids {
+        let Some(&bevy_ent) = entity_map.0.get(&node_id) else {
+            continue;
+        };
+        let spec_ent = entities.entity(node_id);
+        let parent_inside_subtree = hierarchies
+            .get(spec_ent)
+            .and_then(|h| h.parent)
+            .is_some_and(|parent_id| {
+                subtree_id_set.contains(&parent_id) && entity_map.0.contains_key(&parent_id)
+            });
+
+        if !parent_inside_subtree && seen.insert(bevy_ent) {
+            roots.push(bevy_ent);
+        }
+    }
+
+    roots
+}
+
+fn remove_dom_subtree(
+    world: &mut SpecWorld,
+    root: SpecEntity,
+    entity_map: &mut EntityMap,
+    commands: &mut Commands,
+    dom_data: &mut VirtualDomData,
+    include_load_states: &mut crate::IncludeLoadStates,
+    script_load_states: &mut ScriptLoadStates,
+    pending_model_loads: &mut PendingModelLoads,
+    model_load_states: &mut ModelLoadStates,
+    space_handle_tables: &mut crate::SpaceHandleTables,
+) -> usize {
+    if !world.entities().is_alive(root) {
+        return 0;
+    }
+
+    let parent_id = {
+        let hierarchies = world.read_storage::<Hierarchy>();
+        hierarchies.get(root).and_then(|h| h.parent)
+    };
+    if let Some(parent_id) = parent_id {
+        let parent = world.entities().entity(parent_id);
+        let mut hierarchies = world.write_storage::<Hierarchy>();
+        if let Some(parent_hierarchy) = hierarchies.get_mut(parent) {
+            parent_hierarchy.children.retain(|child| *child != root);
+        }
+        if let Some(root_hierarchy) = hierarchies.get_mut(root) {
+            root_hierarchy.parent = None;
+        }
+    }
+
+    let mut subtree_ids = Vec::new();
+    collect_subtree_ids(world, root, &mut subtree_ids);
+    if subtree_ids.is_empty() {
+        return 0;
+    }
+
+    let bevy_roots = collect_bevy_subtree_roots(world, &subtree_ids, entity_map);
+
+    for &node_id in &subtree_ids {
+        clear_async_node_state(
+            node_id,
+            script_load_states,
+            pending_model_loads,
+            model_load_states,
+        );
+        include_load_states.0.remove(&node_id);
+        dom_data.nodes.remove(&node_id);
+        entity_map.0.remove(&node_id);
+
+        for table in space_handle_tables.by_space.values_mut() {
+            if let Some(local_id) = table.global_to_local.remove(&node_id) {
+                table.local_to_global.remove(&local_id);
+            }
+            table.detached_globals.remove(&node_id);
+        }
+    }
+
+    for bevy_root in bevy_roots {
+        commands.entity(bevy_root).despawn_recursive();
+    }
+
+    for &node_id in &subtree_ids {
+        let ent = world.entities().entity(node_id);
+        let _ = world.delete_entity(ent);
+    }
+
+    subtree_ids.len()
 }
 
 pub fn expand_includes(
@@ -675,7 +773,6 @@ pub fn process_delete_requests(
 // ─── Mark dirty ──────────────────────────────────────────────────────────────
 
 pub fn mark_dirty_system(
-    world: Res<ElemenetWorld>,
     mut commands: Commands,
     entity_map: Res<EntityMap>,
     mut dirty_nodes: ResMut<DirtyNodes>,
@@ -748,6 +845,10 @@ fn queue_include_load_if_needed(
 }
 
 pub fn commit_pending_includes_system(
+    mut world: ResMut<ElemenetWorld>,
+    mut pending_includes: ResMut<crate::PendingIncludes>,
+    mut dom_data: ResMut<VirtualDomData>,
+    mut dirty_nodes: ResMut<DirtyNodes>,
     mut log_panel: ResMut<LogPanel>,
     mut include_load_states: ResMut<crate::IncludeLoadStates>,
     current_url: Res<CurrentUrl>,
@@ -775,6 +876,18 @@ pub fn commit_pending_includes_system(
             continue;
         }
 
+        let is_current_request = matches!(
+            include_load_states.0.get(&inc.parent_node_id),
+            Some(crate::IncludeLoadState::Loading { url }) if *url == inc.url
+        );
+        if !is_current_request {
+            log_panel.push_info(format!(
+                "Dropping stale include result: {} (parent {})",
+                inc.url, inc.parent_node_id
+            ));
+            continue;
+        }
+
         let url = inc.url.clone();
         if include_would_cycle(&world.0, parent_ent, &url, &current_url.0) {
             log_panel.push_warn(format!(
@@ -789,13 +902,37 @@ pub fn commit_pending_includes_system(
 
         match parse_xml(&mut world.0, &inc.xml) {
             Ok(child_root) => {
+                let previous_children = {
+                    let hierarchies = world.0.read_storage::<Hierarchy>();
+                    hierarchies
+                        .get(parent_ent)
+                        .map(|hierarchy| hierarchy.children.clone())
+                        .unwrap_or_default()
+                };
+                let mut replaced_nodes = 0usize;
+                for previous_child in previous_children {
+                    replaced_nodes += remove_dom_subtree(
+                        &mut world.0,
+                        previous_child,
+                        &mut entity_map,
+                        &mut commands,
+                        &mut dom_data,
+                        &mut include_load_states,
+                        &mut script_load_states,
+                        &mut pending_model_loads,
+                        &mut model_load_states,
+                        &mut space_handle_tables,
+                    );
+                }
+
                 Hierarchy::add_child(&mut world.0, parent_ent, child_root);
                 let mut new_dirty = Vec::new();
                 collect_subtree_ids(&world.0, child_root, &mut new_dirty);
                 log_panel.push_info(format!(
-                    "Include committed: {} ({} nodes) -> parent {}",
+                    "Include committed: {} ({} new nodes, {} replaced) -> parent {}",
                     inc.url,
                     new_dirty.len(),
+                    replaced_nodes,
                     inc.parent_node_id,
                 ));
 

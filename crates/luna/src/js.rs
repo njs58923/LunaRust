@@ -12,8 +12,8 @@ use js_runtime::Engine as JsEngine;
 use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
 
 use crate::{
-    request_fetch_text, AttributeUpdates, DirtyNodes, ElemenetWorld, IoService, LogLevel, LogPanel,
-    JsSnapshotState, ModelLoadStates, PendingModelLoads, PendingScripts, ReloadTrigger,
+    request_fetch_text, AttributeUpdates, DirtyNodes, ElemenetWorld, IoService, JsSnapshotState,
+    LogLevel, LogPanel, ModelLoadStates, PendingModelLoads, PendingScripts, ReloadTrigger,
     ScriptLoadStates, SpaceHandleTable, SpaceHandleTables,
 };
 
@@ -933,7 +933,11 @@ pub fn js_tick_system(world: &mut World) {
                     "error" => LogLevel::Error,
                     _ => LogLevel::Info,
                 };
-                log_panel.push_for_space(log_level, format!("[JS][space:{}] {}", space_id, msg), space_id);
+                log_panel.push_for_space(
+                    log_level,
+                    format!("[JS][space:{}] {}", space_id, msg),
+                    space_id,
+                );
             }
         }
     }
@@ -1194,7 +1198,7 @@ pub fn js_tick_system(world: &mut World) {
             }
         }
         if let Some(mut dirty_nodes) = world.get_resource_mut::<DirtyNodes>() {
-            dirty_nodes.0.extend(dirty_child_ids);
+            dirty_nodes.0.extend(dirty_child_ids.iter().copied());
         }
         if !dirty_child_ids.is_empty() {
             snapshot_dirty = true;
@@ -1284,7 +1288,9 @@ pub fn js_tick_system(world: &mut World) {
                 }
                 log_messages.push(format!(
                     "[JS][space:{}] remove: node_id={} ({} nodes)",
-                    space_id, node_id, subtree.len()
+                    space_id,
+                    node_id,
+                    subtree.len()
                 ));
             }
             (log_messages, all_removed_ids)

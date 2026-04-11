@@ -7,7 +7,17 @@ license = "MIT/Apache-2.0"
 
 [workspace]
 resolver = "2"
-members = ["crates/*", "crates/bevy_openxr/examples/android"]
+members = [
+	"crates/bevy_openxr",
+	"crates/bevy_webxr",
+	"crates/bevy_xr",
+	"crates/bevy_xr_utils",
+	"crates/js_runtime",
+	"crates/luna",
+	"crates/rust_exps",
+	"crates/virtual_dom",
+	"crates/bevy_openxr/examples/android",
+]
 
 [workspace.dependencies]
 bevy = { version = "0.14.0", default-features = false, features = [

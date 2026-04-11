@@ -10,12 +10,12 @@ use bevy_egui::EguiPlugin;
 use tokio::runtime::Runtime;
 use virtual_dom::dom::element::build_world;
 
+use bevy_mod_openxr::action_binding::OxrSendActionBindings;
 use bevy_mod_openxr::add_xr_plugins;
 use bevy_mod_xr::session::{
     XrBeginSessionEvent, XrCreateSessionEvent, XrDestroySessionEvent, XrEndSessionEvent,
     XrRequestExitEvent, XrSessionCreated, XrSessionPlugin, XrState, XrStateChanged,
 };
-use bevy_mod_openxr::action_binding::OxrSendActionBindings;
 use bevy_xr_utils::tracking_utils::{
     suggest_action_bindings, TrackingUtilitiesPlugin, XrTrackedLeftGrip, XrTrackedRightGrip,
 };
@@ -128,8 +128,7 @@ fn main() {
             dom::mark_dirty_system,
             dom::dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
             dom::process_delete_requests.run_if(|del: Res<DeleteRequests>| !del.0.is_empty()),
-            dom::commit_pending_includes_system
-                .run_if(|p: Res<PendingIncludes>| !p.0.is_empty()),
+            dom::commit_pending_includes_system.run_if(|p: Res<PendingIncludes>| !p.0.is_empty()),
         ),
     );
 
@@ -329,8 +328,26 @@ fn spawn_controllers(
 ) {
     let mesh = meshes.add(Cuboid::new(0.1, 0.1, 0.05));
     let mat = materials.add(Color::srgb_u8(124, 144, 255));
-    let left  = cmds.spawn((PbrBundle { mesh: mesh.clone(), material: mat.clone(), ..default() }, XrTrackedLeftGrip)).id();
-    let right = cmds.spawn((PbrBundle { mesh, material: mat, ..default() }, XrTrackedRightGrip)).id();
+    let left = cmds
+        .spawn((
+            PbrBundle {
+                mesh: mesh.clone(),
+                material: mat.clone(),
+                ..default()
+            },
+            XrTrackedLeftGrip,
+        ))
+        .id();
+    let right = cmds
+        .spawn((
+            PbrBundle {
+                mesh,
+                material: mat,
+                ..default()
+            },
+            XrTrackedRightGrip,
+        ))
+        .id();
     if let Ok(root_entity) = root.get_single() {
         cmds.entity(root_entity).push_children(&[left, right]);
     }
@@ -342,7 +359,6 @@ fn dispatch_touch_events_to_js(
     mut touch_events: ResMut<touch::TouchEvents>,
     mut manager: NonSendMut<js::ScriptRuntimeManager>,
     space_handle_tables: Res<SpaceHandleTables>,
-    entity_map: Res<EntityMap>,
 ) {
     if touch_events.0.is_empty() {
         return;
@@ -360,9 +376,11 @@ fn dispatch_touch_events_to_js(
                     // Instead we'll use a command approach - but the worker uses channels.
                     // For now, push to ALL workers that have a mapping for this node.
                     // The JS controller script will pick up events via op_poll_touch_events.
-                    let _ = worker.cmd_tx.send(js::JsWorkerCommand::PushTouchEvents(
-                        vec![(local_id, *x, *y, *z)],
-                    ));
+                    let _ = worker
+                        .cmd_tx
+                        .send(js::JsWorkerCommand::PushTouchEvents(vec![(
+                            local_id, *x, *y, *z,
+                        )]));
                 }
             }
         }
@@ -392,7 +410,6 @@ fn process_space_mount_queue(
     mut mount_queue: ResMut<SpaceMountQueue>,
     manager: NonSendMut<js::ScriptRuntimeManager>,
     specs_world: Res<ElemenetWorld>,
-    mut log_panel: ResMut<LogPanel>,
 ) {
     let Some(root_id) = find_root_worker_space_id(&specs_world.0, &manager) else {
         return;
@@ -415,7 +432,6 @@ fn process_space_unmount_queue(
     mut unmount_queue: ResMut<SpaceUnmountQueue>,
     manager: NonSendMut<js::ScriptRuntimeManager>,
     specs_world: Res<ElemenetWorld>,
-    mut log_panel: ResMut<LogPanel>,
 ) {
     let Some(root_id) = find_root_worker_space_id(&specs_world.0, &manager) else {
         return;

@@ -1,8 +1,12 @@
-
 use std::collections::HashMap;
 
 use anyhow::Result;
-use dom::{ element::{Attrs, ElementType, Hierarchy, Tag, Text, Transform2, Vec3}, hsml::{Model, Script, Include}, tags::TAGS_VALUES, TRANSFORM_POSITION, TRANSFORM_ROTATION, TRANSFORM_SCALE};
+use dom::{
+    element::{Attrs, ElementType, Hierarchy, Tag, Text, Transform2, Vec3},
+    hsml::{Include, Model, Script},
+    tags::TAGS_VALUES,
+    TRANSFORM_POSITION, TRANSFORM_ROTATION, TRANSFORM_SCALE,
+};
 use quick_xml::events::attributes::Attributes as XmlAttributes;
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -14,13 +18,12 @@ use dom::tags;
 
 /// Carga el XML desde una URL y retorna el contenido como String.
 pub async fn load_xml_from_url(url: &str) -> Result<String> {
-    let response = reqwest::get(url).await?;
+    let response = reqwest::get(url).await?.error_for_status()?;
     let text = response.text().await?;
     Ok(text)
 }
 
-
-fn read_attributes(attributes: XmlAttributes) -> HashMap<String, String>{
+fn read_attributes(attributes: XmlAttributes) -> HashMap<String, String> {
     let mut node: HashMap<String, String> = HashMap::new();
     for attr in attributes {
         if let Ok(attr) = attr {
@@ -35,32 +38,43 @@ fn read_attributes(attributes: XmlAttributes) -> HashMap<String, String>{
 
     return node;
 }
-fn read_vec3(attributes: &HashMap<String, String>, x:&str,y:&str,z:&str, d: &str) -> Vec3{
+fn read_vec3(attributes: &HashMap<String, String>, x: &str, y: &str, z: &str, d: &str) -> Vec3 {
     return Vec3 {
-        x: attributes.get(x).unwrap_or(&d.to_owned()).parse::<f32>().unwrap_or(0.0),
-        y: attributes.get(y).unwrap_or(&d.to_owned()).parse::<f32>().unwrap_or(0.0),
-        z: attributes.get(z).unwrap_or(&d.to_owned()).parse::<f32>().unwrap_or(0.0),
+        x: attributes
+            .get(x)
+            .unwrap_or(&d.to_owned())
+            .parse::<f32>()
+            .unwrap_or(0.0),
+        y: attributes
+            .get(y)
+            .unwrap_or(&d.to_owned())
+            .parse::<f32>()
+            .unwrap_or(0.0),
+        z: attributes
+            .get(z)
+            .unwrap_or(&d.to_owned())
+            .parse::<f32>()
+            .unwrap_or(0.0),
     };
 }
 
-fn read_str(attributes: &HashMap<String, String>, key:&String, default: &String) -> String{
+fn read_str(attributes: &HashMap<String, String>, key: &String, default: &String) -> String {
     return attributes.get(key).unwrap_or(default).clone();
 }
 
-fn read_some_str(attributes: &HashMap<String, String>, key:&str, default: &str) -> Option<String>{
-    if let Some(value) = attributes.get(key){
+fn read_some_str(attributes: &HashMap<String, String>, key: &str, default: &str) -> Option<String> {
+    if let Some(value) = attributes.get(key) {
         return Some(value.clone());
     }
-    if default == ""{
+    if default == "" {
         return None;
     }
     return Some(default.to_owned().clone());
 }
 
-
 /// Parsea el XML y construye el DOM virtual utilizando HSMLElement.
 /// Este parser es simple y asume un XML bien formado.
-pub fn parse_xml( world: &mut World, xml_content: &str) -> Result<Entity> {
+pub fn parse_xml(world: &mut World, xml_content: &str) -> Result<Entity> {
     struct OpenNode {
         tag: String,
         entity: Option<Entity>,
@@ -74,7 +88,11 @@ pub fn parse_xml( world: &mut World, xml_content: &str) -> Result<Entity> {
     let mut buf: Vec<u8> = Vec::new();
     let mut text_accum: String = String::new();
 
-    fn apply(world: &mut World, tag: &String, attributes : &HashMap<String, String>)-> Option<Entity>{
+    fn apply(
+        world: &mut World,
+        tag: &String,
+        attributes: &HashMap<String, String>,
+    ) -> Option<Entity> {
         let mut node_build = world.create_entity();
 
         // println!("T: {:?}", &tag);
@@ -84,41 +102,64 @@ pub fn parse_xml( world: &mut World, xml_content: &str) -> Result<Entity> {
                     ElementType::Node => {
                         node_build = node_build.with(Tag(tag.to_string()));
                         node_build = node_build.with(Hierarchy::default());
-                        if tag == "[TEXT]"{
+                        if tag == "[TEXT]" {
                             node_build = node_build.with(Text(tag.to_string()));
                         }
                         node_build = node_build.with(Attrs(attributes.clone()));
                     }
                     ElementType::Element => {
-                        let scale_value:Vec3;
-                        
+                        let scale_value: Vec3;
+
                         if let Some(value) = attributes.get("s") {
-                            scale_value =  Vec3 {
+                            scale_value = Vec3 {
                                 x: value.parse::<f32>().unwrap_or(1.0),
                                 y: value.parse::<f32>().unwrap_or(1.0),
                                 z: value.parse::<f32>().unwrap_or(1.0),
                             }
-                        }else{
-                            scale_value = read_vec3(&attributes, TRANSFORM_SCALE[0],TRANSFORM_SCALE[1],TRANSFORM_SCALE[2], "1")
+                        } else {
+                            scale_value = read_vec3(
+                                &attributes,
+                                TRANSFORM_SCALE[0],
+                                TRANSFORM_SCALE[1],
+                                TRANSFORM_SCALE[2],
+                                "1",
+                            )
                         }
 
                         node_build = node_build.with(Transform2 {
-                            position: read_vec3(&attributes, TRANSFORM_POSITION[0],TRANSFORM_POSITION[1],TRANSFORM_POSITION[2], "0"),
-                            rotation: read_vec3(&attributes, TRANSFORM_ROTATION[0],TRANSFORM_ROTATION[1],TRANSFORM_ROTATION[2], "0"),
+                            position: read_vec3(
+                                &attributes,
+                                TRANSFORM_POSITION[0],
+                                TRANSFORM_POSITION[1],
+                                TRANSFORM_POSITION[2],
+                                "0",
+                            ),
+                            rotation: read_vec3(
+                                &attributes,
+                                TRANSFORM_ROTATION[0],
+                                TRANSFORM_ROTATION[1],
+                                TRANSFORM_ROTATION[2],
+                                "0",
+                            ),
                             scale: scale_value,
                         });
-                    },
+                    }
                     ElementType::HSMLElement => {
                         if tag == "model" {
-                            node_build = node_build.with(Model{src: read_some_str(&attributes, "src", "")});
+                            node_build = node_build.with(Model {
+                                src: read_some_str(&attributes, "src", ""),
+                            });
+                        } else if tag == "script" {
+                            node_build = node_build.with(Script {
+                                src: read_some_str(&attributes, "src", ""),
+                                inline: None,
+                            });
+                        } else if tag == "include" {
+                            node_build = node_build.with(Include {
+                                src: read_some_str(&attributes, "src", ""),
+                            });
                         }
-                        else if tag == "script" {
-                            node_build = node_build.with(Script{src: read_some_str(&attributes, "src", ""), inline: None});
-                        }
-                        else if tag == "include" {
-                            node_build = node_build.with(Include{src: read_some_str(&attributes, "src", "")});
-                        }
-                    },
+                    }
                 }
             }
             return Some(node_build.build());
@@ -246,7 +287,7 @@ fn serialize_xml_internal(
             }
         }
 
-        fn str_vec3(p:Vec3, x:&str,y:&str,z:&str, d: f32)-> Option<String>{
+        fn str_vec3(p: Vec3, x: &str, y: &str, z: &str, d: f32) -> Option<String> {
             let mut attrs = String::new();
 
             if p.x != d {
@@ -259,23 +300,41 @@ fn serialize_xml_internal(
                 attrs.push_str(&format!(" {}=\"{}\"", z, p.z));
             }
 
-            if attrs.len()>0{
+            if attrs.len() > 0 {
                 return Some(attrs);
             }
-            return None; 
+            return None;
         }
 
         if let Some(transform) = transforms.get(entity) {
-            if let Some(atrs) = str_vec3(transform.position, TRANSFORM_POSITION[0],TRANSFORM_POSITION[1],TRANSFORM_POSITION[2], 0.0){
+            if let Some(atrs) = str_vec3(
+                transform.position,
+                TRANSFORM_POSITION[0],
+                TRANSFORM_POSITION[1],
+                TRANSFORM_POSITION[2],
+                0.0,
+            ) {
                 xml.push_str(&atrs)
             }
-            if let Some(atrs) = str_vec3(transform.rotation, TRANSFORM_ROTATION[0],TRANSFORM_ROTATION[1],TRANSFORM_ROTATION[2], 0.0){
+            if let Some(atrs) = str_vec3(
+                transform.rotation,
+                TRANSFORM_ROTATION[0],
+                TRANSFORM_ROTATION[1],
+                TRANSFORM_ROTATION[2],
+                0.0,
+            ) {
                 xml.push_str(&atrs)
             }
-            if let Some(atrs) = str_vec3(transform.scale, TRANSFORM_SCALE[0],TRANSFORM_SCALE[1],TRANSFORM_SCALE[2], 1.0){
+            if let Some(atrs) = str_vec3(
+                transform.scale,
+                TRANSFORM_SCALE[0],
+                TRANSFORM_SCALE[1],
+                TRANSFORM_SCALE[2],
+                1.0,
+            ) {
                 xml.push_str(&atrs)
             }
-            
+
             // Puedes continuar con rotation y scale...
         }
 
@@ -286,7 +345,11 @@ fn serialize_xml_internal(
                 xml.push_str(">");
                 for child in &hierarchy.children {
                     xml.push_str(&serialize_xml_internal(
-                        *child, tags, attrs, transforms, hierarchies
+                        *child,
+                        tags,
+                        attrs,
+                        transforms,
+                        hierarchies,
                     ));
                 }
                 xml.push_str(&format!("</{}>", tags.get(entity).unwrap().0));
@@ -298,4 +361,3 @@ fn serialize_xml_internal(
 
     xml
 }
-

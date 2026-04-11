@@ -388,3 +388,19 @@ pub struct AsyncDomParams<'w> {
     pub pending_model_loads: ResMut<'w, crate::PendingModelLoads>,
     pub model_load_states: ResMut<'w, crate::ModelLoadStates>,
 }
+
+#[derive(SystemParam)]
+pub struct DocumentCommitParams<'w> {
+    pub attribute_updates: ResMut<'w, AttributeUpdates>,
+    pub delete_requests: ResMut<'w, DeleteRequests>,
+    pub pending_scripts: ResMut<'w, PendingScripts>,
+    pub script_load_states: ResMut<'w, crate::ScriptLoadStates>,
+    pub pending_model_loads: ResMut<'w, crate::PendingModelLoads>,
+    pub model_load_states: ResMut<'w, crate::ModelLoadStates>,
+    pub pending_includes: ResMut<'w, crate::PendingIncludes>,
+    pub include_load_states: ResMut<'w, crate::IncludeLoadStates>,
+    pub space_handle_tables: ResMut<'w, SpaceHandleTables>,
+    pub text_material_cache: ResMut<'w, TextMaterialCache>,
+    pub primitive_material_cache: ResMut<'w, PrimitiveMaterialCache>,
+    pub js_snapshot_state: ResMut<'w, JsSnapshotState>,
+}

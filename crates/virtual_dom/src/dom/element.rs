@@ -1,9 +1,11 @@
-use specs::{World, WorldExt, prelude::*};
+use specs::{prelude::*, World, WorldExt};
 use specs_derive::Component;
 use std::{collections::HashMap, default};
 
-use super::{create_new_id, hsml::{Model, Script, Include}};
-
+use super::{
+    create_new_id,
+    hsml::{Include, Model, Script},
+};
 
 #[derive(Component, Debug, Default)]
 pub struct Hierarchy {
@@ -12,8 +14,11 @@ pub struct Hierarchy {
 }
 
 impl Hierarchy {
-    pub fn default()-> Hierarchy{
-        Hierarchy { parent: None, children: vec![] }
+    pub fn default() -> Hierarchy {
+        Hierarchy {
+            parent: None,
+            children: vec![],
+        }
     }
     pub fn add_child(world: &mut World, parent: Entity, child: Entity) {
         let mut hierarchies = world.write_storage::<Hierarchy>();
@@ -23,7 +28,6 @@ impl Hierarchy {
 
         // Añadir padre al hijo
         hierarchies.get_mut(child).unwrap().parent = Some(parent.id());
-
     }
 
     pub fn get_children(world: &World, entity: Entity) -> Option<Vec<Entity>> {
@@ -83,7 +87,7 @@ pub fn build_world() -> World {
     world
 }
 
-struct ElementTest{
+struct ElementTest {
     hierarchy: Option<Hierarchy>,
     tag: Option<Tag>,
     transform2: Option<Transform2>,
@@ -100,14 +104,13 @@ pub struct Element {
 
 impl Element {
     pub fn new(world: &mut World) -> Self {
-        let entity = world.create_entity()
-        .with(Id(create_new_id()))
-        .build();
+        let entity = world.create_entity().with(Id(create_new_id())).build();
         Self { entity }
     }
 
     pub fn with_tag(world: &mut World, tag: &str) -> Self {
-        let entity = world.create_entity()
+        let entity = world
+            .create_entity()
             .with(Id(create_new_id()))
             .with(Tag(tag.to_string()))
             .build();
