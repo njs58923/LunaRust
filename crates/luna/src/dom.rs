@@ -18,7 +18,8 @@ use virtual_dom::{
 };
 
 use crate::io::{
-    clear_async_node_state, request_document_load, request_model_prepare, request_script_load,
+    clear_async_node_state, request_document_load, request_include_load, request_model_prepare,
+    request_script_load,
 };
 use crate::render::{
     apply_transform, build_text_transform, get_or_create_text_material, parse_hex_color,
@@ -580,9 +581,11 @@ pub fn process_delete_requests(
             commands.entity(bevy_ent).despawn_recursive();
         }
         let sp_ent = world.0.entities().entity(ent_id);
-        match world.0.delete_entity(sp_ent) {
-            Ok(_) => log_panel.push_info(format!("Entity (ID={}) deleted.", ent_id)),
-            Err(_) => log_panel.push_error(format!("Error deleting entity (ID={}).", ent_id)),
+        if world.0.entities().is_alive(sp_ent) {
+            match world.0.delete_entity(sp_ent) {
+                Ok(_) => log_panel.push_info(format!("Entity (ID={}) deleted.", ent_id)),
+                Err(_) => log_panel.push_error(format!("Error deleting entity (ID={}).", ent_id)),
+            }
         }
     }
 }
@@ -598,6 +601,117 @@ pub fn mark_dirty_system(
     for node_id in dirty_nodes.0.iter().copied() {
         if let Some(&ent) = entity_map.0.get(&node_id) {
             commands.entity(ent).insert(Dirty);
+        }
+    }
+}
+
+// ─── Include loading ─────────────────────────────────────────────────────────
+
+fn queue_include_load_if_needed(
+    node_id: u32,
+    attrs_storage: &ReadStorage<Attrs>,
+    node: SpecEntity,
+    current_url: &CurrentUrl,
+    include_load_states: &mut crate::IncludeLoadStates,
+    tokio_rt: &TokioRuntime,
+    io_service: &IoService,
+    log_panel: &mut LogPanel,
+) {
+    let src = attrs_storage
+        .get(node)
+        .and_then(|a| a.0.get("src"))
+        .cloned();
+    let Some(src) = src else {
+        return;
+    };
+    if src.is_empty() {
+        return;
+    }
+    let Some(final_url) = resolve_remote_path(&current_url.0, &src) else {
+        log_panel.push_warn(format!("include: cannot resolve src='{src}'"));
+        return;
+    };
+
+    // Check if already loading/loaded for this URL
+    if let Some(state) = include_load_states.0.get(&node_id) {
+        match state {
+            crate::IncludeLoadState::Loading { url } if *url == final_url => return,
+            crate::IncludeLoadState::Loaded { url } if *url == final_url => return,
+            _ => {} // URL changed or failed, re-request
+        }
+    }
+
+    include_load_states.0.insert(
+        node_id,
+        crate::IncludeLoadState::Loading {
+            url: final_url.clone(),
+        },
+    );
+    request_include_load(&tokio_rt.0, io_service, node_id, final_url.clone());
+    log_panel.push_info(format!("Include load queued: {final_url} (node {node_id})"));
+}
+
+pub fn commit_pending_includes_system(
+    mut world: ResMut<ElemenetWorld>,
+    mut pending_includes: ResMut<crate::PendingIncludes>,
+    mut dom_data: ResMut<VirtualDomData>,
+    mut dirty_nodes: ResMut<DirtyNodes>,
+    mut log_panel: ResMut<LogPanel>,
+    mut include_load_states: ResMut<crate::IncludeLoadStates>,
+) {
+    let pending: Vec<_> = pending_includes.0.drain(..).collect();
+    if pending.is_empty() {
+        return;
+    }
+
+    for inc in pending {
+        let parent_ent = world.0.entities().entity(inc.parent_node_id);
+        if !world.0.entities().is_alive(parent_ent) {
+            log_panel.push_warn(format!(
+                "Include parent node {} no longer alive, skipping",
+                inc.parent_node_id
+            ));
+            include_load_states.0.remove(&inc.parent_node_id);
+            continue;
+        }
+
+        match parse_xml(&mut world.0, &inc.xml) {
+            Ok(child_root) => {
+                Hierarchy::add_child(&mut world.0, parent_ent, child_root);
+                let mut new_dirty = Vec::new();
+                collect_subtree_ids(&world.0, child_root, &mut new_dirty);
+                log_panel.push_info(format!(
+                    "Include committed: {} ({} nodes) -> parent {}",
+                    inc.url,
+                    new_dirty.len(),
+                    inc.parent_node_id,
+                ));
+
+                for &nid in &new_dirty {
+                    let ent = world.0.entities().entity(nid);
+                    dom_data.nodes.insert(nid, ent);
+                }
+                dirty_nodes.0.extend(new_dirty);
+
+                include_load_states.0.insert(
+                    inc.parent_node_id,
+                    crate::IncludeLoadState::Loaded {
+                        url: inc.url,
+                    },
+                );
+            }
+            Err(e) => {
+                log_panel.push_error(format!(
+                    "Include parse error: {} (parent {}): {e}",
+                    inc.url, inc.parent_node_id
+                ));
+                include_load_states.0.insert(
+                    inc.parent_node_id,
+                    crate::IncludeLoadState::Failed {
+                        url: inc.url,
+                    },
+                );
+            }
         }
     }
 }
@@ -728,6 +842,7 @@ pub fn dom_sync_system(
     mut text_render: TextRenderParams,
     mut meshes: ResMut<Assets<Mesh>>,
     mut pending_scripts: ResMut<crate::PendingScripts>,
+    mut include_load_states: ResMut<crate::IncludeLoadStates>,
 ) {
     let start_time = Instant::now();
     if dirty_nodes.0.is_empty() {
@@ -920,6 +1035,13 @@ pub fn dom_sync_system(
                         Visibility::Hidden
                     };
                 }
+                // Trigger include load if src changed or not yet loaded
+                if tag == "include" {
+                    queue_include_load_if_needed(
+                        node_id, &attrs_storage, *node, &current_url,
+                        &mut include_load_states, tokio_rt, io_service, &mut log_panel,
+                    );
+                }
                 continue;
             }
 
@@ -1017,20 +1139,28 @@ pub fn dom_sync_system(
                         ))
                         .id()
                 }
-                "space" | "include" => commands
-                    .spawn((
-                        SpatialBundle {
-                            transform: transform_b,
-                            visibility: if node_visible(&attrs_storage, *node) {
-                                Visibility::Visible
-                            } else {
-                                Visibility::Hidden
+                "space" | "include" => {
+                    if tag == "include" {
+                        queue_include_load_if_needed(
+                            node_id, &attrs_storage, *node, &current_url,
+                            &mut include_load_states, tokio_rt, io_service, &mut log_panel,
+                        );
+                    }
+                    commands
+                        .spawn((
+                            SpatialBundle {
+                                transform: transform_b,
+                                visibility: if node_visible(&attrs_storage, *node) {
+                                    Visibility::Visible
+                                } else {
+                                    Visibility::Hidden
+                                },
+                                ..Default::default()
                             },
-                            ..Default::default()
-                        },
-                        Dirty,
-                    ))
-                    .id(),
+                            Dirty,
+                        ))
+                        .id()
+                }
                 "box" => {
                     let attrs_opt = attrs_storage.get(*node);
                     let color = primitive_color(&attrs_storage, *node);

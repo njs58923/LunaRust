@@ -110,10 +110,9 @@ fn create_space_context(space_id: u32) -> std::result::Result<SpaceScriptContext
     let mut engine = std::panic::catch_unwind(JsEngine::new)
         .map_err(|e| format!("panic creating JS engine for space {}: {:?}", space_id, e))?;
 
-    let set_root = format!(
-        "globalThis.hiperspace.dimention = new HSMLRootElement({});",
-        space_id
-    );
+    // The root element uses local_id=0, which maps to global space_id
+    // in the SpaceHandleTable. JS must use the local ID, not the global one.
+    let set_root = "globalThis.hiperspace.dimention = new HSMLRootElement(0);".to_string();
     engine
         .eval(&set_root)
         .map_err(|e| format!("failed to set JS root for space {}: {}", space_id, e))?;
@@ -154,7 +153,8 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                             .update_hierarchy_snapshot(snap.parents, snap.children);
                     }
                     JsWorkerCommand::EvalScript { url, code } => {
-                        if ctx.loaded_scripts.contains(&url) {
+                        let is_ephemeral = url.starts_with("eval://");
+                        if !is_ephemeral && ctx.loaded_scripts.contains(&url) {
                             let _ = event_tx.send(JsWorkerEvent::EvalResult {
                                 url,
                                 already_loaded: true,
@@ -165,7 +165,9 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                         let wrapped_code = format!("(function(){{\n{}\n}})();", code);
                         match ctx.engine.eval(&wrapped_code) {
                             Ok(_) => {
-                                ctx.loaded_scripts.insert(url.clone());
+                                if !is_ephemeral {
+                                    ctx.loaded_scripts.insert(url.clone());
+                                }
                                 let _ = event_tx.send(JsWorkerEvent::EvalResult {
                                     url,
                                     already_loaded: false,
@@ -1194,36 +1196,108 @@ pub fn js_tick_system(world: &mut World) {
             }
         }
 
-        let log_messages = {
+        let (log_messages, all_removed_ids) = {
             let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else {
                 return;
             };
             let mut log_messages = Vec::new();
+            let mut all_removed_ids: Vec<u32> = Vec::new();
             for &node_id in &allowed_remove_ids {
-                let (ent, is_alive) = {
+                let subtree = {
                     let entities = specs_world.0.entities();
-                    let ent = entities.entity(node_id);
-                    (ent, entities.is_alive(ent))
+                    let hier = specs_world.0.read_storage::<Hierarchy>();
+                    let root_ent = entities.entity(node_id);
+                    if !entities.is_alive(root_ent) {
+                        continue;
+                    }
+                    // Collect entire subtree (BFS)
+                    let mut to_delete = Vec::new();
+                    let mut stack = vec![root_ent];
+                    while let Some(ent) = stack.pop() {
+                        to_delete.push(ent.id());
+                        if let Some(h) = hier.get(ent) {
+                            for &child_id in &h.children {
+                                let child = entities.entity(child_id.id());
+                                if entities.is_alive(child) {
+                                    stack.push(child);
+                                }
+                            }
+                        }
+                    }
+                    to_delete
                 };
-                if is_alive {
+                // Save subtree IDs for cleanup BEFORE deleting from specs
+                all_removed_ids.extend_from_slice(&subtree);
+                // Delete all entities in subtree
+                for &nid in &subtree {
+                    let ent = specs_world.0.entities().entity(nid);
                     specs_world.0.delete_entity(ent).ok();
-                    log_messages.push(format!(
-                        "[JS][space:{}] remove: node_id={}",
-                        space_id, node_id
-                    ));
+                }
+                log_messages.push(format!(
+                    "[JS][space:{}] remove: node_id={} ({} nodes)",
+                    space_id, node_id, subtree.len()
+                ));
+            }
+            (log_messages, all_removed_ids)
+        };
+        // Collect Bevy entities to despawn, then despawn them
+        let bevy_entities_to_despawn: Vec<Entity> = {
+            let mut to_despawn = Vec::new();
+            if let Some(mut entity_map) = world.get_resource_mut::<crate::EntityMap>() {
+                for &nid in &all_removed_ids {
+                    if let Some(bevy_ent) = entity_map.0.remove(&nid) {
+                        to_despawn.push(bevy_ent);
+                    }
                 }
             }
-            log_messages
+            to_despawn
         };
+        for bevy_ent in bevy_entities_to_despawn {
+            if world.get_entity(bevy_ent).is_some() {
+                world.entity_mut(bevy_ent).despawn_recursive();
+            }
+        }
+        // Clean up async node state (scripts, models)
+        {
+            let mut script_loads = world.resource_mut::<crate::ScriptLoadStates>();
+            for &nid in &all_removed_ids {
+                script_loads.0.remove(&nid);
+            }
+        }
+        {
+            let mut pending_models = world.resource_mut::<crate::PendingModelLoads>();
+            for &nid in &all_removed_ids {
+                pending_models.remove_node(nid);
+            }
+        }
+        {
+            let mut model_loads = world.resource_mut::<crate::ModelLoadStates>();
+            for &nid in &all_removed_ids {
+                model_loads.0.remove(&nid);
+            }
+        }
+        // Clean up dom_data entries
+        if let Some(mut dom_data) = world.get_resource_mut::<crate::VirtualDomData>() {
+            for &nid in &all_removed_ids {
+                dom_data.nodes.remove(&nid);
+            }
+        }
+        // Clean up include load states
+        if let Some(mut include_states) = world.get_resource_mut::<crate::IncludeLoadStates>() {
+            for &nid in &all_removed_ids {
+                include_states.0.remove(&nid);
+            }
+        }
+        // Clean up handle table entries for ALL subtree nodes
         if let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() {
             let Some(table) = space_handle_tables.by_space.get_mut(&space_id) else {
                 return;
             };
-            for node_id in &allowed_remove_ids {
-                if let Some(local_id) = table.global_to_local.remove(node_id) {
+            for &nid in &all_removed_ids {
+                if let Some(local_id) = table.global_to_local.remove(&nid) {
                     table.local_to_global.remove(&local_id);
                 }
-                table.detached_globals.remove(node_id);
+                table.detached_globals.remove(&nid);
             }
         }
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {

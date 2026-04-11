@@ -43,6 +43,12 @@ pub enum IoResult {
         url: String,
         result: Result<String, String>,
     },
+    IncludeLoaded {
+        network_id: u64,
+        parent_node_id: u32,
+        url: String,
+        result: Result<String, String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +57,7 @@ pub enum NetworkRequestKind {
     Fetch,
     Script,
     Model,
+    Include,
 }
 
 impl NetworkRequestKind {
@@ -60,6 +67,7 @@ impl NetworkRequestKind {
             Self::Fetch => "fetch",
             Self::Script => "script",
             Self::Model => "model",
+            Self::Include => "include",
         }
     }
 }
@@ -333,6 +341,29 @@ pub fn request_script_load(rt: &Runtime, io_service: &IoService, node_id: u32, u
     });
 }
 
+pub fn request_include_load(
+    rt: &Runtime,
+    io_service: &IoService,
+    parent_node_id: u32,
+    url: String,
+) {
+    let network_id = io_service.begin_request(
+        NetworkRequestKind::Include,
+        url.clone(),
+        format!("include-parent:{parent_node_id}"),
+    );
+    let tx = io_service.sender();
+    rt.spawn(async move {
+        let result = load_text_resource(&url).await;
+        let _ = tx.send(IoResult::IncludeLoaded {
+            network_id,
+            parent_node_id,
+            url,
+            result,
+        });
+    });
+}
+
 pub fn request_model_prepare(rt: &Runtime, io_service: &IoService, url: String) {
     let network_id =
         io_service.begin_request(NetworkRequestKind::Model, url.clone(), "model-cache");
@@ -525,6 +556,7 @@ pub fn poll_io_results_system(
     mut model_load_states: ResMut<ModelLoadStates>,
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut manager: NonSendMut<ScriptRuntimeManager>,
+    mut pending_includes: ResMut<crate::PendingIncludes>,
 ) {
     let Ok(rx) = io_service.result_rx.lock() else {
         return;
@@ -671,6 +703,40 @@ pub fn poll_io_results_system(
                     Err(error) => {
                         log_panel.push_error(format!(
                             "Model prepare failed asynchronously: {url} -> {error}"
+                        ));
+                    }
+                }
+            }
+            IoResult::IncludeLoaded {
+                network_id,
+                parent_node_id,
+                url,
+                result,
+            } => {
+                let status = if result.is_ok() {
+                    NetworkRequestStatus::Ok
+                } else {
+                    NetworkRequestStatus::Error
+                };
+                let detail = result.as_ref().err().cloned();
+                io_service.finish_request(network_id, status, detail);
+                match result {
+                    Ok(xml) => {
+                        log_panel.push_info(format!(
+                            "Include loaded: {url} -> parent node {parent_node_id}"
+                        ));
+                        // Parse and attach to parent in specs world
+                        // We need mutable access to the specs world, but we only have Res<>.
+                        // Store the result for processing in a dedicated system.
+                        pending_includes.0.push(crate::PendingInclude {
+                            parent_node_id,
+                            url,
+                            xml,
+                        });
+                    }
+                    Err(error) => {
+                        log_panel.push_error(format!(
+                            "Include load failed: {url} (parent {parent_node_id}): {error}"
                         ));
                     }
                 }

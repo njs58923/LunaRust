@@ -101,6 +101,8 @@ fn main() {
     app.insert_resource(PendingModelLoads::default());
     app.insert_resource(ModelLoadStates::default());
     app.insert_resource(touch::TouchEvents::default());
+    app.insert_resource(PendingIncludes::default());
+    app.insert_resource(IncludeLoadStates::default());
     app.insert_resource(SpaceMountQueue(vec!["luna://home".to_string()]));
     app.insert_resource(SpaceUnmountQueue::default());
     app.insert_resource(MountedSpaceList(vec![MountedSpaceEntry {
@@ -124,6 +126,8 @@ fn main() {
             dom::mark_dirty_system,
             dom::dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
             dom::process_delete_requests.run_if(|del: Res<DeleteRequests>| !del.0.is_empty()),
+            dom::commit_pending_includes_system
+                .run_if(|p: Res<PendingIncludes>| !p.0.is_empty()),
         ),
     );
 

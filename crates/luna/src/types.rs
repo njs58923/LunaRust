@@ -258,6 +258,27 @@ pub struct PerformanceStats {
 #[derive(Resource, Default)]
 pub struct PendingScripts(pub Vec<(u32, String, String)>);
 
+#[derive(Debug, Clone)]
+pub struct PendingInclude {
+    pub parent_node_id: u32,
+    pub url: String,
+    pub xml: String,
+}
+
+#[derive(Resource, Default)]
+pub struct PendingIncludes(pub Vec<PendingInclude>);
+
+/// Tracks which include nodes have already been requested (to avoid duplicate loads).
+#[derive(Resource, Default)]
+pub struct IncludeLoadStates(pub HashMap<u32, IncludeLoadState>);
+
+#[derive(Debug, Clone)]
+pub enum IncludeLoadState {
+    Loading { url: String },
+    Loaded { url: String },
+    Failed { url: String },
+}
+
 #[derive(PartialEq, Eq)]
 pub enum DevtoolTab {
     Status,
