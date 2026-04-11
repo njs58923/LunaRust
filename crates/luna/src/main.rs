@@ -291,11 +291,15 @@ fn spawn_controllers(
     mut cmds: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    root: Query<Entity, With<bevy_mod_xr::session::XrTrackingRoot>>,
 ) {
     let mesh = meshes.add(Cuboid::new(0.1, 0.1, 0.05));
     let mat = materials.add(Color::srgb_u8(124, 144, 255));
-    cmds.spawn((PbrBundle { mesh: mesh.clone(), material: mat.clone(), ..default() }, XrTrackedLeftGrip));
-    cmds.spawn((PbrBundle { mesh, material: mat, ..default() }, XrTrackedRightGrip));
+    let left  = cmds.spawn((PbrBundle { mesh: mesh.clone(), material: mat.clone(), ..default() }, XrTrackedLeftGrip)).id();
+    let right = cmds.spawn((PbrBundle { mesh, material: mat, ..default() }, XrTrackedRightGrip)).id();
+    if let Ok(root_entity) = root.get_single() {
+        cmds.entity(root_entity).push_children(&[left, right]);
+    }
 }
 
 fn toggle_render_mode(

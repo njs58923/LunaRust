@@ -206,15 +206,16 @@ fn handle_smooth_locomotion(
 ) {
     let Ok(state) = actions.left_stick.state(&session, Path::NULL) else { return };
     let input = vec3(state.current_state.x, 0.0, -state.current_state.y);
-    if input.length_squared() < 0.01 { return; }
+    let magnitude = input.length().min(1.0);
+    if magnitude < 0.01 { return; }
 
     let Ok(mut root_tf) = root.get_single_mut() else { return };
-    let speed = 3.0;
+    let max_speed = 3.0;
 
     // view.pose.orientation is in tracking space; root rotation is tracking→world.
     // Compose both so locomotion follows where the player is actually looking.
     let dir = if let Some(view) = views.first() {
-        let hmd_dir = view.pose.orientation.to_quat().mul_vec3(input);
+        let hmd_dir = view.pose.orientation.to_quat().mul_vec3(input.normalize_or_zero());
         let mut world_dir = root_tf.rotation.mul_vec3(hmd_dir);
         world_dir.y = 0.0;
         world_dir.normalize_or_zero()
@@ -222,7 +223,7 @@ fn handle_smooth_locomotion(
         input.normalize_or_zero()
     };
 
-    root_tf.translation += dir * speed * time.delta_seconds();
+    root_tf.translation += dir * max_speed * magnitude * time.delta_seconds();
 }
 
 // ─── Snap turn (right stick) ──────────────────────────────────────────────────
