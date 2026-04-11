@@ -7,6 +7,8 @@
 
   const core = Deno.core;
 
+  const __lunaElementCache = new Map();
+
   function _findNodeById(el, targetId) {
     if (!el) return null;
     if (el.nodeId === targetId) return el;
@@ -186,7 +188,14 @@
 
     _resolveNodeId(nodeId) {
       if (this._isResolved()) return;
+
+      const oldId = this._nodeId;
       this._nodeId = nodeId;
+
+      if (__lunaElementCache.get(oldId) === this) {
+        __lunaElementCache.delete(oldId);
+      }
+      __lunaElementCache.set(nodeId, this);
 
       if (this._positionProxy) this._positionProxy._nodeId = nodeId;
       if (this._rotationProxy) this._rotationProxy._nodeId = nodeId;
@@ -554,28 +563,84 @@
   }
 
   // ---------------------------------------------------------------------------
+  // HSMLVideoElement (<video src="..."/>)
+  // ---------------------------------------------------------------------------
+
+  class HSMLVideoElement extends HSMLElement {
+    constructor(nodeId) {
+      super(nodeId);
+    }
+
+    get src() { return this.getAttribute('src'); }
+    set src(v) { this.setAttribute('src', v); }
+
+    get loop() { return this.getAttribute('loop') === 'true'; }
+    set loop(v) { this.setAttribute('loop', String(!!v)); }
+
+    get autoplay() { return this.getAttribute('autoplay') === 'true'; }
+    set autoplay(v) { this.setAttribute('autoplay', String(!!v)); }
+
+    get muted() { return this.getAttribute('muted') === 'true'; }
+    set muted(v) { this.setAttribute('muted', String(!!v)); }
+
+    play() {
+      this._onResolved((nodeId) => {
+        core.ops.op_hsml_video_play(nodeId);
+      });
+    }
+
+    pause() {
+      this._onResolved((nodeId) => {
+        core.ops.op_hsml_video_pause(nodeId);
+      });
+    }
+
+    stop() {
+      this._onResolved((nodeId) => {
+        core.ops.op_hsml_video_stop(nodeId);
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Element factory
   // ---------------------------------------------------------------------------
 
   function _wrapElement(nodeId, tagHint = '') {
+    const cached = __lunaElementCache.get(nodeId);
+    if (cached) {
+      if (tagHint) cached._setTagHint(tagHint);
+      return cached;
+    }
+
     const tag = nodeId >= 0 ? core.ops.op_hsml_get_tag(nodeId) : String(tagHint || '');
-    switch(tag.toUpperCase()) {
+    let el;
+
+    switch (tag.toUpperCase()) {
       case 'MODEL': {
-        const el = new HSMLModelElement(nodeId);
+        el = new HSMLModelElement(nodeId);
         el._setTagHint('MODEL');
-        return el;
+        break;
       }
       case 'BUTTON': {
-        const el = new HSMLButtonElement(nodeId);
+        el = new HSMLButtonElement(nodeId);
         el._setTagHint('BUTTON');
-        return el;
+        break;
+      }
+      case 'VIDEO': {
+        el = new HSMLVideoElement(nodeId);
+        el._setTagHint('VIDEO');
+        break;
       }
       default: {
-        const el = new HSMLElement(nodeId);
+        el = new HSMLElement(nodeId);
         el._setTagHint(tagHint || tag);
-        return el;
+        break;
       }
     }
+
+    __lunaElementCache.set(nodeId, el);
+    return el;
   }
 
   // ---------------------------------------------------------------------------
@@ -763,6 +828,7 @@
   global.HSMLRootElement = HSMLRootElement;
   global.HSMLModelElement = HSMLModelElement;
   global.HSMLButtonElement = HSMLButtonElement;
+  global.HSMLVideoElement = HSMLVideoElement;
   global.Location = Location;
 
   // Auto-initialize with default root (node_id=0)
