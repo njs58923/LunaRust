@@ -142,6 +142,36 @@ fn parse_script_src_attribute() {
 }
 
 #[test]
+fn parse_inline_script() {
+    use virtual_dom::dom::hsml::Script;
+    let mut world = make_world();
+    let xml = r#"<hsml><script>console.log('hello');</script></hsml>"#;
+    let root = parse_xml(&mut world, xml).expect("parse failed");
+
+    let hier = world.read_storage::<Hierarchy>();
+    let scripts = world.read_storage::<Script>();
+    let script_ent = hier.get(root).unwrap().children[0];
+    let s = scripts.get(script_ent).expect("no Script component");
+    assert!(s.src.is_none(), "inline script should have no src");
+    assert_eq!(s.inline.as_deref(), Some("console.log('hello');"));
+}
+
+#[test]
+fn parse_script_with_src_has_no_inline() {
+    use virtual_dom::dom::hsml::Script;
+    let mut world = make_world();
+    let xml = r#"<hsml><script src="luna://test.js"></script></hsml>"#;
+    let root = parse_xml(&mut world, xml).expect("parse failed");
+
+    let hier = world.read_storage::<Hierarchy>();
+    let scripts = world.read_storage::<Script>();
+    let script_ent = hier.get(root).unwrap().children[0];
+    let s = scripts.get(script_ent).expect("no Script component");
+    assert_eq!(s.src.as_deref(), Some("luna://test.js"));
+    assert!(s.inline.is_none(), "src-based script should have no inline");
+}
+
+#[test]
 fn parse_malformed_xml_returns_error() {
     let mut world = make_world();
     let result = parse_xml(&mut world, "<unclosed");

@@ -612,13 +612,42 @@ fn queue_script_load_if_needed(
     tokio_rt: &TokioRuntime,
     io_service: &IoService,
     log_panel: &mut LogPanel,
+    specs_world: &SpecWorld,
+    pending_scripts: &mut crate::PendingScripts,
 ) {
     let Some(script_comp) = scripts_storage.get(node) else {
         return;
     };
-    let Some(src) = script_comp.src.as_ref() else {
+
+    // Inline script: no src, has inline code
+    if script_comp.src.is_none() {
+        if let Some(code) = script_comp.inline.as_ref() {
+            let node_id = node.id();
+            let inline_url = format!("inline://{}", node_id);
+
+            // Only run once (same dedup as src-based scripts)
+            if matches!(
+                script_load_states.0.get(&node_id),
+                Some(ScriptLoadState::Loaded { url }) if *url == inline_url
+            ) {
+                return;
+            }
+
+            if let Some(space_id) = crate::js::find_owner_space_id(specs_world, node) {
+                pending_scripts.0.push((space_id, inline_url.clone(), code.clone()));
+                script_load_states.0.insert(
+                    node_id,
+                    ScriptLoadState::Loaded { url: inline_url },
+                );
+                log_panel.push_info(format!(
+                    "[JS][space:{space_id}] Inline script queued (node {node_id})"
+                ));
+            }
+        }
         return;
-    };
+    }
+
+    let src = script_comp.src.as_ref().unwrap();
     let Some(final_url) = resolve_remote_path(&current_url.0, src) else {
         log_panel.push_error(format!(
             "Cannot resolve script src '{src}' against '{}'",
@@ -698,6 +727,7 @@ pub fn dom_sync_system(
     mut async_dom: AsyncDomParams,
     mut text_render: TextRenderParams,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut pending_scripts: ResMut<crate::PendingScripts>,
 ) {
     let start_time = Instant::now();
     if dirty_nodes.0.is_empty() {
@@ -864,6 +894,8 @@ pub fn dom_sync_system(
                     tokio_rt,
                     io_service,
                     &mut log_panel,
+                    &world.0,
+                    &mut pending_scripts,
                 );
                 if let Ok((_, mut t, dirty, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
@@ -972,6 +1004,8 @@ pub fn dom_sync_system(
                         tokio_rt,
                         io_service,
                         &mut log_panel,
+                        &world.0,
+                        &mut pending_scripts,
                     );
                     commands
                         .spawn((

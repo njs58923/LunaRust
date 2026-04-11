@@ -66,6 +66,8 @@ pub fn parse_xml( world: &mut World, xml_content: &str) -> Result<Entity> {
     let mut node_stack: Vec<Entity> = Vec::new();
     let mut root: Option<Entity> = None;
     let mut buf: Vec<u8> = Vec::new();
+    let mut tag_stack: Vec<String> = Vec::new();
+    let mut text_accum: String = String::new();
 
     fn apply(world: &mut World, tag: &String, attributes : &HashMap<String, String>)-> Option<Entity>{
         let mut node_build = world.create_entity();
@@ -106,7 +108,7 @@ pub fn parse_xml( world: &mut World, xml_content: &str) -> Result<Entity> {
                             node_build = node_build.with(Model{src: read_some_str(&attributes, "src", "")});
                         }
                         else if tag == "script" {
-                            node_build = node_build.with(Script{src: read_some_str(&attributes, "src", "")});
+                            node_build = node_build.with(Script{src: read_some_str(&attributes, "src", ""), inline: None});
                         }
                         else if tag == "include" {
                             node_build = node_build.with(Include{src: read_some_str(&attributes, "src", "")});
@@ -124,10 +126,12 @@ pub fn parse_xml( world: &mut World, xml_content: &str) -> Result<Entity> {
             Ok(Event::Start(ref e)) => {
                 let tag = String::from_utf8_lossy(e.name().as_ref()).into_owned();
                 let attributes = read_attributes(e.attributes());
-                
+
                 if let Some(entity) = apply(world, &tag, &attributes) {
                     node_stack.push(entity);
                 }
+                tag_stack.push(tag);
+                text_accum.clear();
             }
             Ok(Event::Empty(ref e)) => {
                 // Manejo de etiquetas autocontenidas.
@@ -144,12 +148,35 @@ pub fn parse_xml( world: &mut World, xml_content: &str) -> Result<Entity> {
                 }
             }
             Ok(Event::End(_)) => {
+                let closed_tag = tag_stack.pop().unwrap_or_default();
+
                 if let Some(node) = node_stack.pop() {
+                    // If this was a <script> with inline text, store it
+                    if closed_tag == "script" && !text_accum.trim().is_empty() {
+                        let mut scripts = world.write_storage::<Script>();
+                        if let Some(script) = scripts.get_mut(node) {
+                            script.inline = Some(text_accum.trim().to_string());
+                        }
+                    }
+                    text_accum.clear();
+
                     if let Some(parent) = node_stack.last_mut() {
                         Hierarchy::add_child(world, parent.clone(), node);
                     } else {
                         root = Some(node);
                     }
+                }
+            }
+            Ok(Event::Text(ref e)) => {
+                if tag_stack.last().map(|t| t.as_str()) == Some("script") {
+                    let txt = e.unescape().unwrap_or_default();
+                    text_accum.push_str(&txt);
+                }
+            }
+            Ok(Event::CData(ref e)) => {
+                if tag_stack.last().map(|t| t.as_str()) == Some("script") {
+                    let txt = String::from_utf8_lossy(e.as_ref());
+                    text_accum.push_str(&txt);
                 }
             }
             Ok(Event::Eof) => break,

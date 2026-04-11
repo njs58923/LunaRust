@@ -47,23 +47,6 @@ impl VirtualRoutes {
         routes.insert("ux_vr".to_string(), RouteHandler::Static(LUNA_UX_VR));
         routes.insert("controller_desktop".to_string(), RouteHandler::Static(LUNA_CONTROLLER_DESKTOP));
         routes.insert("controller_vr".to_string(), RouteHandler::Static(LUNA_CONTROLLER_VR));
-        routes.insert(
-            "internal/ux_desktop.js".to_string(),
-            RouteHandler::Static(SCRIPT_UX_DESKTOP),
-        );
-        routes.insert(
-            "internal/ux_vr.js".to_string(),
-            RouteHandler::Static(SCRIPT_UX_VR),
-        );
-        routes.insert(
-            "internal/controller_desktop.js".to_string(),
-            RouteHandler::Static(SCRIPT_CONTROLLER_DESKTOP),
-        );
-        routes.insert(
-            "internal/controller_vr.js".to_string(),
-            RouteHandler::Static(SCRIPT_CONTROLLER_VR),
-        );
-
         Self { routes }
     }
 
@@ -577,7 +560,9 @@ const LUNA_UX_DESKTOP: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   </head>
   <space id="ux_desktop">
     <include src="luna://controller_desktop" />
-    <script src="luna://internal/ux_desktop.js" />
+    <script>
+      console.log('[ux_desktop] Desktop UX loaded (controller included via HSML)');
+    </script>
   </space>
 </hsml>"##;
 
@@ -591,7 +576,9 @@ const LUNA_UX_VR: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   </head>
   <space id="ux_vr">
     <include src="luna://controller_vr" />
-    <script src="luna://internal/ux_vr.js" />
+    <script>
+      console.log('[ux_vr] VR UX loaded (controller included via HSML)');
+    </script>
   </space>
 </hsml>"##;
 
@@ -608,7 +595,36 @@ const LUNA_CONTROLLER_DESKTOP: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
   <space id="controller_desktop">
-    <script src="luna://internal/controller_desktop.js" />
+    <script>
+      Deno.core.ops.op_register_controller('desktop');
+
+      function pollTouch() {
+        var events = Deno.core.ops.op_poll_touch_events();
+        for (var i = 0; i &lt; events.length; i++) {
+          var evt = events[i];
+          var root = globalThis.hiperspace &amp;&amp; globalThis.hiperspace.dimention;
+          if (!root) continue;
+          function findNode(el, targetId) {
+            if (el.nodeId === targetId) return el;
+            var ch = el.children;
+            for (var j = 0; j &lt; ch.length; j++) {
+              var found = findNode(ch[j], targetId);
+              if (found) return found;
+            }
+            return null;
+          }
+          var target = findNode(root, evt.nodeId);
+          if (target) {
+            target.dispatchEvent({ type: 'touch', nodeId: evt.nodeId, x: evt.x, y: evt.y, z: evt.z });
+            target.dispatchEvent({ type: 'click' });
+          }
+        }
+        requestAnimationFrame(pollTouch);
+      }
+      requestAnimationFrame(pollTouch);
+
+      console.log('[controller_desktop] Desktop controller active');
+    </script>
   </space>
 </hsml>"##;
 
@@ -621,95 +637,38 @@ const LUNA_CONTROLLER_VR: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
   <space id="controller_vr">
-    <script src="luna://internal/controller_vr.js" />
+    <script>
+      Deno.core.ops.op_register_controller('vr');
+
+      function pollTouch() {
+        var events = Deno.core.ops.op_poll_touch_events();
+        for (var i = 0; i &lt; events.length; i++) {
+          var evt = events[i];
+          var root = globalThis.hiperspace &amp;&amp; globalThis.hiperspace.dimention;
+          if (!root) continue;
+          function findNode(el, targetId) {
+            if (el.nodeId === targetId) return el;
+            var ch = el.children;
+            for (var j = 0; j &lt; ch.length; j++) {
+              var found = findNode(ch[j], targetId);
+              if (found) return found;
+            }
+            return null;
+          }
+          var target = findNode(root, evt.nodeId);
+          if (target) {
+            target.dispatchEvent({ type: 'touch', nodeId: evt.nodeId, x: evt.x, y: evt.y, z: evt.z });
+            target.dispatchEvent({ type: 'click' });
+          }
+        }
+        requestAnimationFrame(pollTouch);
+      }
+      requestAnimationFrame(pollTouch);
+
+      console.log('[controller_vr] VR controller active');
+    </script>
   </space>
 </hsml>"##;
-
-// ============================================================================
-// UX + CONTROLLER SCRIPTS
-// ============================================================================
-
-const SCRIPT_UX_DESKTOP: &str = r##"
-(function() {
-  console.log('[ux_desktop] Desktop UX loaded (controller included via HSML)');
-})();
-"##;
-
-const SCRIPT_UX_VR: &str = r##"
-(function() {
-  console.log('[ux_vr] VR UX loaded (controller included via HSML)');
-})();
-"##;
-
-const SCRIPT_CONTROLLER_DESKTOP: &str = r##"
-(function() {
-  Deno.core.ops.op_register_controller('desktop');
-
-  function pollTouch() {
-    const events = Deno.core.ops.op_poll_touch_events();
-    for (const evt of events) {
-      const root = globalThis.hiperspace && globalThis.hiperspace.dimention;
-      if (!root) continue;
-      function findNode(el, targetId) {
-        if (el.nodeId === targetId) return el;
-        for (const child of el.children) {
-          const found = findNode(child, targetId);
-          if (found) return found;
-        }
-        return null;
-      }
-      const target = findNode(root, evt.nodeId);
-      if (target) {
-        target.dispatchEvent({
-          type: 'touch',
-          nodeId: evt.nodeId,
-          x: evt.x, y: evt.y, z: evt.z,
-        });
-        target.dispatchEvent({ type: 'click' });
-      }
-    }
-    requestAnimationFrame(pollTouch);
-  }
-  requestAnimationFrame(pollTouch);
-
-  console.log('[controller_desktop] Desktop controller active');
-})();
-"##;
-
-const SCRIPT_CONTROLLER_VR: &str = r##"
-(function() {
-  Deno.core.ops.op_register_controller('vr');
-
-  function pollTouch() {
-    const events = Deno.core.ops.op_poll_touch_events();
-    for (const evt of events) {
-      const root = globalThis.hiperspace && globalThis.hiperspace.dimention;
-      if (!root) continue;
-      function findNode(el, targetId) {
-        if (el.nodeId === targetId) return el;
-        for (const child of el.children) {
-          const found = findNode(child, targetId);
-          if (found) return found;
-        }
-        return null;
-      }
-      const target = findNode(root, evt.nodeId);
-      if (target) {
-        target.dispatchEvent({
-          type: 'touch',
-          nodeId: evt.nodeId,
-          x: evt.x, y: evt.y, z: evt.z,
-        });
-        target.dispatchEvent({ type: 'click' });
-      }
-    }
-    requestAnimationFrame(pollTouch);
-  }
-  requestAnimationFrame(pollTouch);
-
-  console.log('[controller_vr] VR controller active');
-})();
-"##;
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 

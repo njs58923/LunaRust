@@ -14,10 +14,11 @@ impl Model {
 #[derive(Component, Debug, Clone,Default)]
 pub struct Script {
     pub src: Option<String>,
+    pub inline: Option<String>,
 }
 impl Script {
     fn default()-> Script{
-        Script{src: None}
+        Script{src: None, inline: None}
     }
 }
 #[derive(Component, Debug, Clone,Default)]
