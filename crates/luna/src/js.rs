@@ -77,7 +77,6 @@ pub enum JsWorkerEvent {
     TickData(JsTickData),
     DebugState {
         space_id: u32,
-        controller_mode: String,
         loaded_scripts: Vec<String>,
         capabilities_bits: u64,
     },
@@ -245,7 +244,6 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                     JsWorkerCommand::RequestDebugState => {
                         let _ = event_tx.send(JsWorkerEvent::DebugState {
                             space_id,
-                            controller_mode: ctx.engine.get_controller_mode(),
                             loaded_scripts: ctx.loaded_scripts.iter().cloned().collect(),
                             capabilities_bits: ctx.capabilities_bits,
                         });
@@ -1015,7 +1013,6 @@ pub fn js_tick_system(world: &mut World) {
                     }
                     Ok(JsWorkerEvent::DebugState {
                         space_id: _debug_space_id,
-                        controller_mode: _controller_mode,
                         loaded_scripts: _loaded_scripts,
                         capabilities_bits: _capabilities_bits,
                     }) => {

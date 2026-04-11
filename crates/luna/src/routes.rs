@@ -41,16 +41,10 @@ impl VirtualRoutes {
             "internal/root_api.js".to_string(),
             RouteHandler::Static(SCRIPT_ROOT_API),
         );
-        routes.insert(
-            "internal/controller_toque.js".to_string(),
-            RouteHandler::Static(SCRIPT_CONTROLLER_TOQUE),
-        );
 
-        // UX and Controller routes
+        // UX routes
         routes.insert("ux_desktop".to_string(), RouteHandler::Static(LUNA_UX_DESKTOP));
         routes.insert("ux_vr".to_string(), RouteHandler::Static(LUNA_UX_VR));
-        routes.insert("controller_desktop".to_string(), RouteHandler::Static(LUNA_CONTROLLER_DESKTOP));
-        routes.insert("controller_vr".to_string(), RouteHandler::Static(LUNA_CONTROLLER_VR));
         Self { routes }
     }
 
@@ -616,127 +610,6 @@ const LUNA_UX_VR: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   </space>
 </hsml>"##;
 
-// ============================================================================
-// CONTROLLER DOCUMENTS
-// ============================================================================
-
-const LUNA_CONTROLLER_DESKTOP: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
-<hsml>
-  <head>
-    <name>Controller Desktop</name>
-    <meta type="position" x="0" y="0" z="0"/>
-    <meta type="scale" x="1" y="1" z="1"/>
-    <meta type="rotation" x="0" y="0" z="0"/>
-  </head>
-  <space id="controller_desktop">
-    <script>
-      Deno.core.ops.op_register_controller('desktop');
-
-      function pollTouch() {
-        var events = Deno.core.ops.op_poll_touch_events();
-        for (var i = 0; i &lt; events.length; i++) {
-          var evt = events[i];
-          var root = globalThis.hiperspace &amp;&amp; globalThis.hiperspace.dimention;
-          if (!root) continue;
-          function findNode(el, targetId) {
-            if (el.nodeId === targetId) return el;
-            var ch = el.children;
-            for (var j = 0; j &lt; ch.length; j++) {
-              var found = findNode(ch[j], targetId);
-              if (found) return found;
-            }
-            return null;
-          }
-          var target = findNode(root, evt.nodeId);
-          if (target) {
-            target.dispatchEvent({ type: 'touch', nodeId: evt.nodeId, x: evt.x, y: evt.y, z: evt.z });
-            target.dispatchEvent({ type: 'click' });
-          }
-        }
-        requestAnimationFrame(pollTouch);
-      }
-      requestAnimationFrame(pollTouch);
-
-      console.log('[controller_desktop] Desktop controller active');
-    </script>
-  </space>
-</hsml>"##;
-
-const LUNA_CONTROLLER_VR: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
-<hsml>
-  <head>
-    <name>Controller VR</name>
-    <meta type="position" x="0" y="0" z="0"/>
-    <meta type="scale" x="1" y="1" z="1"/>
-    <meta type="rotation" x="0" y="0" z="0"/>
-  </head>
-  <space id="controller_vr">
-    <script>
-      Deno.core.ops.op_register_controller('vr');
-
-      function pollTouch() {
-        var events = Deno.core.ops.op_poll_touch_events();
-        for (var i = 0; i &lt; events.length; i++) {
-          var evt = events[i];
-          var root = globalThis.hiperspace &amp;&amp; globalThis.hiperspace.dimention;
-          if (!root) continue;
-          function findNode(el, targetId) {
-            if (el.nodeId === targetId) return el;
-            var ch = el.children;
-            for (var j = 0; j &lt; ch.length; j++) {
-              var found = findNode(ch[j], targetId);
-              if (found) return found;
-            }
-            return null;
-          }
-          var target = findNode(root, evt.nodeId);
-          if (target) {
-            target.dispatchEvent({ type: 'touch', nodeId: evt.nodeId, x: evt.x, y: evt.y, z: evt.z });
-            target.dispatchEvent({ type: 'click' });
-          }
-        }
-        requestAnimationFrame(pollTouch);
-      }
-      requestAnimationFrame(pollTouch);
-
-      console.log('[controller_vr] VR controller active');
-    </script>
-  </space>
-</hsml>"##;
-
-const SCRIPT_CONTROLLER_TOQUE: &str = r##"
-(function () {
-  function findNode(el, targetId) {
-    if (el.nodeId === targetId) return el;
-    var ch = el.children;
-    for (var i = 0; i < ch.length; i++) {
-      var found = findNode(ch[i], targetId);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  function pollToqueRaw() {
-    // compat temporal con el runtime actual
-    var events = Deno.core.ops.op_poll_touch_events();
-    var root = globalThis.hiperspace && globalThis.hiperspace.dimention;
-    if (root) {
-      for (var i = 0; i < events.length; i++) {
-        var evt = events[i];
-        var target = findNode(root, evt.nodeId);
-        if (target) {
-          target.dispatchEvent({ type: 'toque', nodeId: evt.nodeId, x: evt.x, y: evt.y, z: evt.z });
-        }
-      }
-    }
-    requestAnimationFrame(pollToqueRaw);
-  }
-
-  requestAnimationFrame(pollToqueRaw);
-  console.log('[controller_toque] active');
-})();
-"##;
-
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -844,20 +717,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_controller_desktop_returns_hsml() {
-        let content = VIRTUAL_ROUTES.resolve("luna://controller_desktop").unwrap();
-        assert!(content.contains("<hsml>"));
-        assert!(content.contains("controller_desktop"));
-    }
-
-    #[test]
-    fn resolve_controller_vr_returns_hsml() {
-        let content = VIRTUAL_ROUTES.resolve("luna://controller_vr").unwrap();
-        assert!(content.contains("<hsml>"));
-        assert!(content.contains("controller_vr"));
-    }
-
-    #[test]
     fn root_api_has_switch_mode() {
         let content = VIRTUAL_ROUTES
             .resolve("luna://internal/root_api.js")
@@ -865,5 +724,34 @@ mod tests {
         assert!(content.contains("switchMode"));
         assert!(content.contains("luna://ux_desktop"));
         assert!(content.contains("luna://ux_vr"));
+    }
+
+    #[test]
+    fn controller_routes_are_gone() {
+        let content = VIRTUAL_ROUTES.resolve("luna://controller_desktop").unwrap();
+        assert!(content.contains("404"));
+
+        let content = VIRTUAL_ROUTES.resolve("luna://controller_vr").unwrap();
+        assert!(content.contains("404"));
+
+        let content = VIRTUAL_ROUTES.resolve("luna://internal/controller_toque.js").unwrap();
+        assert!(content.contains("404"));
+    }
+
+    #[test]
+    fn root_api_no_longer_mentions_controller_resources() {
+        let content = VIRTUAL_ROUTES
+            .resolve("luna://internal/root_api.js")
+            .unwrap();
+        assert!(!content.contains("controller_desktop"));
+        assert!(!content.contains("controller_vr"));
+    }
+
+    #[test]
+    fn home_route_requests_only_navigate_self() {
+        let content = VIRTUAL_ROUTES.resolve("luna://home").unwrap();
+        assert!(content.contains(r#"resources="navigate_self""#));
+        assert!(!content.contains("controller_desktop"));
+        assert!(!content.contains("controller_vr"));
     }
 }

@@ -320,19 +320,7 @@ impl Default for WsCloseQueue {
     }
 }
 
-// --- Controller registration + touch events ---
-
-/// Stores the registered controller mode ("desktop" | "vr" | "")
-pub struct ControllerRegistration {
-    pub mode: Arc<Mutex<String>>,
-}
-impl Default for ControllerRegistration {
-    fn default() -> Self {
-        Self {
-            mode: Arc::new(Mutex::new(String::new())),
-        }
-    }
-}
+// --- Touch raw events ---
 
 #[derive(Clone, Debug)]
 pub struct DomEvent {
@@ -355,7 +343,7 @@ impl Default for DomEventQueue {
     }
 }
 
-/// Touch events pushed from Rust into JS: Vec<(node_id, x, y, z)>
+/// Touch raw events pushed from Rust into JS: Vec<(node_id, x, y, z)>
 pub struct TouchEventQueue {
     pub events: Arc<Mutex<Vec<(i32, f32, f32, f32)>>>,
 }
@@ -675,13 +663,7 @@ fn op_ws_close(state: &mut OpState, #[smi] conn_id: i32) {
     status_map.status.lock().unwrap().insert(conn_id, "closed".to_string());
 }
 
-// --- Controller + Touch ops ---
-
-#[op2(fast)]
-fn op_register_controller(state: &mut OpState, #[string] mode: &str) {
-    let reg = state.borrow::<ControllerRegistration>();
-    *reg.mode.lock().unwrap() = mode.to_string();
-}
+// --- Touch raw ops ---
 
 #[op2]
 #[serde]
@@ -793,9 +775,8 @@ pub struct Engine {
     ws_status_map: Arc<Mutex<HashMap<i32, String>>>,
     ws_close_queue: Arc<Mutex<Vec<i32>>>,
 
-    // DOM events + Controller raw
+    // DOM events + Touch raw
     dom_events: Arc<Mutex<Vec<DomEvent>>>,
-    controller_mode: Arc<Mutex<String>>,
     touch_events: Arc<Mutex<Vec<(i32, f32, f32, f32)>>>,
 
     // HTTP Cache & Security
@@ -829,7 +810,6 @@ impl Engine {
         let ws_status_map = WsStatusMap::default();
         let ws_close_queue = WsCloseQueue::default();
         let dom_event_queue = DomEventQueue::default();
-        let controller_registration = ControllerRegistration::default();
         let touch_event_queue = TouchEventQueue::default();
 
         // Clone Arcs for OpState
@@ -912,9 +892,6 @@ impl Engine {
         let dom_event_queue_for_state = DomEventQueue {
             events: dom_event_queue.events.clone(),
         };
-        let controller_registration_for_state = ControllerRegistration {
-            mode: controller_registration.mode.clone(),
-        };
         let touch_event_queue_for_state = TouchEventQueue {
             events: touch_event_queue.events.clone(),
         };
@@ -968,9 +945,8 @@ impl Engine {
                 op_ws_recv::decl(),
                 op_ws_get_status::decl(),
                 op_ws_close::decl(),
-                // DOM events + Controller raw
+                // DOM events + Touch raw
                 op_poll_dom_events::decl(),
-                op_register_controller::decl(),
                 op_poll_touch_events::decl(),
             ])
             .state(move |state| {
@@ -1054,9 +1030,6 @@ impl Engine {
                 state.put::<DomEventQueue>(DomEventQueue {
                     events: dom_event_queue_for_state.events.clone(),
                 });
-                state.put::<ControllerRegistration>(ControllerRegistration {
-                    mode: controller_registration_for_state.mode.clone(),
-                });
                 state.put::<TouchEventQueue>(TouchEventQueue {
                     events: touch_event_queue_for_state.events.clone(),
                 });
@@ -1112,7 +1085,6 @@ impl Engine {
             ws_status_map: ws_status_map.status,
             ws_close_queue: ws_close_queue.queue,
             dom_events: dom_event_queue.events,
-            controller_mode: controller_registration.mode,
             touch_events: touch_event_queue.events,
             // HTTP Cache & Security (initialized with defaults)
             script_cache: Arc::new(Mutex::new(ScriptCache::new(100))), // Max 100 scripts
@@ -1295,11 +1267,6 @@ impl Engine {
 
     // --- Controller + Touch ---
 
-    /// Get the registered controller mode for this engine ("desktop" | "vr" | "")
-    pub fn get_controller_mode(&self) -> String {
-        self.controller_mode.lock().unwrap().clone()
-    }
-
     /// Push a touch event into this engine's JS-visible queue
     pub fn push_touch_event(&self, node_id: i32, x: f32, y: f32, z: f32) {
         self.touch_events.lock().unwrap().push((node_id, x, y, z));
@@ -1433,6 +1400,13 @@ const BOOTSTRAP_JS: &str = r#"
       }
     }
 
+    if (typeof global.__luna_dispatch_dom_events === 'function') {
+      const domEvents = core.ops.op_poll_dom_events();
+      if (domEvents && domEvents.length > 0) {
+        try { global.__luna_dispatch_dom_events(domEvents); } catch (e) { console.error(e); }
+      }
+    }
+
     const rafs = core.ops.op_raf_poll();
     for (const pair of rafs) {
       const id = pair[0], ts = pair[1];
@@ -1440,13 +1414,6 @@ const BOOTSTRAP_JS: &str = r#"
       if (fn_) {
         rafCallbacks.delete(id);
         try { fn_(ts); } catch (e) { console.error(e); }
-      }
-    }
-
-    if (typeof global.__luna_dispatch_dom_events === 'function') {
-      const domEvents = core.ops.op_poll_dom_events();
-      if (domEvents && domEvents.length > 0) {
-        try { global.__luna_dispatch_dom_events(domEvents); } catch (e) { console.error(e); }
       }
     }
   }

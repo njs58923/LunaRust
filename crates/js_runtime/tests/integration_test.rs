@@ -62,6 +62,59 @@ mod tests {
         assert_eq!(result, Value::from("hello, world!"));
         Ok(())
     }
+
+    #[test]
+    fn test_dom_toque_dispatch_works_without_controller_script() -> Result<()> {
+        use std::collections::HashMap;
+        let mut eng = Engine::new();
+
+        let mut attrs = HashMap::new();
+        attrs.insert(0, HashMap::new());
+        attrs.insert(1, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "btn".to_string());
+            m
+        });
+        eng.update_attr_snapshot(attrs);
+
+        let mut tags = HashMap::new();
+        tags.insert(0, "hsml".to_string());
+        tags.insert(1, "box".to_string());
+        eng.update_tag_snapshot(tags);
+
+        let mut parents = HashMap::new();
+        parents.insert(0, -1);
+        parents.insert(1, 0);
+
+        let mut children = HashMap::new();
+        children.insert(0, vec![1]);
+        children.insert(1, vec![]);
+        eng.update_hierarchy_snapshot(parents, children);
+
+        eng.update_transform_snapshot(
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        );
+
+        eng.eval(r#"
+            const btn = hiperspace.dimention.getElementById('btn');
+            if (!btn) {
+              console.log('BTN_MISSING');
+            } else {
+              btn.addEventListener('toque', () => console.log('TOQUE_OK'));
+            }
+        "#)?;
+
+        eng.push_dom_toque_event(1, 1.0, 2.0, 3.0);
+        eng.fire_raf(0.0);
+
+        let logs = eng.drain_logs();
+        assert!(logs.iter().any(|(_, msg)| msg.contains("TOQUE_OK")));
+        assert!(!logs.iter().any(|(_, msg)| msg.contains("BTN_MISSING")));
+        Ok(())
+    }
     
     #[test]
     fn test_increment_performance_rust() -> std::io::Result<()> {

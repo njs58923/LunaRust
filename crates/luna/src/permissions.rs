@@ -13,29 +13,26 @@ bitflags! {
     pub struct CapabilityBits: u64 {
         const ROOT                 = 1 << 0;
         const READ_TOQUE_RAW       = 1 << 1;
-        const DISPATCH_LOCAL_TOQUE = 1 << 2;
-        const NAVIGATE_SELF        = 1 << 3;
-        const NAVIGATE_GLOBAL      = 1 << 4;
-        const FETCH_TEXT           = 1 << 5;
-        const LIST_ROOT_SPACES     = 1 << 6;
-        const MOUNT_ROOT_SPACE     = 1 << 7;
-        const UPDATE_ROOT_SPACE    = 1 << 8;
-        const UNMOUNT_ROOT_SPACE   = 1 << 9;
-        const READ_CAMERA_POSE     = 1 << 10;
-        const READ_HMD_POSE        = 1 << 11;
-        const READ_CONTROLLER_POSE = 1 << 12;
-        const DEVTOOLS_READ        = 1 << 13;
-        const DEVTOOLS_WRITE       = 1 << 14;
+        const NAVIGATE_SELF        = 1 << 2;
+        const NAVIGATE_GLOBAL      = 1 << 3;
+        const FETCH_TEXT           = 1 << 4;
+        const LIST_ROOT_SPACES     = 1 << 5;
+        const MOUNT_ROOT_SPACE     = 1 << 6;
+        const UPDATE_ROOT_SPACE    = 1 << 7;
+        const UNMOUNT_ROOT_SPACE   = 1 << 8;
+        const READ_CAMERA_POSE     = 1 << 9;
+        const READ_HMD_POSE        = 1 << 10;
+        const READ_CONTROLLER_POSE = 1 << 11;
+        const DEVTOOLS_READ        = 1 << 12;
+        const DEVTOOLS_WRITE       = 1 << 13;
     }
 }
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct NativeServiceBits: u32 {
-        const DESKTOP_TOQUE_SOURCE   = 1 << 0;
-        const VR_TOQUE_SOURCE        = 1 << 1;
-        const DESKTOP_CAMERA_CONTROL = 1 << 2;
-        const VR_LOCOMOTION          = 1 << 3;
+        const DESKTOP_CAMERA_CONTROL = 1 << 0;
+        const VR_LOCOMOTION          = 1 << 1;
     }
 }
 
@@ -56,24 +53,6 @@ lazy_static! {
                 capabilities: CapabilityBits::all(),
                 native_services: NativeServiceBits::empty(),
                 auto_scripts: &["luna://internal/root_api.js"],
-            },
-        );
-
-        m.insert(
-            "controller_desktop",
-            ResourceBundleDef {
-                capabilities: CapabilityBits::READ_TOQUE_RAW,
-                native_services: NativeServiceBits::empty(),
-                auto_scripts: &[],
-            },
-        );
-
-        m.insert(
-            "controller_vr",
-            ResourceBundleDef {
-                capabilities: CapabilityBits::READ_TOQUE_RAW,
-                native_services: NativeServiceBits::empty(),
-                auto_scripts: &[],
             },
         );
 
@@ -206,7 +185,6 @@ pub fn capability_labels(bits: CapabilityBits) -> Vec<&'static str> {
     [
         ("ROOT", CapabilityBits::ROOT),
         ("READ_TOQUE_RAW", CapabilityBits::READ_TOQUE_RAW),
-        ("DISPATCH_LOCAL_TOQUE", CapabilityBits::DISPATCH_LOCAL_TOQUE),
         ("NAVIGATE_SELF", CapabilityBits::NAVIGATE_SELF),
         ("NAVIGATE_GLOBAL", CapabilityBits::NAVIGATE_GLOBAL),
         ("FETCH_TEXT", CapabilityBits::FETCH_TEXT),
@@ -228,8 +206,6 @@ pub fn capability_labels(bits: CapabilityBits) -> Vec<&'static str> {
 
 pub fn native_service_labels(bits: NativeServiceBits) -> Vec<&'static str> {
     [
-        ("DESKTOP_TOQUE_SOURCE", NativeServiceBits::DESKTOP_TOQUE_SOURCE),
-        ("VR_TOQUE_SOURCE", NativeServiceBits::VR_TOQUE_SOURCE),
         ("DESKTOP_CAMERA_CONTROL", NativeServiceBits::DESKTOP_CAMERA_CONTROL),
         ("VR_LOCOMOTION", NativeServiceBits::VR_LOCOMOTION),
     ]
@@ -317,14 +293,6 @@ pub fn space_has_capability(space_id: u32, cap: CapabilityBits, policies: &Space
         .get(&space_id)
         .map(|policy| policy.effective_caps.contains(cap))
         .unwrap_or(false)
-}
-
-pub fn desktop_toque_source_enabled(active: Res<ActiveNativeServices>) -> bool {
-    active.0.contains(NativeServiceBits::DESKTOP_TOQUE_SOURCE)
-}
-
-pub fn vr_toque_source_enabled(active: Res<ActiveNativeServices>) -> bool {
-    active.0.contains(NativeServiceBits::VR_TOQUE_SOURCE)
 }
 
 pub fn desktop_camera_control_enabled(active: Res<ActiveNativeServices>) -> bool {

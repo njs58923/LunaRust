@@ -17,7 +17,7 @@ pub enum ToqueSource {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct ToqueRawEvent {
+pub struct HostToqueHit {
     pub node_id: u32,
     pub x: f32,
     pub y: f32,
@@ -25,16 +25,17 @@ pub struct ToqueRawEvent {
     pub source: ToqueSource,
 }
 
-/// Cola de eventos raw; el controller resource los normaliza a `toque`.
+/// Hits detectados por el host; alimentan el evento DOM `toque`
+/// y opcionalmente el canal raw privilegiado.
 #[derive(Resource, Default)]
-pub struct ToqueRawEvents(pub Vec<ToqueRawEvent>);
+pub struct HostToqueHits(pub Vec<HostToqueHit>);
 
 pub fn desktop_toque_raycast_system(
     mouse_button: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     toqueable_query: Query<(&GlobalTransform, &Toqueable)>,
-    mut toque_events: ResMut<ToqueRawEvents>,
+    mut toque_hits: ResMut<HostToqueHits>,
     mut log_panel: ResMut<LogPanel>,
     shooter: Option<Res<crate::desktop_locomotion::DesktopShooterActive>>,
 ) {
@@ -87,7 +88,7 @@ pub fn desktop_toque_raycast_system(
     }
 
     if let Some((_, node_id, hit_point)) = closest {
-        toque_events.0.push(ToqueRawEvent {
+        toque_hits.0.push(HostToqueHit {
             node_id,
             x: hit_point.x,
             y: hit_point.y,
@@ -95,7 +96,7 @@ pub fn desktop_toque_raycast_system(
             source: ToqueSource::Desktop,
         });
         log_panel.push_info(format!(
-            "[toque-raw][desktop] HIT node={} at ({:.2}, {:.2}, {:.2})",
+            "[toque-host][desktop] HIT node={} at ({:.2}, {:.2}, {:.2})",
             node_id, hit_point.x, hit_point.y, hit_point.z
         ));
     }
@@ -106,7 +107,7 @@ pub fn vr_toque_raycast_system(
     session: Res<bevy_mod_openxr::session::OxrSession>,
     controller_query: Query<&GlobalTransform, With<bevy_xr_utils::tracking_utils::XrTrackedRightGrip>>,
     toqueable_query: Query<(&GlobalTransform, &Toqueable)>,
-    mut toque_events: ResMut<ToqueRawEvents>,
+    mut toque_hits: ResMut<HostToqueHits>,
     mut log_panel: ResMut<LogPanel>,
     mut last_trigger: Local<bool>,
 ) {
@@ -153,7 +154,7 @@ pub fn vr_toque_raycast_system(
     }
 
     if let Some((_, node_id, hit_point)) = closest {
-        toque_events.0.push(ToqueRawEvent {
+        toque_hits.0.push(HostToqueHit {
             node_id,
             x: hit_point.x,
             y: hit_point.y,
@@ -161,7 +162,7 @@ pub fn vr_toque_raycast_system(
             source: ToqueSource::Vr,
         });
         log_panel.push_info(format!(
-            "[toque-raw][vr] HIT node={} at ({:.2}, {:.2}, {:.2})",
+            "[toque-host][vr] HIT node={} at ({:.2}, {:.2}, {:.2})",
             node_id, hit_point.x, hit_point.y, hit_point.z
         ));
     }
@@ -169,17 +170,17 @@ pub fn vr_toque_raycast_system(
 
 /// Enruta `toque` DOM siempre al owner del target y raw solo si el space tiene READ_TOQUE_RAW.
 pub fn dispatch_toque_events_to_js(
-    mut toque_events: ResMut<ToqueRawEvents>,
+    mut toque_hits: ResMut<HostToqueHits>,
     world: Res<ElemenetWorld>,
     mut manager: NonSendMut<ScriptRuntimeManager>,
     space_handle_tables: Res<SpaceHandleTables>,
     space_policies: Res<SpacePolicies>,
 ) {
-    if toque_events.0.is_empty() {
+    if toque_hits.0.is_empty() {
         return;
     }
 
-    let events: Vec<ToqueRawEvent> = toque_events.0.drain(..).collect();
+    let events: Vec<HostToqueHit> = toque_hits.0.drain(..).collect();
 
     for evt in events {
         let ent = world.0.entities().entity(evt.node_id);

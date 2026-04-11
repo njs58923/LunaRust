@@ -108,7 +108,7 @@ fn main() {
     app.insert_resource(ScriptLoadStates::default());
     app.insert_resource(PendingModelLoads::default());
     app.insert_resource(ModelLoadStates::default());
-    app.insert_resource(touch::ToqueRawEvents::default());
+    app.insert_resource(touch::HostToqueHits::default());
     app.insert_resource(SpacePolicies::default());
     app.insert_resource(ActiveNativeServices::default());
     app.insert_resource(permissions::SpacePolicyHistory {
