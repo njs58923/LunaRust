@@ -9,7 +9,10 @@ use fontdue::{
 };
 use tokio::runtime::Runtime;
 
-use crate::{LogPanel, ModelCache, TextMaterialCache, TextMaterialKey};
+use crate::{
+    LogPanel, ModelCache, PrimitiveMaterialCache, PrimitiveMaterialKey, TextMaterialCache,
+    TextMaterialKey,
+};
 
 // ─── Transform helper (from render/mod.rs) ──────────────────────────────────
 
@@ -183,6 +186,36 @@ pub fn get_or_create_text_material(
         .materials
         .insert(cache_key, text_material.clone());
     text_material
+}
+
+pub fn get_or_create_primitive_material(
+    primitive_cache: &mut PrimitiveMaterialCache,
+    materials: &mut Assets<StandardMaterial>,
+    color: Color,
+    double_sided: bool,
+) -> Handle<StandardMaterial> {
+    let [r, g, b, a] = color.to_srgba().to_u8_array();
+    let cache_key = PrimitiveMaterialKey {
+        color_key: format!("{r:02x}{g:02x}{b:02x}{a:02x}"),
+        double_sided,
+    };
+
+    if let Some(handle) = primitive_cache.materials.get(&cache_key) {
+        return handle.clone();
+    }
+
+    let material = materials.add(StandardMaterial {
+        base_color: color,
+        cull_mode: if double_sided {
+            None
+        } else {
+            Some(bevy::render::render_resource::Face::Back)
+        },
+        ..Default::default()
+    });
+
+    primitive_cache.materials.insert(cache_key, material.clone());
+    material
 }
 
 // ─── Model loading & cache ───────────────────────────────────────────────────

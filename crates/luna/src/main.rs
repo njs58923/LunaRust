@@ -90,7 +90,9 @@ fn main() {
     ));
     app.insert_resource(ModelCache::default());
     app.insert_resource(TextMaterialCache::default());
+    app.insert_resource(PrimitiveMaterialCache::default());
     app.insert_resource(PerformanceStats::default());
+    app.insert_resource(JsSnapshotState::default());
     app.insert_resource(DevtoolState::default());
     app.insert_resource(PendingScripts::default());
     app.insert_resource(IoService::default());

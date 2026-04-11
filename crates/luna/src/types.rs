@@ -82,6 +82,18 @@ pub struct VirtualDomData {
 #[derive(Resource, Default)]
 pub struct DirtyNodes(pub Vec<u32>);
 
+impl DirtyNodes {
+    pub fn dedup_in_place(&mut self) {
+        self.0.sort_unstable();
+        self.0.dedup();
+    }
+
+    pub fn take_unique(&mut self) -> Vec<u32> {
+        self.dedup_in_place();
+        self.0.drain(..).collect()
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct ElemenetWorld(pub SpecWorld);
 
@@ -179,6 +191,19 @@ pub struct ReloadTrigger(pub bool);
 #[derive(Resource, Default)]
 pub struct AttributeUpdates(pub Vec<(u32, String, String)>);
 
+impl AttributeUpdates {
+    pub fn drain_coalesced(&mut self) -> Vec<(u32, String, String)> {
+        let mut last_values: HashMap<(u32, String), String> = HashMap::new();
+        for (ent_id, key, value) in self.0.drain(..) {
+            last_values.insert((ent_id, key), value);
+        }
+        last_values
+            .into_iter()
+            .map(|((ent_id, key), value)| (ent_id, key, value))
+            .collect()
+    }
+}
+
 #[derive(Component)]
 pub struct Dirty;
 
@@ -245,6 +270,17 @@ pub struct TextMaterialKey {
     pub color_key: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PrimitiveMaterialKey {
+    pub color_key: String,
+    pub double_sided: bool,
+}
+
+#[derive(Resource, Default)]
+pub struct PrimitiveMaterialCache {
+    pub materials: HashMap<PrimitiveMaterialKey, Handle<StandardMaterial>>,
+}
+
 #[derive(Resource, Default)]
 pub struct TextMaterialCache {
     pub materials: HashMap<TextMaterialKey, Handle<StandardMaterial>>,
@@ -253,6 +289,17 @@ pub struct TextMaterialCache {
 #[derive(Resource, Default)]
 pub struct PerformanceStats {
     pub dom_sync_ms: f32,
+}
+
+#[derive(Resource)]
+pub struct JsSnapshotState {
+    pub dirty: bool,
+}
+
+impl Default for JsSnapshotState {
+    fn default() -> Self {
+        Self { dirty: true }
+    }
 }
 
 #[derive(Resource, Default)]
@@ -314,6 +361,7 @@ pub struct TextRenderParams<'w> {
     pub materials: ResMut<'w, Assets<StandardMaterial>>,
     pub images: ResMut<'w, Assets<Image>>,
     pub text_material_cache: ResMut<'w, TextMaterialCache>,
+    pub primitive_material_cache: ResMut<'w, PrimitiveMaterialCache>,
 }
 
 #[derive(SystemParam)]

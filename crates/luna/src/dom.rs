@@ -22,7 +22,8 @@ use crate::io::{
     request_script_load,
 };
 use crate::render::{
-    apply_transform, build_text_transform, get_or_create_text_material, parse_hex_color,
+    apply_transform, build_text_transform, get_or_create_primitive_material,
+    get_or_create_text_material, parse_hex_color,
     parse_text_attrs, resolve_remote_path,
 };
 use crate::{
@@ -107,17 +108,19 @@ fn node_visible(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> bool {
 fn spawn_colored_primitive(
     commands: &mut Commands,
     materials: &mut Assets<StandardMaterial>,
+    primitive_material_cache: &mut crate::PrimitiveMaterialCache,
     mesh: Handle<Mesh>,
     color: Color,
     transform: Transform,
     double_sided: bool,
     touchable_node_id: Option<u32>,
 ) -> Entity {
-    let material = materials.add(StandardMaterial {
-        base_color: color,
-        cull_mode: double_sided.then_some(None).flatten(),
-        ..Default::default()
-    });
+    let material = get_or_create_primitive_material(
+        primitive_material_cache,
+        materials,
+        color,
+        double_sided,
+    );
     let mut entity_commands = commands.spawn((
         PbrBundle {
             mesh,
@@ -173,6 +176,7 @@ pub fn commit_pending_document_load_system(
     mut pending_model_loads: ResMut<PendingModelLoads>,
     mut model_load_states: ResMut<ModelLoadStates>,
     mut space_handle_tables: ResMut<crate::SpaceHandleTables>,
+    mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
 ) {
     let pending = pending_document_loads.0.drain(..).collect::<Vec<_>>();
     if pending.is_empty() {
@@ -221,6 +225,7 @@ pub fn commit_pending_document_load_system(
                         dom_data.nodes = new_nodes;
                         dirty_nodes.0 = new_dirty;
                         document_load_state.0 = None;
+                        js_snapshot_state.dirty = true;
                         log_panel
                             .push_info(format!("Document commit complete (epoch {epoch}): {url}"));
                     }
@@ -485,7 +490,14 @@ pub fn apply_attribute_updates(
     mut attribute_updates: ResMut<AttributeUpdates>,
     mut world: ResMut<ElemenetWorld>,
     mut dirty_nodes: ResMut<DirtyNodes>,
+    mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
 ) {
+    if attribute_updates.0.is_empty() {
+        return;
+    }
+
+    js_snapshot_state.dirty = true;
+
     let entities = world.0.entities();
     let mut attrs_storage = world.0.write_storage::<Attrs>();
     let mut tr_storage = world.0.write_storage::<Transform2>();
@@ -504,7 +516,7 @@ pub fn apply_attribute_updates(
     );
     let (sx, sy, sz) = (TRANSFORM_SCALE[0], TRANSFORM_SCALE[1], TRANSFORM_SCALE[2]);
 
-    for (ent_id, key, val) in attribute_updates.0.drain(..) {
+    for (ent_id, key, val) in attribute_updates.drain_coalesced() {
         let ent = entities.entity(ent_id);
         if !entities.is_alive(ent) {
             continue;
@@ -622,6 +634,7 @@ pub fn process_delete_requests(
     mut space_handle_tables: ResMut<crate::SpaceHandleTables>,
     mut dom_data: ResMut<VirtualDomData>,
     mut include_load_states: ResMut<crate::IncludeLoadStates>,
+    mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
 ) {
     for ent_id in delete_requests.0.drain(..) {
         let sp_ent = world.0.entities().entity(ent_id);
@@ -696,6 +709,7 @@ pub fn process_delete_requests(
             "Entity subtree (ID={}) deleted ({} nodes).",
             ent_id, deleted
         ));
+        js_snapshot_state.dirty = true;
     }
 }
 
@@ -705,8 +719,9 @@ pub fn mark_dirty_system(
     world: Res<ElemenetWorld>,
     mut commands: Commands,
     entity_map: Res<EntityMap>,
-    dirty_nodes: ResMut<DirtyNodes>,
+    mut dirty_nodes: ResMut<DirtyNodes>,
 ) {
+    dirty_nodes.dedup_in_place();
     for node_id in dirty_nodes.0.iter().copied() {
         if let Some(&ent) = entity_map.0.get(&node_id) {
             commands.entity(ent).insert(Dirty);
@@ -781,6 +796,7 @@ pub fn commit_pending_includes_system(
     mut log_panel: ResMut<LogPanel>,
     mut include_load_states: ResMut<crate::IncludeLoadStates>,
     current_url: Res<CurrentUrl>,
+    mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
 ) {
     let pending: Vec<_> = pending_includes.0.drain(..).collect();
     if pending.is_empty() {
@@ -830,6 +846,7 @@ pub fn commit_pending_includes_system(
                     dom_data.nodes.insert(nid, ent);
                 }
                 dirty_nodes.0.extend(new_dirty);
+                js_snapshot_state.dirty = true;
 
                 include_load_states.0.insert(
                     inc.parent_node_id,
@@ -983,7 +1000,8 @@ pub fn dom_sync_system(
     mut include_load_states: ResMut<crate::IncludeLoadStates>,
 ) {
     let start_time = Instant::now();
-    if dirty_nodes.0.is_empty() {
+    let dirty_node_ids = dirty_nodes.take_unique();
+    if dirty_node_ids.is_empty() {
         return;
     }
     let tokio_rt = &async_dom.tokio_rt;
@@ -1002,7 +1020,7 @@ pub fn dom_sync_system(
 
     // log_panel.push_info(format!("dom_sync: processing {} dirty nodes...", dirty_nodes.0.len()));
 
-    for node_id in dirty_nodes.0.drain(..) {
+    for node_id in dirty_node_ids {
         let Some(node) = dom_data.nodes.get(&node_id) else {
             log_panel.push_error(format!("No dom node for id={}", node_id));
             continue;
@@ -1192,13 +1210,18 @@ pub fn dom_sync_system(
 
             if tag == "box" || tag == "sphere" || tag == "plane" || tag == "cylinder" {
                 commands.entity(bevy_ent).insert(crate::touch::Touchable(node_id));
+                let color = primitive_color(&attrs_storage, *node);
+                let double_sided = tag == "plane";
+                let material = get_or_create_primitive_material(
+                    &mut text_render.primitive_material_cache,
+                    &mut text_render.materials,
+                    color,
+                    double_sided,
+                );
                 if let Ok((_, mut t, dirty, maybe_material)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
-                    if let Some(material_handle) = maybe_material {
-                        let color = primitive_color(&attrs_storage, *node);
-                        if let Some(mat) = text_render.materials.get_mut(&*material_handle) {
-                            mat.base_color = color;
-                        }
+                    if let Some(mut material_handle) = maybe_material {
+                        *material_handle = material;
                     }
                     if dirty.is_some() {
                         commands.entity(bevy_ent).remove::<Dirty>();
@@ -1343,6 +1366,7 @@ pub fn dom_sync_system(
                     spawn_colored_primitive(
                         &mut commands,
                         &mut text_render.materials,
+                        &mut text_render.primitive_material_cache,
                         mesh,
                         color,
                         transform_b,
@@ -1353,6 +1377,7 @@ pub fn dom_sync_system(
                 "sphere" => spawn_colored_primitive(
                     &mut commands,
                     &mut text_render.materials,
+                    &mut text_render.primitive_material_cache,
                     shared_resources.sphere_mesh.clone(),
                     primitive_color(&attrs_storage, *node),
                     transform_b,
@@ -1362,6 +1387,7 @@ pub fn dom_sync_system(
                 "plane" => spawn_colored_primitive(
                     &mut commands,
                     &mut text_render.materials,
+                    &mut text_render.primitive_material_cache,
                     shared_resources.plane_mesh.clone(),
                     primitive_color(&attrs_storage, *node),
                     transform_b,
@@ -1371,6 +1397,7 @@ pub fn dom_sync_system(
                 "cylinder" => spawn_colored_primitive(
                     &mut commands,
                     &mut text_render.materials,
+                    &mut text_render.primitive_material_cache,
                     shared_resources.cylinder_mesh.clone(),
                     primitive_color(&attrs_storage, *node),
                     transform_b,

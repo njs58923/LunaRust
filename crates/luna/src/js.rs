@@ -13,8 +13,8 @@ use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
 
 use crate::{
     request_fetch_text, AttributeUpdates, DirtyNodes, ElemenetWorld, IoService, LogLevel, LogPanel,
-    ModelLoadStates, PendingModelLoads, PendingScripts, ReloadTrigger, ScriptLoadStates,
-    SpaceHandleTable, SpaceHandleTables,
+    JsSnapshotState, ModelLoadStates, PendingModelLoads, PendingScripts, ReloadTrigger,
+    ScriptLoadStates, SpaceHandleTable, SpaceHandleTables,
 };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -72,6 +72,8 @@ pub enum JsWorkerEvent {
 pub struct SpaceScriptWorker {
     pub cmd_tx: mpsc::Sender<JsWorkerCommand>,
     pub event_rx: mpsc::Receiver<JsWorkerEvent>,
+    pub snapshot_in_flight: bool,
+    pub tick_in_flight: bool,
     pub join: Option<JoinHandle<()>>,
 }
 
@@ -223,6 +225,8 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
     Ok(SpaceScriptWorker {
         cmd_tx,
         event_rx,
+        snapshot_in_flight: false,
+        tick_in_flight: false,
         join: Some(join),
     })
 }
@@ -421,6 +425,14 @@ pub fn find_owner_space_id(world: &specs::World, mut node: specs::Entity) -> Opt
 // ─── Systems ─────────────────────────────────────────────────────────────────
 
 pub fn js_update_snapshots_system(world: &mut World) {
+    let should_refresh = world
+        .get_resource::<JsSnapshotState>()
+        .map(|state| state.dirty)
+        .unwrap_or(true);
+    if !should_refresh {
+        return;
+    }
+
     let (
         attr_snap,
         tag_snap,
@@ -620,6 +632,7 @@ pub fn js_update_snapshots_system(world: &mut World) {
         snapshot_batches
     };
 
+    let mut all_snapshots_sent = true;
     {
         let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
             return;
@@ -629,12 +642,19 @@ pub fn js_update_snapshots_system(world: &mut World) {
             let Some(worker) = manager.contexts.get_mut(&space_id) else {
                 continue;
             };
+            if worker.snapshot_in_flight {
+                all_snapshots_sent = false;
+                continue;
+            }
             if let Err(e) = worker.cmd_tx.send(JsWorkerCommand::UpdateSnapshots(snap)) {
                 errors.push(format!(
                     "failed to send snapshots to space {}: {}",
                     space_id, e
                 ));
                 broken_contexts.push(space_id);
+                all_snapshots_sent = false;
+            } else {
+                worker.snapshot_in_flight = true;
             }
         }
 
@@ -653,6 +673,11 @@ pub fn js_update_snapshots_system(world: &mut World) {
         for &space_id in &removed_contexts {
             space_handle_tables.by_space.remove(&space_id);
         }
+    }
+
+    let keep_dirty = !all_snapshots_sent || !errors.is_empty();
+    if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
+        snapshot_state.dirty = keep_dirty;
     }
 
     if !removed_contexts.is_empty() || !created_contexts.is_empty() || !errors.is_empty() {
@@ -770,11 +795,17 @@ pub fn js_tick_system(world: &mut World) {
             return;
         };
 
-        for worker in manager.contexts.values_mut() {
-            let _ = worker.cmd_tx.send(JsWorkerCommand::Tick { elapsed_ms });
+        let mut broken_contexts = Vec::new();
+        for (space_id, worker) in manager.contexts.iter_mut() {
+            if worker.tick_in_flight {
+                continue;
+            }
+            match worker.cmd_tx.send(JsWorkerCommand::Tick { elapsed_ms }) {
+                Ok(_) => worker.tick_in_flight = true,
+                Err(_) => broken_contexts.push(*space_id),
+            }
         }
 
-        let mut broken_contexts = Vec::new();
         for (space_id, worker) in manager.contexts.iter_mut() {
             loop {
                 match worker.event_rx.try_recv() {
@@ -783,22 +814,33 @@ pub fn js_tick_system(world: &mut World) {
                         already_loaded,
                         error,
                     }) => {
+                        worker.snapshot_in_flight = false;
+                        worker.tick_in_flight = false;
                         eval_events.push((*space_id, url, already_loaded, error));
                     }
                     Ok(JsWorkerEvent::TickData(data)) => {
+                        worker.snapshot_in_flight = false;
+                        worker.tick_in_flight = false;
                         tick_batches.push((*space_id, data));
                     }
                     Ok(JsWorkerEvent::WorkerError(err)) => {
+                        worker.snapshot_in_flight = false;
+                        worker.tick_in_flight = false;
                         worker_errors.push(format!("[JS][space:{}] {}", space_id, err));
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
+                        worker.snapshot_in_flight = false;
+                        worker.tick_in_flight = false;
                         broken_contexts.push(*space_id);
                         break;
                     }
                 }
             }
         }
+
+        broken_contexts.sort_unstable();
+        broken_contexts.dedup();
 
         for space_id in broken_contexts {
             if let Some(mut worker) = manager.contexts.remove(&space_id) {
@@ -845,6 +887,7 @@ pub fn js_tick_system(world: &mut World) {
     let mut remove_batches = Vec::new();
     let mut fetch_batches = Vec::new();
     let mut navigate_batches = Vec::new();
+    let mut snapshot_dirty = false;
 
     for (space_id, data) in tick_batches {
         if !data.logs.is_empty() {
@@ -1062,6 +1105,9 @@ pub fn js_tick_system(world: &mut World) {
                 dom_data.nodes.insert(id, ent);
             }
         }
+        if !created_nodes.is_empty() {
+            snapshot_dirty = true;
+        }
         if let Some(mut dirty_nodes) = world.get_resource_mut::<DirtyNodes>() {
             dirty_nodes
                 .0
@@ -1149,6 +1195,9 @@ pub fn js_tick_system(world: &mut World) {
         }
         if let Some(mut dirty_nodes) = world.get_resource_mut::<DirtyNodes>() {
             dirty_nodes.0.extend(dirty_child_ids);
+        }
+        if !dirty_child_ids.is_empty() {
+            snapshot_dirty = true;
         }
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
             for msg in log_messages {
@@ -1300,6 +1349,9 @@ pub fn js_tick_system(world: &mut World) {
                 table.detached_globals.remove(&nid);
             }
         }
+        if !all_removed_ids.is_empty() {
+            snapshot_dirty = true;
+        }
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
             for msg in log_messages {
                 log_panel.push_info(msg);
@@ -1346,6 +1398,12 @@ pub fn js_tick_system(world: &mut World) {
         }
         if let Some(mut reload_trigger) = world.get_resource_mut::<ReloadTrigger>() {
             reload_trigger.0 = true;
+        }
+    }
+
+    if snapshot_dirty {
+        if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
+            snapshot_state.dirty = true;
         }
     }
 }
