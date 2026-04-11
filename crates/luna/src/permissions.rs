@@ -278,6 +278,38 @@ fn resolve_resource_set(tokens: &[String]) -> (CapabilityBits, NativeServiceBits
     (caps, native, auto_scripts)
 }
 
+#[inline]
+fn intersect_requested_or_take_entry(
+    requested_resources: &[String],
+    requested_caps: CapabilityBits,
+    entry_caps: CapabilityBits,
+) -> CapabilityBits {
+    if entry_caps.is_empty() {
+        return CapabilityBits::empty();
+    }
+    if requested_resources.is_empty() {
+        entry_caps
+    } else {
+        requested_caps & entry_caps
+    }
+}
+
+#[inline]
+fn intersect_requested_or_take_entry_native(
+    requested_resources: &[String],
+    requested_native: NativeServiceBits,
+    entry_native: NativeServiceBits,
+) -> NativeServiceBits {
+    if entry_native.is_empty() {
+        return NativeServiceBits::empty();
+    }
+    if requested_resources.is_empty() {
+        entry_native
+    } else {
+        requested_native & entry_native
+    }
+}
+
 fn is_root_space(attrs: Option<&HashMap<String, String>>) -> bool {
     let Some(attrs) = attrs else {
         return false;
@@ -324,6 +356,8 @@ pub fn rebuild_space_policies_system(
         ent: specs::Entity,
         inherited_caps: CapabilityBits,
         inherited_native: NativeServiceBits,
+        entry_caps: CapabilityBits,
+        entry_native: NativeServiceBits,
         hierarchies: &specs::ReadStorage<Hierarchy>,
         tags: &specs::ReadStorage<Tag>,
         attrs: &specs::ReadStorage<Attrs>,
@@ -334,13 +368,26 @@ pub fn rebuild_space_policies_system(
 
         let mut child_caps = inherited_caps;
         let mut child_native = inherited_native;
+        let mut child_entry_caps = entry_caps;
+        let mut child_entry_native = entry_native;
 
         if tag_name == "include" {
             if let Some(raw) = attrs_map.and_then(|m| m.get("resources")) {
                 let tokens = parse_resource_tokens(raw);
                 let (grant_caps, grant_native, _) = resolve_resource_set(&tokens);
-                child_caps = inherited_caps & grant_caps;
-                child_native = inherited_native & grant_native;
+                // Los includes NO transmiten permisos por defecto.
+                // Si declaran resources, generan un "entry grant" para el
+                // documento cargado bajo ese include.
+                child_caps = CapabilityBits::empty();
+                child_native = NativeServiceBits::empty();
+                child_entry_caps = inherited_caps & grant_caps;
+                child_entry_native = inherited_native & grant_native;
+            } else {
+                // include sin resources => no pasa nada al contenido hijo
+                child_caps = CapabilityBits::empty();
+                child_native = NativeServiceBits::empty();
+                child_entry_caps = CapabilityBits::empty();
+                child_entry_native = NativeServiceBits::empty();
             }
         }
 
@@ -360,11 +407,24 @@ pub fn rebuild_space_policies_system(
                 } else {
                     requested_caps
                 }
+            } else if !entry_caps.is_empty() {
+                // Grant no heredable consumido al entrar al documento/space
+                intersect_requested_or_take_entry(
+                    &requested_resources,
+                    requested_caps,
+                    entry_caps,
+                )
             } else {
                 requested_caps & inherited_caps
             };
             let effective_native = if root_space {
                 requested_native
+            } else if !entry_native.is_empty() {
+                intersect_requested_or_take_entry_native(
+                    &requested_resources,
+                    requested_native,
+                    entry_native,
+                )
             } else {
                 requested_native & inherited_native
             };
@@ -401,6 +461,10 @@ pub fn rebuild_space_policies_system(
             } else {
                 effective_native
             };
+
+            // El entry grant se consume en este space y no sigue heredándose.
+            child_entry_caps = CapabilityBits::empty();
+            child_entry_native = NativeServiceBits::empty();
         }
 
         if let Some(h) = hierarchies.get(ent) {
@@ -409,6 +473,8 @@ pub fn rebuild_space_policies_system(
                     child,
                     child_caps,
                     child_native,
+                    child_entry_caps,
+                    child_entry_native,
                     hierarchies,
                     tags,
                     attrs,
@@ -428,6 +494,8 @@ pub fn rebuild_space_policies_system(
     for root in roots {
         walk(
             root,
+            CapabilityBits::empty(),
+            NativeServiceBits::empty(),
             CapabilityBits::empty(),
             NativeServiceBits::empty(),
             &hierarchies,
@@ -509,4 +577,142 @@ pub struct SpacePolicySnapshotEntry {
 pub struct SpacePolicyHistory {
     pub entries: Vec<SpacePolicySnapshotEntry>,
     pub max_entries: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::prelude::App;
+    use specs::{Join, WorldExt};
+    use virtual_dom::{dom::element::build_world, parse_xml};
+
+    fn build_app_with_xml(xml: &str) -> App {
+        let mut specs_world = build_world();
+        parse_xml(&mut specs_world, xml).expect("xml parse failed");
+
+        let mut app = App::new();
+        app.insert_resource(crate::ElemenetWorld(specs_world));
+        app.insert_resource(SpacePolicies::default());
+        app.insert_resource(crate::LogPanel::default());
+        app.insert_resource(SpacePolicyHistory {
+            entries: Vec::new(),
+            max_entries: 32,
+        });
+        app.add_systems(Update, rebuild_space_policies_system);
+        app
+    }
+
+    fn find_space_id_by_attr_id(world: &crate::ElemenetWorld, attr_id: &str) -> u32 {
+        let entities = world.0.entities();
+        let tags = world.0.read_storage::<Tag>();
+        let attrs = world.0.read_storage::<Attrs>();
+
+        (&entities, &tags, &attrs)
+            .join()
+            .find_map(|(ent, tag, attrs)| {
+                (tag.0 == "space" && attrs.0.get("id").map(|s| s.as_str()) == Some(attr_id))
+                    .then_some(ent.id())
+            })
+            .expect("space id attr not found")
+    }
+
+    #[test]
+    fn top_tab_include_grants_navigate_self_only_to_document_root_space() {
+        let xml = r#"
+        <hsml>
+          <space id="luna_root" system-space="root" resources="root">
+            <space id="tab_wrapper" managed-by="dimension.luna" resources="navigate_self">
+              <include resources="navigate_self">
+                <hsml>
+                  <space id="doc_root">
+                    <include>
+                      <hsml>
+                        <space id="nested_doc_root" />
+                      </hsml>
+                    </include>
+                  </space>
+                </hsml>
+              </include>
+            </space>
+          </space>
+        </hsml>
+        "#;
+
+        let mut app = build_app_with_xml(xml);
+        app.update();
+
+        let world = app.world().resource::<crate::ElemenetWorld>();
+        let policies = app.world().resource::<SpacePolicies>();
+
+        let wrapper_id = find_space_id_by_attr_id(world, "tab_wrapper");
+        let doc_root_id = find_space_id_by_attr_id(world, "doc_root");
+        let nested_doc_root_id = find_space_id_by_attr_id(world, "nested_doc_root");
+
+        assert!(policies
+            .by_space
+            .get(&wrapper_id)
+            .unwrap()
+            .effective_caps
+            .contains(CapabilityBits::NAVIGATE_SELF));
+
+        assert!(policies
+            .by_space
+            .get(&doc_root_id)
+            .unwrap()
+            .effective_caps
+            .contains(CapabilityBits::NAVIGATE_SELF));
+
+        assert!(!policies
+            .by_space
+            .get(&nested_doc_root_id)
+            .unwrap()
+            .effective_caps
+            .contains(CapabilityBits::NAVIGATE_SELF));
+    }
+
+    #[test]
+    fn nested_include_only_gets_navigate_self_when_repassed_explicitly() {
+        let xml = r#"
+        <hsml>
+          <space id="luna_root" system-space="root" resources="root">
+            <space id="tab_wrapper" managed-by="dimension.luna" resources="navigate_self">
+              <include resources="navigate_self">
+                <hsml>
+                  <space id="doc_root">
+                    <include resources="navigate_self">
+                      <hsml>
+                        <space id="nested_doc_root" />
+                      </hsml>
+                    </include>
+                  </space>
+                </hsml>
+              </include>
+            </space>
+          </space>
+        </hsml>
+        "#;
+
+        let mut app = build_app_with_xml(xml);
+        app.update();
+
+        let world = app.world().resource::<crate::ElemenetWorld>();
+        let policies = app.world().resource::<SpacePolicies>();
+
+        let doc_root_id = find_space_id_by_attr_id(world, "doc_root");
+        let nested_doc_root_id = find_space_id_by_attr_id(world, "nested_doc_root");
+
+        assert!(policies
+            .by_space
+            .get(&doc_root_id)
+            .unwrap()
+            .effective_caps
+            .contains(CapabilityBits::NAVIGATE_SELF));
+
+        assert!(policies
+            .by_space
+            .get(&nested_doc_root_id)
+            .unwrap()
+            .effective_caps
+            .contains(CapabilityBits::NAVIGATE_SELF));
+    }
 }
