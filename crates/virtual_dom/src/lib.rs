@@ -61,12 +61,17 @@ fn read_some_str(attributes: &HashMap<String, String>, key:&str, default: &str) 
 /// Parsea el XML y construye el DOM virtual utilizando HSMLElement.
 /// Este parser es simple y asume un XML bien formado.
 pub fn parse_xml( world: &mut World, xml_content: &str) -> Result<Entity> {
+    struct OpenNode {
+        tag: String,
+        entity: Option<Entity>,
+    }
+
     let mut reader = Reader::from_str(xml_content);
     reader.trim_text(true);
     let mut node_stack: Vec<Entity> = Vec::new();
+    let mut open_stack: Vec<OpenNode> = Vec::new();
     let mut root: Option<Entity> = None;
     let mut buf: Vec<u8> = Vec::new();
-    let mut tag_stack: Vec<String> = Vec::new();
     let mut text_accum: String = String::new();
 
     fn apply(world: &mut World, tag: &String, attributes : &HashMap<String, String>)-> Option<Entity>{
@@ -127,10 +132,11 @@ pub fn parse_xml( world: &mut World, xml_content: &str) -> Result<Entity> {
                 let tag = String::from_utf8_lossy(e.name().as_ref()).into_owned();
                 let attributes = read_attributes(e.attributes());
 
-                if let Some(entity) = apply(world, &tag, &attributes) {
+                let entity = apply(world, &tag, &attributes);
+                if let Some(entity) = entity {
                     node_stack.push(entity);
                 }
-                tag_stack.push(tag);
+                open_stack.push(OpenNode { tag, entity });
                 text_accum.clear();
             }
             Ok(Event::Empty(ref e)) => {
@@ -148,33 +154,54 @@ pub fn parse_xml( world: &mut World, xml_content: &str) -> Result<Entity> {
                 }
             }
             Ok(Event::End(_)) => {
-                let closed_tag = tag_stack.pop().unwrap_or_default();
+                let Some(open) = open_stack.pop() else {
+                    text_accum.clear();
+                    continue;
+                };
 
-                if let Some(node) = node_stack.pop() {
-                    // If this was a <script> with inline text, store it
-                    if closed_tag == "script" && !text_accum.trim().is_empty() {
+                if let Some(node) = open.entity {
+                    if open.tag == "script" && !text_accum.trim().is_empty() {
                         let mut scripts = world.write_storage::<Script>();
                         if let Some(script) = scripts.get_mut(node) {
                             script.inline = Some(text_accum.trim().to_string());
                         }
                     }
-                    text_accum.clear();
 
-                    if let Some(parent) = node_stack.last_mut() {
-                        Hierarchy::add_child(world, parent.clone(), node);
+                    match node_stack.pop() {
+                        Some(popped) if popped == node => {}
+                        Some(popped) => {
+                            return Err(anyhow::anyhow!(
+                                "Error leyendo XML: pila de nodos desincronizada al cerrar <{}> (tope={:?}, esperado={:?})",
+                                open.tag,
+                                popped,
+                                node
+                            ));
+                        }
+                        None => {
+                            return Err(anyhow::anyhow!(
+                                "Error leyendo XML: pila de nodos vacía al cerrar <{}>",
+                                open.tag
+                            ));
+                        }
+                    }
+
+                    if let Some(parent) = node_stack.last().copied() {
+                        Hierarchy::add_child(world, parent, node);
                     } else {
                         root = Some(node);
                     }
                 }
+
+                text_accum.clear();
             }
             Ok(Event::Text(ref e)) => {
-                if tag_stack.last().map(|t| t.as_str()) == Some("script") {
+                if open_stack.last().map(|open| open.tag.as_str()) == Some("script") {
                     let txt = e.unescape().unwrap_or_default();
                     text_accum.push_str(&txt);
                 }
             }
             Ok(Event::CData(ref e)) => {
-                if tag_stack.last().map(|t| t.as_str()) == Some("script") {
+                if open_stack.last().map(|open| open.tag.as_str()) == Some("script") {
                     let txt = String::from_utf8_lossy(e.as_ref());
                     text_accum.push_str(&txt);
                 }

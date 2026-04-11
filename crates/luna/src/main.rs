@@ -392,14 +392,13 @@ fn process_space_mount_queue(
     specs_world: Res<ElemenetWorld>,
     mut log_panel: ResMut<LogPanel>,
 ) {
-    let urls: Vec<String> = mount_queue.0.drain(..).collect();
     let Some(root_id) = find_root_worker_space_id(&specs_world.0, &manager) else {
-        log_panel.push_warn("Cannot mount spaces: root worker not found (luna://root not loaded?)");
         return;
     };
     let Some(worker) = manager.contexts.get(&root_id) else {
         return;
     };
+    let urls: Vec<String> = mount_queue.0.drain(..).collect();
     for url in urls {
         let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
         let code = format!("dimension.luna.mountSpace('{}');", escaped);
@@ -416,14 +415,13 @@ fn process_space_unmount_queue(
     specs_world: Res<ElemenetWorld>,
     mut log_panel: ResMut<LogPanel>,
 ) {
-    let urls: Vec<String> = unmount_queue.0.drain(..).collect();
     let Some(root_id) = find_root_worker_space_id(&specs_world.0, &manager) else {
-        log_panel.push_warn("Cannot unmount spaces: root worker not found");
         return;
     };
     let Some(worker) = manager.contexts.get(&root_id) else {
         return;
     };
+    let urls: Vec<String> = unmount_queue.0.drain(..).collect();
     for url in urls {
         let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
         let code = format!(

@@ -230,6 +230,38 @@ fn parse_empty_string_returns_error() {
     assert!(result.is_err());
 }
 
+#[test]
+fn parse_unknown_wrapper_tag_keeps_stack_in_sync() {
+    let mut world = make_world();
+    let xml = r#"<hsml><unknown><space><box/></space></unknown></hsml>"#;
+    let root = parse_xml(&mut world, xml).expect("parse failed");
+
+    let hier = world.read_storage::<Hierarchy>();
+    let tags = world.read_storage::<Tag>();
+
+    let root_children = &hier.get(root).unwrap().children;
+    assert_eq!(root_children.len(), 1);
+    let space = root_children[0];
+    assert_eq!(tags.get(space).unwrap().0, "space");
+    assert_eq!(hier.get(space).unwrap().children.len(), 1);
+    let child = hier.get(space).unwrap().children[0];
+    assert_eq!(tags.get(child).unwrap().0, "box");
+}
+
+#[test]
+fn parse_unknown_sibling_does_not_drop_following_known_nodes() {
+    let mut world = make_world();
+    let xml = r#"<hsml><space/><unknown></unknown><space/></hsml>"#;
+    let root = parse_xml(&mut world, xml).expect("parse failed");
+
+    let hier = world.read_storage::<Hierarchy>();
+    let tags = world.read_storage::<Tag>();
+    let children = &hier.get(root).unwrap().children;
+    assert_eq!(children.len(), 2);
+    assert_eq!(tags.get(children[0]).unwrap().0, "space");
+    assert_eq!(tags.get(children[1]).unwrap().0, "space");
+}
+
 // ─── serialize_xml ───────────────────────────────────────────────────────────
 
 #[test]

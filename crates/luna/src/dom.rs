@@ -37,6 +37,52 @@ use crate::{
 const DOM_SYNC_VERBOSE_LOGS: bool = false;
 const ATTR_DELETE_SENTINEL: &str = "[DEL]";
 
+fn is_structural_tag(tag: &str) -> bool {
+    matches!(tag, "" | "hsml" | "head" | "name" | "meta" | "state" | "div")
+}
+
+fn include_ancestor_chain_contains(
+    world: &SpecWorld,
+    node: SpecEntity,
+    candidate_url: &str,
+    base_url: &str,
+) -> bool {
+    let entities = world.entities();
+    let hierarchies = world.read_storage::<Hierarchy>();
+    let attrs = world.read_storage::<Attrs>();
+    let tags = world.read_storage::<Tag>();
+
+    let mut current = Some(node);
+    while let Some(ent) = current {
+        let parent_id = hierarchies.get(ent).and_then(|h| h.parent);
+        let Some(parent_id) = parent_id else {
+            break;
+        };
+
+        let parent = entities.entity(parent_id);
+        if !entities.is_alive(parent) {
+            break;
+        }
+
+        if matches!(tags.get(parent), Some(tag) if tag.0 == "include") {
+            if let Some(src) = attrs.get(parent).and_then(|a| a.0.get("src")) {
+                let ancestor_url = resolve_remote_path(base_url, src).unwrap_or_else(|| src.clone());
+                if ancestor_url == candidate_url {
+                    return true;
+                }
+            }
+        }
+
+        current = Some(parent);
+    }
+
+    false
+}
+
+fn include_would_cycle(world: &SpecWorld, include_node: SpecEntity, candidate_url: &str, base_url: &str) -> bool {
+    candidate_url == base_url || include_ancestor_chain_contains(world, include_node, candidate_url, base_url)
+}
+
 fn primitive_color(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> Color {
     attrs_storage
         .get(node)
@@ -65,23 +111,26 @@ fn spawn_colored_primitive(
     color: Color,
     transform: Transform,
     double_sided: bool,
+    touchable_node_id: Option<u32>,
 ) -> Entity {
     let material = materials.add(StandardMaterial {
         base_color: color,
         cull_mode: double_sided.then_some(None).flatten(),
         ..Default::default()
     });
-    commands
-        .spawn((
-            PbrBundle {
-                mesh,
-                material,
-                transform,
-                ..Default::default()
-            },
-            Dirty,
-        ))
-        .id()
+    let mut entity_commands = commands.spawn((
+        PbrBundle {
+            mesh,
+            material,
+            transform,
+            ..Default::default()
+        },
+        Dirty,
+    ));
+    if let Some(node_id) = touchable_node_id {
+        entity_commands.insert(crate::touch::Touchable(node_id));
+    }
+    entity_commands.id()
 }
 
 // ─── Reload ──────────────────────────────────────────────────────────────────
@@ -401,6 +450,14 @@ where
                 ));
                 continue;
             };
+            if include_would_cycle(world, parent_ent, &final_url, base_url) {
+                log.push_warn(format!(
+                    "include cycle blocked: {} -> parent {}",
+                    final_url,
+                    parent_ent.id()
+                ));
+                continue;
+            }
 
             let Some(xml) = load(&final_url, log)? else {
                 continue;
@@ -563,30 +620,82 @@ pub fn process_delete_requests(
     mut pending_model_loads: ResMut<PendingModelLoads>,
     mut model_load_states: ResMut<ModelLoadStates>,
     mut space_handle_tables: ResMut<crate::SpaceHandleTables>,
+    mut dom_data: ResMut<VirtualDomData>,
+    mut include_load_states: ResMut<crate::IncludeLoadStates>,
 ) {
     for ent_id in delete_requests.0.drain(..) {
-        clear_async_node_state(
-            ent_id,
-            &mut script_load_states,
-            &mut pending_model_loads,
-            &mut model_load_states,
-        );
-        for table in space_handle_tables.by_space.values_mut() {
-            if let Some(local_id) = table.global_to_local.remove(&ent_id) {
-                table.local_to_global.remove(&local_id);
-            }
-            table.detached_globals.remove(&ent_id);
+        let sp_ent = world.0.entities().entity(ent_id);
+        if !world.0.entities().is_alive(sp_ent) {
+            continue;
         }
-        if let Some(bevy_ent) = entity_map.0.remove(&ent_id) {
+
+        let mut subtree_ids = Vec::new();
+        collect_subtree_ids(&world.0, sp_ent, &mut subtree_ids);
+        let subtree_set: HashSet<u32> = subtree_ids.iter().copied().collect();
+
+        let bevy_roots = {
+            let entities = world.0.entities();
+            let hierarchies = world.0.read_storage::<Hierarchy>();
+
+            subtree_ids
+                .iter()
+                .filter_map(|node_id| {
+                    let bevy_ent = entity_map.0.get(node_id).copied()?;
+                    let parent_id = hierarchies
+                        .get(entities.entity(*node_id))
+                        .and_then(|h| h.parent);
+                    let parent_in_subtree = parent_id
+                        .map(|pid| subtree_set.contains(&pid))
+                        .unwrap_or(false);
+                    let parent_has_bevy = parent_id
+                        .and_then(|pid| entity_map.0.get(&pid))
+                        .is_some();
+
+                    if !parent_in_subtree || !parent_has_bevy {
+                        Some(bevy_ent)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+
+        for node_id in &subtree_ids {
+            clear_async_node_state(
+                *node_id,
+                &mut script_load_states,
+                &mut pending_model_loads,
+                &mut model_load_states,
+            );
+            include_load_states.0.remove(node_id);
+            dom_data.nodes.remove(node_id);
+
+            for table in space_handle_tables.by_space.values_mut() {
+                if let Some(local_id) = table.global_to_local.remove(node_id) {
+                    table.local_to_global.remove(&local_id);
+                }
+                table.detached_globals.remove(node_id);
+            }
+
+            entity_map.0.remove(node_id);
+        }
+
+        for bevy_ent in bevy_roots {
             commands.entity(bevy_ent).despawn_recursive();
         }
-        let sp_ent = world.0.entities().entity(ent_id);
-        if world.0.entities().is_alive(sp_ent) {
-            match world.0.delete_entity(sp_ent) {
-                Ok(_) => log_panel.push_info(format!("Entity (ID={}) deleted.", ent_id)),
-                Err(_) => log_panel.push_error(format!("Error deleting entity (ID={}).", ent_id)),
+
+        let mut deleted = 0usize;
+        for node_id in &subtree_ids {
+            let ent = world.0.entities().entity(*node_id);
+            if world.0.entities().is_alive(ent) && world.0.delete_entity(ent).is_ok() {
+                deleted += 1;
             }
         }
+
+        log_panel.push_info(format!(
+            "Entity subtree (ID={}) deleted ({} nodes).",
+            ent_id, deleted
+        ));
     }
 }
 
@@ -616,6 +725,7 @@ fn queue_include_load_if_needed(
     tokio_rt: &TokioRuntime,
     io_service: &IoService,
     log_panel: &mut LogPanel,
+    specs_world: &SpecWorld,
 ) {
     let src = attrs_storage
         .get(node)
@@ -631,6 +741,18 @@ fn queue_include_load_if_needed(
         log_panel.push_warn(format!("include: cannot resolve src='{src}'"));
         return;
     };
+    if include_would_cycle(specs_world, node, &final_url, &current_url.0) {
+        include_load_states.0.insert(
+            node_id,
+            crate::IncludeLoadState::Failed {
+                url: final_url.clone(),
+            },
+        );
+        log_panel.push_warn(format!(
+            "Include cycle blocked: {final_url} (node {node_id})"
+        ));
+        return;
+    }
 
     // Check if already loading/loaded for this URL
     if let Some(state) = include_load_states.0.get(&node_id) {
@@ -658,6 +780,7 @@ pub fn commit_pending_includes_system(
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut log_panel: ResMut<LogPanel>,
     mut include_load_states: ResMut<crate::IncludeLoadStates>,
+    current_url: Res<CurrentUrl>,
 ) {
     let pending: Vec<_> = pending_includes.0.drain(..).collect();
     if pending.is_empty() {
@@ -672,6 +795,21 @@ pub fn commit_pending_includes_system(
                 inc.parent_node_id
             ));
             include_load_states.0.remove(&inc.parent_node_id);
+            continue;
+        }
+
+        let url = inc.url.clone();
+        if include_would_cycle(&world.0, parent_ent, &url, &current_url.0) {
+            log_panel.push_warn(format!(
+                "Include cycle blocked during commit: {} -> parent {}",
+                url, inc.parent_node_id
+            ));
+            include_load_states.0.insert(
+                inc.parent_node_id,
+                crate::IncludeLoadState::Failed {
+                    url,
+                },
+            );
             continue;
         }
 
@@ -1021,7 +1159,7 @@ pub fn dom_sync_system(
                 continue;
             }
 
-            if tag == "space" || tag == "include" {
+            if tag == "space" || tag == "include" || is_structural_tag(&tag) {
                 if let Ok((_, mut t, dirty, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
                     if dirty.is_some() {
@@ -1038,14 +1176,22 @@ pub fn dom_sync_system(
                 // Trigger include load if src changed or not yet loaded
                 if tag == "include" {
                     queue_include_load_if_needed(
-                        node_id, &attrs_storage, *node, &current_url,
-                        &mut include_load_states, tokio_rt, io_service, &mut log_panel,
+                        node_id,
+                        &attrs_storage,
+                        *node,
+                        &current_url,
+                        &mut include_load_states,
+                        tokio_rt,
+                        io_service,
+                        &mut log_panel,
+                        &world.0,
                     );
                 }
                 continue;
             }
 
             if tag == "box" || tag == "sphere" || tag == "plane" || tag == "cylinder" {
+                commands.entity(bevy_ent).insert(crate::touch::Touchable(node_id));
                 if let Ok((_, mut t, dirty, maybe_material)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
                     if let Some(material_handle) = maybe_material {
@@ -1142,8 +1288,15 @@ pub fn dom_sync_system(
                 "space" | "include" => {
                     if tag == "include" {
                         queue_include_load_if_needed(
-                            node_id, &attrs_storage, *node, &current_url,
-                            &mut include_load_states, tokio_rt, io_service, &mut log_panel,
+                            node_id,
+                            &attrs_storage,
+                            *node,
+                            &current_url,
+                            &mut include_load_states,
+                            tokio_rt,
+                            io_service,
+                            &mut log_panel,
+                            &world.0,
                         );
                     }
                     commands
@@ -1161,6 +1314,20 @@ pub fn dom_sync_system(
                         ))
                         .id()
                 }
+                _other if is_structural_tag(&tag) => commands
+                    .spawn((
+                        SpatialBundle {
+                            transform: transform_b,
+                            visibility: if node_visible(&attrs_storage, *node) {
+                                Visibility::Visible
+                            } else {
+                                Visibility::Hidden
+                            },
+                            ..Default::default()
+                        },
+                        Dirty,
+                    ))
+                    .id(),
                 "box" => {
                     let attrs_opt = attrs_storage.get(*node);
                     let color = primitive_color(&attrs_storage, *node);
@@ -1180,6 +1347,7 @@ pub fn dom_sync_system(
                         color,
                         transform_b,
                         false,
+                        Some(node_id),
                     )
                 }
                 "sphere" => spawn_colored_primitive(
@@ -1189,6 +1357,7 @@ pub fn dom_sync_system(
                     primitive_color(&attrs_storage, *node),
                     transform_b,
                     false,
+                    Some(node_id),
                 ),
                 "plane" => spawn_colored_primitive(
                     &mut commands,
@@ -1197,6 +1366,7 @@ pub fn dom_sync_system(
                     primitive_color(&attrs_storage, *node),
                     transform_b,
                     true,
+                    Some(node_id),
                 ),
                 "cylinder" => spawn_colored_primitive(
                     &mut commands,
@@ -1205,6 +1375,7 @@ pub fn dom_sync_system(
                     primitive_color(&attrs_storage, *node),
                     transform_b,
                     false,
+                    Some(node_id),
                 ),
                 "text" => {
                     let empty_map = HashMap::new();
