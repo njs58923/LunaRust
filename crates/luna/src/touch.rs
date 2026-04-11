@@ -36,6 +36,7 @@ pub fn desktop_toque_raycast_system(
     toqueable_query: Query<(&GlobalTransform, &Toqueable)>,
     mut toque_events: ResMut<ToqueRawEvents>,
     mut log_panel: ResMut<LogPanel>,
+    shooter: Option<Res<crate::desktop_locomotion::DesktopShooterActive>>,
 ) {
     if !mouse_button.just_pressed(MouseButton::Left) {
         return;
@@ -43,8 +44,15 @@ pub fn desktop_toque_raycast_system(
     let Ok(window) = windows.get_single() else {
         return;
     };
-    let Some(cursor_pos) = window.cursor_position() else {
-        return;
+    let shooter_active = shooter.map(|s| s.0).unwrap_or(false);
+    let cursor_pos = if shooter_active {
+        // Shooter mode: raycast from center of window
+        Vec2::new(window.width() / 2.0, window.height() / 2.0)
+    } else {
+        let Some(pos) = window.cursor_position() else {
+            return;
+        };
+        pos
     };
     let Ok((camera, camera_transform)) = camera_query.get_single() else {
         return;

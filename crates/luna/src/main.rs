@@ -19,6 +19,7 @@ use bevy_mod_xr::session::{
 use bevy_xr_utils::tracking_utils::{
     suggest_action_bindings, TrackingUtilitiesPlugin, XrTrackedLeftGrip, XrTrackedRightGrip,
 };
+use luna::desktop_locomotion::DesktopLocomotionPlugin;
 use luna::vr_locomotion::VrLocomotionPlugin;
 
 use luna::*;
@@ -61,6 +62,7 @@ fn main() {
     app.add_plugins(TrackingUtilitiesPlugin);
     app.add_systems(OxrSendActionBindings, suggest_action_bindings);
     app.add_plugins(VrLocomotionPlugin);
+    app.add_plugins(DesktopLocomotionPlugin);
     app.add_systems(XrSessionCreated, spawn_controllers);
     app.insert_resource(RenderMode {
         is_vr: initial_render_mode,
