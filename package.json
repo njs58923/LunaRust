@@ -35,6 +35,7 @@
 
     "deps:tree":     "cargo tree -p luna",
     "deps:outdated": "cargo outdated -p luna",
-    "deps:audit":    "cargo audit"
+    "deps:audit":    "cargo audit",
+    "docker": "docker compose up -d"
   }
 }
