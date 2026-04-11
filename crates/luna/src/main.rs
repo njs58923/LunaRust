@@ -10,10 +10,13 @@ use bevy_egui::EguiPlugin;
 use tokio::runtime::Runtime;
 use virtual_dom::dom::element::build_world;
 
-use bevy_mod_openxr::add_xr_plugins;
+use bevy_mod_openxr::{action_binding::OxrSendActionBindings, add_xr_plugins};
 use bevy_mod_xr::session::{
     XrBeginSessionEvent, XrCreateSessionEvent, XrDestroySessionEvent, XrEndSessionEvent,
-    XrRequestExitEvent, XrSessionPlugin, XrState, XrStateChanged,
+    XrRequestExitEvent, XrSessionCreated, XrSessionPlugin, XrState, XrStateChanged,
+};
+use bevy_xr_utils::tracking_utils::{
+    suggest_action_bindings, TrackingUtilitiesPlugin, XrTrackedLeftGrip, XrTrackedRightGrip,
 };
 
 use luna::*;
@@ -56,6 +59,9 @@ fn main() {
 
     app.add_plugins(add_xr_plugins(default_plugins).set(XrSessionPlugin { auto_handle: false }));
     app.add_plugins(bevy_xr_utils::hand_gizmos::HandGizmosPlugin);
+    app.add_plugins(TrackingUtilitiesPlugin);
+    app.add_systems(OxrSendActionBindings, suggest_action_bindings);
+    app.add_systems(XrSessionCreated, spawn_controllers);
     app.insert_resource(RenderMode {
         is_vr: initial_render_mode,
     });
@@ -276,6 +282,17 @@ fn xr_session_handler(
             _ => {}
         }
     }
+}
+
+fn spawn_controllers(
+    mut cmds: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let mesh = meshes.add(Cuboid::new(0.1, 0.1, 0.05));
+    let mat = materials.add(Color::srgb_u8(124, 144, 255));
+    cmds.spawn((PbrBundle { mesh: mesh.clone(), material: mat.clone(), ..default() }, XrTrackedLeftGrip));
+    cmds.spawn((PbrBundle { mesh, material: mat, ..default() }, XrTrackedRightGrip));
 }
 
 fn toggle_render_mode(
