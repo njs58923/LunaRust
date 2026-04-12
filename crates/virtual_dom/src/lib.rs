@@ -16,6 +16,101 @@ pub mod dom;
 
 use dom::tags;
 
+fn find_tag_end(xml: &str, start: usize) -> Option<usize> {
+    let bytes = xml.as_bytes();
+    let mut i = start;
+    let mut quote: Option<u8> = None;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        match quote {
+            Some(q) => {
+                if b == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if b == b'\'' || b == b'"' {
+                    quote = Some(b);
+                } else if b == b'>' {
+                    return Some(i);
+                }
+            }
+        }
+        i += 1;
+    }
+
+    None
+}
+
+fn decode_basic_xml_entities(input: &str) -> String {
+    input
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+fn cdata_safe(input: &str) -> String {
+    input.replace("]]>", "]]]]><![CDATA[>")
+}
+
+/// Emula el comportamiento "raw text" de <script> en navegadores,
+/// aunque el documento completo siga siendo parseado como XML.
+///
+/// - Detecta <script>...</script>
+/// - Si no es self-closing, envuelve el cuerpo en CDATA
+/// - Además decodifica entidades XML comunes para mantener compatibilidad
+///   con scripts viejos escritos como XML puro (&lt;, &amp;&amp;, etc.)
+fn normalize_inline_script_blocks(xml: &str) -> String {
+    let mut out = String::with_capacity(xml.len() + 64);
+    let mut cursor = 0usize;
+
+    while let Some(rel_start) = xml[cursor..].find("<script") {
+        let start = cursor + rel_start;
+        out.push_str(&xml[cursor..start]);
+
+        let Some(open_end) = find_tag_end(xml, start) else {
+            out.push_str(&xml[start..]);
+            return out;
+        };
+
+        let open_tag = &xml[start..=open_end];
+        out.push_str(open_tag);
+
+        let is_self_closing = open_tag.trim_end().ends_with("/>");
+        if is_self_closing {
+            cursor = open_end + 1;
+            continue;
+        }
+
+        let body_start = open_end + 1;
+        let Some(rel_close) = xml[body_start..].find("</script>") else {
+            out.push_str(&xml[body_start..]);
+            return out;
+        };
+        let close_start = body_start + rel_close;
+        let body = &xml[body_start..close_start];
+        let trimmed = body.trim();
+
+        if trimmed.starts_with("<![CDATA[") {
+            out.push_str(body);
+        } else {
+            let normalized = decode_basic_xml_entities(body);
+            out.push_str("<![CDATA[");
+            out.push_str(&cdata_safe(&normalized));
+            out.push_str("]]>");
+        }
+
+        out.push_str("</script>");
+        cursor = close_start + "</script>".len();
+    }
+
+    out.push_str(&xml[cursor..]);
+    out
+}
+
 /// Carga el XML desde una URL y retorna el contenido como String.
 pub async fn load_xml_from_url(url: &str) -> Result<String> {
     let response = reqwest::get(url).await?.error_for_status()?;
@@ -80,7 +175,8 @@ pub fn parse_xml(world: &mut World, xml_content: &str) -> Result<Entity> {
         entity: Option<Entity>,
     }
 
-    let mut reader = Reader::from_str(xml_content);
+    let normalized_xml = normalize_inline_script_blocks(xml_content);
+    let mut reader = Reader::from_str(&normalized_xml);
     reader.trim_text(true);
     let mut node_stack: Vec<Entity> = Vec::new();
     let mut open_stack: Vec<OpenNode> = Vec::new();

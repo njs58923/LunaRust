@@ -335,7 +335,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     }
 
     function spawn(tag, amount) {
-      for (let i = 0; i &lt; amount; i++) spawnAround(tag);
+      for (let i = 0; i < amount; i++) spawnAround(tag);
     }
 
     // ── actions ───────────────────────────────────────────────────────────────
@@ -343,7 +343,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     function clearDynamic() {
       while (dynamicNodes.length) {
         const item = dynamicNodes.pop();
-        if (item &amp;&amp; item.el) item.el.remove();
+        if (item && item.el) item.el.remove();
       }
       updateCounters();
       setStatus('cleared all dynamic nodes');

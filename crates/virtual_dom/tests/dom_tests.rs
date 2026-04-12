@@ -217,6 +217,36 @@ fn parse_inline_script_with_xml_entities() {
 }
 
 #[test]
+fn parse_inline_script_accepts_raw_js_operators_without_xml_escaping() {
+    use virtual_dom::dom::hsml::Script;
+
+    let mut world = make_world();
+    let xml = r#"
+        <hsml>
+            <space>
+                <script>
+                    for (let i = 0; i < 3; i++) {
+                        if (i && true) console.log(i);
+                    }
+                </script>
+            </space>
+        </hsml>
+    "#;
+
+    let root = parse_xml(&mut world, xml).expect("parse failed");
+
+    let hier = world.read_storage::<Hierarchy>();
+    let scripts = world.read_storage::<Script>();
+    let space = hier.get(root).unwrap().children[0];
+    let script_ent = hier.get(space).unwrap().children[0];
+    let s = scripts.get(script_ent).expect("no Script component");
+    let code = s.inline.as_ref().expect("should have inline code");
+
+    assert!(code.contains("i < 3"), "raw '<' should survive in script body: {}", code);
+    assert!(code.contains("i && true"), "raw '&&' should survive in script body: {}", code);
+}
+
+#[test]
 fn parse_malformed_xml_returns_error() {
     let mut world = make_world();
     let result = parse_xml(&mut world, "<unclosed");
