@@ -544,6 +544,17 @@
 
       return element;
     }
+    
+    // Batch de transforms locales del contexto actual.
+    // Layout plano:
+    // [nodeId, px, py, pz, rx, ry, rz, ...]
+    setTransformBatch(updates) {
+      if (!Array.isArray(updates) || updates.length === 0) return;
+      if ((updates.length % 7) !== 0) {
+        throw new Error('setTransformBatch: updates.length must be multiple of 7');
+      }
+      core.ops.op_hsml_set_transform_batch(updates);
+    }
   }
 
   // ---------------------------------------------------------------------------

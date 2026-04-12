@@ -575,6 +575,30 @@ fn op_hsml_set_global_position(state: &mut OpState, #[smi] node_id: i32, x: f32,
     queue.global_positions.lock().unwrap().push((node_id, Vec3 { x, y, z }));
 }
 
+// --- Transform batch op ---
+// Flat numeric layout:
+// [node_id, px, py, pz, rx, ry, rz, node_id, px, py, pz, rx, ry, rz, ...]
+#[op2]
+fn op_hsml_set_transform_batch(state: &mut OpState, #[serde] updates: Vec<f64>) {
+    if updates.len() < 7 {
+        return;
+    }
+
+    let queue = state.borrow::<TransformUpdateQueue>();
+    let count = updates.len() / 7;
+
+    let mut positions = queue.positions.lock().unwrap();
+    let mut rotations = queue.rotations.lock().unwrap();
+    positions.reserve(count);
+    rotations.reserve(count);
+
+    for chunk in updates.chunks_exact(7) {
+        let node_id = chunk[0] as i32;
+        positions.push((node_id, Vec3 { x: chunk[1] as f32, y: chunk[2] as f32, z: chunk[3] as f32 }));
+        rotations.push((node_id, Vec3 { x: chunk[4] as f32, y: chunk[5] as f32, z: chunk[6] as f32 }));
+    }
+}
+
 // --- Fetch ops ---
 
 #[op2(fast)]
@@ -933,6 +957,7 @@ impl Engine {
                 op_hsml_set_position::decl(),
                 op_hsml_set_rotation::decl(),
                 op_hsml_set_scale::decl(),
+                op_hsml_set_transform_batch::decl(),
                 op_hsml_set_global_position::decl(),
                 // Fetch
                 op_fetch_request::decl(),

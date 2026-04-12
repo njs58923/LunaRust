@@ -243,6 +243,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
   <script>
     const root = hiperspace.dimention;
+    const transformBatch = [];
     const __tmpRot = { x: 0, y: 0, z: 0 };
     const __tmpPos = { x: 0, y: 0, z: 0 };
 
@@ -298,6 +299,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       const bz = -Math.cos(angle) * dist;
       // Vertical spread: ~40% stay near ground, ~60% float at varying heights
       // Max height scales with distance so far-away giants can sit high in the sky.
+      const off     = nextId * 0.38;
       const groundY = scale * 0.5;
       const lift    = Math.random() &lt; 0.4
         ? 0
@@ -331,7 +333,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
       el.position = { x: bx, y: by, z: bz };
       root.appendChild(el);
-      dynamicNodes.push({ el, bx, by, bz });
+      dynamicNodes.push({ el, bx, by, bz, off });
       updateCounters();
       setStatus('spawned ' + tag + ' at ' + dist.toFixed(1) + ' m — scale ' + scale.toFixed(2) + ' m — y ' + by.toFixed(2));
     }
@@ -359,18 +361,30 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     function animateFrame(ts) {
       if (!animating) return;
       const t = ts / 1000;
-      dynamicNodes.forEach(({ el, bx, by, bz }, i) => {
-        const off = i * 0.38;
-        __tmpRot.x = Math.sin(t * 0.5 + off) * 0.12;
-        __tmpRot.y = t * 0.9 + off;
-        __tmpRot.z = Math.sin(t * 0.7 + off) * 0.12;
-        el.rotation = __tmpRot;
+       transformBatch.length = 0;
 
-        __tmpPos.x = bx;
-        __tmpPos.y = by + Math.sin(t * 1.4 + off) * (by * 0.25);
-        __tmpPos.z = bz;
-        el.position = __tmpPos;
-      });
+       for (let i = 0; i &lt; dynamicNodes.length; i++) {
+         const item = dynamicNodes[i];
+         const el = item.el;
+         const nodeId = el.nodeId;
+         if (nodeId &lt; 0) continue; // todavía pending, saltar este frame
+
+         const off = item.off;
+         const rx = Math.sin(t * 0.5 + off) * 0.12;
+         const ry = t * 0.9 + off;
+         const rz = Math.sin(t * 0.7 + off) * 0.12;
+         const px = item.bx;
+         const py = item.by + Math.sin(t * 1.4 + off) * (item.by * 0.25);
+         const pz = item.bz;
+
+         transformBatch.push(
+           nodeId,
+           px, py, pz,
+           rx, ry, rz
+         );
+       }
+
+       if (transformBatch.length) root.setTransformBatch(transformBatch);
       requestAnimationFrame(animateFrame);
     }
 
