@@ -127,171 +127,241 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
   <space resources="navigate_self">
-    <text x="0" y="2.25" z="-3.0" value="Luna Demos" size="0.32" />
-    <text x="0" y="1.95" z="-3.0" value="DOM, transforms, runtime and navigation playground" size="0.13" />
 
-    <plane x="0" y="0.15" z="-7" sx="4.8" sy="2.6" sz="1" color="#151A22" id="demo_panel" />
-    <plane x="0" y="-1.0" z="-5.0" rx="-1.2" sx="6.5" sy="4.0" sz="1" color="#0D1117" id="demo_floor" />
+    <!-- ═══════════════════════════════════════════════════════════════════════
+         ENVIRONMENT
+         ═══════════════════════════════════════════════════════════════════════ -->
 
-    <text x="-2.0" y="1.45" z="-3.0" value="Spawn" size="0.11" color="#8BC34A" />
-    <text x="0.0" y="1.45" z="-3.0" value="Modify" size="0.11" color="#03A9F4" />
-    <text x="1.95" y="1.45" z="-3.0" value="Navigation" size="0.11" color="#FFB74D" />
+    <!-- Ground extending 80m radius -->
+    <plane x="0" y="-0.02" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#080D12" id="demo_ground" />
 
-    <box x="-2.0" y="1.05" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#4CAF50" id="demo_spawn_box" />
-    <text x="-2.0" y="1.05" z="-2.94" value="Spawn Box" size="0.08" />
+    <!-- ═══════════════════════════════════════════════════════════════════════
+         SCALE RING — 8 anchors, each at a different distance and direction.
+         Scale rule: size = distance × 0.1  (4 m → 0.4 m  …  35 m → 3.5 m)
+         All appear roughly the same angular size from the origin.
+         ═══════════════════════════════════════════════════════════════════════ -->
 
-    <box x="-2.0" y="0.68" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#8BC34A" id="demo_spawn_sphere" />
-    <text x="-2.0" y="0.68" z="-2.94" value="Spawn Sphere" size="0.08" />
+    <!--  4 m  straight ahead  — tiny orange cube (0.4 m) -->
+    <box x="0"      y="0.20" z="-4"     sx="0.40" sy="0.40" sz="0.40" color="#FF6F00" id="scale_4m" />
+    <text x="0"      y="0.50" z="-4"     value="4 m · 0.4 m" size="0.050" color="#FFD54F" />
 
-    <box x="-2.0" y="0.31" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#009688" id="demo_spawn_cylinder" />
-    <text x="-2.0" y="0.31" z="-2.94" value="Spawn Cylinder" size="0.08" />
+    <!--  6 m  front-right  45°  — yellow-green (0.6 m) -->
+    <box x="4.24"  y="0.30" z="-4.24"  sx="0.60" sy="0.60" sz="0.60" color="#AEEA00" id="scale_6m" />
+    <text x="4.24"  y="0.75" z="-4.24"  value="6 m · 0.6 m" size="0.075" color="#F9A825" />
 
-    <box x="-2.0" y="-0.06" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#607D8B" id="demo_spawn_plane" />
-    <text x="-2.0" y="-0.06" z="-2.94" value="Spawn Plane" size="0.08" />
+    <!--  9 m  right  90°  — green (0.9 m) -->
+    <box x="9"     y="0.45" z="0"      sx="0.90" sy="0.90" sz="0.90" color="#00C853" id="scale_9m" />
+    <text x="9"     y="1.05" z="0"      value="9 m · 0.9 m" size="0.113" color="#B9F6CA" />
 
-    <box x="-2.0" y="-0.43" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#7E57C2" id="demo_stress" />
-    <text x="-2.0" y="-0.43" z="-2.94" value="Spawn x25" size="0.08" />
+    <!-- 12 m  back-right  135°  — cyan (1.2 m) -->
+    <box x="8.49"  y="0.60" z="8.49"   sx="1.20" sy="1.20" sz="1.20" color="#00BCD4" id="scale_12m" />
+    <text x="8.49"  y="1.40" z="8.49"   value="12 m · 1.2 m" size="0.150" color="#B2EBF2" />
 
-    <box x="0.0" y="1.05" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#03A9F4" id="demo_recolor" />
-    <text x="0.0" y="1.05" z="-2.94" value="Recolor" size="0.08" />
+    <!-- 16 m  directly behind  180°  — blue (1.6 m) -->
+    <box x="0"     y="0.80" z="16"     sx="1.60" sy="1.60" sz="1.60" color="#2979FF" id="scale_16m" />
+    <text x="0"     y="1.75" z="16"     value="16 m · 1.6 m" size="0.200" color="#82B1FF" />
 
-    <box x="0.0" y="0.68" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#00BCD4" id="demo_toggle_anim" />
-    <text x="0.0" y="0.68" z="-2.94" value="Toggle Anim" size="0.08" />
+    <!-- 20 m  back-left  225°  — purple (2.0 m) -->
+    <box x="-14.14" y="1.00" z="14.14" sx="2.00" sy="2.00" sz="2.00" color="#AA00FF" id="scale_20m" />
+    <text x="-14.14" y="2.15" z="14.14" value="20 m · 2.0 m" size="0.250" color="#E040FB" />
 
-    <box x="0.0" y="0.31" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#2196F3" id="demo_move_banner" />
-    <text x="0.0" y="0.31" z="-2.94" value="Move Banner" size="0.08" />
+    <!-- 26 m  left  270°  — pink (2.6 m) -->
+    <box x="-26"   y="1.30" z="0"      sx="2.60" sy="2.60" sz="2.60" color="#F50057" id="scale_26m" />
+    <text x="-26"   y="2.75" z="0"      value="26 m · 2.6 m" size="0.325" color="#FF80AB" />
 
-    <box x="0.0" y="-0.06" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#1976D2" id="demo_toggle_floor" />
-    <text x="0.0" y="-0.06" z="-2.94" value="Toggle Floor" size="0.08" />
+    <!-- 35 m  front-left  315°  — red-orange (3.5 m — imposing!) -->
+    <box x="-24.75" y="1.75" z="-24.75" sx="3.50" sy="3.50" sz="3.50" color="#DD2C00" id="scale_35m" />
+    <text x="-24.75" y="3.55" z="-24.75" value="35 m · 3.5 m" size="0.438" color="#FFAB40" />
 
-    <box x="0.0" y="-0.43" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#E53935" id="demo_clear" />
-    <text x="0.0" y="-0.43" z="-2.94" value="Clear Dynamic" size="0.08" />
+    <!-- ═══════════════════════════════════════════════════════════════════════
+         CONTROL PANEL  (at z = -3.1, eye level)
+         ═══════════════════════════════════════════════════════════════════════ -->
 
-    <box x="1.95" y="1.05" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#4CAF50" id="btn_home" />
-    <text x="1.95" y="1.05" z="-2.94" value="Home" size="0.08" />
+    <plane x="0" y="0.50" z="-3.15" sx="5.10" sy="2.50" sz="1" color="#0D1B2A" id="demo_panel" />
 
-    <box x="1.95" y="0.68" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#FF9800" id="btn_about" />
-    <text x="1.95" y="0.68" z="-2.94" value="About" size="0.08" />
+    <text x="0" y="1.68" z="-3.0" value="Luna Scale Demo" size="0.22" color="#64B5F6" />
+    <text x="0" y="1.38" z="-3.0" value="size = distance × 0.1  (all same angular size)" size="0.088" color="#546E7A" />
 
-    <box x="1.95" y="0.31" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#9C27B0" id="btn_settings" />
-    <text x="1.95" y="0.31" z="-2.94" value="Settings" size="0.08" />
+    <!-- Column headers -->
+    <text x="-1.70" y="1.07" z="-3.0" value="Spawn" size="0.10" color="#8BC34A" />
+    <text x="0.00"  y="1.07" z="-3.0" value="Modify" size="0.10" color="#03A9F4" />
+    <text x="1.70"  y="1.07" z="-3.0" value="Navigate" size="0.10" color="#FFB74D" />
 
-    <box x="1.95" y="-0.06" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#795548" id="demo_query" />
-    <text x="1.95" y="-0.06" z="-2.94" value="Query Test" size="0.08" />
+    <!-- ── Spawn column ── -->
+    <box x="-1.70" y="0.74" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#4CAF50" id="demo_spawn_box" />
+    <text x="-1.70" y="0.74" z="-2.94" value="Spawn Box" size="0.07" />
 
-    <box x="1.95" y="-0.43" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#546E7A" id="demo_wave" />
-    <text x="1.95" y="-0.43" z="-2.94" value="Wave Once" size="0.08" />
+    <box x="-1.70" y="0.45" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#8BC34A" id="demo_spawn_sphere" />
+    <text x="-1.70" y="0.45" z="-2.94" value="Spawn Sphere" size="0.07" />
 
-    <text x="0" y="-0.88" z="-2.95" value="Status: ready" size="0.09" id="demo_status" color="#FFFFFF" />
-    <text x="0" y="-1.12" z="-2.95" value="Dynamic nodes: 0" size="0.08" id="demo_count" color="#B0BEC5" />
-    <text x="0" y="-1.34" z="-2.95" value="Animation: off" size="0.08" id="demo_anim" color="#B0BEC5" />
-    <text x="0" y="-1.58" z="-2.95" value="Try create/remove/recolor/move/query/navigation" size="0.075" id="demo_hint" color="#90A4AE" />
+    <box x="-1.70" y="0.16" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#009688" id="demo_spawn_cylinder" />
+    <text x="-1.70" y="0.16" z="-2.94" value="Spawn Cylinder" size="0.07" />
+
+    <box x="-1.70" y="-0.13" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#607D8B" id="demo_spawn_plane" />
+    <text x="-1.70" y="-0.13" z="-2.94" value="Spawn Plane" size="0.07" />
+
+    <box x="-1.70" y="-0.42" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#7E57C2" id="demo_stress" />
+    <text x="-1.70" y="-0.42" z="-2.94" value="Stress ×25" size="0.07" />
+
+    <!-- ── Modify column ── -->
+    <box x="0.00" y="0.74" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#03A9F4" id="demo_recolor" />
+    <text x="0.00" y="0.74" z="-2.94" value="Recolor" size="0.07" />
+
+    <box x="0.00" y="0.45" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#00BCD4" id="demo_toggle_anim" />
+    <text x="0.00" y="0.45" z="-2.94" value="Toggle Anim" size="0.07" />
+
+    <box x="0.00" y="0.16" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#2196F3" id="demo_move_banner" />
+    <text x="0.00" y="0.16" z="-2.94" value="Move Panel" size="0.07" />
+
+    <box x="0.00" y="-0.13" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#1976D2" id="demo_toggle_floor" />
+    <text x="0.00" y="-0.13" z="-2.94" value="Toggle Floor" size="0.07" />
+
+    <box x="0.00" y="-0.42" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#E53935" id="demo_clear" />
+    <text x="0.00" y="-0.42" z="-2.94" value="Clear All" size="0.07" />
+
+    <!-- ── Navigate column ── -->
+    <box x="1.70" y="0.74" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#4CAF50" id="btn_home" />
+    <text x="1.70" y="0.74" z="-2.94" value="Home" size="0.07" />
+
+    <box x="1.70" y="0.45" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#FF9800" id="btn_about" />
+    <text x="1.70" y="0.45" z="-2.94" value="About" size="0.07" />
+
+    <box x="1.70" y="0.16" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#9C27B0" id="btn_settings" />
+    <text x="1.70" y="0.16" z="-2.94" value="Settings" size="0.07" />
+
+    <box x="1.70" y="-0.13" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#795548" id="demo_query" />
+    <text x="1.70" y="-0.13" z="-2.94" value="Query Test" size="0.07" />
+
+    <box x="1.70" y="-0.42" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#546E7A" id="demo_wave" />
+    <text x="1.70" y="-0.42" z="-2.94" value="Ring Arrange" size="0.07" />
+
+    <!-- Status bar -->
+    <text x="0" y="-0.78" z="-2.96" value="Status: ready" size="0.085" id="demo_status" color="#FFFFFF" />
+    <text x="0" y="-0.96" z="-2.96" value="Dynamic nodes: 0" size="0.075" id="demo_count" color="#B0BEC5" />
+    <text x="0" y="-1.12" z="-2.96" value="Animation: off" size="0.075" id="demo_anim" color="#B0BEC5" />
+    <text x="0" y="-1.28" z="-2.96" value="Objects scale 1:10 of distance — spawns appear around you" size="0.063" id="demo_hint" color="#546E7A" />
 
   <script>
     const root = hiperspace.dimention;
+
+    // Each entry: { el, baseX, baseY, baseZ }
     const dynamicNodes = [];
     let nextId = 1;
     let animating = false;
     let bannerMoved = false;
     let floorVisible = true;
 
-    function byId(id) {
-      return root.getElementById(id);
-    }
+    // ── helpers ──────────────────────────────────────────────────────────────
 
-    function setText(id, value) {
+    function byId(id) { return root.getElementById(id); }
+
+    function setText(id, val) {
       const el = byId(id);
-      if (el) el.setAttribute('value', value);
+      if (el) el.setAttribute('value', val);
     }
 
-    function setStatus(value) {
-      setText('demo_status', 'Status: ' + value);
-      console.log('[luna://demos]', value);
+    function setStatus(msg) {
+      setText('demo_status', 'Status: ' + msg);
+      console.log('[luna://demos]', msg);
     }
 
     function updateCounters() {
       setText('demo_count', 'Dynamic nodes: ' + dynamicNodes.length);
-      setText('demo_anim', 'Animation: ' + (animating ? 'on' : 'off'));
+      setText('demo_anim',  'Animation: ' + (animating ? 'on' : 'off'));
     }
 
     function randomColor() {
-      const colors = ['#F44336', '#E91E63', '#9C27B0', '#673AB7', '#3F51B5', '#2196F3', '#00BCD4', '#009688', '#4CAF50', '#FF9800'];
-      return colors[Math.floor(Math.random() * colors.length)];
+      const palette = [
+        '#F44336','#E91E63','#9C27B0','#673AB7',
+        '#3F51B5','#2196F3','#00BCD4','#009688',
+        '#4CAF50','#CDDC39','#FF9800','#FF5722',
+      ];
+      return palette[Math.floor(Math.random() * palette.length)];
     }
 
-    function randomX() {
-      return -2.2 + Math.random() * 4.4;
-    }
+    // ── scale-aware spawn ─────────────────────────────────────────────────────
+    //  Rule: size = distance × 0.1
+    //    3.5 m  →  0.35 m  (tiny, near your shins)
+    //   10   m  →  1.0  m  (life-sized box)
+    //   30   m  →  3.0  m  (huge structure, but far away)
 
-    function randomY() {
-      return -0.9 + Math.random() * 1.4;
-    }
+    function spawnAround(tag) {
+      const el = root.createElement(tag);
 
-    function randomZ() {
-      return -4.7 + Math.random() * 1.0;
-    }
+      const angle = Math.random() * Math.PI * 2;          // full 360°
+      const dist  = 3.5 + Math.random() * 28.5;           // 3.5 – 32 m
+      const scale = dist * 0.1;                            // proportional scale
 
-    function registerDynamic(el, tag) {
-      el.id = 'demo_dyn_' + nextId;
-      nextId += 1;
+      const bx = Math.sin(angle) * dist;
+      const bz = -Math.cos(angle) * dist;
+      const by = scale * 0.5;                              // sit on ground
+
+      el.id        = 'demo_dyn_' + nextId++;
       el.className = 'demo-dynamic';
       el.setAttribute('color', randomColor());
-      el.setAttribute('sx', '0.28');
-      el.setAttribute('sy', '0.28');
-      el.setAttribute('sz', '0.28');
-      el.position = { x: randomX(), y: randomY(), z: randomZ() };
+
       if (tag === 'plane') {
-        el.setAttribute('sx', '0.55');
-        el.setAttribute('sy', '0.55');
+        el.setAttribute('sx', String(scale * 2.0));
+        el.setAttribute('sy', String(scale * 2.0));
         el.setAttribute('sz', '1');
-        el.rotation = { x: -1.15, y: 0, z: 0 };
+        el.rotation = { x: -1.5708, y: Math.random() * Math.PI * 2, z: 0 };
+      } else if (tag === 'cylinder') {
+        el.setAttribute('sx', String(scale));
+        el.setAttribute('sy', String(scale * 1.6));
+        el.setAttribute('sz', String(scale));
+        el.rotation = { x: 0, y: Math.random() * Math.PI * 2, z: 0 };
+      } else {
+        el.setAttribute('sx', String(scale));
+        el.setAttribute('sy', String(scale));
+        el.setAttribute('sz', String(scale));
+        el.rotation = {
+          x: Math.random() * 0.4,
+          y: Math.random() * Math.PI * 2,
+          z: Math.random() * 0.4,
+        };
       }
-      if (tag === 'cylinder') {
-        el.setAttribute('sy', '0.45');
-      }
+
+      el.position = { x: bx, y: by, z: bz };
       root.appendChild(el);
-      dynamicNodes.push(el);
+      dynamicNodes.push({ el, bx, by, bz });
       updateCounters();
-      setStatus('spawned ' + tag);
+      setStatus('spawned ' + tag + ' at ' + dist.toFixed(1) + ' m — scale ' + scale.toFixed(2) + ' m');
     }
 
     function spawn(tag, amount) {
-      Array.from({ length: amount }).forEach(() => {
-        const el = root.createElement(tag);
-        registerDynamic(el, tag);
-      });
+      for (let i = 0; i &lt; amount; i++) spawnAround(tag);
     }
+
+    // ── actions ───────────────────────────────────────────────────────────────
 
     function clearDynamic() {
       while (dynamicNodes.length) {
-        const el = dynamicNodes.pop();
-        if (el) el.remove();
+        const item = dynamicNodes.pop();
+        if (item &amp;&amp; item.el) item.el.remove();
       }
       updateCounters();
-      setStatus('cleared dynamic nodes');
+      setStatus('cleared all dynamic nodes');
     }
 
     function recolorDynamic() {
-      dynamicNodes.forEach((el) => {
-        el.setAttribute('color', randomColor());
-      });
-      setStatus('recolored dynamic nodes');
+      dynamicNodes.forEach(({ el }) => el.setAttribute('color', randomColor()));
+      setStatus('recolored ' + dynamicNodes.length + ' nodes');
     }
 
     function animateFrame(ts) {
       if (!animating) return;
       const t = ts / 1000;
-      dynamicNodes.forEach((el, index) => {
-        const offset = index * 0.22;
+      dynamicNodes.forEach(({ el, bx, by, bz }, i) => {
+        const off = i * 0.38;
         el.rotation = {
-          x: 0,
-          y: t + offset,
-          z: Math.sin(t + offset) * 0.2
+          x: Math.sin(t * 0.5 + off) * 0.12,
+          y: t * 0.9 + off,
+          z: Math.sin(t * 0.7 + off) * 0.12,
         };
         el.position = {
-          x: el.position.x,
-          y: Math.sin((t * 2.0) + offset) * 0.25,
-          z: el.position.z
+          x: bx,
+          y: by + Math.sin(t * 1.4 + off) * (by * 0.25),
+          z: bz,
         };
       });
       requestAnimationFrame(animateFrame);
@@ -300,7 +370,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     function toggleAnimation() {
       animating = !animating;
       updateCounters();
-      setStatus(animating ? 'animation started' : 'animation stopped');
+      setStatus(animating ? 'animation on' : 'animation off');
       if (animating) requestAnimationFrame(animateFrame);
     }
 
@@ -309,16 +379,16 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       if (!panel) return;
       bannerMoved = !bannerMoved;
       panel.position = bannerMoved
-        ? { x: 0.35, y: 0.35, z: -3.8 }
-        : { x: 0.0, y: 0.15, z: -3.8 };
+        ? { x: 0.45, y: 0.70, z: -3.15 }
+        : { x: 0.00, y: 0.50, z: -3.15 };
       panel.rotation = bannerMoved
-        ? { x: 0, y: 0.14, z: 0 }
-        : { x: 0, y: 0, z: 0 };
-      setStatus('moved banner panel');
+        ? { x: 0, y: 0.12, z: 0 }
+        : { x: 0, y: 0.00, z: 0 };
+      setStatus(bannerMoved ? 'panel nudged' : 'panel reset');
     }
 
     function toggleFloor() {
-      const floor = byId('demo_floor');
+      const floor = byId('demo_ground');
       if (!floor) return;
       floorVisible = !floorVisible;
       floor.setAttribute('visible', floorVisible ? 'true' : 'false');
@@ -326,39 +396,47 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     }
 
     function queryTest() {
-      const all = root.getElementsByClass('demo-dynamic');
+      const all   = root.getElementsByClass('demo-dynamic');
       const first = all.length ? all[0].id : 'none';
-      setText('demo_hint', 'Query found ' + all.length + ' dynamic nodes, first=' + first);
-      setStatus('querySelector-style test complete');
+      setText('demo_hint', 'Found ' + all.length + ' dynamic — first: ' + first);
+      setStatus('query complete');
     }
 
-    function waveOnce() {
-      dynamicNodes.forEach((el, index) => {
-        el.position = {
-          x: -2.0 + (index % 8) * 0.55,
-          y: -0.8 + Math.floor(index / 8) * 0.45,
-          z: -4.2
-        };
-        el.rotation = { x: 0, y: index * 0.2, z: 0 };
+    // Arrange all dynamic nodes into a scale ring (same rule: size ∝ distance)
+    function ringArrange() {
+      const n = dynamicNodes.length;
+      if (!n) { setStatus('nothing to arrange'); return; }
+      dynamicNodes.forEach((item, i) => {
+        const angle = (i / n) * Math.PI * 2;
+        const dist  = 5 + (i % 5) * 5;          // rings: 5, 10, 15, 20, 25 m
+        const scale = dist * 0.1;
+        const nx = Math.sin(angle) * dist;
+        const nz = -Math.cos(angle) * dist;
+        const ny = scale * 0.5;
+        item.bx = nx; item.by = ny; item.bz = nz;
+        item.el.position = { x: nx, y: ny, z: nz };
+        item.el.rotation = { x: 0, y: angle + Math.PI, z: 0 };
       });
-      setStatus('arranged dynamic nodes in grid');
+      setStatus('arranged ' + n + ' nodes in scale ring');
     }
+
+    // ── bindings ──────────────────────────────────────────────────────────────
 
     const bindings = {
-      demo_spawn_box: () => spawn('box', 25),
-      demo_spawn_sphere: () => spawn('sphere', 1),
+      demo_spawn_box:      () => spawn('box', 1),
+      demo_spawn_sphere:   () => spawn('sphere', 1),
       demo_spawn_cylinder: () => spawn('cylinder', 1),
-      demo_spawn_plane: () => spawn('plane', 1),
-      demo_stress: () => spawn('box', 2),
-      demo_recolor: recolorDynamic,
-      demo_toggle_anim: toggleAnimation,
-      demo_move_banner: moveBanner,
-      demo_toggle_floor: toggleFloor,
-      demo_clear: clearDynamic,
-      demo_query: queryTest,
-      demo_wave: waveOnce,
-      btn_home: () => { location.href = 'luna://home'; },
-      btn_about: () => { location.href = 'luna://about'; },
+      demo_spawn_plane:    () => spawn('plane', 1),
+      demo_stress:         () => spawn('box', 25),
+      demo_recolor:        recolorDynamic,
+      demo_toggle_anim:    toggleAnimation,
+      demo_move_banner:    moveBanner,
+      demo_toggle_floor:   toggleFloor,
+      demo_clear:          clearDynamic,
+      demo_query:          queryTest,
+      demo_wave:           ringArrange,
+      btn_home:     () => { location.href = 'luna://home'; },
+      btn_about:    () => { location.href = 'luna://about'; },
       btn_settings: () => { location.href = 'luna://settings'; },
     };
 
@@ -368,7 +446,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     });
 
     updateCounters();
-    setStatus('demos ready');
+    setStatus('ready — look around to see the scale ring');
   </script>
   </space>
 </hsml>"##;

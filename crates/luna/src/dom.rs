@@ -189,6 +189,7 @@ fn spawn_colored_primitive(
     transform: Transform,
     double_sided: bool,
     touchable_node_id: Option<u32>,
+    hit_shape: Option<crate::touch::HitShape>,
 ) -> Entity {
     let material =
         get_or_create_primitive_material(primitive_material_cache, materials, color, double_sided);
@@ -203,6 +204,9 @@ fn spawn_colored_primitive(
     ));
     if let Some(node_id) = touchable_node_id {
         entity_commands.insert(crate::touch::Toqueable(node_id));
+        if let Some(shape) = hit_shape {
+            entity_commands.insert(shape);
+        }
     }
     entity_commands.id()
 }
@@ -1436,9 +1440,14 @@ pub fn dom_sync_system(
             }
 
             if tag == "box" || tag == "sphere" || tag == "plane" || tag == "cylinder" {
+                let hit_shape = match tag.as_str() {
+                    "box" => crate::touch::HitShape::Box,
+                    "plane" => crate::touch::HitShape::Plane,
+                    _ => crate::touch::HitShape::Sphere,
+                };
                 commands
                     .entity(bevy_ent)
-                    .insert(crate::touch::Toqueable(node_id));
+                    .insert((crate::touch::Toqueable(node_id), hit_shape));
                 let color = primitive_color(&attrs_storage, *node);
                 let double_sided = tag == "plane";
                 let material = get_or_create_primitive_material(
@@ -1601,6 +1610,7 @@ pub fn dom_sync_system(
                         transform_b,
                         false,
                         Some(node_id),
+                        Some(crate::touch::HitShape::Box),
                     )
                 }
                 "sphere" => spawn_colored_primitive(
@@ -1612,6 +1622,7 @@ pub fn dom_sync_system(
                     transform_b,
                     false,
                     Some(node_id),
+                    Some(crate::touch::HitShape::Sphere),
                 ),
                 "plane" => spawn_colored_primitive(
                     &mut commands,
@@ -1622,6 +1633,7 @@ pub fn dom_sync_system(
                     transform_b,
                     true,
                     Some(node_id),
+                    Some(crate::touch::HitShape::Plane),
                 ),
                 "cylinder" => spawn_colored_primitive(
                     &mut commands,
@@ -1632,6 +1644,7 @@ pub fn dom_sync_system(
                     transform_b,
                     false,
                     Some(node_id),
+                    Some(crate::touch::HitShape::Sphere),
                 ),
                 "text" => {
                     let empty_map = HashMap::new();

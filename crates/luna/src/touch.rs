@@ -10,6 +10,101 @@ use crate::{ElemenetWorld, LogPanel, SpaceHandleTables};
 #[derive(Component)]
 pub struct Toqueable(pub u32);
 
+/// Exact collision shape used by the toque raycast.
+///
+/// Sphere:  ray–sphere using `max(sx,sy,sz) * 0.5` as radius.
+/// Box:     ray–OBB using the full non-uniform scale and world rotation.
+/// Plane:   ray–rectangle in the local XY plane of the entity (Z = 0, normal +Z).
+#[derive(Component, Clone, Copy, Debug)]
+pub enum HitShape {
+    Sphere,
+    Box,
+    Plane,
+}
+
+/// Returns `(t, hit_point)` if `ray` intersects the given shape, else `None`.
+/// `t` is the ray parameter at the entry point (>= 0).
+fn intersect_shape(
+    ray_origin: Vec3,
+    ray_dir: Vec3,
+    entity_pos: Vec3,
+    rotation: Quat,
+    scale: Vec3,
+    shape: HitShape,
+) -> Option<(f32, Vec3)> {
+    match shape {
+        HitShape::Sphere => {
+            let radius = scale.max_element() * 0.5;
+            let oc = ray_origin - entity_pos;
+            let a = ray_dir.dot(ray_dir);
+            let b = 2.0 * oc.dot(ray_dir);
+            let c = oc.dot(oc) - radius * radius;
+            let discriminant = b * b - 4.0 * a * c;
+            if discriminant < 0.0 {
+                return None;
+            }
+            let t = (-b - discriminant.sqrt()) / (2.0 * a);
+            if t <= 0.0 {
+                return None;
+            }
+            Some((t, ray_origin + ray_dir * t))
+        }
+        HitShape::Box => {
+            // Transform ray into the box's local (oriented, unit-cube) space.
+            let inv_rot = rotation.inverse();
+            let lo = inv_rot * (ray_origin - entity_pos);
+            let ld = inv_rot * ray_dir;
+            let half = scale * 0.5;
+
+            // Slab method with safe divisions.
+            let safe = |v: f32| if v.abs() > 1e-8 { v } else { 1e-8 };
+            let inv = Vec3::new(1.0 / safe(ld.x), 1.0 / safe(ld.y), 1.0 / safe(ld.z));
+
+            let t1 = (-half - lo) * inv;
+            let t2 = (half - lo) * inv;
+            let tmin = t1.min(t2);
+            let tmax = t1.max(t2);
+            let t_enter = tmin.x.max(tmin.y).max(tmin.z);
+            let t_exit = tmax.x.min(tmax.y).min(tmax.z);
+
+            if t_exit < t_enter.max(0.0) {
+                return None;
+            }
+            let t = t_enter.max(0.0);
+            if t <= 0.0 {
+                return None;
+            }
+            Some((t, ray_origin + ray_dir * t))
+        }
+        HitShape::Plane => {
+            // Plane mesh lives in local XY (z = 0) with normal +Z.
+            let normal = (rotation * Vec3::Z).normalize_or_zero();
+            if normal == Vec3::ZERO {
+                return None;
+            }
+            let denom = normal.dot(ray_dir);
+            if denom.abs() < 1e-6 {
+                return None; // ray parallel to plane
+            }
+            let t = (entity_pos - ray_origin).dot(normal) / denom;
+            if t <= 0.0 {
+                return None;
+            }
+            let hit_world = ray_origin + ray_dir * t;
+            // Back-transform to local coords to test the rectangle bounds.
+            let inv_rot = rotation.inverse();
+            let local_hit = inv_rot * (hit_world - entity_pos);
+            let half_x = scale.x * 0.5;
+            let half_y = scale.y * 0.5;
+            if local_hit.x.abs() <= half_x && local_hit.y.abs() <= half_y {
+                Some((t, hit_world))
+            } else {
+                None
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum ToqueSource {
     Desktop,
@@ -34,7 +129,7 @@ pub fn desktop_toque_raycast_system(
     mouse_button: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
-    toqueable_query: Query<(&GlobalTransform, &Toqueable)>,
+    toqueable_query: Query<(&GlobalTransform, &Toqueable, Option<&HitShape>)>,
     mut toque_hits: ResMut<HostToqueHits>,
     mut log_panel: ResMut<LogPanel>,
     shooter: Option<Res<crate::desktop_locomotion::DesktopShooterActive>>,
@@ -65,24 +160,20 @@ pub fn desktop_toque_raycast_system(
 
     let mut closest: Option<(f32, u32, Vec3)> = None;
 
-    for (global_transform, toqueable) in toqueable_query.iter() {
-        let entity_pos = global_transform.translation();
-        let scale = global_transform.to_scale_rotation_translation().0;
-        let radius = scale.max_element() * 0.5;
+    for (global_transform, toqueable, hit_shape) in toqueable_query.iter() {
+        let (scale, rotation, entity_pos) = global_transform.to_scale_rotation_translation();
+        let shape = hit_shape.copied().unwrap_or(HitShape::Sphere);
 
-        let oc = ray.origin - entity_pos;
-        let a = ray.direction.dot(*ray.direction);
-        let b = 2.0 * oc.dot(*ray.direction);
-        let c = oc.dot(oc) - radius * radius;
-        let discriminant = b * b - 4.0 * a * c;
-
-        if discriminant >= 0.0_f32 {
-            let t = (-b - discriminant.sqrt()) / (2.0 * a);
-            if t > 0.0 {
-                if closest.is_none() || t < closest.unwrap().0 {
-                    let hit_point = ray.origin + *ray.direction * t;
-                    closest = Some((t, toqueable.0, hit_point));
-                }
+        if let Some((t, hit_point)) = intersect_shape(
+            ray.origin,
+            *ray.direction,
+            entity_pos,
+            rotation,
+            scale,
+            shape,
+        ) {
+            if closest.is_none() || t < closest.unwrap().0 {
+                closest = Some((t, toqueable.0, hit_point));
             }
         }
     }
@@ -106,7 +197,7 @@ pub fn vr_toque_raycast_system(
     actions: Res<crate::vr_locomotion::LunaLocomotionActions>,
     session: Res<bevy_mod_openxr::session::OxrSession>,
     controller_query: Query<&GlobalTransform, With<bevy_xr_utils::tracking_utils::XrTrackedRightGrip>>,
-    toqueable_query: Query<(&GlobalTransform, &Toqueable)>,
+    toqueable_query: Query<(&GlobalTransform, &Toqueable, Option<&HitShape>)>,
     mut toque_hits: ResMut<HostToqueHits>,
     mut log_panel: ResMut<LogPanel>,
     mut last_trigger: Local<bool>,
@@ -137,23 +228,15 @@ pub fn vr_toque_raycast_system(
 
     let mut closest: Option<(f32, u32, Vec3)> = None;
 
-    for (global_transform, toqueable) in toqueable_query.iter() {
-        let entity_pos = global_transform.translation();
-        let scale = global_transform.to_scale_rotation_translation().0;
-        let radius = scale.max_element() * 0.5;
-        let oc = ray_origin - entity_pos;
-        let a = ray_dir.dot(ray_dir);
-        let b = 2.0 * oc.dot(ray_dir);
-        let c = oc.dot(oc) - radius * radius;
-        let discriminant = b * b - 4.0 * a * c;
+    for (global_transform, toqueable, hit_shape) in toqueable_query.iter() {
+        let (scale, rotation, entity_pos) = global_transform.to_scale_rotation_translation();
+        let shape = hit_shape.copied().unwrap_or(HitShape::Sphere);
 
-        if discriminant >= 0.0 {
-            let t = (-b - discriminant.sqrt()) / (2.0 * a);
-            if t > 0.0 && t < 20.0 {
-                if closest.is_none() || t < closest.unwrap().0 {
-                    let hit_point = ray_origin + ray_dir * t;
-                    closest = Some((t, toqueable.0, hit_point));
-                }
+        if let Some((t, hit_point)) =
+            intersect_shape(ray_origin, ray_dir, entity_pos, rotation, scale, shape)
+        {
+            if t < 20.0 && (closest.is_none() || t < closest.unwrap().0) {
+                closest = Some((t, toqueable.0, hit_point));
             }
         }
     }
