@@ -274,10 +274,6 @@ fn log_buttons(actions: Res<LunaLocomotionActions>, session: Res<OxrSession>) {
         };
     }
 
-    log_float!(actions.left_trigger,      "Left Trigger");
-    log_float!(actions.right_trigger,     "Right Trigger");
-    log_float!(actions.left_grip,         "Left Grip");
-    log_float!(actions.right_grip,        "Right Grip");
     log_bool!(actions.btn_a,              "A");
     log_bool!(actions.btn_b,              "B");
     log_bool!(actions.btn_x,              "X");
