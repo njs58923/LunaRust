@@ -294,7 +294,13 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
       const bx = Math.sin(angle) * dist;
       const bz = -Math.cos(angle) * dist;
-      const by = scale * 0.5;                              // sit on ground
+      // Vertical spread: ~40% stay near ground, ~60% float at varying heights
+      // Max height scales with distance so far-away giants can sit high in the sky.
+      const groundY = scale * 0.5;
+      const lift    = Math.random() &lt; 0.4
+        ? 0
+        : Math.random() * (1.0 + dist * 0.25);             // up to ~1 m + 25% of distance
+      const by = groundY + lift;
 
       el.id        = 'demo_dyn_' + nextId++;
       el.className = 'demo-dynamic';
@@ -325,7 +331,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       root.appendChild(el);
       dynamicNodes.push({ el, bx, by, bz });
       updateCounters();
-      setStatus('spawned ' + tag + ' at ' + dist.toFixed(1) + ' m — scale ' + scale.toFixed(2) + ' m');
+      setStatus('spawned ' + tag + ' at ' + dist.toFixed(1) + ' m — scale ' + scale.toFixed(2) + ' m — y ' + by.toFixed(2));
     }
 
     function spawn(tag, amount) {
@@ -408,11 +414,13 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       if (!n) { setStatus('nothing to arrange'); return; }
       dynamicNodes.forEach((item, i) => {
         const angle = (i / n) * Math.PI * 2;
-        const dist  = 5 + (i % 5) * 5;          // rings: 5, 10, 15, 20, 25 m
+        const ring  = i % 5;
+        const dist  = 5 + ring * 5;             // rings: 5, 10, 15, 20, 25 m
         const scale = dist * 0.1;
         const nx = Math.sin(angle) * dist;
         const nz = -Math.cos(angle) * dist;
-        const ny = scale * 0.5;
+        // Stagger heights per ring so outer rings float higher.
+        const ny = scale * 0.5 + ring * 1.5;    // 0, 1.5, 3, 4.5, 6 m above ground
         item.bx = nx; item.by = ny; item.bz = nz;
         item.el.position = { x: nx, y: ny, z: nz };
         item.el.rotation = { x: 0, y: angle + Math.PI, z: 0 };
