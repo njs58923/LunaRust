@@ -289,7 +289,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       const el = root.createElement(tag);
 
       const angle = Math.random() * Math.PI * 2;          // full 360°
-      const dist  = 3.5 + Math.random() * 28.5;           // 3.5 – 32 m
+      const dist  = 3.5 + Math.random() * 250;           // 3.5 – 32 m
       const scale = dist * 0.1;                            // proportional scale
 
       const bx = Math.sin(angle) * dist;
@@ -431,10 +431,10 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     // ── bindings ──────────────────────────────────────────────────────────────
 
     const bindings = {
-      demo_spawn_box:      () => spawn('box', 1),
-      demo_spawn_sphere:   () => spawn('sphere', 1),
-      demo_spawn_cylinder: () => spawn('cylinder', 1),
-      demo_spawn_plane:    () => spawn('plane', 1),
+      demo_spawn_box:      () => spawn('box', 25),
+      demo_spawn_sphere:   () => spawn('sphere', 25),
+      demo_spawn_cylinder: () => spawn('cylinder', 25),
+      demo_spawn_plane:    () => spawn('plane', 25),
       demo_stress:         () => spawn('box', 25),
       demo_recolor:        recolorDynamic,
       demo_toggle_anim:    toggleAnimation,
