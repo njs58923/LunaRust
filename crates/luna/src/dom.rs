@@ -430,28 +430,25 @@ pub fn collect_subtree_ids(world: &SpecWorld, root: SpecEntity, out: &mut Vec<u3
     }
 }
 
-fn collect_bevy_subtree_roots(
-    world: &SpecWorld,
+fn collect_bevy_subtree_roots_from_bevy(
     subtree_ids: &[u32],
     entity_map: &EntityMap,
+    bevy_parents: &Query<&Parent>,
 ) -> Vec<Entity> {
-    let entities = world.entities();
-    let hierarchies = world.read_storage::<Hierarchy>();
-    let subtree_id_set: HashSet<u32> = subtree_ids.iter().copied().collect();
-    let mut roots = Vec::new();
-    let mut seen = HashSet::new();
+    let subtree_bevy: HashSet<Entity> = subtree_ids
+        .iter()
+        .filter_map(|node_id| entity_map.0.get(node_id).copied())
+        .collect();
 
-    for &node_id in subtree_ids {
-        let Some(&bevy_ent) = entity_map.0.get(&node_id) else {
-            continue;
-        };
-        let spec_ent = entities.entity(node_id);
-        let parent_inside_subtree = hierarchies
-            .get(spec_ent)
-            .and_then(|h| h.parent)
-            .is_some_and(|parent_id| {
-                subtree_id_set.contains(&parent_id) && entity_map.0.contains_key(&parent_id)
-            });
+    let mut seen = HashSet::new();
+    let mut roots = Vec::new();
+
+    for &bevy_ent in &subtree_bevy {
+        let parent_inside_subtree = bevy_parents
+            .get(bevy_ent)
+            .ok()
+            .map(|p| p.get())
+            .is_some_and(|parent| subtree_bevy.contains(&parent));
 
         if !parent_inside_subtree && seen.insert(bevy_ent) {
             roots.push(bevy_ent);
@@ -472,6 +469,7 @@ fn remove_dom_subtree(
     pending_model_loads: &mut PendingModelLoads,
     model_load_states: &mut ModelLoadStates,
     space_handle_tables: &mut crate::SpaceHandleTables,
+    bevy_parents: &Query<&Parent>,
 ) -> usize {
     if !world.entities().is_alive(root) {
         return 0;
@@ -498,7 +496,10 @@ fn remove_dom_subtree(
         return 0;
     }
 
-    let bevy_roots = collect_bevy_subtree_roots(world, &subtree_ids, entity_map);
+    // Usar roots REALES de Bevy, no inferidos desde Specs.
+    // Esto permite volver a despawn_recursive() sin dejar huérfanos
+    // y sin pagar el costo de despawnear entidad por entidad.
+    let bevy_roots = collect_bevy_subtree_roots_from_bevy(&subtree_ids, entity_map, bevy_parents);
 
     for &node_id in &subtree_ids {
         clear_async_node_state(
@@ -818,6 +819,7 @@ pub fn process_delete_requests(
     mut model_load_states: ResMut<ModelLoadStates>,
     mut space_handle_tables: ResMut<crate::SpaceHandleTables>,
     mut dom_data: ResMut<VirtualDomData>,
+    bevy_parents: Query<&Parent>,
     mut include_load_states: ResMut<crate::IncludeLoadStates>,
     mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
     mut space_policies: ResMut<crate::permissions::SpacePolicies>,
@@ -839,6 +841,7 @@ pub fn process_delete_requests(
             &mut pending_model_loads,
             &mut model_load_states,
             &mut space_handle_tables,
+            &bevy_parents,
         );
 
         if deleted == 0 {
@@ -945,6 +948,7 @@ pub fn commit_pending_includes_system(
     mut model_load_states: ResMut<ModelLoadStates>,
     mut space_handle_tables: ResMut<crate::SpaceHandleTables>,
     mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
+    bevy_parents: Query<&Parent>,
     mut space_policies: ResMut<crate::permissions::SpacePolicies>,
 ) {
     let pending: Vec<_> = pending_includes.0.drain(..).collect();
@@ -1011,6 +1015,7 @@ pub fn commit_pending_includes_system(
                         &mut pending_model_loads,
                         &mut model_load_states,
                         &mut space_handle_tables,
+                        &bevy_parents,
                     );
                 }
 
@@ -1172,6 +1177,7 @@ pub fn dom_sync_system(
         &mut Transform,
         Option<&Dirty>,
         Option<&mut Handle<StandardMaterial>>,
+        Option<&Parent>,
     )>,
     mut visibility_query: Query<&mut Visibility>,
     asset_server: Res<AssetServer>,
@@ -1204,6 +1210,26 @@ pub fn dom_sync_system(
 
     // log_panel.push_info(format!("dom_sync: processing {} dirty nodes...", dirty_nodes.0.len()));
 
+    fn sync_parent_if_needed(
+        commands: &mut Commands,
+        parent_id: Option<u32>,
+        entity_map: &EntityMap,
+        bevy_ent: Entity,
+        current_parent: Option<Entity>,
+    ) {
+        let expected_parent = parent_id.and_then(|pid| entity_map.0.get(&pid).copied());
+
+        if current_parent == expected_parent {
+            return;
+        }
+
+        if let Some(parent_ent) = expected_parent {
+            commands.entity(bevy_ent).set_parent(parent_ent);
+        } else {
+            commands.entity(bevy_ent).remove_parent();
+        }
+    }
+
     for node_id in dirty_node_ids {
         let Some(node) = dom_data.nodes.get(&node_id) else {
             log_panel.push_error(format!("No dom node for id={}", node_id));
@@ -1221,6 +1247,21 @@ pub fn dom_sync_system(
 
         if let Some(&bevy_ent) = entity_map.0.get(&node_id) {
             // --- Update existing entity ---
+            let current_parent = {
+                match query.get_mut(bevy_ent) {
+                    Ok((_, _, _, _, parent)) => parent.map(|p| p.get()),
+                    Err(_) => None,
+                }
+            };
+
+            sync_parent_if_needed(
+                &mut commands,
+                parent_id,
+                &entity_map,
+                bevy_ent,
+                current_parent,
+            );
+
             //
             // REGLA: para aplicar cambios de atributos (setAttribute desde JS) hay que
             // leer el valor directamente de `attrs_storage` en esta rama, no depender del
@@ -1286,7 +1327,7 @@ pub fn dom_sync_system(
                     );
                     set_parent(&mut commands, new_ent, parent_id, &entity_map);
                     entity_map.0.insert(node_id, new_ent);
-                } else if let Ok((_, mut t, dirty, _)) = query.get_mut(bevy_ent) {
+                } else if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
                     if dirty.is_some() {
                         commands.entity(bevy_ent).remove::<Dirty>();
@@ -1310,7 +1351,7 @@ pub fn dom_sync_system(
                 let text_transform = build_text_transform(transform_b, &text_value, text_size);
 
                 let mut updated_in_place = false;
-                if let Ok((_, mut t, dirty, maybe_material)) = query.get_mut(bevy_ent) {
+                if let Ok((_, mut t, dirty, maybe_material, _)) = query.get_mut(bevy_ent) {
                     *t = text_transform;
                     if let Some(mut material_handle) = maybe_material {
                         *material_handle = text_material.clone();
@@ -1354,7 +1395,7 @@ pub fn dom_sync_system(
                     &world.0,
                     &mut pending_scripts,
                 );
-                if let Ok((_, mut t, dirty, _)) = query.get_mut(bevy_ent) {
+                if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
                     if dirty.is_some() {
                         commands.entity(bevy_ent).remove::<Dirty>();
@@ -1364,7 +1405,7 @@ pub fn dom_sync_system(
             }
 
             if tag == "space" || tag == "include" || is_structural_tag(&tag) {
-                if let Ok((_, mut t, dirty, _)) = query.get_mut(bevy_ent) {
+                if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
                     if dirty.is_some() {
                         commands.entity(bevy_ent).remove::<Dirty>();
@@ -1406,7 +1447,7 @@ pub fn dom_sync_system(
                     color,
                     double_sided,
                 );
-                if let Ok((_, mut t, dirty, maybe_material)) = query.get_mut(bevy_ent) {
+                if let Ok((_, mut t, dirty, maybe_material, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
                     if let Some(mut material_handle) = maybe_material {
                         *material_handle = material;
@@ -1419,7 +1460,7 @@ pub fn dom_sync_system(
             }
 
             // Default: update transform if dirty
-            if let Ok((_, mut t, dirty, _)) = query.get_mut(bevy_ent) {
+            if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
                 if dirty.is_some() {
                     *t = transform_b;
                     commands.entity(bevy_ent).remove::<Dirty>();

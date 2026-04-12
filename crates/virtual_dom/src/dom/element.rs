@@ -21,13 +21,34 @@ impl Hierarchy {
         }
     }
     pub fn add_child(world: &mut World, parent: Entity, child: Entity) {
+        // Si el child ya tenía padre, primero lo quitamos de ese padre anterior.
+        let old_parent_id = {
+            let hierarchies = world.read_storage::<Hierarchy>();
+            hierarchies.get(child).and_then(|h| h.parent)
+        };
+
+        let old_parent = old_parent_id.map(|id| world.entities().entity(id));
         let mut hierarchies = world.write_storage::<Hierarchy>();
 
-        // Añadir hijo al padre
-        hierarchies.get_mut(parent).unwrap().children.push(child);
+        if let Some(old_parent) = old_parent {
+            if old_parent != parent {
+                if let Some(old_parent_h) = hierarchies.get_mut(old_parent) {
+                    old_parent_h.children.retain(|c| *c != child);
+                }
+            }
+        }
 
-        // Añadir padre al hijo
-        hierarchies.get_mut(child).unwrap().parent = Some(parent.id());
+        // Añadir hijo al nuevo padre si todavía no estaba.
+        if let Some(parent_h) = hierarchies.get_mut(parent) {
+            if !parent_h.children.contains(&child) {
+                parent_h.children.push(child);
+            }
+        }
+
+        // Actualizar padre del hijo
+        if let Some(child_h) = hierarchies.get_mut(child) {
+            child_h.parent = Some(parent.id());
+        }
     }
 
     pub fn get_children(world: &World, entity: Entity) -> Option<Vec<Entity>> {
