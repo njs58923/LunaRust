@@ -112,6 +112,7 @@ pub fn vr_toque_raycast_system(
     mut last_trigger: Local<bool>,
 ) {
     let Ok(state) = actions.right_trigger.state(&session, openxr::Path::NULL) else {
+        log_panel.push_warn("[vr_toque] right_trigger.state failed");
         return;
     };
 
@@ -123,8 +124,12 @@ pub fn vr_toque_raycast_system(
         return;
     }
 
-    let Ok(controller_tf) = controller_query.get_single() else {
-        return;
+    let controller_tf = match controller_query.get_single() {
+        Ok(tf) => tf,
+        Err(e) => {
+            log_panel.push_warn(format!("[vr_toque] controller query failed: {:?}", e));
+            return;
+        }
     };
 
     let ray_origin = controller_tf.translation();
