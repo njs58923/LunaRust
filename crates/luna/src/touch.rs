@@ -133,7 +133,7 @@ pub fn vr_toque_raycast_system(
     };
 
     let ray_origin = controller_tf.translation();
-    let ray_dir = controller_tf.forward().as_vec3();
+    let ray_dir = -controller_tf.up().as_vec3();
 
     let mut closest: Option<(f32, u32, Vec3)> = None;
 
