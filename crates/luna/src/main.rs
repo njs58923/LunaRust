@@ -88,6 +88,8 @@ fn main() {
     app.insert_resource(ReloadTrigger(false));
     app.insert_resource(AttributeUpdates::default());
     app.insert_resource(DeleteRequests::default());
+    app.insert_resource(TransformUpdates::default());
+    app.insert_resource(TransformOnlyDirtyNodes::default());
     app.insert_resource(SpaceHandleTables::default());
     app.insert_resource(DevtoolVisible(false));
     app.insert_resource(LogPanel::default());
@@ -148,6 +150,7 @@ fn main() {
         Update,
         (
             io::poll_io_results_system,
+            dom::apply_transform_updates.run_if(|u: Res<TransformUpdates>| !u.is_empty()),
             dom::request_navigation_system.run_if(|r: Res<ReloadTrigger>| r.0),
             dom::commit_pending_document_load_system
                 .run_if(|p: Res<PendingDocumentLoads>| !p.0.is_empty()),

@@ -243,6 +243,8 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
   <script>
     const root = hiperspace.dimention;
+    const __tmpRot = { x: 0, y: 0, z: 0 };
+    const __tmpPos = { x: 0, y: 0, z: 0 };
 
     // Each entry: { el, baseX, baseY, baseZ }
     const dynamicNodes = [];
@@ -359,16 +361,15 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       const t = ts / 1000;
       dynamicNodes.forEach(({ el, bx, by, bz }, i) => {
         const off = i * 0.38;
-        el.rotation = {
-          x: Math.sin(t * 0.5 + off) * 0.12,
-          y: t * 0.9 + off,
-          z: Math.sin(t * 0.7 + off) * 0.12,
-        };
-        el.position = {
-          x: bx,
-          y: by + Math.sin(t * 1.4 + off) * (by * 0.25),
-          z: bz,
-        };
+        __tmpRot.x = Math.sin(t * 0.5 + off) * 0.12;
+        __tmpRot.y = t * 0.9 + off;
+        __tmpRot.z = Math.sin(t * 0.7 + off) * 0.12;
+        el.rotation = __tmpRot;
+
+        __tmpPos.x = bx;
+        __tmpPos.y = by + Math.sin(t * 1.4 + off) * (by * 0.25);
+        __tmpPos.z = bz;
+        el.position = __tmpPos;
       });
       requestAnimationFrame(animateFrame);
     }

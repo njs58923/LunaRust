@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{collections::{HashMap, HashSet}, fs, path::PathBuf};
 
 use bevy::{ecs::system::SystemParam, prelude::*};
 use serde::{Deserialize, Serialize};
@@ -211,6 +211,23 @@ impl AttributeUpdates {
             .collect()
     }
 }
+#[derive(Resource, Default)]
+pub struct TransformUpdates {
+    pub positions: Vec<(u32, js_runtime::Vec3)>,
+    pub rotations: Vec<(u32, js_runtime::Vec3)>,
+    pub scales: Vec<(u32, js_runtime::Vec3)>,
+}
+
+impl TransformUpdates {
+    pub fn is_empty(&self) -> bool {
+        self.positions.is_empty() && self.rotations.is_empty() && self.scales.is_empty()
+    }
+}
+
+/// Nodos que solo cambiaron transform en este frame.
+/// Permite usar un fast-path en dom_sync_system sin recalcular attrs/materiales.
+#[derive(Resource, Default)]
+pub struct TransformOnlyDirtyNodes(pub HashSet<u32>);
 
 #[derive(Component)]
 pub struct Dirty;
@@ -400,6 +417,7 @@ pub struct AsyncDomParams<'w> {
     pub script_load_states: ResMut<'w, crate::ScriptLoadStates>,
     pub pending_model_loads: ResMut<'w, crate::PendingModelLoads>,
     pub model_load_states: ResMut<'w, crate::ModelLoadStates>,
+    pub transform_only_dirty: ResMut<'w, crate::TransformOnlyDirtyNodes>,
 }
 
 #[derive(SystemParam)]

@@ -225,9 +225,13 @@
     }
 
     setAttribute(key, value) {
-      this._onResolved((nodeId) => {
-        core.ops.op_hsml_set_attr(nodeId, String(key), String(value));
-      });
+       const k = String(key);
+       const v = String(value);
+       if (this._isResolved()) {
+         core.ops.op_hsml_set_attr(this._nodeId, k, v);
+       } else {
+         this._onResolved((nodeId) => core.ops.op_hsml_set_attr(nodeId, k, v));
+       }
     }
 
     get id() { return this.getAttribute('id'); }
@@ -264,9 +268,13 @@
 
     set position(v) {
       if (typeof v === 'object' && v.x != null && v.y != null && v.z != null) {
-        this._onResolved((nodeId) => {
-          core.ops.op_hsml_set_position(nodeId, v.x, v.y, v.z);
-        });
+        if (this._isResolved()) {
+          core.ops.op_hsml_set_position(this._nodeId, v.x, v.y, v.z);
+        } else {
+          this._onResolved((nodeId) => {
+            core.ops.op_hsml_set_position(nodeId, v.x, v.y, v.z);
+          });
+        }
         if (this._positionProxy) {
           this._positionProxy._cache = { x: v.x, y: v.y, z: v.z };
         }
@@ -289,9 +297,13 @@
 
     set rotation(v) {
       if (typeof v === 'object' && v.x != null && v.y != null && v.z != null) {
-        this._onResolved((nodeId) => {
-          core.ops.op_hsml_set_rotation(nodeId, v.x, v.y, v.z);
-        });
+        if (this._isResolved()) {
+          core.ops.op_hsml_set_rotation(this._nodeId, v.x, v.y, v.z);
+        } else {
+          this._onResolved((nodeId) => {
+            core.ops.op_hsml_set_rotation(nodeId, v.x, v.y, v.z);
+          });
+        }
         if (this._rotationProxy) {
           this._rotationProxy._cache = { x: v.x, y: v.y, z: v.z };
         }
@@ -314,9 +326,13 @@
 
     set scale(v) {
       if (typeof v === 'number') {
-        this._onResolved((nodeId) => {
-          core.ops.op_hsml_set_scale(nodeId, v, v, v);
-        });
+        if (this._isResolved()) {
+          core.ops.op_hsml_set_scale(this._nodeId, v, v, v);
+        } else {
+          this._onResolved((nodeId) => {
+            core.ops.op_hsml_set_scale(nodeId, v, v, v);
+          });
+        }
         if (this._scaleProxy) {
           this._scaleProxy._cache = { x: v, y: v, z: v };
         }

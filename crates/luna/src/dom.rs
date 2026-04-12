@@ -667,12 +667,87 @@ where
 
 // ─── Attribute updates ───────────────────────────────────────────────────────
 
+pub fn apply_transform_updates(
+    mut transform_updates: ResMut<crate::TransformUpdates>,
+    mut world: ResMut<ElemenetWorld>,
+    mut dirty_nodes: ResMut<DirtyNodes>,
+    mut transform_only_dirty: ResMut<crate::TransformOnlyDirtyNodes>,
+) {
+    if transform_updates.is_empty() {
+        return;
+    }
+
+    let entities = world.0.entities();
+    let mut tr_storage = world.0.write_storage::<Transform2>();
+
+    let mut last_positions: HashMap<u32, js_runtime::Vec3> = HashMap::new();
+    let mut last_rotations: HashMap<u32, js_runtime::Vec3> = HashMap::new();
+    let mut last_scales: HashMap<u32, js_runtime::Vec3> = HashMap::new();
+
+    for (node_id, pos) in transform_updates.positions.drain(..) {
+        last_positions.insert(node_id, pos);
+    }
+    for (node_id, rot) in transform_updates.rotations.drain(..) {
+        last_rotations.insert(node_id, rot);
+    }
+    for (node_id, scale) in transform_updates.scales.drain(..) {
+        last_scales.insert(node_id, scale);
+    }
+
+    let mut updated_nodes = HashSet::new();
+
+    for (node_id, pos) in last_positions {
+        let ent = entities.entity(node_id);
+        if !entities.is_alive(ent) {
+            continue;
+        }
+        if let Some(tr) = tr_storage.get_mut(ent) {
+            tr.position.x = pos.x;
+            tr.position.y = pos.y;
+            tr.position.z = pos.z;
+            updated_nodes.insert(node_id);
+        }
+    }
+
+    for (node_id, rot) in last_rotations {
+        let ent = entities.entity(node_id);
+        if !entities.is_alive(ent) {
+            continue;
+        }
+        if let Some(tr) = tr_storage.get_mut(ent) {
+            tr.rotation.x = rot.x;
+            tr.rotation.y = rot.y;
+            tr.rotation.z = rot.z;
+            updated_nodes.insert(node_id);
+        }
+    }
+
+    for (node_id, scale) in last_scales {
+        let ent = entities.entity(node_id);
+        if !entities.is_alive(ent) {
+            continue;
+        }
+        if let Some(tr) = tr_storage.get_mut(ent) {
+            tr.scale.x = scale.x;
+            tr.scale.y = scale.y;
+            tr.scale.z = scale.z;
+            updated_nodes.insert(node_id);
+        }
+    }
+
+    let updated_nodes: Vec<u32> = updated_nodes.into_iter().collect();
+    dirty_nodes.0.extend(updated_nodes.iter().copied());
+    transform_only_dirty.0.extend(updated_nodes);
+}
+
+
 pub fn apply_attribute_updates(
     mut attribute_updates: ResMut<AttributeUpdates>,
     world: ResMut<ElemenetWorld>,
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
     mut space_policies: ResMut<crate::permissions::SpacePolicies>,
+    mut transform_only_dirty: ResMut<crate::TransformOnlyDirtyNodes>,
 ) {
     if attribute_updates.0.is_empty() {
         return;
@@ -704,6 +779,8 @@ pub fn apply_attribute_updates(
         if !entities.is_alive(ent) {
             continue;
         }
+        transform_only_dirty.0.remove(&ent_id);
+
 
         if attrs_storage.get(ent).is_none() {
             let _ = attrs_storage.insert(ent, Attrs(HashMap::new()));
@@ -1191,7 +1268,7 @@ pub fn dom_sync_system(
     mut text_render: TextRenderParams,
     mut meshes: ResMut<Assets<Mesh>>,
     mut pending_scripts: ResMut<crate::PendingScripts>,
-    mut include_load_states: ResMut<crate::IncludeLoadStates>,
+    mut include_load_states: ResMut<crate::IncludeLoadStates>
 ) {
     let start_time = Instant::now();
     let dirty_node_ids = dirty_nodes.take_unique();
@@ -1204,6 +1281,7 @@ pub fn dom_sync_system(
     let script_load_states = &mut async_dom.script_load_states;
     let pending_model_loads = &mut async_dom.pending_model_loads;
     let model_load_states = &mut async_dom.model_load_states;
+    let transform_only_dirty = &mut async_dom.transform_only_dirty;
 
     let tags = world.0.read_storage::<Tag>();
     let transforms = world.0.read_storage::<Transform2>();
@@ -1243,6 +1321,7 @@ pub fn dom_sync_system(
         let tag = tags.get(*node).map(|t| t.0.clone()).unwrap_or_default();
         let hierarchy = hierarchies.get(*node);
         let parent_id = hierarchy.and_then(|h| h.parent);
+        let transform_only = transform_only_dirty.0.contains(&node_id);
 
         let mut transform_b = Transform::default();
         if let Some(tr2) = transforms.get(*node) {
@@ -1265,6 +1344,31 @@ pub fn dom_sync_system(
                 bevy_ent,
                 current_parent,
             );
+
+            if transform_only {
+                if tag == "text" {
+                    let empty_map = HashMap::new();
+                    let attrs_map = attrs_storage.get(*node).map(|a| &a.0).unwrap_or(&empty_map);
+                    let (text_value, text_size, _) = parse_text_attrs(attrs_map);
+                    let text_transform = build_text_transform(transform_b, &text_value, text_size);
+                    if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
+                        *t = text_transform;
+                        if dirty.is_some() {
+                            commands.entity(bevy_ent).remove::<Dirty>();
+                        }
+                    }
+                } else {
+                    if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
+                        *t = transform_b;
+                        if dirty.is_some() {
+                            commands.entity(bevy_ent).remove::<Dirty>();
+                        }
+                    }
+                }
+
+                transform_only_dirty.0.remove(&node_id);
+                continue;
+            }
 
             //
             // REGLA: para aplicar cambios de atributos (setAttribute desde JS) hay que

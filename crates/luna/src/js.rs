@@ -19,7 +19,7 @@ use virtual_dom::dom::{
 use crate::{
     request_fetch_text, AttributeUpdates, DirtyNodes, ElemenetWorld, IoService, JsSnapshotState,
     LogLevel, LogPanel, ModelLoadStates, PendingModelLoads, PendingScripts, ReloadTrigger,
-    ScriptLoadStates, SpaceHandleTable, SpaceHandleTables,
+    ScriptLoadStates, SpaceHandleTable, SpaceHandleTables, TransformUpdates,
 };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -1143,11 +1143,19 @@ pub fn js_tick_system(world: &mut World) {
     }
 
     let mut ownership_logs = Vec::new();
-    let validated_attribute_updates = {
+    let (
+        validated_attribute_updates,
+        validated_position_updates,
+        validated_rotation_updates,
+        validated_scale_updates,
+    ) = {
         let Some(space_handle_tables) = world.get_resource::<SpaceHandleTables>() else {
             return;
         };
         let mut validated = Vec::new();
+        let mut validated_positions = Vec::new();
+        let mut validated_rotations = Vec::new();
+        let mut validated_scales = Vec::new();
 
         for (space_id, updates) in attr_update_batches {
             for (local_id, key, value) in updates {
@@ -1166,9 +1174,7 @@ pub fn js_tick_system(world: &mut World) {
             for (local_id, pos) in updates {
                 if let Some(global_id) = resolve_global_id(&space_handle_tables, space_id, local_id)
                 {
-                    validated.push((global_id, "x".to_string(), pos.x.to_string()));
-                    validated.push((global_id, "y".to_string(), pos.y.to_string()));
-                    validated.push((global_id, "z".to_string(), pos.z.to_string()));
+                    validated_positions.push((global_id, pos));
                 } else {
                     ownership_logs.push(format!(
                         "[JS][space:{space_id}] Blocked invalid local position write: local_id={local_id}"
@@ -1181,9 +1187,7 @@ pub fn js_tick_system(world: &mut World) {
             for (local_id, rot) in updates {
                 if let Some(global_id) = resolve_global_id(&space_handle_tables, space_id, local_id)
                 {
-                    validated.push((global_id, "rx".to_string(), rot.x.to_string()));
-                    validated.push((global_id, "ry".to_string(), rot.y.to_string()));
-                    validated.push((global_id, "rz".to_string(), rot.z.to_string()));
+                    validated_rotations.push((global_id, rot));
                 } else {
                     ownership_logs.push(format!(
                         "[JS][space:{space_id}] Blocked invalid local rotation write: local_id={local_id}"
@@ -1196,9 +1200,7 @@ pub fn js_tick_system(world: &mut World) {
             for (local_id, scale) in updates {
                 if let Some(global_id) = resolve_global_id(&space_handle_tables, space_id, local_id)
                 {
-                    validated.push((global_id, "sx".to_string(), scale.x.to_string()));
-                    validated.push((global_id, "sy".to_string(), scale.y.to_string()));
-                    validated.push((global_id, "sz".to_string(), scale.z.to_string()));
+                    validated_scales.push((global_id, scale));
                 } else {
                     ownership_logs.push(format!(
                         "[JS][space:{space_id}] Blocked invalid local scale write: local_id={local_id}"
@@ -1207,7 +1209,12 @@ pub fn js_tick_system(world: &mut World) {
             }
         }
 
-        validated
+        (
+            validated,
+            validated_positions,
+            validated_rotations,
+            validated_scales,
+        )
     };
 
     {
@@ -1215,6 +1222,15 @@ pub fn js_tick_system(world: &mut World) {
             return;
         };
         attribute_updates.0.extend(validated_attribute_updates);
+    }
+    
+    {
+        let Some(mut transform_updates) = world.get_resource_mut::<TransformUpdates>() else {
+            return;
+        };
+        transform_updates.positions.extend(validated_position_updates);
+        transform_updates.rotations.extend(validated_rotation_updates);
+        transform_updates.scales.extend(validated_scale_updates);
     }
 
     if !ownership_logs.is_empty() {
