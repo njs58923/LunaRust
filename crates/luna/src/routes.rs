@@ -127,35 +127,248 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
   <space resources="navigate_self">
-    <text x="0" y="1.5" z="-2" value="Luna Demos" size="0.3" />
-    <text x="0" y="1.2" z="-2" value="Interactive 3D Demonstrations" size="0.15" />
+    <text x="0" y="2.25" z="-3.0" value="Luna Demos" size="0.32" />
+    <text x="0" y="1.95" z="-3.0" value="DOM, transforms, runtime and navigation playground" size="0.13" />
 
-    <box x="-1.2" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#9C27B0" id="demo_cube" />
-    <text x="-1.2" y="0.6" z="-1.9" value="Demo 1" size="0.1" />
+    <plane x="0" y="0.15" z="-7" sx="4.8" sy="2.6" sz="1" color="#151A22" id="demo_panel" />
+    <plane x="0" y="-1.0" z="-5.0" rx="-1.2" sx="6.5" sy="4.0" sz="1" color="#0D1117" id="demo_floor" />
 
-    <box x="0" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#00BCD4" id="demo_colors" />
-    <text x="0" y="0.6" z="-1.9" value="Demo 2" size="0.1" />
+    <text x="-2.0" y="1.45" z="-3.0" value="Spawn" size="0.11" color="#8BC34A" />
+    <text x="0.0" y="1.45" z="-3.0" value="Modify" size="0.11" color="#03A9F4" />
+    <text x="1.95" y="1.45" z="-3.0" value="Navigation" size="0.11" color="#FFB74D" />
 
-    <box x="1.2" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#FF5722" id="demo_buttons" />
-    <text x="1.2" y="0.6" z="-1.9" value="Demo 3" size="0.1" />
+    <box x="-2.0" y="1.05" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#4CAF50" id="demo_spawn_box" />
+    <text x="-2.0" y="1.05" z="-2.94" value="Spawn Box" size="0.08" />
 
-    <box x="0" y="-0.2" z="-2" sx="0.6" sy="0.2" sz="0.05" color="#4CAF50" id="btn_home" />
-    <text x="0" y="-0.2" z="-1.95" value="Back to Home" size="0.08" />
+    <box x="-2.0" y="0.68" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#8BC34A" id="demo_spawn_sphere" />
+    <text x="-2.0" y="0.68" z="-2.94" value="Spawn Sphere" size="0.08" />
+
+    <box x="-2.0" y="0.31" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#009688" id="demo_spawn_cylinder" />
+    <text x="-2.0" y="0.31" z="-2.94" value="Spawn Cylinder" size="0.08" />
+
+    <box x="-2.0" y="-0.06" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#607D8B" id="demo_spawn_plane" />
+    <text x="-2.0" y="-0.06" z="-2.94" value="Spawn Plane" size="0.08" />
+
+    <box x="-2.0" y="-0.43" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#7E57C2" id="demo_stress" />
+    <text x="-2.0" y="-0.43" z="-2.94" value="Spawn x25" size="0.08" />
+
+    <box x="0.0" y="1.05" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#03A9F4" id="demo_recolor" />
+    <text x="0.0" y="1.05" z="-2.94" value="Recolor" size="0.08" />
+
+    <box x="0.0" y="0.68" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#00BCD4" id="demo_toggle_anim" />
+    <text x="0.0" y="0.68" z="-2.94" value="Toggle Anim" size="0.08" />
+
+    <box x="0.0" y="0.31" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#2196F3" id="demo_move_banner" />
+    <text x="0.0" y="0.31" z="-2.94" value="Move Banner" size="0.08" />
+
+    <box x="0.0" y="-0.06" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#1976D2" id="demo_toggle_floor" />
+    <text x="0.0" y="-0.06" z="-2.94" value="Toggle Floor" size="0.08" />
+
+    <box x="0.0" y="-0.43" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#E53935" id="demo_clear" />
+    <text x="0.0" y="-0.43" z="-2.94" value="Clear Dynamic" size="0.08" />
+
+    <box x="1.95" y="1.05" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#4CAF50" id="btn_home" />
+    <text x="1.95" y="1.05" z="-2.94" value="Home" size="0.08" />
+
+    <box x="1.95" y="0.68" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#FF9800" id="btn_about" />
+    <text x="1.95" y="0.68" z="-2.94" value="About" size="0.08" />
+
+    <box x="1.95" y="0.31" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#9C27B0" id="btn_settings" />
+    <text x="1.95" y="0.31" z="-2.94" value="Settings" size="0.08" />
+
+    <box x="1.95" y="-0.06" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#795548" id="demo_query" />
+    <text x="1.95" y="-0.06" z="-2.94" value="Query Test" size="0.08" />
+
+    <box x="1.95" y="-0.43" z="-3.0" sx="0.7" sy="0.24" sz="0.06" color="#546E7A" id="demo_wave" />
+    <text x="1.95" y="-0.43" z="-2.94" value="Wave Once" size="0.08" />
+
+    <text x="0" y="-0.88" z="-2.95" value="Status: ready" size="0.09" id="demo_status" color="#FFFFFF" />
+    <text x="0" y="-1.12" z="-2.95" value="Dynamic nodes: 0" size="0.08" id="demo_count" color="#B0BEC5" />
+    <text x="0" y="-1.34" z="-2.95" value="Animation: off" size="0.08" id="demo_anim" color="#B0BEC5" />
+    <text x="0" y="-1.58" z="-2.95" value="Try create/remove/recolor/move/query/navigation" size="0.075" id="demo_hint" color="#90A4AE" />
 
   <script>
-    const btnHome = hiperspace.dimention.getElementById('btn_home');
-    if (btnHome) btnHome.addEventListener('toque', () => { location.href = 'luna://home'; });
+    const root = hiperspace.dimention;
+    const dynamicNodes = [];
+    let nextId = 1;
+    let animating = false;
+    let bannerMoved = false;
+    let floorVisible = true;
 
-    // Demo placeholders - implement actual demo logic later
-    const demos = ['demo_cube', 'demo_colors', 'demo_buttons'];
-    demos.forEach(id => {
-      const elem = hiperspace.dimention.getElementById(id);
-      if (elem) elem.addEventListener('toque', () => {
-        console.log('Demo clicked:', id, '- Implementation pending');
+    function byId(id) {
+      return root.getElementById(id);
+    }
+
+    function setText(id, value) {
+      const el = byId(id);
+      if (el) el.setAttribute('value', value);
+    }
+
+    function setStatus(value) {
+      setText('demo_status', 'Status: ' + value);
+      console.log('[luna://demos]', value);
+    }
+
+    function updateCounters() {
+      setText('demo_count', 'Dynamic nodes: ' + dynamicNodes.length);
+      setText('demo_anim', 'Animation: ' + (animating ? 'on' : 'off'));
+    }
+
+    function randomColor() {
+      const colors = ['#F44336', '#E91E63', '#9C27B0', '#673AB7', '#3F51B5', '#2196F3', '#00BCD4', '#009688', '#4CAF50', '#FF9800'];
+      return colors[Math.floor(Math.random() * colors.length)];
+    }
+
+    function randomX() {
+      return -2.2 + Math.random() * 4.4;
+    }
+
+    function randomY() {
+      return -0.9 + Math.random() * 1.4;
+    }
+
+    function randomZ() {
+      return -4.7 + Math.random() * 1.0;
+    }
+
+    function registerDynamic(el, tag) {
+      el.id = 'demo_dyn_' + nextId;
+      nextId += 1;
+      el.className = 'demo-dynamic';
+      el.setAttribute('color', randomColor());
+      el.setAttribute('sx', '0.28');
+      el.setAttribute('sy', '0.28');
+      el.setAttribute('sz', '0.28');
+      el.position = { x: randomX(), y: randomY(), z: randomZ() };
+      if (tag === 'plane') {
+        el.setAttribute('sx', '0.55');
+        el.setAttribute('sy', '0.55');
+        el.setAttribute('sz', '1');
+        el.rotation = { x: -1.15, y: 0, z: 0 };
+      }
+      if (tag === 'cylinder') {
+        el.setAttribute('sy', '0.45');
+      }
+      root.appendChild(el);
+      dynamicNodes.push(el);
+      updateCounters();
+      setStatus('spawned ' + tag);
+    }
+
+    function spawn(tag, amount) {
+      Array.from({ length: amount }).forEach(() => {
+        const el = root.createElement(tag);
+        registerDynamic(el, tag);
       });
+    }
+
+    function clearDynamic() {
+      while (dynamicNodes.length) {
+        const el = dynamicNodes.pop();
+        if (el) el.remove();
+      }
+      updateCounters();
+      setStatus('cleared dynamic nodes');
+    }
+
+    function recolorDynamic() {
+      dynamicNodes.forEach((el) => {
+        el.setAttribute('color', randomColor());
+      });
+      setStatus('recolored dynamic nodes');
+    }
+
+    function animateFrame(ts) {
+      if (!animating) return;
+      const t = ts / 1000;
+      dynamicNodes.forEach((el, index) => {
+        const offset = index * 0.22;
+        el.rotation = {
+          x: 0,
+          y: t + offset,
+          z: Math.sin(t + offset) * 0.2
+        };
+        el.position = {
+          x: el.position.x,
+          y: Math.sin((t * 2.0) + offset) * 0.25,
+          z: el.position.z
+        };
+      });
+      requestAnimationFrame(animateFrame);
+    }
+
+    function toggleAnimation() {
+      animating = !animating;
+      updateCounters();
+      setStatus(animating ? 'animation started' : 'animation stopped');
+      if (animating) requestAnimationFrame(animateFrame);
+    }
+
+    function moveBanner() {
+      const panel = byId('demo_panel');
+      if (!panel) return;
+      bannerMoved = !bannerMoved;
+      panel.position = bannerMoved
+        ? { x: 0.35, y: 0.35, z: -3.8 }
+        : { x: 0.0, y: 0.15, z: -3.8 };
+      panel.rotation = bannerMoved
+        ? { x: 0, y: 0.14, z: 0 }
+        : { x: 0, y: 0, z: 0 };
+      setStatus('moved banner panel');
+    }
+
+    function toggleFloor() {
+      const floor = byId('demo_floor');
+      if (!floor) return;
+      floorVisible = !floorVisible;
+      floor.setAttribute('visible', floorVisible ? 'true' : 'false');
+      setStatus(floorVisible ? 'floor visible' : 'floor hidden');
+    }
+
+    function queryTest() {
+      const all = root.getElementsByClass('demo-dynamic');
+      const first = all.length ? all[0].id : 'none';
+      setText('demo_hint', 'Query found ' + all.length + ' dynamic nodes, first=' + first);
+      setStatus('querySelector-style test complete');
+    }
+
+    function waveOnce() {
+      dynamicNodes.forEach((el, index) => {
+        el.position = {
+          x: -2.0 + (index % 8) * 0.55,
+          y: -0.8 + Math.floor(index / 8) * 0.45,
+          z: -4.2
+        };
+        el.rotation = { x: 0, y: index * 0.2, z: 0 };
+      });
+      setStatus('arranged dynamic nodes in grid');
+    }
+
+    const bindings = {
+      demo_spawn_box: () => spawn('box', 25),
+      demo_spawn_sphere: () => spawn('sphere', 1),
+      demo_spawn_cylinder: () => spawn('cylinder', 1),
+      demo_spawn_plane: () => spawn('plane', 1),
+      demo_stress: () => spawn('box', 2),
+      demo_recolor: recolorDynamic,
+      demo_toggle_anim: toggleAnimation,
+      demo_move_banner: moveBanner,
+      demo_toggle_floor: toggleFloor,
+      demo_clear: clearDynamic,
+      demo_query: queryTest,
+      demo_wave: waveOnce,
+      btn_home: () => { location.href = 'luna://home'; },
+      btn_about: () => { location.href = 'luna://about'; },
+      btn_settings: () => { location.href = 'luna://settings'; },
+    };
+
+    Object.keys(bindings).forEach((id) => {
+      const el = byId(id);
+      if (el) el.addEventListener('toque', bindings[id]);
     });
 
-    console.log('[luna://demos] Page loaded');
+    updateCounters();
+    setStatus('demos ready');
   </script>
   </space>
 </hsml>"##;
