@@ -213,6 +213,7 @@ impl AttributeUpdates {
 }
 #[derive(Resource, Default)]
 pub struct TransformUpdates {
+    pub local_transforms: Vec<(u32, js_runtime::Vec3, js_runtime::Vec3)>,
     pub positions: Vec<(u32, js_runtime::Vec3)>,
     pub rotations: Vec<(u32, js_runtime::Vec3)>,
     pub scales: Vec<(u32, js_runtime::Vec3)>,
@@ -220,7 +221,10 @@ pub struct TransformUpdates {
 
 impl TransformUpdates {
     pub fn is_empty(&self) -> bool {
-        self.positions.is_empty() && self.rotations.is_empty() && self.scales.is_empty()
+        self.local_transforms.is_empty()
+            && self.positions.is_empty()
+            && self.rotations.is_empty()
+            && self.scales.is_empty()
     }
 }
 

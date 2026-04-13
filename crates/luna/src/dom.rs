@@ -680,12 +680,16 @@ pub fn apply_transform_updates(
     let entities = world.0.entities();
     let mut tr_storage = world.0.write_storage::<Transform2>();
 
+    let mut last_local_transforms: HashMap<u32, (js_runtime::Vec3, js_runtime::Vec3)> = HashMap::new();
     let mut last_positions: HashMap<u32, js_runtime::Vec3> = HashMap::new();
     let mut last_rotations: HashMap<u32, js_runtime::Vec3> = HashMap::new();
     let mut last_scales: HashMap<u32, js_runtime::Vec3> = HashMap::new();
 
     for (node_id, pos) in transform_updates.positions.drain(..) {
         last_positions.insert(node_id, pos);
+    }
+    for (node_id, pos, rot) in transform_updates.local_transforms.drain(..) {
+        last_local_transforms.insert(node_id, (pos, rot));
     }
     for (node_id, rot) in transform_updates.rotations.drain(..) {
         last_rotations.insert(node_id, rot);
@@ -695,6 +699,26 @@ pub fn apply_transform_updates(
     }
 
     let mut updated_nodes = HashSet::new();
+
+    for (node_id, (pos, rot)) in last_local_transforms {
+        let ent = entities.entity(node_id);
+        if !entities.is_alive(ent) {
+            continue;
+        }
+        if let Some(tr) = tr_storage.get_mut(ent) {
+            tr.position.x = pos.x;
+            tr.position.y = pos.y;
+            tr.position.z = pos.z;
+
+            tr.rotation.x = rot.x;
+            tr.rotation.y = rot.y;
+            tr.rotation.z = rot.z;
+
+            updated_nodes.insert(node_id);
+        }
+    }
+
+    // Overrides específicos del frame pueden seguir entrando por separado.
 
     for (node_id, pos) in last_positions {
         let ent = entities.entity(node_id);

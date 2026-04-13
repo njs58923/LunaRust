@@ -45,6 +45,7 @@ pub struct SpaceSnapshots {
 pub struct JsTickData {
     pub logs: Vec<(String, String)>,
     pub attr_updates: Vec<(i32, String, String)>,
+    pub local_transform_updates: Vec<(i32, js_runtime::Vec3, js_runtime::Vec3)>,
     pub pos_updates: Vec<(i32, js_runtime::Vec3)>,
     pub rot_updates: Vec<(i32, js_runtime::Vec3)>,
     pub scale_updates: Vec<(i32, js_runtime::Vec3)>,
@@ -210,6 +211,7 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                         let tick_data = JsTickData {
                             logs: ctx.engine.drain_logs(),
                             attr_updates: ctx.engine.drain_attr_updates(),
+                            local_transform_updates: ctx.engine.drain_transform_local_updates(),
                             pos_updates: ctx.engine.drain_transform_position_updates(),
                             rot_updates: ctx.engine.drain_transform_rotation_updates(),
                             scale_updates: ctx.engine.drain_transform_scale_updates(),
@@ -1074,6 +1076,7 @@ pub fn js_tick_system(world: &mut World) {
 
     let mut logs_by_context = Vec::new();
     let mut attr_update_batches = Vec::new();
+    let mut local_transform_batches = Vec::new();
     let mut pos_update_batches = Vec::new();
     let mut rot_update_batches = Vec::new();
     let mut scale_update_batches = Vec::new();
@@ -1107,6 +1110,9 @@ pub fn js_tick_system(world: &mut World) {
         }
         if !data.attr_updates.is_empty() {
             attr_update_batches.push((space_id, data.attr_updates));
+        }
+        if !data.local_transform_updates.is_empty() {
+            local_transform_batches.push((space_id, data.local_transform_updates));
         }
         if !data.pos_updates.is_empty() {
             pos_update_batches.push((space_id, data.pos_updates));
@@ -1145,6 +1151,7 @@ pub fn js_tick_system(world: &mut World) {
     let mut ownership_logs = Vec::new();
     let (
         validated_attribute_updates,
+        validated_local_transform_updates,
         validated_position_updates,
         validated_rotation_updates,
         validated_scale_updates,
@@ -1153,6 +1160,7 @@ pub fn js_tick_system(world: &mut World) {
             return;
         };
         let mut validated = Vec::new();
+        let mut validated_local_transforms = Vec::new();
         let mut validated_positions = Vec::new();
         let mut validated_rotations = Vec::new();
         let mut validated_scales = Vec::new();
@@ -1165,6 +1173,18 @@ pub fn js_tick_system(world: &mut World) {
                 } else {
                     ownership_logs.push(format!(
                         "[JS][space:{space_id}] Blocked invalid local attribute write: local_id={local_id}, key={key}"
+                    ));
+                }
+            }
+        }
+        for (space_id, updates) in local_transform_batches {
+            for (local_id, pos, rot) in updates {
+                if let Some(global_id) = resolve_global_id(&space_handle_tables, space_id, local_id)
+                {
+                    validated_local_transforms.push((global_id, pos, rot));
+                } else {
+                    ownership_logs.push(format!(
+                        "[JS][space:{space_id}] Blocked invalid local transform write: local_id={local_id}"
                     ));
                 }
             }
@@ -1211,6 +1231,7 @@ pub fn js_tick_system(world: &mut World) {
 
         (
             validated,
+            validated_local_transforms,
             validated_positions,
             validated_rotations,
             validated_scales,
@@ -1228,6 +1249,7 @@ pub fn js_tick_system(world: &mut World) {
         let Some(mut transform_updates) = world.get_resource_mut::<TransformUpdates>() else {
             return;
         };
+        transform_updates.local_transforms.extend(validated_local_transform_updates);
         transform_updates.positions.extend(validated_position_updates);
         transform_updates.rotations.extend(validated_rotation_updates);
         transform_updates.scales.extend(validated_scale_updates);

@@ -173,6 +173,7 @@ impl Default for TransformSnapshot {
 
 /// Transform mutation queue: Vec<(node_id, Vec3)>
 pub struct TransformUpdateQueue {
+    pub local_transforms: Arc<Mutex<Vec<(i32, Vec3, Vec3)>>>, // (node_id, position, rotation)
     pub positions: Arc<Mutex<Vec<(i32, Vec3)>>>,
     pub rotations: Arc<Mutex<Vec<(i32, Vec3)>>>,
     pub scales: Arc<Mutex<Vec<(i32, Vec3)>>>,
@@ -181,6 +182,7 @@ pub struct TransformUpdateQueue {
 impl Default for TransformUpdateQueue {
     fn default() -> Self {
         Self {
+            local_transforms: Arc::new(Mutex::new(Vec::new())),
             positions: Arc::new(Mutex::new(Vec::new())),
             rotations: Arc::new(Mutex::new(Vec::new())),
             scales: Arc::new(Mutex::new(Vec::new())),
@@ -564,6 +566,17 @@ fn op_hsml_set_rotation(state: &mut OpState, #[smi] node_id: i32, x: f32, y: f32
 }
 
 #[op2(fast)]
+fn op_hsml_set_local_transform(
+    state: &mut OpState,
+    #[smi] node_id: i32,
+    px: f32, py: f32, pz: f32,
+    rx: f32, ry: f32, rz: f32,
+) {
+    let queue = state.borrow::<TransformUpdateQueue>();
+    queue.local_transforms.lock().unwrap().push((node_id, Vec3 { x: px, y: py, z: pz }, Vec3 { x: rx, y: ry, z: rz }));
+}
+
+#[op2(fast)]
 fn op_hsml_set_scale(state: &mut OpState, #[smi] node_id: i32, x: f32, y: f32, z: f32) {
     let queue = state.borrow::<TransformUpdateQueue>();
     queue.scales.lock().unwrap().push((node_id, Vec3 { x, y, z }));
@@ -776,6 +789,7 @@ pub struct Engine {
     tag_snapshot: Arc<Mutex<HashMap<i32, String>>>,
 
     // Transforms
+    transform_update_local_transforms: Arc<Mutex<Vec<(i32, Vec3, Vec3)>>>,
     transform_update_positions: Arc<Mutex<Vec<(i32, Vec3)>>>,
     transform_update_rotations: Arc<Mutex<Vec<(i32, Vec3)>>>,
     transform_update_scales: Arc<Mutex<Vec<(i32, Vec3)>>>,
@@ -876,6 +890,7 @@ impl Engine {
             tags: tag_snapshot.tags.clone(),
         };
         let transform_update_queue_for_state = TransformUpdateQueue {
+            local_transforms: transform_update_queue.local_transforms.clone(),
             positions: transform_update_queue.positions.clone(),
             rotations: transform_update_queue.rotations.clone(),
             scales: transform_update_queue.scales.clone(),
@@ -954,6 +969,7 @@ impl Engine {
                 op_hsml_get_scale::decl(),
                 op_hsml_get_global_position::decl(),
                 // Transforms (setters)
+                op_hsml_set_local_transform::decl(),
                 op_hsml_set_position::decl(),
                 op_hsml_set_rotation::decl(),
                 op_hsml_set_scale::decl(),
@@ -1015,6 +1031,7 @@ impl Engine {
                     tags: tag_snapshot_for_state.tags.clone(),
                 });
                 state.put::<TransformUpdateQueue>(TransformUpdateQueue {
+                    local_transforms: transform_update_queue_for_state.local_transforms.clone(),
                     positions: transform_update_queue_for_state.positions.clone(),
                     rotations: transform_update_queue_for_state.rotations.clone(),
                     scales: transform_update_queue_for_state.scales.clone(),
@@ -1093,6 +1110,7 @@ impl Engine {
             hierarchy_snapshot_parents: hierarchy_snapshot.parents,
             hierarchy_snapshot_children: hierarchy_snapshot.children,
             tag_snapshot: tag_snapshot.tags,
+            transform_update_local_transforms: transform_update_queue.local_transforms,
             transform_update_positions: transform_update_queue.positions,
             transform_update_rotations: transform_update_queue.rotations,
             transform_update_scales: transform_update_queue.scales,
@@ -1164,6 +1182,9 @@ impl Engine {
 
     pub fn drain_remove_element_queue(&self) -> Vec<i32> {
         self.remove_element_queue.lock().unwrap().drain(..).collect()
+    }
+    pub fn drain_transform_local_updates(&self) -> Vec<(i32, Vec3, Vec3)> {
+        self.transform_update_local_transforms.lock().unwrap().drain(..).collect()
     }
 
     pub fn drain_transform_position_updates(&self) -> Vec<(i32, Vec3)> {

@@ -345,6 +345,22 @@
         }
       }
     }
+    setLocalTransform(px, py, pz, rx, ry, rz) {
+      if (this._isResolved()) {
+        core.ops.op_hsml_set_local_transform(this._nodeId, px, py, pz, rx, ry, rz);
+      } else {
+        this._onResolved((nodeId) => {
+          core.ops.op_hsml_set_local_transform(nodeId, px, py, pz, rx, ry, rz);
+        });
+      }
+
+      if (this._positionProxy) {
+        this._positionProxy._cache = { x: px, y: py, z: pz };
+      }
+      if (this._rotationProxy) {
+        this._rotationProxy._cache = { x: rx, y: ry, z: rz };
+      }
+    }
 
     get globalPosition() {
       if (!this._isResolved()) {
