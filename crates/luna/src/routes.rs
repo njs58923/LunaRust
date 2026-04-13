@@ -133,7 +133,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
          ═══════════════════════════════════════════════════════════════════════ -->
 
     <!-- Ground extending 80m radius -->
-    <plane x="0" y="-0.02" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#080D12" id="demo_ground" />
+    <plane x="0" y="-3" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#080D12" id="demo_ground" />
 
     <!-- ═══════════════════════════════════════════════════════════════════════
          SCALE RING — 8 anchors, each at a different distance and direction.
@@ -235,24 +235,38 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <box x="1.70" y="-0.42" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#546E7A" id="demo_wave" />
     <text x="1.70" y="-0.42" z="-2.94" value="Ring Arrange" size="0.07" />
 
+    <box x="1.70" y="-0.71" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#455A64" id="demo_mode" />
+    <text x="1.70" y="-0.71" z="-2.94" value="Mode" size="0.07" />
+
     <!-- Status bar -->
     <text x="0" y="-0.78" z="-2.96" value="Status: ready" size="0.085" id="demo_status" color="#FFFFFF" />
     <text x="0" y="-0.96" z="-2.96" value="Dynamic nodes: 0" size="0.075" id="demo_count" color="#B0BEC5" />
     <text x="0" y="-1.12" z="-2.96" value="Animation: off" size="0.075" id="demo_anim" color="#B0BEC5" />
     <text x="0" y="-1.28" z="-2.96" value="Objects scale 1:10 of distance — spawns appear around you" size="0.063" id="demo_hint" color="#546E7A" />
 
-  <script>
+    <script>
     const root = hiperspace.dimention;
     const transformBatch = [];
     const __tmpRot = { x: 0, y: 0, z: 0 };
     const __tmpPos = { x: 0, y: 0, z: 0 };
 
-    // Each entry: { el, baseX, baseY, baseZ }
+    // Each entry: { el, bx, by, bz, off }
     const dynamicNodes = [];
     let nextId = 1;
     let animating = false;
     let bannerMoved = false;
     let floorVisible = true;
+
+    // Modes:
+    //  - 'batch'    => root.setTransformBatch([...])
+    //  - 'direct'   => el.position + el.rotation
+    //  - 'combined' => el.setLocalTransform(px,py,pz,rx,ry,rz)
+    let transformMode = 'batch';
+
+    // FPS meter (script-side, approximate)
+    let fpsFrames = 0;
+    let fpsLastTs = 0;
+    let fpsValue = 0;
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -270,7 +284,20 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     function updateCounters() {
       setText('demo_count', 'Dynamic nodes: ' + dynamicNodes.length);
-      setText('demo_anim',  'Animation: ' + (animating ? 'on' : 'off'));
+      setText('demo_anim',  'Animation: ' + (animating ? 'on' : 'off') + ' · mode: ' + transformMode);
+      setText('demo_hint',  'Mode: ' + transformMode + ' · FPS: ' + fpsValue + ' · Nodes: ' + dynamicNodes.length);
+    }
+
+    function updateFps(ts) {
+      fpsFrames++;
+      if (!fpsLastTs) fpsLastTs = ts;
+      const dt = ts - fpsLastTs;
+      if (dt >= 500) {
+        fpsValue = Math.round((fpsFrames * 1000) / dt);
+        fpsFrames = 0;
+        fpsLastTs = ts;
+        updateCounters();
+      }
     }
 
     function randomColor() {
@@ -282,56 +309,88 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       return palette[Math.floor(Math.random() * palette.length)];
     }
 
+    function hasCombinedTransformApi(el) {
+      return !!(el && typeof el.setLocalTransform === 'function');
+    }
+
+    function cycleTransformMode() {
+      if (transformMode === 'batch') {
+        transformMode = hasCombinedTransformApi(root) ? 'combined' : 'direct';
+      } else if (transformMode === 'combined') {
+        transformMode = 'direct';
+      } else {
+        transformMode = 'batch';
+      }
+      updateCounters();
+      setStatus('transform mode → ' + transformMode);
+    }
+
+    function applyTransformDirect(el, px, py, pz, rx, ry, rz) {
+      __tmpRot.x = rx; __tmpRot.y = ry; __tmpRot.z = rz;
+      el.rotation = __tmpRot;
+
+      __tmpPos.x = px; __tmpPos.y = py; __tmpPos.z = pz;
+      el.position = __tmpPos;
+    }
+
+    function applyTransformCombined(el, px, py, pz, rx, ry, rz) {
+      if (hasCombinedTransformApi(el)) {
+        el.setLocalTransform(px, py, pz, rx, ry, rz);
+      } else {
+        applyTransformDirect(el, px, py, pz, rx, ry, rz);
+      }
+    }
+
     // ── scale-aware spawn ─────────────────────────────────────────────────────
-    //  Rule: size = distance × 0.1
-    //    3.5 m  →  0.35 m  (tiny, near your shins)
-    //   10   m  →  1.0  m  (life-sized box)
-    //   30   m  →  3.0  m  (huge structure, but far away)
 
     function spawnAround(tag) {
       const el = root.createElement(tag);
 
-      const angle = Math.random() * Math.PI * 2;          // full 360°
-      const dist  = 3.5 + Math.random() * 250;           // 3.5 – 32 m
-      const scale = dist * 0.1;                            // proportional scale
+      const angle = Math.random() * Math.PI * 2;
+      const dist  = 3.5 + Math.random() * 250;
+      const scale = dist * 0.1;
 
       const bx = Math.sin(angle) * dist;
       const bz = -Math.cos(angle) * dist;
-      // Vertical spread: ~40% stay near ground, ~60% float at varying heights
-      // Max height scales with distance so far-away giants can sit high in the sky.
-      const off     = nextId * 0.38;
+      const off = nextId * 0.38;
+
       const groundY = scale * 0.5;
-      const lift    = Math.random() &lt; 0.4
+      const lift = Math.random() < 0.4
         ? 0
-        : Math.random() * (1.0 + dist * 0.25);             // up to ~1 m + 25% of distance
+        : Math.random() * (1.0 + dist * 0.25);
       const by = groundY + lift;
 
-      el.id        = 'demo_dyn_' + nextId++;
+      el.id = 'demo_dyn_' + nextId++;
       el.className = 'demo-dynamic';
       el.setAttribute('color', randomColor());
+
+      let rx, ry, rz;
 
       if (tag === 'plane') {
         el.setAttribute('sx', String(scale * 2.0));
         el.setAttribute('sy', String(scale * 2.0));
         el.setAttribute('sz', '1');
-        el.rotation = { x: -1.5708, y: Math.random() * Math.PI * 2, z: 0 };
+        rx = -1.5708;
+        ry = Math.random() * Math.PI * 2;
+        rz = 0;
       } else if (tag === 'cylinder') {
         el.setAttribute('sx', String(scale));
         el.setAttribute('sy', String(scale * 1.6));
         el.setAttribute('sz', String(scale));
-        el.rotation = { x: 0, y: Math.random() * Math.PI * 2, z: 0 };
+        rx = 0;
+        ry = Math.random() * Math.PI * 2;
+        rz = 0;
       } else {
         el.setAttribute('sx', String(scale));
         el.setAttribute('sy', String(scale));
         el.setAttribute('sz', String(scale));
-        el.rotation = {
-          x: Math.random() * 0.4,
-          y: Math.random() * Math.PI * 2,
-          z: Math.random() * 0.4,
-        };
+        rx = Math.random() * 0.4;
+        ry = Math.random() * Math.PI * 2;
+        rz = Math.random() * 0.4;
       }
 
-      el.position = { x: bx, y: by, z: bz };
+      applyTransformCombined(el, bx, by, bz, rx, ry, rz);
+
       root.appendChild(el);
       dynamicNodes.push({ el, bx, by, bz, off });
       updateCounters();
@@ -360,36 +419,71 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     function animateFrame(ts) {
       if (!animating) return;
+
+      updateFps(ts);
       const t = ts / 1000;
-       transformBatch.length = 0;
 
-       for (let i = 0; i &lt; dynamicNodes.length; i++) {
-         const item = dynamicNodes[i];
-         const el = item.el;
-         const nodeId = el.nodeId;
-         if (nodeId &lt; 0) continue; // todavía pending, saltar este frame
+      if (transformMode === 'batch') {
+        transformBatch.length = 0;
 
-         const off = item.off;
-         const rx = Math.sin(t * 0.5 + off) * 0.12;
-         const ry = t * 0.9 + off;
-         const rz = Math.sin(t * 0.7 + off) * 0.12;
-         const px = item.bx;
-         const py = item.by + Math.sin(t * 1.4 + off) * (item.by * 0.25);
-         const pz = item.bz;
+        for (let i = 0; i < dynamicNodes.length; i++) {
+          const item = dynamicNodes[i];
+          const el = item.el;
+          const nodeId = el.nodeId;
+          if (nodeId < 0) continue;
 
-         transformBatch.push(
-           nodeId,
-           px, py, pz,
-           rx, ry, rz
-         );
-       }
+          const off = item.off;
+          const rx = Math.sin(t * 0.5 + off) * 0.12;
+          const ry = t * 0.9 + off;
+          const rz = Math.sin(t * 0.7 + off) * 0.12;
+          const px = item.bx;
+          const py = item.by + Math.sin(t * 1.4 + off) * (item.by * 0.25);
+          const pz = item.bz;
 
-       if (transformBatch.length) root.setTransformBatch(transformBatch);
+          transformBatch.push(nodeId, px, py, pz, rx, ry, rz);
+        }
+
+        if (transformBatch.length) {
+          root.setTransformBatch(transformBatch);
+        }
+      } else if (transformMode === 'combined') {
+        for (let i = 0; i < dynamicNodes.length; i++) {
+          const item = dynamicNodes[i];
+          const off = item.off;
+          applyTransformCombined(
+            item.el,
+            item.bx,
+            item.by + Math.sin(t * 1.4 + off) * (item.by * 0.25),
+            item.bz,
+            Math.sin(t * 0.5 + off) * 0.12,
+            t * 0.9 + off,
+            Math.sin(t * 0.7 + off) * 0.12
+          );
+        }
+      } else {
+        for (let i = 0; i < dynamicNodes.length; i++) {
+          const item = dynamicNodes[i];
+          const off = item.off;
+          applyTransformDirect(
+            item.el,
+            item.bx,
+            item.by + Math.sin(t * 1.4 + off) * (item.by * 0.25),
+            item.bz,
+            Math.sin(t * 0.5 + off) * 0.12,
+            t * 0.9 + off,
+            Math.sin(t * 0.7 + off) * 0.12
+          );
+        }
+      }
+
       requestAnimationFrame(animateFrame);
     }
 
     function toggleAnimation() {
       animating = !animating;
+      fpsFrames = 0;
+      fpsLastTs = 0;
+      fpsValue = 0;
       updateCounters();
       setStatus(animating ? 'animation on' : 'animation off');
       if (animating) requestAnimationFrame(animateFrame);
@@ -399,12 +493,13 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       const panel = byId('demo_panel');
       if (!panel) return;
       bannerMoved = !bannerMoved;
-      panel.position = bannerMoved
-        ? { x: 0.45, y: 0.70, z: -3.15 }
-        : { x: 0.00, y: 0.50, z: -3.15 };
-      panel.rotation = bannerMoved
-        ? { x: 0, y: 0.12, z: 0 }
-        : { x: 0, y: 0.00, z: 0 };
+
+      if (bannerMoved) {
+        applyTransformCombined(panel, 0.45, 0.70, -3.15, 0, 0.12, 0);
+      } else {
+        applyTransformCombined(panel, 0.00, 0.50, -3.15, 0, 0.00, 0);
+      }
+
       setStatus(bannerMoved ? 'panel nudged' : 'panel reset');
     }
 
@@ -417,29 +512,35 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     }
 
     function queryTest() {
-      const all   = root.getElementsByClass('demo-dynamic');
+      const all = root.getElementsByClass('demo-dynamic');
       const first = all.length ? all[0].id : 'none';
-      setText('demo_hint', 'Found ' + all.length + ' dynamic — first: ' + first);
+      setText('demo_hint', 'Mode: ' + transformMode + ' · FPS: ' + fpsValue + ' · Found ' + all.length + ' · first: ' + first);
       setStatus('query complete');
     }
 
-    // Arrange all dynamic nodes into a scale ring (same rule: size ∝ distance)
     function ringArrange() {
       const n = dynamicNodes.length;
-      if (!n) { setStatus('nothing to arrange'); return; }
+      if (!n) {
+        setStatus('nothing to arrange');
+        return;
+      }
+
       dynamicNodes.forEach((item, i) => {
         const angle = (i / n) * Math.PI * 2;
         const ring  = i % 5;
-        const dist  = 5 + ring * 5;             // rings: 5, 10, 15, 20, 25 m
+        const dist  = 5 + ring * 5;
         const scale = dist * 0.1;
         const nx = Math.sin(angle) * dist;
         const nz = -Math.cos(angle) * dist;
-        // Stagger heights per ring so outer rings float higher.
-        const ny = scale * 0.5 + ring * 1.5;    // 0, 1.5, 3, 4.5, 6 m above ground
-        item.bx = nx; item.by = ny; item.bz = nz;
-        item.el.position = { x: nx, y: ny, z: nz };
-        item.el.rotation = { x: 0, y: angle + Math.PI, z: 0 };
+        const ny = scale * 0.5 + ring * 1.5;
+
+        item.bx = nx;
+        item.by = ny;
+        item.bz = nz;
+
+        applyTransformCombined(item.el, nx, ny, nz, 0, angle + Math.PI, 0);
       });
+
       setStatus('arranged ' + n + ' nodes in scale ring');
     }
 
@@ -458,9 +559,10 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       demo_clear:          clearDynamic,
       demo_query:          queryTest,
       demo_wave:           ringArrange,
-      btn_home:     () => { location.href = 'luna://home'; },
-      btn_about:    () => { location.href = 'luna://about'; },
-      btn_settings: () => { location.href = 'luna://settings'; },
+      btn_home:            () => { location.href = 'luna://home'; },
+      btn_about:           () => { location.href = 'luna://about'; },
+      btn_settings:        () => { location.href = 'luna://settings'; },
+      demo_mode: cycleTransformMode,
     };
 
     Object.keys(bindings).forEach((id) => {
@@ -468,9 +570,16 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       if (el) el.addEventListener('toque', bindings[id]);
     });
 
+    // Extra toggle by keyboard for easy benchmarking:
+    // T = cycle transform mode
+    globalThis.addEventListener?.('keydown', () => {}); // harmless if unsupported
+
+    // Since this runtime has no real DOM keyboard events, expose a debug function:
+    globalThis.__demo_cycle_transform_mode = cycleTransformMode;
+
     updateCounters();
-    setStatus('ready — look around to see the scale ring');
-  </script>
+    setStatus('ready — mode=' + transformMode + ' — call __demo_cycle_transform_mode() to switch mode');
+    </script>
   </space>
 </hsml>"##;
 
