@@ -1081,7 +1081,7 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     const root = hiperspace.dimention;
     const bullets = [];
     let bulletCount = 0;
-    const BULLET_SPEED = 1000; // units per second
+    const BULLET_SPEED = 300; // units per second
     const GRAVITY = 9.8; // simple gravity
     let lastFireTime = 0;
     let loopRunning = false;
@@ -1149,7 +1149,7 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
         vy: dirY * BULLET_SPEED,
         vz: dirZ * BULLET_SPEED,
         startTime: now,
-        maxDistance: 80
+        maxDistance: 3000
       });
 
       // Start the loop only if it's not already running
