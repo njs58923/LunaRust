@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use specs::WorldExt;
-
+use std::collections::HashMap;
 use crate::js::{find_owner_space_id, JsWorkerCommand, ScriptRuntimeManager};
 use crate::permissions::{space_has_capability, CapabilityBits, SpacePolicies};
 use crate::{ElemenetWorld, LogPanel, SpaceHandleTables};
@@ -9,6 +9,11 @@ use crate::{ElemenetWorld, LogPanel, SpaceHandleTables};
 /// Marker component for primitives that can receive a normalized `toque`.
 #[derive(Component)]
 pub struct Toqueable(pub u32);
+
+/// Marker component for invisible/controller-tracked pose volumes.
+#[derive(Component)]
+pub struct PoseZone(pub u32);
+
 
 /// Exact collision shape used by the toque raycast.
 ///
@@ -105,6 +110,38 @@ fn intersect_shape(
     }
 }
 
+fn contains_point(
+    point: Vec3,
+    entity_pos: Vec3,
+    rotation: Quat,
+    scale: Vec3,
+    shape: HitShape,
+) -> bool {
+    match shape {
+        HitShape::Sphere => {
+            let radius = scale.max_element() * 0.5;
+            point.distance_squared(entity_pos) <= radius * radius
+        }
+        HitShape::Box => {
+            let inv_rot = rotation.inverse();
+            let local = inv_rot * (point - entity_pos);
+            let half = scale * 0.5;
+            local.x.abs() <= half.x && local.y.abs() <= half.y && local.z.abs() <= half.z
+        }
+        HitShape::Plane => {
+            let inv_rot = rotation.inverse();
+            let local = inv_rot * (point - entity_pos);
+            let half_x = scale.x * 0.5;
+            let half_y = scale.y * 0.5;
+            let half_z = (scale.z * 0.5).max(0.02);
+            local.x.abs() <= half_x
+                && local.y.abs() <= half_y
+                && local.z.abs() <= half_z
+        }
+    }
+}
+
+
 #[derive(Debug, Clone, Copy)]
 pub enum ToqueSource {
     Desktop,
@@ -124,6 +161,25 @@ pub struct HostToqueHit {
 /// y opcionalmente el canal raw privilegiado.
 #[derive(Resource, Default)]
 pub struct HostToqueHits(pub Vec<HostToqueHit>);
+
+#[derive(Debug, Clone)]
+pub struct HostPoseMoveHit {
+    pub node_id: u32,
+    pub hand: String,
+    pub px: f32,
+    pub py: f32,
+    pub pz: f32,
+    pub dx: f32,
+    pub dy: f32,
+    pub dz: f32,
+    pub trigger: f32,
+    pub grip: f32,
+}
+
+/// posemove detectado por el host; se despacha como DOM event si el space tiene permiso.
+#[derive(Resource, Default)]
+pub struct HostPoseMoveEvents(pub Vec<HostPoseMoveHit>);
+
 
 pub fn desktop_toque_raycast_system(
     mouse_button: Res<ButtonInput<MouseButton>>,
@@ -255,6 +311,88 @@ pub fn vr_toque_raycast_system(
         ));
     }
 }
+fn push_pose_events_for_hand(
+    hand: &str,
+    controller_tf: &GlobalTransform,
+    trigger: f32,
+    grip: f32,
+    posezone_query: &Query<(&GlobalTransform, &PoseZone, Option<&HitShape>)>,
+    pose_events: &mut HostPoseMoveEvents,
+) {
+    let point = controller_tf.translation();
+    let dir = (-controller_tf.up().as_vec3()).normalize_or_zero();
+    if dir == Vec3::ZERO {
+        return;
+    }
+
+    for (global_transform, posezone, hit_shape) in posezone_query.iter() {
+        let (scale, rotation, entity_pos) = global_transform.to_scale_rotation_translation();
+        let shape = hit_shape.copied().unwrap_or(HitShape::Box);
+
+        if contains_point(point, entity_pos, rotation, scale, shape) {
+            pose_events.0.push(HostPoseMoveHit {
+                node_id: posezone.0,
+                hand: hand.to_string(),
+                px: point.x,
+                py: point.y,
+                pz: point.z,
+                dx: dir.x,
+                dy: dir.y,
+                dz: dir.z,
+                trigger,
+                grip,
+            });
+        }
+    }
+}
+
+pub fn vr_posemove_system(
+    actions: Res<crate::vr_locomotion::LunaLocomotionActions>,
+    session: Res<bevy_mod_openxr::session::OxrSession>,
+    left_controller_query: Query<
+        &GlobalTransform,
+        With<bevy_xr_utils::tracking_utils::XrTrackedLeftGrip>,
+    >,
+    right_controller_query: Query<
+        &GlobalTransform,
+        With<bevy_xr_utils::tracking_utils::XrTrackedRightGrip>,
+    >,
+    posezone_query: Query<(&GlobalTransform, &PoseZone, Option<&HitShape>)>,
+    mut pose_events: ResMut<HostPoseMoveEvents>,
+) {
+    if posezone_query.is_empty() {
+        return;
+    }
+
+    let left_trigger = actions
+        .left_trigger
+        .state(&session, openxr::Path::NULL)
+        .map(|s| s.current_state)
+        .unwrap_or(0.0);
+    let right_trigger = actions
+        .right_trigger
+        .state(&session, openxr::Path::NULL)
+        .map(|s| s.current_state)
+        .unwrap_or(0.0);
+    let left_grip = actions
+        .left_grip
+        .state(&session, openxr::Path::NULL)
+        .map(|s| s.current_state)
+        .unwrap_or(0.0);
+    let right_grip = actions
+        .right_grip
+        .state(&session, openxr::Path::NULL)
+        .map(|s| s.current_state)
+        .unwrap_or(0.0);
+
+    if let Ok(tf) = left_controller_query.get_single() {
+        push_pose_events_for_hand("left", tf, left_trigger, left_grip, &posezone_query, &mut pose_events);
+    }
+    if let Ok(tf) = right_controller_query.get_single() {
+        push_pose_events_for_hand("right", tf, right_trigger, right_grip, &posezone_query, &mut pose_events);
+    }
+}
+
 
 /// Enruta `toque` DOM siempre al owner del target y raw solo si el space tiene READ_TOQUE_RAW.
 pub fn dispatch_toque_events_to_js(
@@ -304,6 +442,68 @@ pub fn dispatch_toque_events_to_js(
                         local_id, evt.x, evt.y, evt.z,
                     )]));
             }
+        }
+    }
+}
+
+
+
+/// Enruta `posemove` solo al owner del posezone y solo si el space tiene READ_POSE_STREAM.
+pub fn dispatch_posemove_events_to_js(
+    mut pose_events: ResMut<HostPoseMoveEvents>,
+    world: Res<ElemenetWorld>,
+    mut manager: NonSendMut<ScriptRuntimeManager>,
+    space_handle_tables: Res<SpaceHandleTables>,
+    space_policies: Res<SpacePolicies>,
+) {
+    if pose_events.0.is_empty() {
+        return;
+    }
+
+    let events: Vec<HostPoseMoveHit> = pose_events.0.drain(..).collect();
+    let mut per_space: HashMap<u32, Vec<crate::js::PoseMoveEventData>> = HashMap::new();
+
+    for evt in events {
+        let ent = world.0.entities().entity(evt.node_id);
+        if !world.0.entities().is_alive(ent) {
+            continue;
+        }
+
+        let Some(space_id) = find_owner_space_id(&world.0, ent) else {
+            continue;
+        };
+
+        if !space_has_capability(space_id, CapabilityBits::READ_POSE_STREAM, &space_policies) {
+            continue;
+        }
+
+        let Some(table) = space_handle_tables.by_space.get(&space_id) else {
+            continue;
+        };
+        let Some(&local_id) = table.global_to_local.get(&evt.node_id) else {
+            continue;
+        };
+
+        per_space
+            .entry(space_id)
+            .or_default()
+            .push(crate::js::PoseMoveEventData {
+                node_id: local_id,
+                hand: evt.hand,
+                px: evt.px,
+                py: evt.py,
+                pz: evt.pz,
+                dx: evt.dx,
+                dy: evt.dy,
+                dz: evt.dz,
+                trigger: evt.trigger,
+                grip: evt.grip,
+            });
+    }
+
+    for (space_id, batch) in per_space {
+        if let Some(worker) = manager.contexts.get_mut(&space_id) {
+            let _ = worker.cmd_tx.send(JsWorkerCommand::PushPoseMoveEvents(batch));
         }
     }
 }

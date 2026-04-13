@@ -55,6 +55,20 @@ pub struct JsTickData {
     pub navigate_queue: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PoseMoveEventData {
+    pub node_id: i32,
+    pub hand: String,
+    pub px: f32,
+    pub py: f32,
+    pub pz: f32,
+    pub dx: f32,
+    pub dy: f32,
+    pub dz: f32,
+    pub trigger: f32,
+    pub grip: f32,
+}
+
 pub enum JsWorkerCommand {
     SetCapabilities(u64),
     UpdateSnapshots(SpaceSnapshots),
@@ -63,6 +77,7 @@ pub enum JsWorkerCommand {
     PushElementCreationResults(Vec<(i32, i32)>),
     PushFetchResults(Vec<(i32, std::result::Result<String, String>)>),
     PushDomToqueEvents(Vec<(i32, f32, f32, f32)>),
+    PushPoseMoveEvents(Vec<PoseMoveEventData>),
     PushToqueRawEvents(Vec<(i32, f32, f32, f32)>),
     RequestDebugState,
     Shutdown,
@@ -234,6 +249,22 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                     JsWorkerCommand::PushDomToqueEvents(events) => {
                         for (node_id, x, y, z) in events {
                             ctx.engine.push_dom_toque_event(node_id, x, y, z);
+                        }
+                    }
+                    JsWorkerCommand::PushPoseMoveEvents(events) => {
+                        for evt in events {
+                            ctx.engine.push_posemove_event(
+                                evt.node_id,
+                                evt.hand,
+                                evt.px,
+                                evt.py,
+                                evt.pz,
+                                evt.dx,
+                                evt.dy,
+                                evt.dz,
+                                evt.trigger,
+                                evt.grip,
+                            );
                         }
                     }
                     JsWorkerCommand::PushToqueRawEvents(events) => {

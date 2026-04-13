@@ -239,6 +239,9 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <box x="1.70" y="-0.71" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#455A64" id="demo_mode" />
     <text x="1.70" y="-0.71" z="-2.94" value="Mode" size="0.07" />
 
+    <box x="1.70" y="-1.00" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#EF5350" id="btn_fire_demo" />
+    <text x="1.70" y="-1.00" z="-2.94" value="Fire Demo" size="0.07" />
+
     <!-- Status bar -->
     <text x="0" y="-0.78" z="-2.96" value="Status: ready" size="0.085" id="demo_status" color="#FFFFFF" />
     <text x="0" y="-0.96" z="-2.96" value="Dynamic nodes: 0" size="0.075" id="demo_count" color="#B0BEC5" />
@@ -563,6 +566,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       btn_home:            () => { location.href = 'luna://home'; },
       btn_about:           () => { location.href = 'luna://about'; },
       btn_settings:        () => { location.href = 'luna://settings'; },
+      btn_fire_demo:       () => { location.href = 'luna://fire_demo'; },
       demo_mode: cycleTransformMode,
     };
 
@@ -916,7 +920,7 @@ const SCRIPT_ROOT_API: &str = r##"
     },
 
     regrantMountedSpaces(mode) {
-      const grants = ['navigate_self'];
+      const grants = ['navigate_self', 'read_pose_stream'];
 
       discoverDirectSpaces();
       cleanupRegistry();
@@ -1042,7 +1046,11 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space resources="navigate_self">
+  <space resources="navigate_self,read_pose_stream">
+    <!-- Invisible volume that enables posemove while the controller is inside.
+         Make it generous so the whole play area is covered. -->
+    <posezone id="gun_zone" x="0" y="1.0" z="0" sx="40" sy="12" sz="40" visible="false" />
+
     <!-- Ground -->
     <plane x="0" y="-3" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#0a0a0a" id="ground" />
 
@@ -1050,7 +1058,8 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <plane x="0" y="0.50" z="-3.15" sx="2.50" sy="1.50" sz="1" color="#1a1a2e" id="control_panel" />
 
     <text x="0" y="1.20" z="-3.0" value="Fire Bullet Demo" size="0.20" color="#FF6B6B" />
-    <text x="0" y="0.85" z="-3.0" value="Click Fire to launch bullets forward" size="0.10" color="#888888" />
+    <text x="0" y="0.85" z="-3.0" value="Right trigger fires from the right controller" size="0.10" color="#888888" />
+    <text x="0" y="0.68" z="-3.0" value="FIRE button stays as manual fallback" size="0.08" color="#666666" />
 
     <!-- Fire Button -->
     <box x="-0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#FF6B6B" id="fire_button" />
@@ -1072,11 +1081,12 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     const root = hiperspace.dimention;
     const bullets = [];
     let bulletCount = 0;
-    const BULLET_SPEED = 25; // units per second
+    const BULLET_SPEED = 1000; // units per second
     const GRAVITY = 9.8; // simple gravity
     let lastFireTime = 0;
     let loopRunning = false;
     let lastFrameTs = 0;
+    let latestRightPose = null;
 
     function byId(id) { return root.getElementById(id); }
 
@@ -1094,9 +1104,26 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       setText('bullet_count', 'Bullets: ' + bullets.length);
     }
 
-    function fireBullet() {
+    function normalizePose(evt) {
+      const dx = Number(evt.dx ?? 0);
+      const dy = Number(evt.dy ?? 0);
+      const dz = Number(evt.dz ?? -1);
+      const len = Math.hypot(dx, dy, dz) || 1;
+      return {
+        hand: String(evt.hand || ''),
+        px: Number(evt.px ?? 0),
+        py: Number(evt.py ?? 0),
+        pz: Number(evt.pz ?? -2),
+        dx: dx / len,
+        dy: dy / len,
+        dz: dz / len,
+        trigger: Number(evt.trigger ?? 0),
+        grip: Number(evt.grip ?? 0),
+      };
+    }
+
+    function spawnBulletAt(startX, startY, startZ, dirX, dirY, dirZ, label) {
       const now = performance.now();
-      // Limit fire rate to 100ms between shots
       if (now - lastFireTime < 100) return;
       lastFireTime = now;
 
@@ -1108,25 +1135,19 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       bullet.setAttribute('sy', '0.1');
       bullet.setAttribute('sz', '0.1');
 
-      // Start position (front, slightly above ground)
-      const startX = 0;
-      const startY = 0.3;
-      const startZ = -2;
-
       bullet.position = { x: startX, y: startY, z: startZ };
       bullet.rotation = { x: 0, y: 0, z: 0 };
 
       root.appendChild(bullet);
 
-      // Track bullet with velocity
       bullets.push({
         el: bullet,
         x: startX,
         y: startY,
         z: startZ,
-        vx: 0,
-        vy: 0.5,
-        vz: -BULLET_SPEED,
+        vx: dirX * BULLET_SPEED,
+        vy: dirY * BULLET_SPEED,
+        vz: dirZ * BULLET_SPEED,
         startTime: now,
         maxDistance: 80
       });
@@ -1139,7 +1160,32 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       }
 
       updateBulletCount();
-      setStatus('Bullet fired! (' + bullets.length + ' active)');
+      setStatus(label + ' (' + bullets.length + ' active)');
+    }
+
+    function fireBulletFromPose(pose) {
+      const muzzle = 0.18;
+      spawnBulletAt(
+        pose.px + pose.dx * muzzle,
+        pose.py + pose.dy * muzzle,
+        pose.pz + pose.dz * muzzle,
+        pose.dx,
+        pose.dy,
+        pose.dz,
+        'Bullet fired from ' + pose.hand + ' controller!'
+      );
+    }
+
+    function fireBullet() {
+      if (latestRightPose) {
+        fireBulletFromPose(latestRightPose);
+        return;
+      }
+      spawnBulletAt(
+        0, 0.3, -2,
+        0, 0.02, -1,
+        'Bullet fired from fallback origin!'
+      );
     }
 
     function clearBullets() {
@@ -1201,6 +1247,19 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     const fireBtn = byId('fire_button');
     if (fireBtn) fireBtn.addEventListener('toque', fireBullet);
 
+    const gunZone = byId('gun_zone');
+    if (gunZone) {
+      gunZone.addEventListener('posemove', (evt) => {
+        if (evt.hand !== 'right') return;
+        latestRightPose = normalizePose(evt);
+
+        // Hold trigger to shoot with a simple rate limit.
+        if (latestRightPose.trigger > 0.75) {
+          fireBulletFromPose(latestRightPose);
+        }
+      });
+    }
+
     const clearBtn = byId('clear_button');
     if (clearBtn) clearBtn.addEventListener('toque', clearBullets);
 
@@ -1210,7 +1269,7 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     });
 
     updateBulletCount();
-    setStatus('Ready to fire!');
+    setStatus('Ready — right trigger uses posemove when available');
     </script>
   </space>
 </hsml>"##;

@@ -1515,6 +1515,27 @@ pub fn dom_sync_system(
                 continue;
             }
 
+            if tag == "posezone" {
+                commands
+                    .entity(bevy_ent)
+                    .insert((crate::touch::PoseZone(node_id), crate::touch::HitShape::Box));
+                if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
+                    *t = transform_b;
+                    if dirty.is_some() {
+                        commands.entity(bevy_ent).remove::<Dirty>();
+                    }
+                }
+                if let Ok(mut visibility) = visibility_query.get_mut(bevy_ent) {
+                    *visibility = if node_visible(&attrs_storage, *node) {
+                        Visibility::Visible
+                    } else {
+                        Visibility::Hidden
+                    };
+                }
+                continue;
+            }
+
+
             if tag == "space" || tag == "include" || is_structural_tag(&tag) {
                 if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
@@ -1682,6 +1703,22 @@ pub fn dom_sync_system(
                         ))
                         .id()
                 }
+                "posezone" => commands
+                    .spawn((
+                        SpatialBundle {
+                            transform: transform_b,
+                            visibility: if node_visible(&attrs_storage, *node) {
+                                Visibility::Visible
+                            } else {
+                                Visibility::Hidden
+                            },
+                            ..Default::default()
+                        },
+                        Dirty,
+                        crate::touch::PoseZone(node_id),
+                        crate::touch::HitShape::Box,
+                    ))
+                    .id(),
                 _other if is_structural_tag(&tag) => commands
                     .spawn((
                         SpatialBundle {

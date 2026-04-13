@@ -16,6 +16,7 @@ lazy_static! {
         m.insert("script", vec![ElementType::Node, ElementType::HSMLElement]);
         m.insert("include", vec![ElementType::Node, ElementType::Element, ElementType::HSMLElement]);
         m.insert("space", vec![ElementType::Node, ElementType::Element, ElementType::HSMLElement]);
+        m.insert("posezone", vec![ElementType::Node, ElementType::Element]);
         m.insert("model", vec![ElementType::Node, ElementType::Element, ElementType::HSMLElement]);
         m.insert("div", vec![ElementType::Node, ElementType::Element, ElementType::HSMLElement]);
 

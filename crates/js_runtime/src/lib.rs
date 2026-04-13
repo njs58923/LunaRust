@@ -329,6 +329,15 @@ pub struct DomEvent {
     pub x: Option<f32>,
     pub y: Option<f32>,
     pub z: Option<f32>,
+    pub hand: Option<String>,
+    pub px: Option<f32>,
+    pub py: Option<f32>,
+    pub pz: Option<f32>,
+    pub dx: Option<f32>,
+    pub dy: Option<f32>,
+    pub dz: Option<f32>,
+    pub trigger: Option<f32>,
+    pub grip: Option<f32>,
 }
 
 /// DOM events normalizados host -> JS runtime (default-on)
@@ -706,6 +715,15 @@ fn op_poll_dom_events(state: &mut OpState) -> serde_json::Value {
                 "x": evt.x,
                 "y": evt.y,
                 "z": evt.z,
+                "hand": evt.hand,
+                "px": evt.px,
+                "py": evt.py,
+                "pz": evt.pz,
+                "dx": evt.dx,
+                "dy": evt.dy,
+                "dz": evt.dz,
+                "trigger": evt.trigger,
+                "grip": evt.grip,
             })
         })
         .collect();
@@ -1283,11 +1301,46 @@ impl Engine {
             x,
             y,
             z,
+            hand: None,
+            px: None,
+            py: None,
+            pz: None,
+            dx: None,
+            dy: None,
+            dz: None,
+            trigger: None,
+            grip: None,
         });
     }
 
     pub fn push_dom_toque_event(&self, node_id: i32, x: f32, y: f32, z: f32) {
         self.push_dom_event("toque", node_id, Some(x), Some(y), Some(z));
+    }
+
+    pub fn push_posemove_event(
+        &self,
+        node_id: i32,
+        hand: impl Into<String>,
+        px: f32,
+        py: f32,
+        pz: f32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        trigger: f32,
+        grip: f32,
+    ) {
+        self.dom_events.lock().unwrap().push(DomEvent {
+            event_type: "posemove".to_string(),
+            node_id,
+            x: None,
+            y: None,
+            z: None,
+            hand: Some(hand.into()),
+            px: Some(px), py: Some(py), pz: Some(pz),
+            dx: Some(dx), dy: Some(dy), dz: Some(dz),
+            trigger: Some(trigger), grip: Some(grip),
+        });
     }
 
     // --- Controller + Touch ---

@@ -31,11 +31,11 @@
       const normalized = {
         type: String(evt.type || ''),
         nodeId: evt.nodeId,
-      };
-      if (evt.x != null) normalized.x = evt.x;
-      if (evt.y != null) normalized.y = evt.y;
-      if (evt.z != null) normalized.z = evt.z;
-
+      };   
+      for (const [key, value] of Object.entries(evt)) {
+        if (key === 'type' || key === 'nodeId' || value == null) continue;
+        normalized[key] = value;
+      }
       target.dispatchEvent(normalized);
     }
   };

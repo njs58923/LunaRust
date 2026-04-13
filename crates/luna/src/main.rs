@@ -111,6 +111,7 @@ fn main() {
     app.insert_resource(PendingModelLoads::default());
     app.insert_resource(ModelLoadStates::default());
     app.insert_resource(touch::HostToqueHits::default());
+    app.insert_resource(touch::HostPoseMoveEvents::default());
     app.insert_resource(SpacePolicies::default());
     app.insert_resource(ActiveNativeServices::default());
     app.insert_resource(permissions::SpacePolicyHistory {
@@ -188,8 +189,14 @@ fn main() {
             .run_if(bevy_mod_openxr::openxr_session_running)
             .run_if(resource_exists::<luna::vr_locomotion::LunaLocomotionActions>),
     );
+    app.add_systems(
+        Update,
+        touch::vr_posemove_system
+            .run_if(bevy_mod_openxr::openxr_session_running)
+            .run_if(resource_exists::<luna::vr_locomotion::LunaLocomotionActions>),
+    );
     app.add_systems(Update, touch::dispatch_toque_events_to_js);
-
+    app.add_systems(Update, touch::dispatch_posemove_events_to_js.run_if(|e: Res<touch::HostPoseMoveEvents>| !e.0.is_empty()));
     app.add_systems(
         Update,
         (
@@ -422,7 +429,7 @@ fn process_space_mount_queue(
         return;
     };
     let urls: Vec<String> = mount_queue.0.drain(..).collect();
-    let grants = "['navigate_self']";
+    let grants = "['navigate_self','read_pose_stream']";
     for url in urls {
         let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
         let code = format!(

@@ -13,18 +13,19 @@ bitflags! {
     pub struct CapabilityBits: u64 {
         const ROOT                 = 1 << 0;
         const READ_TOQUE_RAW       = 1 << 1;
-        const NAVIGATE_SELF        = 1 << 2;
-        const NAVIGATE_GLOBAL      = 1 << 3;
-        const FETCH_TEXT           = 1 << 4;
-        const LIST_ROOT_SPACES     = 1 << 5;
-        const MOUNT_ROOT_SPACE     = 1 << 6;
-        const UPDATE_ROOT_SPACE    = 1 << 7;
-        const UNMOUNT_ROOT_SPACE   = 1 << 8;
-        const READ_CAMERA_POSE     = 1 << 9;
-        const READ_HMD_POSE        = 1 << 10;
-        const READ_CONTROLLER_POSE = 1 << 11;
-        const DEVTOOLS_READ        = 1 << 12;
-        const DEVTOOLS_WRITE       = 1 << 13;
+        const READ_POSE_STREAM     = 1 << 2;
+        const NAVIGATE_SELF        = 1 << 3;
+        const NAVIGATE_GLOBAL      = 1 << 4;
+        const FETCH_TEXT           = 1 << 5;
+        const LIST_ROOT_SPACES     = 1 << 6;
+        const MOUNT_ROOT_SPACE     = 1 << 7;
+        const UPDATE_ROOT_SPACE    = 1 << 8;
+        const UNMOUNT_ROOT_SPACE   = 1 << 9;
+        const READ_CAMERA_POSE     = 1 << 10;
+        const READ_HMD_POSE        = 1 << 11;
+        const READ_CONTROLLER_POSE = 1 << 12;
+        const DEVTOOLS_READ        = 1 << 13;
+        const DEVTOOLS_WRITE       = 1 << 14;
     }
 }
 
@@ -55,7 +56,14 @@ lazy_static! {
                 auto_scripts: &["luna://internal/root_api.js"],
             },
         );
-
+        m.insert(
+            "read_pose_stream",
+            ResourceBundleDef {
+                capabilities: CapabilityBits::READ_POSE_STREAM,
+                native_services: NativeServiceBits::empty(),
+                auto_scripts: &[],
+            },
+        );
         m.insert(
             "navigate_self",
             ResourceBundleDef {
@@ -185,6 +193,7 @@ pub fn capability_labels(bits: CapabilityBits) -> Vec<&'static str> {
     [
         ("ROOT", CapabilityBits::ROOT),
         ("READ_TOQUE_RAW", CapabilityBits::READ_TOQUE_RAW),
+        ("READ_POSE_STREAM", CapabilityBits::READ_POSE_STREAM),
         ("NAVIGATE_SELF", CapabilityBits::NAVIGATE_SELF),
         ("NAVIGATE_GLOBAL", CapabilityBits::NAVIGATE_GLOBAL),
         ("FETCH_TEXT", CapabilityBits::FETCH_TEXT),
