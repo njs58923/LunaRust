@@ -14,6 +14,7 @@ pub mod types;
 pub mod ui;
 pub mod utils;
 pub mod vr_locomotion;
+pub mod avatar_vm;
 
 // Re-exportar todos los tipos públicos para que main.rs pueda hacer `use luna::*`
 pub use dom::*;
