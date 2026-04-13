@@ -948,7 +948,10 @@ pub fn mark_dirty_system(
     dirty_nodes.dedup_in_place();
     for node_id in dirty_nodes.0.iter().copied() {
         if let Some(&ent) = entity_map.0.get(&node_id) {
-            commands.entity(ent).insert(Dirty);
+            // try_insert evita el panic B0003 cuando otro sistema (ej. process_delete_requests)
+            // encola un despawn_recursive en el mismo frame: los commands de este sistema pueden
+            // aplicarse después del despawn, dejando el entity_map temporalmente desincronizado.
+            commands.entity(ent).try_insert(Dirty);
         }
     }
 }

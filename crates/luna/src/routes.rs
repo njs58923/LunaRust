@@ -22,6 +22,7 @@ impl VirtualRoutes {
         routes.insert("root".to_string(), RouteHandler::Static(LUNA_ROOT));
         routes.insert("home".to_string(), RouteHandler::Static(LUNA_HOME));
         routes.insert("demos".to_string(), RouteHandler::Static(LUNA_DEMOS));
+        routes.insert("fire_demo".to_string(), RouteHandler::Static(LUNA_FIRE_DEMO));
         routes.insert("settings".to_string(), RouteHandler::Static(LUNA_SETTINGS));
         routes.insert("about".to_string(), RouteHandler::Static(LUNA_ABOUT));
         routes.insert("error/404".to_string(), RouteHandler::Static(LUNA_404));
@@ -1029,6 +1030,187 @@ const LUNA_UX_VR: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <text x="0" y="2.0" z="-3" value="UX VR Mounted" size="0.15" color="#00FF00" />
     <script>
       console.log('[ux_vr] VR UX loaded');
+    </script>
+  </space>
+</hsml>"##;
+
+const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head>
+    <name>Fire Bullet Demo</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space resources="navigate_self">
+    <!-- Ground -->
+    <plane x="0" y="-3" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#0a0a0a" id="ground" />
+
+    <!-- Control Panel -->
+    <plane x="0" y="0.50" z="-3.15" sx="2.50" sy="1.50" sz="1" color="#1a1a2e" id="control_panel" />
+
+    <text x="0" y="1.20" z="-3.0" value="Fire Bullet Demo" size="0.20" color="#FF6B6B" />
+    <text x="0" y="0.85" z="-3.0" value="Click Fire to launch bullets forward" size="0.10" color="#888888" />
+
+    <!-- Fire Button -->
+    <box x="-0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#FF6B6B" id="fire_button" />
+    <text x="-0.6" y="0.50" z="-2.94" value="FIRE!" size="0.10" color="#FFFFFF" />
+
+    <!-- Clear Button -->
+    <box x="0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4ECDC4" id="clear_button" />
+    <text x="0.6" y="0.50" z="-2.94" value="CLEAR" size="0.10" color="#FFFFFF" />
+
+    <!-- Home Button -->
+    <box x="0" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4CAF50" id="home_button" />
+    <text x="0" y="0.05" z="-2.94" value="HOME" size="0.10" color="#FFFFFF" />
+
+    <!-- Status Text -->
+    <text x="0" y="-0.40" z="-3.0" value="Bullets: 0" size="0.10" id="bullet_count" color="#FFD700" />
+    <text x="0" y="-0.60" z="-3.0" value="Ready to fire!" size="0.08" id="status_text" color="#FFFFFF" />
+
+    <script>
+    const root = hiperspace.dimention;
+    const bullets = [];
+    let bulletCount = 0;
+    const BULLET_SPEED = 25; // units per second
+    const GRAVITY = 9.8; // simple gravity
+    let lastFireTime = 0;
+    let loopRunning = false;
+    let lastFrameTs = 0;
+
+    function byId(id) { return root.getElementById(id); }
+
+    function setText(id, val) {
+      const el = byId(id);
+      if (el) el.setAttribute('value', val);
+    }
+
+    function setStatus(msg) {
+      setText('status_text', msg);
+      console.log('[fire_demo]', msg);
+    }
+
+    function updateBulletCount() {
+      setText('bullet_count', 'Bullets: ' + bullets.length);
+    }
+
+    function fireBullet() {
+      const now = performance.now();
+      // Limit fire rate to 100ms between shots
+      if (now - lastFireTime < 100) return;
+      lastFireTime = now;
+
+      const bullet = root.createElement('sphere');
+      bullet.id = 'bullet_' + bulletCount++;
+      bullet.className = 'bullet';
+      bullet.setAttribute('color', '#FFD700');
+      bullet.setAttribute('sx', '0.1');
+      bullet.setAttribute('sy', '0.1');
+      bullet.setAttribute('sz', '0.1');
+
+      // Start position (front, slightly above ground)
+      const startX = 0;
+      const startY = 0.3;
+      const startZ = -2;
+
+      bullet.position = { x: startX, y: startY, z: startZ };
+      bullet.rotation = { x: 0, y: 0, z: 0 };
+
+      root.appendChild(bullet);
+
+      // Track bullet with velocity
+      bullets.push({
+        el: bullet,
+        x: startX,
+        y: startY,
+        z: startZ,
+        vx: 0,
+        vy: 0.5,
+        vz: -BULLET_SPEED,
+        startTime: now,
+        maxDistance: 80
+      });
+
+      // Start the loop only if it's not already running
+      if (!loopRunning) {
+        loopRunning = true;
+        lastFrameTs = 0;
+        requestAnimationFrame(animateBullets);
+      }
+
+      updateBulletCount();
+      setStatus('Bullet fired! (' + bullets.length + ' active)');
+    }
+
+    function clearBullets() {
+      bullets.forEach(b => {
+        if (b.el) b.el.remove();
+      });
+      bullets.length = 0;
+      bulletCount = 0;
+      updateBulletCount();
+      setStatus('All bullets cleared!');
+    }
+
+    function animateBullets(ts) {
+      if (bullets.length === 0) {
+        loopRunning = false;
+        lastFrameTs = 0;
+        return;
+      }
+
+      // Real delta time in seconds, clamped to avoid huge jumps
+      // (first frame after pause, tab-switch, breakpoint, etc.)
+      if (!lastFrameTs) lastFrameTs = ts;
+      let dt = (ts - lastFrameTs) / 1000;
+      lastFrameTs = ts;
+      if (dt > 0.1) dt = 0.1;
+      if (dt <= 0) dt = 1 / 60;
+
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+
+        // Apply gravity
+        b.vy -= GRAVITY * dt;
+
+        // Update position
+        b.x += b.vx * dt;
+        b.y += b.vy * dt;
+        b.z += b.vz * dt;
+
+        // Remove if out of bounds
+        if (Math.abs(b.x) > b.maxDistance ||
+            Math.abs(b.z) > b.maxDistance ||
+            b.y < -5) {
+          b.el.remove();
+          bullets.splice(i, 1);
+          continue;
+        }
+
+        // Update element position
+        if (b.el) {
+          b.el.position = { x: b.x, y: b.y, z: b.z };
+        }
+      }
+
+      updateBulletCount();
+      requestAnimationFrame(animateBullets);
+    }
+
+    // Bindings
+    const fireBtn = byId('fire_button');
+    if (fireBtn) fireBtn.addEventListener('toque', fireBullet);
+
+    const clearBtn = byId('clear_button');
+    if (clearBtn) clearBtn.addEventListener('toque', clearBullets);
+
+    const homeBtn = byId('home_button');
+    if (homeBtn) homeBtn.addEventListener('toque', () => {
+      location.href = 'luna://home';
+    });
+
+    updateBulletCount();
+    setStatus('Ready to fire!');
     </script>
   </space>
 </hsml>"##;
