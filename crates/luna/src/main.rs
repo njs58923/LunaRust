@@ -428,6 +428,12 @@ fn process_space_mount_queue(
     let Some(worker) = manager.contexts.get(&root_id) else {
         return;
     };
+    if !worker.root_api_sent {
+        if !mount_queue.0.is_empty() {
+            log_panel.push_info("[mount-queue] waiting for root API to initialize...");
+        }
+        return;
+    }
     let urls: Vec<String> = mount_queue.0.drain(..).collect();
     let grants = "['navigate_self','read_pose_stream']";
     for url in urls {
@@ -517,6 +523,9 @@ fn sync_root_mode_resources(
     let Some(worker) = manager.contexts.get(&root_id) else {
         return;
     };
+    if !worker.root_api_sent {
+        return;
+    }
 
     let mode = if render_mode.is_vr { "vr" } else { "desktop" };
     let code = format!(

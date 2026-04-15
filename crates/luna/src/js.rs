@@ -106,6 +106,9 @@ pub struct SpaceScriptWorker {
     pub join: Option<JoinHandle<()>>,
     pub bootstrap_scripts_enqueued: HashSet<String>,
     pub last_capabilities_bits: u64,
+    /// True once `luna://internal/root_api.js` has been flushed into the worker's cmd channel.
+    /// Guards any eval that calls `dimension.luna.*`.
+    pub root_api_sent: bool,
 }
 
 #[derive(Default)]
@@ -293,6 +296,7 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
         join: Some(join),
         bootstrap_scripts_enqueued: HashSet::new(),
         last_capabilities_bits: 0,
+        root_api_sent: false,
     })
 }
 
@@ -948,13 +952,17 @@ pub fn js_eval_pending_scripts(world: &mut World) {
                 return;
             };
             if let Some(worker) = manager.contexts.get_mut(&space_id) {
-                worker
+                let result = worker
                     .cmd_tx
                     .send(JsWorkerCommand::EvalScript {
                         url: url.clone(),
                         code,
                     })
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string());
+                if result.is_ok() && url == "luna://internal/root_api.js" {
+                    worker.root_api_sent = true;
+                }
+                result
             } else {
                 Err(format!("missing JS context for space {}", space_id))
             }
