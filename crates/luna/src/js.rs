@@ -1090,20 +1090,23 @@ pub fn js_tick_system(world: &mut World) {
         };
         for (space_id, url, already_loaded, error) in eval_events {
             if already_loaded {
-                log_panel.push_info(format!(
-                    "[JS][space:{}] Script already loaded, skipping: {}",
-                    space_id, url
-                ));
+                log_panel.push_for_space(
+                    LogLevel::Info,
+                    format!("[JS][space:{}] Script already loaded, skipping: {}", space_id, url),
+                    space_id,
+                );
             } else if let Some(err) = error {
-                log_panel.push_error(format!(
-                    "[JS][space:{}] Error evaluating {}: {}",
-                    space_id, url, err
-                ));
+                log_panel.push_for_space(
+                    LogLevel::Error,
+                    format!("[JS][space:{}] Error evaluating {}: {}", space_id, url, err),
+                    space_id,
+                );
             } else {
-                log_panel.push_info(format!(
-                    "[JS][space:{}] Script evaluated OK: {}",
-                    space_id, url
-                ));
+                log_panel.push_for_space(
+                    LogLevel::Info,
+                    format!("[JS][space:{}] Script evaluated OK: {}", space_id, url),
+                    space_id,
+                );
             }
         }
         for err in worker_errors {

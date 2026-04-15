@@ -70,6 +70,9 @@ impl LogPanel {
     pub fn clear(&mut self) {
         self.logs.clear();
     }
+    pub fn clear_for_space(&mut self, space_id: u32) {
+        self.logs.retain(|e| e.space_id != Some(space_id));
+    }
 }
 
 // ─── Resources & Components ──────────────────────────────────────────────────
@@ -262,6 +265,9 @@ pub struct GlobalDevtoolVisible(pub bool);
 #[derive(Resource, Default)]
 pub struct ConfigVisible(pub bool);
 
+#[derive(Resource, Default)]
+pub struct KeepLogsOnReload(pub bool);
+
 #[derive(Default)]
 pub struct SpaceHandleTable {
     pub runtime_id: u64,
@@ -410,6 +416,7 @@ pub struct DevtoolParams<'w> {
     pub attribute_updates: ResMut<'w, AttributeUpdates>,
     pub delete_requests: ResMut<'w, DeleteRequests>,
     pub config_visible: ResMut<'w, ConfigVisible>,
+    pub keep_logs: ResMut<'w, KeepLogsOnReload>,
 }
 
 #[derive(SystemParam)]

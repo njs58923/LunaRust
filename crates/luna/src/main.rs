@@ -143,6 +143,7 @@ fn main() {
     ));
     app.insert_resource(GlobalDevtoolVisible::default());
     app.insert_resource(ConfigVisible::default());
+    app.insert_resource(KeepLogsOnReload::default());
 
     // Systems
     app.add_systems(Startup, (setup, js::init_js_runtime).chain());

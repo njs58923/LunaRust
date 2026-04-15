@@ -7,6 +7,7 @@ use crate::{
     ActiveSpaceIndex, AttributeUpdates, CurrentUrl, DeleteRequests, DevtoolParams, DevtoolTab,
     EntityMap, GlobalDevtoolVisible, IoService, LogLevel, LogPanel, MountedSpaceEntry,
     PreferredRenderMode, RenderMode, RootConfig, SpaceParams, UiSystemParams, VirtualDomData,
+    KeepLogsOnReload,
 };
 
 pub fn ui_system(
@@ -129,6 +130,11 @@ pub fn ui_system(
                 if reload_clicked {
                     if let Some(idx) = active_space.0 {
                         let tab_url = space_params.mounted_spaces.0[idx].url.clone();
+                        if !devtool.keep_logs.0 {
+                            if let Some(space_id) = find_mounted_space_by_url(&world.0, &tab_url) {
+                                log_panel.clear_for_space(space_id);
+                            }
+                        }
                         reload_tab(
                             &space_params.mounted_spaces.0,
                             &mut space_params.mount_queue.0,
@@ -305,12 +311,17 @@ pub fn ui_system(
                         render_logs(ui, &log_panel, active_tab_space_id);
                         ui.horizontal(|ui| {
                             if ui.button("Clear").clicked() {
-                                log_panel.clear();
+                                if let Some(space_id) = active_tab_space_id {
+                                    log_panel.clear_for_space(space_id);
+                                } else {
+                                    log_panel.clear();
+                                }
                             }
                             if ui.button("Copy").clicked() {
                                 let text = copy_logs(&log_panel, active_tab_space_id);
                                 ui.output_mut(|o| o.copied_text = text);
                             }
+                            ui.checkbox(&mut devtool.keep_logs.0, "Mantener registros");
                         });
                     }
                     DevtoolTab::Redes => {
@@ -501,21 +512,12 @@ fn reload_tab(
 }
 
 fn find_root_space_entity(world: &SpecWorld) -> Option<SpecEntity> {
-    let hier = world.read_storage::<Hierarchy>();
     let tags = world.read_storage::<Tag>();
     let attrs = world.read_storage::<Attrs>();
 
-    for (ent, h) in (&world.entities(), &hier).join() {
-        if h.parent.is_none() {
-            if let Some(tag) = tags.get(ent) {
-                if tag.0 == "space" {
-                    if let Some(attr) = attrs.get(ent) {
-                        if attr.0.get("id").map(|v| v.as_str()) == Some("luna_root") {
-                            return Some(ent);
-                        }
-                    }
-                }
-            }
+    for (ent, tag, attr) in (&world.entities(), &tags, &attrs).join() {
+        if tag.0 == "space" && attr.0.get("id").map(|v| v.as_str()) == Some("luna_root") {
+            return Some(ent);
         }
     }
     None
@@ -671,7 +673,7 @@ fn render_logs(ui: &mut egui::Ui, log_panel: &LogPanel, filter_space: Option<u32
         .show(ui, |ui| {
             for entry in &log_panel.logs {
                 if let Some(filter_id) = filter_space {
-                    if entry.space_id != Some(filter_id) && entry.space_id.is_some() {
+                    if entry.space_id != Some(filter_id) {
                         continue;
                     }
                 }
