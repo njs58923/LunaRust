@@ -263,8 +263,9 @@ pub fn ui_system(
                 });
                 ui.separator();
 
-                // TODO: filter by active space's space_id once we track it
-                // For now, show all content (same as before) but with space_id filter on logs
+                let active_tab_space_id: Option<u32> = active_space.0
+                    .and_then(|idx| space_params.mounted_spaces.0.get(idx))
+                    .and_then(|entry| find_mounted_space_by_url(&world.0, &entry.url));
 
                 match devtool.state.active_tab {
                     DevtoolTab::Status => {
@@ -301,13 +302,13 @@ pub fn ui_system(
                             });
                     }
                     DevtoolTab::Logs => {
-                        render_logs(ui, &log_panel, None);
+                        render_logs(ui, &log_panel, active_tab_space_id);
                         ui.horizontal(|ui| {
                             if ui.button("Clear").clicked() {
                                 log_panel.clear();
                             }
                             if ui.button("Copy").clicked() {
-                                let text = copy_logs(&log_panel, None);
+                                let text = copy_logs(&log_panel, active_tab_space_id);
                                 ui.output_mut(|o| o.copied_text = text);
                             }
                         });
