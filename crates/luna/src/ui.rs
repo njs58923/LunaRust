@@ -64,7 +64,7 @@ pub fn ui_system(
 
             ui.separator();
 
-            // ═══ Row 2: [Home] [URL bar] [Go] [Reload] [Set Home] [Config] ═══
+            // ═══ Row 2: [Home] [URL bar] [Go] [Reload] [Set Home] [Config]═══
             ui.horizontal(|ui| {
                 if ui.button("Home").clicked() {
                     let target = ui_params.root_config.home_url.clone();
@@ -81,16 +81,36 @@ pub fn ui_system(
                     }
                 }
 
-                // URL bar — editable draft, not committed until "Go"
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut address_bar.0)
-                        .desired_width(ui.available_width() - 200.0),
-                );
-                let enter_pressed =
-                    resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
+                // Right-side buttons rendered first so available_width() is accurate for the URL bar
+                let mut go_clicked = false;
+                let mut reload_clicked = false;
+                let mut set_home_clicked = false;
+                let mut config_clicked = false;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Config").on_hover_text("Settings").clicked() {
+                        config_clicked = true;
+                    }
+                    if ui.button("Set Home").on_hover_text("Set current URL as home").clicked() {
+                        set_home_clicked = true;
+                    }
+                    if ui.button("Reload").clicked() {
+                        reload_clicked = true;
+                    }
+                    if ui.button("Go").clicked() {
+                        go_clicked = true;
+                    }
 
-                // "Go" commits the URL to the active tab
-                if ui.button("Go").clicked() || enter_pressed {
+                    // URL bar fills remaining space
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut address_bar.0)
+                            .desired_width(ui.available_width()),
+                    );
+                    if resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
+                        go_clicked = true;
+                    }
+                });
+
+                if go_clicked {
                     if let Some(idx) = active_space.0 {
                         let new_url = address_bar.0.trim().to_string();
                         if !new_url.is_empty() {
@@ -106,7 +126,7 @@ pub fn ui_system(
                     }
                 }
 
-                if ui.button("Reload").clicked() {
+                if reload_clicked {
                     if let Some(idx) = active_space.0 {
                         let tab_url = space_params.mounted_spaces.0[idx].url.clone();
                         reload_tab(
@@ -121,24 +141,19 @@ pub fn ui_system(
                     }
                 }
 
-                if ui.button("Set Home").on_hover_text("Set current URL as home").clicked() {
+                if set_home_clicked {
                     let new_home = address_bar.0.trim().to_string();
                     if !new_home.is_empty() {
                         ui_params.root_config.home_url = new_home.clone();
-
                         match ui_params.root_config.save() {
-                            Ok(path) => {
-                                log_panel.push_info(format!(
-                                    "Home tab URL saved to {}",
-                                    path.display()
-                                ));
-                            }
+                            Ok(path) => log_panel
+                                .push_info(format!("Home tab URL saved to {}", path.display())),
                             Err(e) => log_panel.push_error(format!("Failed saving home URL: {e}")),
                         }
                     }
                 }
 
-                if ui.button("Config").on_hover_text("Settings").clicked() {
+                if config_clicked {
                     devtool.config_visible.0 = !devtool.config_visible.0;
                 }
             });
