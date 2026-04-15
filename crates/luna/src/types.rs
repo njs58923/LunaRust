@@ -259,6 +259,9 @@ pub struct ActiveSpaceIndex(pub Option<usize>);
 #[derive(Resource, Default)]
 pub struct GlobalDevtoolVisible(pub bool);
 
+#[derive(Resource, Default)]
+pub struct ConfigVisible(pub bool);
+
 #[derive(Default)]
 pub struct SpaceHandleTable {
     pub runtime_id: u64,
@@ -406,6 +409,7 @@ pub struct DevtoolParams<'w> {
     pub state: ResMut<'w, DevtoolState>,
     pub attribute_updates: ResMut<'w, AttributeUpdates>,
     pub delete_requests: ResMut<'w, DeleteRequests>,
+    pub config_visible: ResMut<'w, ConfigVisible>,
 }
 
 #[derive(SystemParam)]

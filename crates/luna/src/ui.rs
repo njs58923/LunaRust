@@ -6,8 +6,7 @@ use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
 use crate::{
     ActiveSpaceIndex, AttributeUpdates, CurrentUrl, DeleteRequests, DevtoolParams, DevtoolTab,
     EntityMap, GlobalDevtoolVisible, IoService, LogLevel, LogPanel, MountedSpaceEntry,
-    PreferredRenderMode, RenderMode, RootConfig, SpaceParams, UiSystemParams,
-    VirtualDomData,
+    PreferredRenderMode, RenderMode, RootConfig, SpaceParams, UiSystemParams, VirtualDomData,
 };
 
 pub fn ui_system(
@@ -65,7 +64,7 @@ pub fn ui_system(
 
             ui.separator();
 
-            // ═══ Row 2: [Home] [URL bar] [Go] [Reload] [Set Home] ═══
+            // ═══ Row 2: [Home] [URL bar] [Go] [Reload] [Set Home] [Config] ═══
             ui.horizontal(|ui| {
                 if ui.button("Home").clicked() {
                     let target = ui_params.root_config.home_url.clone();
@@ -137,6 +136,10 @@ pub fn ui_system(
                             Err(e) => log_panel.push_error(format!("Failed saving home URL: {e}")),
                         }
                     }
+                }
+
+                if ui.button("Config").on_hover_text("Settings").clicked() {
+                    devtool.config_visible.0 = !devtool.config_visible.0;
                 }
             });
 
@@ -323,49 +326,6 @@ pub fn ui_system(
         egui::Window::new("Global Devtool")
             .id(egui::Id::new("devtool_global_window"))
             .show(contexts.ctx_mut(), |ui| {
-                egui::CollapsingHeader::new("Root Config").show(ui, |ui| {
-                    let mut auto_load_home = ui_params.root_config.auto_load_home;
-                    if ui
-                        .checkbox(&mut auto_load_home, "Auto-load home on startup")
-                        .changed()
-                    {
-                        ui_params.root_config.auto_load_home = auto_load_home;
-                    }
-                    ui.horizontal(|ui| {
-                        ui.label("Home URL:");
-                        ui.text_edit_singleline(&mut ui_params.root_config.home_url);
-                    });
-                    egui::ComboBox::from_label("Preferred render mode")
-                        .selected_text(match ui_params.root_config.preferred_render_mode {
-                            PreferredRenderMode::Desktop => "Desktop",
-                            PreferredRenderMode::Vr => "VR",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut ui_params.root_config.preferred_render_mode,
-                                PreferredRenderMode::Desktop,
-                                "Desktop",
-                            );
-                            ui.selectable_value(
-                                &mut ui_params.root_config.preferred_render_mode,
-                                PreferredRenderMode::Vr,
-                                "VR",
-                            );
-                        });
-                    ui.label(format!("Root shell URL: {}", root_url.0));
-                    ui.label(format!("Configured home tab URL: {}", ui_params.root_config.home_url));
-                    ui.label(format!("Config path: {}", RootConfig::path().display()));
-                    if ui.button("Save Config").clicked() {
-                        match ui_params.root_config.save() {
-                            Ok(path) => log_panel
-                                .push_info(format!("Root config saved to {}", path.display())),
-                            Err(e) => {
-                                log_panel.push_error(format!("Failed saving root config: {e}"))
-                            }
-                        }
-                    }
-                });
-
                 egui::CollapsingHeader::new("Full HSML Tree").show(ui, |ui| {
                     let w = ui.available_width();
                     egui::ScrollArea::vertical()
@@ -432,6 +392,53 @@ pub fn ui_system(
                         }
                     }
                 });
+            });
+    }
+
+    // ═══ Config window ═══
+    if devtool.config_visible.0 {
+        egui::Window::new("Config")
+            .id(egui::Id::new("config_window"))
+            .show(contexts.ctx_mut(), |ui| {
+                let mut auto_load_home = ui_params.root_config.auto_load_home;
+                if ui
+                    .checkbox(&mut auto_load_home, "Auto-load home on startup")
+                    .changed()
+                {
+                    ui_params.root_config.auto_load_home = auto_load_home;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Home URL:");
+                    ui.text_edit_singleline(&mut ui_params.root_config.home_url);
+                });
+                egui::ComboBox::from_label("Preferred render mode")
+                    .selected_text(match ui_params.root_config.preferred_render_mode {
+                        PreferredRenderMode::Desktop => "Desktop",
+                        PreferredRenderMode::Vr => "VR",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut ui_params.root_config.preferred_render_mode,
+                            PreferredRenderMode::Desktop,
+                            "Desktop",
+                        );
+                        ui.selectable_value(
+                            &mut ui_params.root_config.preferred_render_mode,
+                            PreferredRenderMode::Vr,
+                            "VR",
+                        );
+                    });
+                ui.separator();
+                ui.label(format!("Root shell URL: {}", root_url.0));
+                ui.label(format!("Config path: {}", RootConfig::path().display()));
+                if ui.button("Save Config").clicked() {
+                    match ui_params.root_config.save() {
+                        Ok(path) => {
+                            log_panel.push_info(format!("Root config saved to {}", path.display()))
+                        }
+                        Err(e) => log_panel.push_error(format!("Failed saving root config: {e}")),
+                    }
+                }
             });
     }
 }

@@ -142,6 +142,7 @@ fn main() {
         if root_config.auto_load_home { Some(0) } else { None }
     ));
     app.insert_resource(GlobalDevtoolVisible::default());
+    app.insert_resource(ConfigVisible::default());
 
     // Systems
     app.add_systems(Startup, (setup, js::init_js_runtime).chain());
