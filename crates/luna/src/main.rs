@@ -133,7 +133,6 @@ fn main() {
             vec![MountedSpaceEntry {
                 url: initial_home_url.clone(),
                 title: initial_home_url.clone(),
-                is_home: true,
             }]
         } else {
             Vec::new()

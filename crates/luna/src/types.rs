@@ -239,7 +239,6 @@ pub struct DeleteRequests(pub Vec<u32>);
 pub struct MountedSpaceEntry {
     pub url: String,
     pub title: String,
-    pub is_home: bool,
 }
 
 #[derive(Resource, Default)]

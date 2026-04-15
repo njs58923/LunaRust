@@ -39,18 +39,14 @@ pub fn ui_system(
                 let tab_count = space_params.mounted_spaces.0.len();
                 for (idx, entry) in space_params.mounted_spaces.0.iter().enumerate() {
                     let is_active = active_space.0 == Some(idx);
-                    let label = if entry.is_home {
-                        format!("🏠 {}", short_title(&entry.title, 18))
-                    } else {
-                        short_title(&entry.title, 20)
-                    };
+                    let label = short_title(&entry.title, 20);
 
                     ui.horizontal(|ui| {
                         let btn = ui.selectable_label(is_active, &label);
                         if btn.clicked() {
                             active_space.0 = Some(idx);
                         }
-                        if !entry.is_home && ui.small_button("x").clicked() {
+                        if ui.small_button("x").clicked() {
                             pending_unmounts.push(idx);
                         }
                     });
@@ -61,7 +57,6 @@ pub fn ui_system(
                     space_params.mounted_spaces.0.push(MountedSpaceEntry {
                         url: String::new(),
                         title: "New Tab".to_string(),
-                        is_home: false,
                     });
                     active_space.0 = Some(tab_count);
                     address_bar.0 = String::new();
@@ -74,15 +69,17 @@ pub fn ui_system(
             ui.horizontal(|ui| {
                 if ui.button("Home").clicked() {
                     let target = ui_params.root_config.home_url.clone();
-                    let home_idx = ensure_home_tab(
-                        &mut space_params.mounted_spaces.0,
-                        &mut space_params.mount_queue.0,
-                        &mut space_params.unmount_queue.0,
-                        target.clone(),
-                    );
-                    active_space.0 = Some(home_idx);
-                    address_bar.0 = target.clone();
-                    log_panel.push_info(format!("Activated home tab: {}", target));
+                    if let Some(idx) = active_space.0 {
+                        navigate_tab_to_url(
+                            &mut space_params.mounted_spaces.0,
+                            &mut space_params.mount_queue.0,
+                            &mut space_params.unmount_queue.0,
+                            idx,
+                            target.clone(),
+                        );
+                        address_bar.0 = target.clone();
+                        log_panel.push_info(format!("Navigating to home: {}", target));
+                    }
                 }
 
                 // URL bar — editable draft, not committed until "Go"
@@ -129,17 +126,6 @@ pub fn ui_system(
                     let new_home = address_bar.0.trim().to_string();
                     if !new_home.is_empty() {
                         ui_params.root_config.home_url = new_home.clone();
-
-                        let home_idx = ensure_home_tab(
-                            &mut space_params.mounted_spaces.0,
-                            &mut space_params.mount_queue.0,
-                            &mut space_params.unmount_queue.0,
-                            new_home.clone(),
-                        );
-
-                        // Si quieres que Set Home también te lleve al home-tab inmediatamente:
-                        active_space.0 = Some(home_idx);
-                        address_bar.0 = new_home.clone();
 
                         match ui_params.root_config.save() {
                             Ok(path) => {
@@ -427,14 +413,12 @@ pub fn ui_system(
                     ui.label(format!("Total tabs in UI: {}", space_params.mounted_spaces.0.len()));
                     for (idx, entry) in space_params.mounted_spaces.0.iter().enumerate() {
                         let is_active = active_space.0 == Some(idx);
-                        let home_mark = if entry.is_home { " [HOME]" } else { "" };
                         ui.horizontal(|ui| {
                             ui.label(format!(
-                                "{}[{}] {}{}",
+                                "{}[{}] {}",
                                 if is_active { "▶ " } else { "  " },
                                 idx,
                                 short_title(&entry.url, 40),
-                                home_mark
                             ));
                         });
                         if let Some(space_id) = find_mounted_space_by_url(&world.0, &entry.url) {
@@ -453,10 +437,6 @@ pub fn ui_system(
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-fn find_home_tab_index(spaces: &[MountedSpaceEntry]) -> Option<usize> {
-    spaces.iter().position(|entry| entry.is_home)
-}
 
 fn navigate_tab_to_url(
     mounted_spaces: &mut Vec<MountedSpaceEntry>,
@@ -495,28 +475,6 @@ fn reload_tab(
     }
     unmount_queue.push(url.clone());
     mount_queue.push(url);
-}
-
-fn ensure_home_tab(
-    mounted_spaces: &mut Vec<MountedSpaceEntry>,
-    mount_queue: &mut Vec<String>,
-    unmount_queue: &mut Vec<String>,
-    home_url: String,
-) -> usize {
-    if let Some(idx) = find_home_tab_index(mounted_spaces) {
-        navigate_tab_to_url(mounted_spaces, mount_queue, unmount_queue, idx, home_url);
-        return idx;
-    }
-
-    let idx = mounted_spaces.len();
-    mounted_spaces.push(MountedSpaceEntry {
-        url: String::new(),
-        title: "Home".to_string(),
-        is_home: true,
-    });
-
-    navigate_tab_to_url(mounted_spaces, mount_queue, unmount_queue, idx, home_url);
-    idx
 }
 
 fn find_root_space_entity(world: &SpecWorld) -> Option<SpecEntity> {
