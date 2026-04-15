@@ -289,7 +289,10 @@ pub fn ui_system(
                             .max_width(w)
                             .max_height(300.0)
                             .show(ui, |ui| {
-                                if let Some(root) = get_root_entity(&world.0) {
+                                let space_ent = active_tab_space_id.map(|id| {
+                                    world.0.entities().entity(id)
+                                });
+                                if let Some(root) = space_ent {
                                     show_element_tree(
                                         ui,
                                         root,
@@ -303,7 +306,7 @@ pub fn ui_system(
                                         &mut log_panel,
                                     );
                                 } else {
-                                    ui.label("No elements in scene.");
+                                    ui.label("No hay espacio activo.");
                                 }
                             });
                     }
@@ -325,7 +328,7 @@ pub fn ui_system(
                         });
                     }
                     DevtoolTab::Redes => {
-                        render_network(ui, &io_service, None);
+                        render_network(ui, &io_service, active_tab_space_id);
                     }
                     DevtoolTab::Resources => {
                         if let Some(idx) = active_space.0 {
@@ -721,7 +724,7 @@ fn render_network(ui: &mut egui::Ui, io_service: &IoService, filter_space: Optio
     let filtered: Vec<_> = if let Some(ref owner_pattern) = filter_owner {
         entries
             .iter()
-            .filter(|e| e.owner.contains(owner_pattern) || !e.owner.contains("space:"))
+            .filter(|e| e.owner.contains(owner_pattern))
             .collect()
     } else {
         entries.iter().collect()
