@@ -503,6 +503,238 @@ pub fn create_rounded_cube(radius: f32, segments: u32) -> Mesh {
     .with_inserted_indices(Indices::U32(indices))
 }
 
+/// Rounded cube with per-axis radii (rx, ry, rz) in local space.
+/// Ensures circular front-face corners in world space when called with
+/// rx = r_world/sx, ry = r_world/sy so that rx*sx == ry*sy.
+pub fn create_rounded_cube_aniso(rx: f32, ry: f32, rz: f32, segments: u32) -> Mesh {
+    let rx = rx.clamp(0.0, 0.499);
+    let ry = ry.clamp(0.0, 0.499);
+    let rz = rz.clamp(0.0, 0.499);
+    let hx = 0.5 - rx;
+    let hy = 0.5 - ry;
+    let hz = 0.5 - rz;
+    let seg = segments.max(1);
+
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut uvs: Vec<[f32; 2]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+
+    let needs_flip =
+        |positions: &[[f32; 3]], normals: &[[f32; 3]], a: u32, b: u32, c: u32| -> bool {
+            let pa = positions[a as usize];
+            let pb = positions[b as usize];
+            let pc = positions[c as usize];
+            let e1 = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+            let e2 = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+            let cx = e1[1] * e2[2] - e1[2] * e2[1];
+            let cy = e1[2] * e2[0] - e1[0] * e2[2];
+            let cz = e1[0] * e2[1] - e1[1] * e2[0];
+            let vn = normals[a as usize];
+            cx * vn[0] + cy * vn[1] + cz * vn[2] < 0.0
+        };
+
+    // --- 6 FACES ---
+    struct FaceInfo {
+        normal: [f32; 3],
+        right: [f32; 3],
+        up: [f32; 3],
+        hr: f32,
+        hu: f32,
+        center: [f32; 3],
+    }
+    let faces = [
+        FaceInfo { normal: [0., 0., 1.],  right: [1., 0., 0.],  up: [0., 1., 0.],  hr: hx, hu: hy, center: [0., 0., 0.5]  },
+        FaceInfo { normal: [0., 0., -1.], right: [-1., 0., 0.], up: [0., 1., 0.],  hr: hx, hu: hy, center: [0., 0., -0.5] },
+        FaceInfo { normal: [1., 0., 0.],  right: [0., 0., -1.], up: [0., 1., 0.],  hr: hz, hu: hy, center: [0.5, 0., 0.]  },
+        FaceInfo { normal: [-1., 0., 0.], right: [0., 0., 1.],  up: [0., 1., 0.],  hr: hz, hu: hy, center: [-0.5, 0., 0.] },
+        FaceInfo { normal: [0., 1., 0.],  right: [1., 0., 0.],  up: [0., 0., -1.], hr: hx, hu: hz, center: [0., 0.5, 0.]  },
+        FaceInfo { normal: [0., -1., 0.], right: [1., 0., 0.],  up: [0., 0., 1.],  hr: hx, hu: hz, center: [0., -0.5, 0.] },
+    ];
+
+    for face in &faces {
+        let base = positions.len() as u32;
+        let n = face.normal;
+        for &v in &[-1.0_f32, 1.0] {
+            for &u in &[-1.0_f32, 1.0] {
+                let px = face.center[0] + face.right[0] * u * face.hr + face.up[0] * v * face.hu;
+                let py = face.center[1] + face.right[1] * u * face.hr + face.up[1] * v * face.hu;
+                let pz = face.center[2] + face.right[2] * u * face.hr + face.up[2] * v * face.hu;
+                positions.push([px, py, pz]);
+                normals.push(n);
+                uvs.push([(u + 1.) * 0.5, (1. - v) * 0.5]);
+            }
+        }
+        let flip = needs_flip(&positions, &normals, base, base + 1, base + 3);
+        if flip {
+            indices.extend_from_slice(&[base, base + 3, base + 1, base, base + 2, base + 3]);
+        } else {
+            indices.extend_from_slice(&[base, base + 1, base + 3, base, base + 3, base + 2]);
+        }
+    }
+
+    // --- 12 EDGES (elliptical arcs) ---
+    // r0/r1: arc radii along the n0/n1 face-normal directions.
+    // Normal = gradient of ellipse: normalize(n0*cos/r0 + n1*sin/r1).
+    struct EdgeInfo {
+        p0: [f32; 3],
+        p1: [f32; 3],
+        n0: [f32; 3],
+        n1: [f32; 3],
+        r0: f32,
+        r1: f32,
+    }
+    let edges = [
+        // Z-parallel (XY corners), arc in XY using rx, ry
+        EdgeInfo { p0: [hx, hy, -hz],   p1: [hx, hy, hz],   n0: [1., 0., 0.],  n1: [0., 1., 0.],  r0: rx, r1: ry },
+        EdgeInfo { p0: [-hx, hy, -hz],  p1: [-hx, hy, hz],  n0: [0., 1., 0.],  n1: [-1., 0., 0.], r0: ry, r1: rx },
+        EdgeInfo { p0: [hx, -hy, -hz],  p1: [hx, -hy, hz],  n0: [0., -1., 0.], n1: [1., 0., 0.],  r0: ry, r1: rx },
+        EdgeInfo { p0: [-hx, -hy, -hz], p1: [-hx, -hy, hz], n0: [-1., 0., 0.], n1: [0., -1., 0.], r0: rx, r1: ry },
+        // Y-parallel (XZ corners), arc in XZ using rx, rz
+        EdgeInfo { p0: [hx, -hy, hz],   p1: [hx, hy, hz],   n0: [1., 0., 0.],  n1: [0., 0., 1.],  r0: rx, r1: rz },
+        EdgeInfo { p0: [hx, -hy, -hz],  p1: [hx, hy, -hz],  n0: [0., 0., -1.], n1: [1., 0., 0.],  r0: rz, r1: rx },
+        EdgeInfo { p0: [-hx, -hy, hz],  p1: [-hx, hy, hz],  n0: [0., 0., 1.],  n1: [-1., 0., 0.], r0: rz, r1: rx },
+        EdgeInfo { p0: [-hx, -hy, -hz], p1: [-hx, hy, -hz], n0: [-1., 0., 0.], n1: [0., 0., -1.], r0: rx, r1: rz },
+        // X-parallel (YZ corners), arc in YZ using ry, rz
+        EdgeInfo { p0: [-hx, hy, hz],   p1: [hx, hy, hz],   n0: [0., 1., 0.],  n1: [0., 0., 1.],  r0: ry, r1: rz },
+        EdgeInfo { p0: [-hx, hy, -hz],  p1: [hx, hy, -hz],  n0: [0., 0., -1.], n1: [0., 1., 0.],  r0: rz, r1: ry },
+        EdgeInfo { p0: [-hx, -hy, hz],  p1: [hx, -hy, hz],  n0: [0., 0., 1.],  n1: [0., -1., 0.], r0: rz, r1: ry },
+        EdgeInfo { p0: [-hx, -hy, -hz], p1: [hx, -hy, -hz], n0: [0., -1., 0.], n1: [0., 0., -1.], r0: ry, r1: rz },
+    ];
+
+    for edge in &edges {
+        let base = positions.len() as u32;
+        for i in 0..=seg {
+            let t = i as f32 / seg as f32;
+            let angle = t * FRAC_PI_2;
+            let cos_a = angle.cos();
+            let sin_a = angle.sin();
+
+            let dx = edge.n0[0] * cos_a * edge.r0 + edge.n1[0] * sin_a * edge.r1;
+            let dy = edge.n0[1] * cos_a * edge.r0 + edge.n1[1] * sin_a * edge.r1;
+            let dz = edge.n0[2] * cos_a * edge.r0 + edge.n1[2] * sin_a * edge.r1;
+
+            let nx_raw = edge.n0[0] * cos_a / edge.r0 + edge.n1[0] * sin_a / edge.r1;
+            let ny_raw = edge.n0[1] * cos_a / edge.r0 + edge.n1[1] * sin_a / edge.r1;
+            let nz_raw = edge.n0[2] * cos_a / edge.r0 + edge.n1[2] * sin_a / edge.r1;
+            let nlen = (nx_raw * nx_raw + ny_raw * ny_raw + nz_raw * nz_raw)
+                .sqrt()
+                .max(0.0001);
+
+            for p in &[edge.p0, edge.p1] {
+                positions.push([p[0] + dx, p[1] + dy, p[2] + dz]);
+                normals.push([nx_raw / nlen, ny_raw / nlen, nz_raw / nlen]);
+                uvs.push([t, 0.0]);
+            }
+        }
+
+        let flip = needs_flip(&positions, &normals, base, base + 2, base + 3);
+        for i in 0..seg {
+            let a = base + i * 2;
+            let b = a + 1;
+            let c = a + 2;
+            let d = a + 3;
+            if flip {
+                indices.extend_from_slice(&[a, d, c, a, b, d]);
+            } else {
+                indices.extend_from_slice(&[a, c, d, a, d, b]);
+            }
+        }
+    }
+
+    // --- 8 CORNERS (ellipsoidal patches) ---
+    struct CornerInfo {
+        center: [f32; 3],
+        nx_dir: [f32; 3],
+        ny_dir: [f32; 3],
+        nz_dir: [f32; 3],
+    }
+    let corners = [
+        CornerInfo { center: [ hx,  hy,  hz], nx_dir: [1., 0., 0.],  ny_dir: [0., 1., 0.],  nz_dir: [0., 0., 1.]  },
+        CornerInfo { center: [-hx,  hy,  hz], nx_dir: [-1., 0., 0.], ny_dir: [0., 1., 0.],  nz_dir: [0., 0., 1.]  },
+        CornerInfo { center: [ hx, -hy,  hz], nx_dir: [1., 0., 0.],  ny_dir: [0., -1., 0.], nz_dir: [0., 0., 1.]  },
+        CornerInfo { center: [-hx, -hy,  hz], nx_dir: [-1., 0., 0.], ny_dir: [0., -1., 0.], nz_dir: [0., 0., 1.]  },
+        CornerInfo { center: [ hx,  hy, -hz], nx_dir: [1., 0., 0.],  ny_dir: [0., 1., 0.],  nz_dir: [0., 0., -1.] },
+        CornerInfo { center: [-hx,  hy, -hz], nx_dir: [-1., 0., 0.], ny_dir: [0., 1., 0.],  nz_dir: [0., 0., -1.] },
+        CornerInfo { center: [ hx, -hy, -hz], nx_dir: [1., 0., 0.],  ny_dir: [0., -1., 0.], nz_dir: [0., 0., -1.] },
+        CornerInfo { center: [-hx, -hy, -hz], nx_dir: [-1., 0., 0.], ny_dir: [0., -1., 0.], nz_dir: [0., 0., -1.] },
+    ];
+
+    for corner in &corners {
+        let base = positions.len() as u32;
+        let stride = seg + 1;
+        for j in 0..=seg {
+            let v = j as f32 / seg as f32;
+            let theta = v * FRAC_PI_2;
+            for i in 0..=seg {
+                let u = i as f32 / seg as f32;
+                let phi = u * FRAC_PI_2;
+                let cos_theta = theta.cos();
+                let sin_theta = theta.sin();
+                let cos_phi = phi.cos();
+                let sin_phi = phi.sin();
+
+                let ux = sin_phi * cos_theta;
+                let uy = sin_theta;
+                let uz = cos_phi * cos_theta;
+
+                let px = corner.center[0]
+                    + corner.nx_dir[0] * ux * rx
+                    + corner.ny_dir[0] * uy * ry
+                    + corner.nz_dir[0] * uz * rz;
+                let py = corner.center[1]
+                    + corner.nx_dir[1] * ux * rx
+                    + corner.ny_dir[1] * uy * ry
+                    + corner.nz_dir[1] * uz * rz;
+                let pz = corner.center[2]
+                    + corner.nx_dir[2] * ux * rx
+                    + corner.ny_dir[2] * uy * ry
+                    + corner.nz_dir[2] * uz * rz;
+
+                // Ellipsoid normal = gradient of (dx/rx)^2+(dy/ry)^2+(dz/rz)^2=1
+                let gnx = corner.nx_dir[0] * ux / rx
+                    + corner.ny_dir[0] * uy / ry
+                    + corner.nz_dir[0] * uz / rz;
+                let gny = corner.nx_dir[1] * ux / rx
+                    + corner.ny_dir[1] * uy / ry
+                    + corner.nz_dir[1] * uz / rz;
+                let gnz = corner.nx_dir[2] * ux / rx
+                    + corner.ny_dir[2] * uy / ry
+                    + corner.nz_dir[2] * uz / rz;
+                let glen = (gnx * gnx + gny * gny + gnz * gnz).sqrt().max(0.0001);
+
+                positions.push([px, py, pz]);
+                normals.push([gnx / glen, gny / glen, gnz / glen]);
+                uvs.push([u, v]);
+            }
+        }
+
+        let flip = needs_flip(&positions, &normals, base, base + stride, base + stride + 1);
+        for j in 0..seg {
+            for i in 0..seg {
+                let a = base + j * stride + i;
+                let b = a + 1;
+                let c = a + stride;
+                let d = c + 1;
+                if flip {
+                    indices.extend_from_slice(&[a, d, c, a, b, d]);
+                } else {
+                    indices.extend_from_slice(&[a, c, d, a, d, b]);
+                }
+            }
+        }
+    }
+
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_indices(Indices::U32(indices))
+}
+
 /// Flat rounded-corner plane (Z=0, +Z normals, single-sided).
 /// `radius` is clamped to [0, 0.499]. `segments` controls arc smoothness.
 pub fn create_rounded_plane(radius: f32, segments: u32) -> Mesh {
