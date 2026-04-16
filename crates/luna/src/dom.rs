@@ -1584,6 +1584,27 @@ pub fn dom_sync_system(
                     color,
                     double_sided,
                 );
+
+                // Regenerate mesh if border-radius changed (box or plane)
+                let attrs_opt = attrs_storage.get(*node);
+                let border_radius: Option<f32> = attrs_opt
+                    .and_then(|a| a.0.get("border-radius"))
+                    .and_then(|v| v.parse().ok());
+                let new_mesh = match (tag.as_str(), border_radius) {
+                    ("box", Some(r)) => {
+                        Some(meshes.add(crate::utils::shapes::create_rounded_cube(r, 6)))
+                    }
+                    ("box", None) => Some(shared_resources.cube_mesh.clone()),
+                    ("plane", Some(r)) => {
+                        Some(meshes.add(crate::utils::shapes::create_rounded_plane(r, 6)))
+                    }
+                    ("plane", None) => Some(shared_resources.plane_mesh.clone()),
+                    _ => None,
+                };
+                if let Some(mesh_handle) = new_mesh {
+                    commands.entity(bevy_ent).insert(mesh_handle);
+                }
+
                 if let Ok((_, mut t, dirty, maybe_material, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
                     if let Some(mut material_handle) = maybe_material {
@@ -1768,17 +1789,28 @@ pub fn dom_sync_system(
                     Some(node_id),
                     Some(crate::touch::HitShape::Sphere),
                 ),
-                "plane" => spawn_colored_primitive(
-                    &mut commands,
-                    &mut text_render.materials,
-                    &mut text_render.primitive_material_cache,
-                    shared_resources.plane_mesh.clone(),
-                    primitive_color(&attrs_storage, *node),
-                    transform_b,
-                    true,
-                    Some(node_id),
-                    Some(crate::touch::HitShape::Plane),
-                ),
+                "plane" => {
+                    let attrs_opt = attrs_storage.get(*node);
+                    let border_radius: Option<f32> = attrs_opt
+                        .and_then(|a| a.0.get("border-radius"))
+                        .and_then(|v| v.parse().ok());
+                    let mesh = if let Some(radius) = border_radius {
+                        meshes.add(crate::utils::shapes::create_rounded_plane(radius, 6))
+                    } else {
+                        shared_resources.plane_mesh.clone()
+                    };
+                    spawn_colored_primitive(
+                        &mut commands,
+                        &mut text_render.materials,
+                        &mut text_render.primitive_material_cache,
+                        mesh,
+                        primitive_color(&attrs_storage, *node),
+                        transform_b,
+                        true,
+                        Some(node_id),
+                        Some(crate::touch::HitShape::Plane),
+                    )
+                }
                 "cylinder" => spawn_colored_primitive(
                     &mut commands,
                     &mut text_render.materials,

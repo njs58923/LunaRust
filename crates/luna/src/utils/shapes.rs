@@ -1,6 +1,6 @@
 use bevy::render::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
-use std::f32::consts::FRAC_PI_2;
+use std::f32::consts::{FRAC_PI_2, PI};
 
 pub fn create_plane() -> Mesh {
     Mesh::new(
@@ -491,6 +491,107 @@ pub fn create_rounded_cube(radius: f32, segments: u32) -> Mesh {
                 }
             }
         }
+    }
+
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_indices(Indices::U32(indices))
+}
+
+/// Flat rounded-corner plane (Z=0, +Z normals, single-sided).
+/// `radius` is clamped to [0, 0.499]. `segments` controls arc smoothness.
+pub fn create_rounded_plane(radius: f32, segments: u32) -> Mesh {
+    let r = radius.clamp(0.0, 0.499);
+    let seg = segments.max(1);
+    let h = 0.5 - r; // half-extent minus radius
+
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut uvs: Vec<[f32; 2]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+
+    // Center vertex (index 0)
+    positions.push([0.0, 0.0, 0.0]);
+    normals.push([0.0, 0.0, 1.0]);
+    uvs.push([0.5, 0.5]);
+
+    // Build CCW perimeter:
+    // bottom edge (left to right), bottom-right arc, right edge (bottom to top),
+    // top-right arc, top edge (right to left), top-left arc,
+    // left edge (top to bottom), bottom-left arc.
+    //
+    // Corner arcs: (seg+1) vertices each, angle goes from start to end inclusive.
+
+    // bottom edge: (-h, -h) to (h, -h)
+    for i in 0..=0 {
+        let _ = i;
+        // just the two endpoints, but straight edges are implicit between arc endpoints
+    }
+
+    // We'll push perimeter vertices in order. Straight edges contribute only their
+    // endpoints (corners are shared with adjacent arcs).
+    //
+    // Layout: 4 arcs * (seg+1) vertices each = 4*(seg+1) perimeter vertices.
+    // Between consecutive arc endpoint and next arc startpoint we draw straight
+    // triangle fans that include any intermediate straight vertices.
+    // For simplicity we only emit straight-edge midpoints when needed — here since
+    // we want all mesh triangles to be fans from center, straight edge midpoints
+    // are optional. We add them to reduce sliver triangles on long edges.
+    //
+    // Final perimeter: for each corner arc emit (seg+1) verts, straight edge
+    // midpoints between corners share the arc endpoint verts.
+
+    // Arc corners: center positions, start/end angles (CCW)
+    // bottom-right: center=(h, -h), angles -PI/2 → 0
+    // top-right:    center=(h,  h), angles 0 → PI/2
+    // top-left:     center=(-h, h), angles PI/2 → PI
+    // bottom-left:  center=(-h,-h), angles PI → 3*PI/2
+    struct Corner {
+        cx: f32,
+        cy: f32,
+        a_start: f32,
+        a_end: f32,
+    }
+    let corners = [
+        Corner { cx:  h, cy: -h, a_start: -FRAC_PI_2,        a_end: 0.0             },
+        Corner { cx:  h, cy:  h, a_start: 0.0,               a_end: FRAC_PI_2       },
+        Corner { cx: -h, cy:  h, a_start: FRAC_PI_2,         a_end: PI              },
+        Corner { cx: -h, cy: -h, a_start: PI,                a_end: 3.0 * FRAC_PI_2 },
+    ];
+
+    // Emit all perimeter vertices.
+    // Each arc emits seg+1 verts. The last vert of arc[i] == first vert of arc[i+1]
+    // so we skip the last vert of each arc and close the loop at triangle emit time.
+    let perimeter_start = positions.len() as u32; // = 1
+    let verts_per_arc = seg + 1;
+
+    for corner in &corners {
+        for i in 0..verts_per_arc {
+            // skip the very last vertex of each arc (it equals first of next arc)
+            if i == seg { continue; }
+            let t = i as f32 / seg as f32;
+            let angle = corner.a_start + t * (corner.a_end - corner.a_start);
+            let x = corner.cx + r * angle.cos();
+            let y = corner.cy + r * angle.sin();
+            positions.push([x, y, 0.0]);
+            normals.push([0.0, 0.0, 1.0]);
+            uvs.push([x + 0.5, 0.5 - y]);
+        }
+    }
+
+    // Number of perimeter vertices (each arc contributes `seg` verts, 4 arcs total)
+    let perim_count = (seg * 4) as u32;
+
+    // Fan triangles: center(0) + consecutive perimeter pairs
+    for i in 0..perim_count {
+        let a = perimeter_start + i;
+        let b = perimeter_start + (i + 1) % perim_count;
+        indices.extend_from_slice(&[0, a, b]);
     }
 
     Mesh::new(
