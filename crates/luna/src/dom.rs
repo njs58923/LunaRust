@@ -29,13 +29,37 @@ use crate::{
     ActiveDocumentLoad, AsyncDomParams, AttributeUpdates, CompletedDocumentLoad, CurrentUrl,
     DeleteRequests, Dirty, DirtyNodes, DocumentLoadState, ElemenetWorld, EntityMap, IoService,
     LoadedDocumentBundle, LogPanel, ModelLoadState, ModelLoadStates, NavigationEpoch,
-    PendingDocumentLoads, PendingModelLoads, PerformanceStats, ReloadTrigger, ScriptLoadState,
+    PendingDocumentLoads, PendingJsAttachNodes, PendingModelLoads, PerformanceStats, ReloadTrigger, ScriptLoadState,
     ScriptLoadStates, SharedResources, TextRenderParams, TokioRuntime, VirtualDomData,
     VIRTUAL_ROUTES,
 };
 
 const DOM_SYNC_VERBOSE_LOGS: bool = false;
 const ATTR_DELETE_SENTINEL: &str = "[DEL]";
+
+
+pub fn commit_pending_js_attaches_system(
+    mut pending_js_attaches: ResMut<PendingJsAttachNodes>,
+    world: Res<ElemenetWorld>,
+    mut dom_data: ResMut<VirtualDomData>,
+    mut dirty_nodes: ResMut<DirtyNodes>,
+) {
+    if pending_js_attaches.0.is_empty() {
+        return;
+    }
+
+    let pending: Vec<u32> = pending_js_attaches.0.drain(..).collect();
+    let entities = world.0.entities();
+
+    for node_id in pending {
+        let ent = entities.entity(node_id);
+        if !entities.is_alive(ent) {
+            continue;
+        }
+        dom_data.nodes.insert(node_id, ent);
+        dirty_nodes.0.push(node_id);
+    }
+}
 
 fn is_structural_tag(tag: &str) -> bool {
     matches!(
@@ -1901,7 +1925,7 @@ fn spawn_model_entity(
     asset_server: &AssetServer,
     transform_b: Transform,
     asset_path: Option<&str>,
-    shared_resources: &SharedResources,
+    _shared_resources: &SharedResources,
 ) -> Entity {
     if let Some(asset_path) = asset_path {
         let scene_handle = if asset_path.ends_with(".gltf") || asset_path.ends_with(".glb") {
@@ -1923,11 +1947,10 @@ fn spawn_model_entity(
 
     commands
         .spawn((
-            PbrBundle {
-                mesh: shared_resources.cube_mesh.clone(),
-                material: shared_resources.default_material.clone(),
+            SpatialBundle {
                 transform: transform_b,
-                ..default()
+                visibility: Visibility::Inherited,
+                ..Default::default()
             },
             Dirty,
         ))

@@ -97,6 +97,12 @@ impl DirtyNodes {
     }
 }
 
+/// Nodos creados desde JS que ya fueron conectados por appendChild,
+/// pero cuya inserción visible en dom_data se difiere al próximo frame
+/// para evitar render prematuro antes de attrs/transforms.
+#[derive(Resource, Default)]
+pub struct PendingJsAttachNodes(pub Vec<u32>);
+
 #[derive(Resource, Default)]
 pub struct ElemenetWorld(pub SpecWorld);
 

@@ -72,6 +72,7 @@ fn main() {
 
     app.insert_resource(VirtualDomData::default());
     app.insert_resource(DirtyNodes::default());
+    app.insert_resource(PendingJsAttachNodes::default());
     app.insert_resource(EntityMap::default());
     app.insert_resource(ElemenetWorld(build_world()));
     app.insert_resource(EntityCounter::default());
@@ -152,6 +153,8 @@ fn main() {
         Update,
         (
             io::poll_io_results_system,
+            dom::commit_pending_js_attaches_system
+                .run_if(|p: Res<PendingJsAttachNodes>| !p.0.is_empty()),
             dom::apply_transform_updates.run_if(|u: Res<TransformUpdates>| !u.is_empty()),
             dom::request_navigation_system.run_if(|r: Res<ReloadTrigger>| r.0),
             dom::commit_pending_document_load_system

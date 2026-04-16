@@ -20,6 +20,7 @@ use crate::{
     request_fetch_text, AttributeUpdates, DirtyNodes, ElemenetWorld, IoService, JsSnapshotState,
     LogLevel, LogPanel, ModelLoadStates, PendingModelLoads, PendingScripts, ReloadTrigger,
     ScriptLoadStates, SpaceHandleTable, SpaceHandleTables, TransformUpdates, VirtualDomData,
+    PendingJsAttachNodes,
 };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -1434,13 +1435,13 @@ pub fn js_tick_system(world: &mut World) {
             .map(|dom| dom.nodes.keys().copied().collect())
             .unwrap_or_default();
 
-        let (newly_attached_nodes, dirty_ids, log_messages) = {
+        let (newly_attached_ids, already_attached_dirty_ids, log_messages) = {
             let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else {
                 return;
             };
-            let mut newly_attached_nodes: Vec<(u32, specs::Entity)> = Vec::new();
+            let mut newly_attached_ids: Vec<u32> = Vec::new();
             let mut newly_attached_seen = HashSet::new();
-            let mut dirty_ids = HashSet::new();
+            let mut already_attached_dirty_ids = HashSet::new();
             let mut log_messages = Vec::new();
             for (parent_id, child_id) in allowed_appends {
                 let (parent_ent, child_ent, are_alive) = {
@@ -1458,12 +1459,12 @@ pub fn js_tick_system(world: &mut World) {
                         collect_subtree_ids(&specs_world.0, child_ent, &mut subtree_ids);
 
                         for node_id in subtree_ids {
-                            dirty_ids.insert(node_id);
-                            if attached_now.insert(node_id) && newly_attached_seen.insert(node_id) {
-                                newly_attached_nodes.push((
-                                    node_id,
-                                    specs_world.0.entities().entity(node_id),
-                                ));
+                            if attached_now.insert(node_id) {
+                                if newly_attached_seen.insert(node_id) {
+                                    newly_attached_ids.push(node_id);
+                                }
+                            } else {
+                                already_attached_dirty_ids.insert(node_id);
                             }
                         }
                     }                   
@@ -1474,29 +1475,27 @@ pub fn js_tick_system(world: &mut World) {
                     ));
                 }
             }
-            (newly_attached_nodes, dirty_ids, log_messages)
+            (newly_attached_ids, already_attached_dirty_ids, log_messages)
         };
 
-        if let Some(mut dom_data) = world.get_resource_mut::<crate::VirtualDomData>() {
-            for (node_id, ent) in &newly_attached_nodes {
-                dom_data.nodes.insert(*node_id, *ent);
-            }
+        if let Some(mut pending_js_attaches) = world.get_resource_mut::<PendingJsAttachNodes>() {
+            pending_js_attaches.0.extend(newly_attached_ids.iter().copied());
         }
 
-        let dirty_ids_vec: Vec<u32> = dirty_ids.into_iter().collect();
+        let dirty_ids_vec: Vec<u32> = already_attached_dirty_ids.into_iter().collect();
 
         if let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() {
             let Some(table) = space_handle_tables.by_space.get_mut(&space_id) else {
                 return;
             };
-            for node_id in &dirty_ids_vec {
+            for node_id in newly_attached_ids.iter().chain(dirty_ids_vec.iter()) {
                 table.detached_globals.remove(node_id);
             }
         }
         if let Some(mut dirty_nodes) = world.get_resource_mut::<DirtyNodes>() {
             dirty_nodes.0.extend(dirty_ids_vec.iter().copied());
         }
-        if !dirty_ids_vec.is_empty() {
+        if !dirty_ids_vec.is_empty() || !newly_attached_ids.is_empty() {
             snapshot_dirty = true;
         }
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
