@@ -5,9 +5,8 @@ use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
 
 use crate::{
     ActiveSpaceIndex, AttributeUpdates, CurrentUrl, DeleteRequests, DevtoolParams, DevtoolTab,
-    EntityMap, GlobalDevtoolVisible, IoService, LogLevel, LogPanel, MountedSpaceEntry,
+    DeferredSpaceMount, DeferredSpaceMounts, EntityMap, GlobalDevtoolVisible, IoService, LogLevel, LogPanel, MountedSpaceEntry,
     PreferredRenderMode, RenderMode, RootConfig, SpaceParams, UiSystemParams, VirtualDomData,
-    KeepLogsOnReload,
 };
 
 pub fn ui_system(
@@ -74,6 +73,7 @@ pub fn ui_system(
                             &mut space_params.mounted_spaces.0,
                             &mut space_params.mount_queue.0,
                             &mut space_params.unmount_queue.0,
+                             &mut space_params.deferred_mounts.0,
                             idx,
                             target.clone(),
                         );
@@ -119,6 +119,7 @@ pub fn ui_system(
                                 &mut space_params.mounted_spaces.0,
                                 &mut space_params.mount_queue.0,
                                 &mut space_params.unmount_queue.0,
+                                 &mut space_params.deferred_mounts.0,
                                 idx,
                                 new_url.clone(),
                             );
@@ -139,6 +140,7 @@ pub fn ui_system(
                             &space_params.mounted_spaces.0,
                             &mut space_params.mount_queue.0,
                             &mut space_params.unmount_queue.0,
+                            &mut space_params.deferred_mounts.0,
                             idx,
                         );
                         if !tab_url.is_empty() {
@@ -479,6 +481,7 @@ fn navigate_tab_to_url(
     mounted_spaces: &mut Vec<MountedSpaceEntry>,
     mount_queue: &mut Vec<String>,
     unmount_queue: &mut Vec<String>,
+    deferred_mounts: &mut Vec<DeferredSpaceMount>,
     idx: usize,
     new_url: String,
 ) {
@@ -488,11 +491,15 @@ fn navigate_tab_to_url(
 
     let old_url = mounted_spaces[idx].url.clone();
 
-    if !old_url.is_empty() && old_url != new_url {
-        unmount_queue.push(old_url.clone());
-    }
-
-    if old_url != new_url || old_url.is_empty() {
+    if !old_url.is_empty() {
+        if old_url != new_url {
+            unmount_queue.push(old_url.clone());
+            deferred_mounts.push(DeferredSpaceMount {
+                wait_gone_url: old_url.clone(),
+                mount_url: new_url.clone(),
+            });
+        }
+    } else {
         mount_queue.push(new_url.clone());
     }
 
@@ -504,6 +511,7 @@ fn reload_tab(
     mounted_spaces: &[MountedSpaceEntry],
     mount_queue: &mut Vec<String>,
     unmount_queue: &mut Vec<String>,
+    deferred_mounts: &mut Vec<DeferredSpaceMount>,
     idx: usize,
 ) {
     let url = mounted_spaces[idx].url.clone();
@@ -511,7 +519,10 @@ fn reload_tab(
         return;
     }
     unmount_queue.push(url.clone());
-    mount_queue.push(url);
+    deferred_mounts.push(DeferredSpaceMount {
+        wait_gone_url: url.clone(),
+        mount_url: url,
+    });
 }
 
 fn find_root_space_entity(world: &SpecWorld) -> Option<SpecEntity> {
@@ -578,6 +589,28 @@ fn find_mounted_space_by_url(world: &SpecWorld, url: &str) -> Option<u32> {
         }
     }
     None
+}
+
+pub fn flush_deferred_space_mounts_system(
+    world: Res<crate::ElemenetWorld>,
+    mut deferred_mounts: ResMut<DeferredSpaceMounts>,
+    mut mount_queue: ResMut<crate::SpaceMountQueue>,
+) {
+    if deferred_mounts.0.is_empty() {
+        return;
+    }
+
+    let pending = deferred_mounts.0.drain(..).collect::<Vec<_>>();
+    for item in pending {
+        let old_gone = item.wait_gone_url.trim().is_empty()
+            || find_mounted_space_by_url(&world.0, &item.wait_gone_url).is_none();
+
+        if old_gone {
+            mount_queue.0.push(item.mount_url);
+        } else {
+            deferred_mounts.0.push(item);
+        }
+    }
 }
 
 fn get_space_debug_url(world: &SpecWorld, space: SpecEntity) -> Option<String> {

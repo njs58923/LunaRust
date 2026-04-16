@@ -29,7 +29,7 @@ use crate::{
     ActiveDocumentLoad, AsyncDomParams, AttributeUpdates, CompletedDocumentLoad, CurrentUrl,
     DeleteRequests, Dirty, DirtyNodes, DocumentLoadState, ElemenetWorld, EntityMap, IoService,
     LoadedDocumentBundle, LogPanel, ModelLoadState, ModelLoadStates, NavigationEpoch,
-    PendingDocumentLoads, PendingJsAttachNodes, PendingModelLoads, PerformanceStats, ReloadTrigger, ScriptLoadState,
+    PendingDocumentLoads, PendingJsAttachNodes, PendingJsFirstRenderNodes, PendingModelLoads, PerformanceStats, ReloadTrigger, ScriptLoadState,
     ScriptLoadStates, SharedResources, TextRenderParams, TokioRuntime, VirtualDomData,
     VIRTUAL_ROUTES,
 };
@@ -42,7 +42,7 @@ pub fn commit_pending_js_attaches_system(
     mut pending_js_attaches: ResMut<PendingJsAttachNodes>,
     world: Res<ElemenetWorld>,
     mut dom_data: ResMut<VirtualDomData>,
-    mut dirty_nodes: ResMut<DirtyNodes>,
+    mut pending_first_render: ResMut<PendingJsFirstRenderNodes>,
 ) {
     if pending_js_attaches.0.is_empty() {
         return;
@@ -57,7 +57,25 @@ pub fn commit_pending_js_attaches_system(
             continue;
         }
         dom_data.nodes.insert(node_id, ent);
-        dirty_nodes.0.push(node_id);
+        pending_first_render.0.push((node_id, 1));
+    }
+}
+
+pub fn activate_pending_js_first_render_system(
+    mut pending_first_render: ResMut<PendingJsFirstRenderNodes>,
+    mut dirty_nodes: ResMut<DirtyNodes>,
+) {
+    if pending_first_render.0.is_empty() {
+        return;
+    }
+
+    let pending = pending_first_render.0.drain(..).collect::<Vec<_>>();
+    for (node_id, delay) in pending {
+        if delay == 0 {
+            dirty_nodes.0.push(node_id);
+        } else {
+            pending_first_render.0.push((node_id, delay - 1));
+        }
     }
 }
 

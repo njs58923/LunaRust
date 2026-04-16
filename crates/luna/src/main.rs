@@ -73,6 +73,7 @@ fn main() {
     app.insert_resource(VirtualDomData::default());
     app.insert_resource(DirtyNodes::default());
     app.insert_resource(PendingJsAttachNodes::default());
+    app.insert_resource(PendingJsFirstRenderNodes::default());
     app.insert_resource(EntityMap::default());
     app.insert_resource(ElemenetWorld(build_world()));
     app.insert_resource(EntityCounter::default());
@@ -104,6 +105,7 @@ fn main() {
     app.insert_resource(JsSnapshotState::default());
     app.insert_resource(DevtoolState::default());
     app.insert_resource(PendingScripts::default());
+    app.insert_resource(DeferredSpaceMounts::default());
     app.insert_resource(IoService::default());
     app.insert_resource(PendingDocumentLoads::default());
     app.insert_resource(DocumentLoadState::default());
@@ -160,6 +162,8 @@ fn main() {
             dom::commit_pending_document_load_system
                 .run_if(|p: Res<PendingDocumentLoads>| !p.0.is_empty()),
             dom::apply_attribute_updates.run_if(|a: Res<AttributeUpdates>| !a.0.is_empty()),
+            dom::activate_pending_js_first_render_system
+                .run_if(|p: Res<PendingJsFirstRenderNodes>| !p.0.is_empty()),
             dom::process_delete_requests.run_if(|del: Res<DeleteRequests>| !del.0.is_empty()),
             dom::commit_pending_includes_system.run_if(|p: Res<PendingIncludes>| !p.0.is_empty()),
             permissions::rebuild_space_policies_system.run_if(|p: Res<SpacePolicies>| p.dirty),
@@ -210,6 +214,7 @@ fn main() {
             js::js_eval_pending_scripts,
             js::js_tick_system,
             sync_root_mode_resources,
+            ui::flush_deferred_space_mounts_system,
             process_space_unmount_queue.run_if(|q: Res<SpaceUnmountQueue>| !q.0.is_empty()),
             process_space_mount_queue.run_if(|q: Res<SpaceMountQueue>| !q.0.is_empty()),
         )

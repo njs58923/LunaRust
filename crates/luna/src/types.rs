@@ -103,6 +103,12 @@ impl DirtyNodes {
 #[derive(Resource, Default)]
 pub struct PendingJsAttachNodes(pub Vec<u32>);
 
+/// Nodos JS ya adjuntados al árbol lógico pero que deben esperar
+/// un frame completo antes del primer render para evitar estados
+/// intermedios (material/color/mesh default).
+#[derive(Resource, Default)]
+pub struct PendingJsFirstRenderNodes(pub Vec<(u32, u8)>);
+
 #[derive(Resource, Default)]
 pub struct ElemenetWorld(pub SpecWorld);
 
@@ -349,6 +355,15 @@ impl Default for JsSnapshotState {
 pub struct PendingScripts(pub Vec<(u32, String, String)>);
 
 #[derive(Debug, Clone)]
+pub struct DeferredSpaceMount {
+    pub wait_gone_url: String,
+    pub mount_url: String,
+}
+
+#[derive(Resource, Default)]
+pub struct DeferredSpaceMounts(pub Vec<DeferredSpaceMount>);
+
+#[derive(Debug, Clone)]
 pub struct PendingInclude {
     pub parent_node_id: u32,
     pub url: String,
@@ -413,6 +428,7 @@ pub struct SpaceParams<'w> {
     pub mount_queue: ResMut<'w, SpaceMountQueue>,
     pub unmount_queue: ResMut<'w, SpaceUnmountQueue>,
     pub mounted_spaces: ResMut<'w, MountedSpaceList>,
+    pub deferred_mounts: ResMut<'w, DeferredSpaceMounts>,
 }
 
 #[derive(SystemParam)]
