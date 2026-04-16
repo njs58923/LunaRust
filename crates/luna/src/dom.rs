@@ -1383,31 +1383,6 @@ pub fn dom_sync_system(
                 current_parent,
             );
 
-            if transform_only {
-                if tag == "text" {
-                    let empty_map = HashMap::new();
-                    let attrs_map = attrs_storage.get(*node).map(|a| &a.0).unwrap_or(&empty_map);
-                    let (text_value, text_size, _) = parse_text_attrs(attrs_map);
-                    let text_transform = build_text_transform(transform_b, &text_value, text_size);
-                    if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
-                        *t = text_transform;
-                        if dirty.is_some() {
-                            commands.entity(bevy_ent).remove::<Dirty>();
-                        }
-                    }
-                } else {
-                    if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
-                        *t = transform_b;
-                        if dirty.is_some() {
-                            commands.entity(bevy_ent).remove::<Dirty>();
-                        }
-                    }
-                }
-
-                transform_only_dirty.0.remove(&node_id);
-                continue;
-            }
-
             //
             // REGLA: para aplicar cambios de atributos (setAttribute desde JS) hay que
             // leer el valor directamente de `attrs_storage` en esta rama, no depender del
@@ -1479,6 +1454,38 @@ pub fn dom_sync_system(
                         commands.entity(bevy_ent).remove::<Dirty>();
                     }
                 }
+                // IMPORTANTE:
+                // un <model> puede haber recibido position/scale antes de que el asset
+                // termine de cargar. Si queda pegado en transform_only_dirty, cuando
+                // el modelo quede Ready el fast-path de transform-only se comería para
+                // siempre el reemplazo del placeholder por la escena real.
+                transform_only_dirty.0.remove(&node_id);
+                continue;
+            }
+
+            
+            if transform_only {
+                if tag == "text" {
+                    let empty_map = HashMap::new();
+                    let attrs_map = attrs_storage.get(*node).map(|a| &a.0).unwrap_or(&empty_map);
+                    let (text_value, text_size, _) = parse_text_attrs(attrs_map);
+                    let text_transform = build_text_transform(transform_b, &text_value, text_size);
+                    if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
+                        *t = text_transform;
+                        if dirty.is_some() {
+                            commands.entity(bevy_ent).remove::<Dirty>();
+                        }
+                    }
+                } else {
+                    if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
+                        *t = transform_b;
+                        if dirty.is_some() {
+                            commands.entity(bevy_ent).remove::<Dirty>();
+                        }
+                    }
+                }
+
+                transform_only_dirty.0.remove(&node_id);
                 continue;
             }
 
@@ -1897,6 +1904,12 @@ pub fn dom_sync_system(
 
             set_parent(&mut commands, new_ent, parent_id, &entity_map);
             entity_map.0.insert(node_id, new_ent);
+            
+            // Si este nodo venía marcado como transform-only desde antes de tener
+            // entidad Bevy, la marca debe limpiarse ahora. Si no, un dirty futuro
+            // (por ejemplo cuando un model pasa a Ready) entrará al fast-path y
+            // salteará lógica importante.
+            transform_only_dirty.0.remove(&node_id);
         }
     }
 

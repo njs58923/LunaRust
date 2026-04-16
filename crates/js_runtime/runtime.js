@@ -403,6 +403,18 @@
           core.ops.op_hsml_append_child(parentId, childId);
         });
       });
+      return child;
+    }
+    
+    removeChild(child) {
+      if (!(child instanceof HSMLElement)) {
+        throw new Error('removeChild: argument must be HSMLElement');
+      }
+
+      // Compat simple: el backend ya soporta remove(node),
+      // así que quitar un hijo equivale a remover ese subárbol.
+      child.remove();
+      return child;
     }
 
     remove() {

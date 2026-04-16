@@ -195,14 +195,14 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                     }
                     JsWorkerCommand::EvalScript { url, code } => {
                         let is_ephemeral = url.starts_with("eval://");
-                        if !is_ephemeral && ctx.loaded_scripts.contains(&url) {
-                            let _ = event_tx.send(JsWorkerEvent::EvalResult {
-                                url,
-                                already_loaded: true,
-                                error: None,
-                            });
-                            continue;
-                        }
+                        // if !is_ephemeral && ctx.loaded_scripts.contains(&url) {
+                        //     let _ = event_tx.send(JsWorkerEvent::EvalResult {
+                        //         url,
+                        //         already_loaded: true,
+                        //         error: None,
+                        //     });
+                        //     continue;
+                        // }
                         let wrapped_code = format!("(function(){{\n{}\n}})();", code);
                         match ctx.engine.eval(&wrapped_code) {
                             Ok(_) => {
