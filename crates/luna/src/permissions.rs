@@ -348,6 +348,7 @@ pub fn vr_locomotion_enabled(active: Res<ActiveNativeServices>) -> bool {
 
 pub fn rebuild_space_policies_system(
     world: Res<ElemenetWorld>,
+    dom_data: Res<crate::VirtualDomData>,
     mut policies: ResMut<SpacePolicies>,
     mut log_panel: ResMut<crate::LogPanel>,
     mut history: ResMut<SpacePolicyHistory>,
@@ -360,6 +361,7 @@ pub fn rebuild_space_policies_system(
     let hierarchies = world.0.read_storage::<Hierarchy>();
     let tags = world.0.read_storage::<Tag>();
     let attrs = world.0.read_storage::<Attrs>();
+    let attached_ids: HashSet<u32> = dom_data.nodes.keys().copied().collect();
 
     fn walk(
         ent: specs::Entity,
@@ -367,6 +369,7 @@ pub fn rebuild_space_policies_system(
         inherited_native: NativeServiceBits,
         entry_caps: CapabilityBits,
         entry_native: NativeServiceBits,
+        attached_ids: &HashSet<u32>,
         hierarchies: &specs::ReadStorage<Hierarchy>,
         tags: &specs::ReadStorage<Tag>,
         attrs: &specs::ReadStorage<Attrs>,
@@ -478,12 +481,16 @@ pub fn rebuild_space_policies_system(
 
         if let Some(h) = hierarchies.get(ent) {
             for &child in &h.children {
+                if !attached_ids.contains(&child.id()) {
+                    continue;
+                }
                 walk(
                     child,
                     child_caps,
                     child_native,
                     child_entry_caps,
                     child_entry_native,
+                    attached_ids,
                     hierarchies,
                     tags,
                     attrs,
@@ -495,6 +502,7 @@ pub fn rebuild_space_policies_system(
 
     let roots: Vec<_> = (&entities, &hierarchies)
         .join()
+        .filter(|(ent, _)| attached_ids.contains(&ent.id()))
         .filter(|(_, h)| h.parent.is_none())
         .map(|(ent, _)| ent)
         .collect();
@@ -507,6 +515,7 @@ pub fn rebuild_space_policies_system(
             NativeServiceBits::empty(),
             CapabilityBits::empty(),
             NativeServiceBits::empty(),
+            &attached_ids,
             &hierarchies,
             &tags,
             &attrs,

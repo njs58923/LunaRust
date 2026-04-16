@@ -9,6 +9,11 @@
 
   const __lunaElementCache = new Map();
 
+   function __luna_set_global_dimention(root) {
+     global.dimention = root || null;
+     return global.dimention;
+   }
+
   function _findNodeById(el, targetId) {
     if (!el) return null;
     if (el.nodeId === targetId) return el;
@@ -721,7 +726,14 @@
   // ---------------------------------------------------------------------------
 
   global.hiperspace = {
-    dimention: null,  // Root element set by setHiperSpace
+    _dimention: null,  // Root element set by setHiperSpace
+    get dimention() {
+      return this._dimention;
+    },
+    set dimention(value) {
+      this._dimention = value || null;
+      __luna_set_global_dimention(this._dimention);
+    },
     location: new Location(),
     open: (url) => {
       console.warn('hiperspace.open() not yet implemented');
@@ -866,6 +878,8 @@
   // Bevy will call setHiperSpace if needed
   if (!global.hiperspace.dimention) {
     global.hiperspace.dimention = new HSMLRootElement(0);
+  } else {
+    __luna_set_global_dimention(global.hiperspace.dimention);
   }
 
   console.log('[Luna Runtime] Loaded successfully');

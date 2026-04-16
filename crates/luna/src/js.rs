@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use specs::{Join, WorldExt};
 
 use js_runtime::Engine as JsEngine;
-use crate::dom::{find_nearest_ancestor_include, resolve_node_relative_url};
+use crate::dom::{collect_subtree_ids, find_nearest_ancestor_include, resolve_node_relative_url};
 use crate::permissions::{CapabilityBits, SpacePolicies};
 use virtual_dom::dom::{
     element::{Attrs, Hierarchy, Tag, Transform2},
@@ -19,7 +19,7 @@ use virtual_dom::dom::{
 use crate::{
     request_fetch_text, AttributeUpdates, DirtyNodes, ElemenetWorld, IoService, JsSnapshotState,
     LogLevel, LogPanel, ModelLoadStates, PendingModelLoads, PendingScripts, ReloadTrigger,
-    ScriptLoadStates, SpaceHandleTable, SpaceHandleTables, TransformUpdates,
+    ScriptLoadStates, SpaceHandleTable, SpaceHandleTables, TransformUpdates, VirtualDomData,
 };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -656,6 +656,11 @@ pub fn js_update_snapshots_system(world: &mut World) {
         return;
     }
 
+    let attached_node_ids: HashSet<u32> = world
+    .get_resource::<VirtualDomData>()
+    .map(|dom| dom.nodes.keys().copied().collect())
+    .unwrap_or_default();
+
     let (
         attr_snap,
         tag_snap,
@@ -678,6 +683,9 @@ pub fn js_update_snapshots_system(world: &mut World) {
 
         let mut attr_snap = HashMap::new();
         for (ent, attrs) in (&entities, &attrs_storage).join() {
+            if !attached_node_ids.contains(&ent.id()) {
+                continue;
+            }
             let mut map = HashMap::new();
             for (k, v) in &attrs.0 {
                 map.insert(k.clone(), v.clone());
@@ -687,6 +695,9 @@ pub fn js_update_snapshots_system(world: &mut World) {
 
         let mut tag_snap = HashMap::new();
         for (ent, tag) in (&entities, &tags_storage).join() {
+            if !attached_node_ids.contains(&ent.id()) {
+                continue;
+            }
             tag_snap.insert(ent.id() as i32, tag.0.clone());
         }
 
@@ -695,6 +706,9 @@ pub fn js_update_snapshots_system(world: &mut World) {
         let mut scales = HashMap::new();
         let mut global_positions = HashMap::new();
         for (ent, tr) in (&entities, &transforms_storage).join() {
+            if !attached_node_ids.contains(&ent.id()) {
+                continue;
+            }
             use js_runtime::Vec3;
             positions.insert(
                 ent.id() as i32,
@@ -733,11 +747,15 @@ pub fn js_update_snapshots_system(world: &mut World) {
         let mut parents = HashMap::new();
         let mut children_map = HashMap::new();
         for (ent, hier) in (&entities, &hierarchies_storage).join() {
+            if !attached_node_ids.contains(&ent.id()) {
+                continue;
+            }
             parents.insert(ent.id() as i32, hier.parent.map(|p| p as i32).unwrap_or(-1));
             children_map.insert(
                 ent.id() as i32,
                 hier.children
                     .iter()
+                    .filter(|child| attached_node_ids.contains(&child.id()))
                     .map(|c| c.id() as i32)
                     .collect::<Vec<_>>(),
             );
@@ -1365,19 +1383,6 @@ pub fn js_tick_system(world: &mut World) {
             creation_results
         };
 
-        if let Some(mut dom_data) = world.get_resource_mut::<crate::VirtualDomData>() {
-            for &(_, id, ent) in &created_nodes {
-                dom_data.nodes.insert(id, ent);
-            }
-        }
-        if !created_nodes.is_empty() {
-            snapshot_dirty = true;
-        }
-        if let Some(mut dirty_nodes) = world.get_resource_mut::<DirtyNodes>() {
-            dirty_nodes
-                .0
-                .extend(created_nodes.iter().map(|&(_, id, _)| id));
-        }
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
             for msg in log_messages {
                 log_panel.push_info(msg);
@@ -1424,11 +1429,18 @@ pub fn js_tick_system(world: &mut World) {
             (allowed_appends, rejected_logs)
         };
 
-        let (dirty_child_ids, log_messages) = {
+        let mut attached_now: HashSet<u32> = world
+            .get_resource::<crate::VirtualDomData>()
+            .map(|dom| dom.nodes.keys().copied().collect())
+            .unwrap_or_default();
+
+        let (newly_attached_nodes, dirty_ids, log_messages) = {
             let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else {
                 return;
             };
-            let mut dirty_child_ids = Vec::new();
+            let mut newly_attached_nodes: Vec<(u32, specs::Entity)> = Vec::new();
+            let mut newly_attached_seen = HashSet::new();
+            let mut dirty_ids = HashSet::new();
             let mut log_messages = Vec::new();
             for (parent_id, child_id) in allowed_appends {
                 let (parent_ent, child_ent, are_alive) = {
@@ -1440,28 +1452,51 @@ pub fn js_tick_system(world: &mut World) {
                 };
                 if are_alive {
                     Hierarchy::add_child(&mut specs_world.0, parent_ent, child_ent);
-                    dirty_child_ids.push(child_id);
+
+                    if attached_now.contains(&parent_id) {
+                        let mut subtree_ids = Vec::new();
+                        collect_subtree_ids(&specs_world.0, child_ent, &mut subtree_ids);
+
+                        for node_id in subtree_ids {
+                            dirty_ids.insert(node_id);
+                            if attached_now.insert(node_id) && newly_attached_seen.insert(node_id) {
+                                newly_attached_nodes.push((
+                                    node_id,
+                                    specs_world.0.entities().entity(node_id),
+                                ));
+                            }
+                        }
+                    }                   
+
                     log_messages.push(format!(
                         "[JS][space:{}] appendChild: parent={} child={}",
                         space_id, parent_id, child_id
                     ));
                 }
             }
-            (dirty_child_ids, log_messages)
+            (newly_attached_nodes, dirty_ids, log_messages)
         };
+
+        if let Some(mut dom_data) = world.get_resource_mut::<crate::VirtualDomData>() {
+            for (node_id, ent) in &newly_attached_nodes {
+                dom_data.nodes.insert(*node_id, *ent);
+            }
+        }
+
+        let dirty_ids_vec: Vec<u32> = dirty_ids.into_iter().collect();
 
         if let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() {
             let Some(table) = space_handle_tables.by_space.get_mut(&space_id) else {
                 return;
             };
-            for child_id in &dirty_child_ids {
-                table.detached_globals.remove(child_id);
+            for node_id in &dirty_ids_vec {
+                table.detached_globals.remove(node_id);
             }
         }
         if let Some(mut dirty_nodes) = world.get_resource_mut::<DirtyNodes>() {
-            dirty_nodes.0.extend(dirty_child_ids.iter().copied());
+            dirty_nodes.0.extend(dirty_ids_vec.iter().copied());
         }
-        if !dirty_child_ids.is_empty() {
+        if !dirty_ids_vec.is_empty() {
             snapshot_dirty = true;
         }
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {

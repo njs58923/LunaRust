@@ -670,6 +670,7 @@ where
 pub fn apply_transform_updates(
     mut transform_updates: ResMut<crate::TransformUpdates>,
     mut world: ResMut<ElemenetWorld>,
+    dom_data: Res<VirtualDomData>,
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut transform_only_dirty: ResMut<crate::TransformOnlyDirtyNodes>,
 ) {
@@ -735,15 +736,20 @@ pub fn apply_transform_updates(
         }
     }
 
-    let updated_nodes: Vec<u32> = updated_nodes.into_iter().collect();
-    dirty_nodes.0.extend(updated_nodes.iter().copied());
-    transform_only_dirty.0.extend(updated_nodes);
+    let attached_nodes: Vec<u32> = updated_nodes
+        .into_iter()
+        .filter(|node_id| dom_data.nodes.contains_key(node_id))
+        .collect();
+
+    dirty_nodes.0.extend(attached_nodes.iter().copied());
+    transform_only_dirty.0.extend(attached_nodes);
 }
 
 
 pub fn apply_attribute_updates(
     mut attribute_updates: ResMut<AttributeUpdates>,
     world: ResMut<ElemenetWorld>,
+    dom_data: Res<crate::VirtualDomData>,
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
     mut space_policies: ResMut<crate::permissions::SpacePolicies>,
@@ -779,6 +785,7 @@ pub fn apply_attribute_updates(
         if !entities.is_alive(ent) {
             continue;
         }
+        let is_attached = dom_data.nodes.contains_key(&ent_id);
         transform_only_dirty.0.remove(&ent_id);
 
 
@@ -879,9 +886,11 @@ pub fn apply_attribute_updates(
             }
         }
 
-        dirty_nodes.0.push(ent_id);
+        if is_attached {
+            dirty_nodes.0.push(ent_id);
+        }
 
-        if matches!(key.as_str(), "resources" | "system-space") {
+        if is_attached && matches!(key.as_str(), "resources" | "system-space") {
             space_policies.dirty = true;
         }
     }
@@ -1317,7 +1326,9 @@ pub fn dom_sync_system(
 
     for node_id in dirty_node_ids {
         let Some(node) = dom_data.nodes.get(&node_id) else {
-            log_panel.push_error(format!("No dom node for id={}", node_id));
+            if DOM_SYNC_VERBOSE_LOGS {
+                log_panel.push_warn(format!("dom_sync: skipping detached node id={}", node_id));
+            }
             continue;
         };
 

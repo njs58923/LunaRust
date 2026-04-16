@@ -63,6 +63,19 @@ mod tests {
         Ok(())
     }
 
+    
+    #[test]
+    fn test_global_dimention_alias_exists() -> Result<()> {
+        let mut eng = Engine::new();
+        eng.eval(r#"
+            console.log(typeof dimention, dimention === hiperspace.dimention, dimention.nodeId);
+        "#)?;
+
+        let logs = eng.drain_logs();
+        assert!(logs.iter().any(|(_, msg)| msg.contains("object true 0")));
+        Ok(())
+    }
+
     #[test]
     fn test_dom_toque_dispatch_works_without_controller_script() -> Result<()> {
         use std::collections::HashMap;
