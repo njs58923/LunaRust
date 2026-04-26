@@ -1839,4 +1839,343 @@ mod tests {
             *node_id == 5 && key == "value" && value.contains("right controller")
         }));
     }
+
+    /// Hammer createElement/remove cycles on root and validate JS-side queue
+    /// coherence. Repro target: rapid recycle of bullets/targets that has been
+    /// causing downstream Bevy entity panics
+    /// ("Could not insert a bundle ... because it doesn't exist").
+    ///
+    /// Invariants checked:
+    ///  - every drained create request gets a unique request_id
+    ///  - every drained remove id was previously assigned by us
+    ///  - no node_id appears in the remove queue twice
+    ///  - total creates == total removes after full churn
+    ///  - no duplicate (node_id, key, value) attr update for a stale (already-removed) id
+    #[test]
+    fn dom_stress_create_remove_cycles() {
+        use std::collections::HashSet;
+
+        let mut eng = Engine::new();
+
+        let mut tags = HashMap::new();
+        tags.insert(0, "hsml".to_string());
+        eng.update_tag_snapshot(tags);
+
+        let mut parents = HashMap::new();
+        parents.insert(0, -1);
+        let mut children = HashMap::new();
+        children.insert(0, vec![]);
+        eng.update_hierarchy_snapshot(parents, children);
+
+        let mut attrs = HashMap::new();
+        attrs.insert(0, HashMap::new());
+        eng.update_attr_snapshot(attrs);
+        eng.update_transform_snapshot(
+            HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(),
+        );
+
+        eng.eval(r#"
+            const root = hiperspace.dimention;
+            const live = [];
+            globalThis.__stress_create = (n) => {
+                for (let i = 0; i < n; i++) {
+                    const el = root.createElement('sphere');
+                    el.setAttribute('color', '#FFD700');
+                    el.setAttribute('sx', '0.16');
+                    el.position = { x: i * 0.1, y: 0.5, z: -2 };
+                    root.appendChild(el);
+                    live.push(el);
+                }
+            };
+            globalThis.__stress_remove_all = () => {
+                while (live.length) live.pop().remove();
+            };
+            globalThis.__stress_remove_some = (n) => {
+                for (let i = 0; i < n && live.length; i++) live.pop().remove();
+            };
+            globalThis.__stress_count = () => live.length;
+        "#).unwrap();
+
+        eng.drain_element_creation_queue();
+        eng.drain_remove_element_queue();
+        eng.drain_attr_updates();
+        eng.drain_logs();
+
+        let cycles = 40;
+        let batch = 25;
+        let mut next_real_id: i32 = 100;
+        let mut all_assigned: HashSet<i32> = HashSet::new();
+        let mut all_removed: HashSet<i32> = HashSet::new();
+
+        for cycle in 0..cycles {
+            // Spawn a batch
+            eng.eval(&format!("__stress_create({})", batch)).unwrap();
+            let creates = eng.drain_element_creation_queue();
+            assert_eq!(
+                creates.len(),
+                batch,
+                "cycle {}: expected {} creates, got {}",
+                cycle, batch, creates.len()
+            );
+
+            let mut req_ids: HashSet<i32> = HashSet::new();
+            for (req_id, tag) in &creates {
+                assert_eq!(tag, "sphere");
+                assert!(req_ids.insert(*req_id), "duplicate request_id {}", req_id);
+
+                let real_id = next_real_id;
+                next_real_id += 1;
+                eng.push_element_creation_result(*req_id, real_id);
+                assert!(
+                    all_assigned.insert(real_id),
+                    "duplicate real id {} assigned",
+                    real_id
+                );
+            }
+
+            // Pump pending callbacks (resolve queued setAttribute/position/etc).
+            eng.fire_raf((cycle * 16) as f64);
+
+            // Tear down half, leave half live across cycles to grow the live set.
+            let to_remove = batch / 2;
+            eng.eval(&format!("__stress_remove_some({})", to_remove)).unwrap();
+            eng.fire_raf((cycle * 16 + 8) as f64);
+
+            let removes = eng.drain_remove_element_queue();
+            assert_eq!(
+                removes.len(),
+                to_remove,
+                "cycle {}: expected {} removes, got {}",
+                cycle, to_remove, removes.len()
+            );
+            for id in &removes {
+                assert!(
+                    all_assigned.contains(id),
+                    "remove for never-assigned id {}",
+                    id
+                );
+                assert!(
+                    all_removed.insert(*id),
+                    "duplicate remove queued for id {}",
+                    id
+                );
+            }
+        }
+
+        // Final sweep: remove every survivor.
+        eng.eval("__stress_remove_all()").unwrap();
+        eng.fire_raf((cycles * 16 + 100) as f64);
+        let final_removes = eng.drain_remove_element_queue();
+        for id in &final_removes {
+            assert!(
+                all_assigned.contains(id),
+                "final remove for unknown id {}",
+                id
+            );
+            assert!(
+                all_removed.insert(*id),
+                "duplicate final remove for id {}",
+                id
+            );
+        }
+
+        assert_eq!(
+            all_assigned.len(),
+            cycles * batch,
+            "total creates mismatch"
+        );
+        assert_eq!(
+            all_removed.len(),
+            cycles * batch,
+            "total removes != total creates ({} created, {} removed)",
+            all_assigned.len(),
+            all_removed.len()
+        );
+
+        // Engine should have logged no errors (e.g. throws from ops on dead refs).
+        let logs = eng.drain_logs();
+        let errors: Vec<_> = logs.iter().filter(|(level, _)| level == "error").collect();
+        assert!(
+            errors.is_empty(),
+            "stress run produced JS error logs: {:?}",
+            errors
+        );
+    }
+
+    /// Same churn pattern as target_demo: bursts of bullet spawns, then a full
+    /// reset that wipes everything. Reset path is exactly what was crashing in
+    /// production.
+    #[test]
+    fn dom_stress_burst_then_reset() {
+        use std::collections::HashSet;
+
+        let mut eng = Engine::new();
+
+        let mut tags = HashMap::new();
+        tags.insert(0, "hsml".to_string());
+        eng.update_tag_snapshot(tags);
+
+        let mut parents = HashMap::new();
+        parents.insert(0, -1);
+        let mut children = HashMap::new();
+        children.insert(0, vec![]);
+        eng.update_hierarchy_snapshot(parents, children);
+
+        let mut attrs = HashMap::new();
+        attrs.insert(0, HashMap::new());
+        eng.update_attr_snapshot(attrs);
+        eng.update_transform_snapshot(
+            HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(),
+        );
+
+        eng.eval(r#"
+            const root = hiperspace.dimention;
+            const pool = [];
+            globalThis.__burst = (n) => {
+                for (let i = 0; i < n; i++) {
+                    const el = root.createElement('sphere');
+                    el.setAttribute('color', '#FF0000');
+                    root.appendChild(el);
+                    pool.push(el);
+                }
+            };
+            globalThis.__reset = () => {
+                while (pool.length) pool.pop().remove();
+            };
+        "#).unwrap();
+
+        eng.drain_element_creation_queue();
+        eng.drain_remove_element_queue();
+        eng.drain_logs();
+
+        let bursts = 15;
+        let burst_size = 30;
+        let mut next_real_id: i32 = 1000;
+        let mut total_assigned = 0usize;
+        let mut total_removed = 0usize;
+        let mut seen_ids: HashSet<i32> = HashSet::new();
+
+        for cycle in 0..bursts {
+            eng.eval(&format!("__burst({})", burst_size)).unwrap();
+            let creates = eng.drain_element_creation_queue();
+            assert_eq!(creates.len(), burst_size);
+
+            for (req_id, _) in &creates {
+                let id = next_real_id;
+                next_real_id += 1;
+                eng.push_element_creation_result(*req_id, id);
+                assert!(seen_ids.insert(id));
+                total_assigned += 1;
+            }
+            eng.fire_raf((cycle * 100) as f64);
+
+            // Full reset.
+            eng.eval("__reset()").unwrap();
+            eng.fire_raf((cycle * 100 + 50) as f64);
+
+            let removes = eng.drain_remove_element_queue();
+            assert_eq!(
+                removes.len(),
+                burst_size,
+                "burst {}: removes != burst_size",
+                cycle
+            );
+
+            let unique: HashSet<i32> = removes.iter().copied().collect();
+            assert_eq!(unique.len(), removes.len(), "duplicate id in remove batch");
+            for id in &removes {
+                assert!(seen_ids.contains(id), "remove for unknown id {}", id);
+            }
+            total_removed += removes.len();
+        }
+
+        assert_eq!(total_assigned, total_removed);
+        assert_eq!(total_assigned, bursts * burst_size);
+
+        let logs = eng.drain_logs();
+        let errors: Vec<_> = logs.iter().filter(|(level, _)| level == "error").collect();
+        assert!(errors.is_empty(), "burst run produced errors: {:?}", errors);
+    }
+
+    /// Adversarial pattern: create then immediately remove BEFORE backend
+    /// resolves the request_id. The remove must be queued via `_onResolved`
+    /// and then fire as soon as the real id arrives. If the JS layer races
+    /// here, downstream we get a stale entity_map entry → Bevy panic on next
+    /// command flush.
+    #[test]
+    fn dom_stress_create_then_remove_before_resolve() {
+        let mut eng = Engine::new();
+
+        let mut tags = HashMap::new();
+        tags.insert(0, "hsml".to_string());
+        eng.update_tag_snapshot(tags);
+
+        let mut parents = HashMap::new();
+        parents.insert(0, -1);
+        let mut children = HashMap::new();
+        children.insert(0, vec![]);
+        eng.update_hierarchy_snapshot(parents, children);
+
+        let mut attrs = HashMap::new();
+        attrs.insert(0, HashMap::new());
+        eng.update_attr_snapshot(attrs);
+        eng.update_transform_snapshot(
+            HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(),
+        );
+
+        eng.eval(r#"
+            const root = hiperspace.dimention;
+            globalThis.__churn = (n) => {
+                for (let i = 0; i < n; i++) {
+                    const el = root.createElement('sphere');
+                    el.setAttribute('color', '#0F0');
+                    root.appendChild(el);
+                    el.remove();
+                }
+            };
+        "#).unwrap();
+
+        eng.drain_element_creation_queue();
+        eng.drain_remove_element_queue();
+        eng.drain_logs();
+
+        let n = 200;
+        eng.eval(&format!("__churn({})", n)).unwrap();
+
+        let creates = eng.drain_element_creation_queue();
+        assert_eq!(creates.len(), n);
+
+        // Removes were queued via _onResolved BEFORE we assigned ids.
+        // Up to this point the remove queue should still be empty.
+        let early_removes = eng.drain_remove_element_queue();
+        assert!(
+            early_removes.is_empty(),
+            "remove fired before id resolution: {:?}",
+            early_removes
+        );
+
+        let mut assigned: Vec<i32> = Vec::with_capacity(n);
+        for (i, (req_id, _)) in creates.iter().enumerate() {
+            let id = 5000 + i as i32;
+            eng.push_element_creation_result(*req_id, id);
+            assigned.push(id);
+        }
+
+        eng.fire_raf(16.0);
+
+        // After resolution, the queued remove for each must have fired exactly once.
+        let removes = eng.drain_remove_element_queue();
+        assert_eq!(removes.len(), n, "post-resolve remove count off");
+
+        let assigned_set: std::collections::HashSet<i32> = assigned.into_iter().collect();
+        let mut seen = std::collections::HashSet::new();
+        for id in &removes {
+            assert!(assigned_set.contains(id), "remove for unknown id {}", id);
+            assert!(seen.insert(*id), "duplicate post-resolve remove for {}", id);
+        }
+
+        let logs = eng.drain_logs();
+        let errors: Vec<_> = logs.iter().filter(|(level, _)| level == "error").collect();
+        assert!(errors.is_empty(), "churn produced errors: {:?}", errors);
+    }
 }
