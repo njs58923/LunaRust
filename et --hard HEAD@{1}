@@ -1,0 +1,170 @@
+[33m64ae213[m[33m ([m[1;36mHEAD -> [m[1;32mmain[m[33m)[m HEAD@{0}: checkout: moving from main to main
+[33m64ae213[m[33m ([m[1;36mHEAD -> [m[1;32mmain[m[33m)[m HEAD@{1}: checkout: moving from main to main
+[33m64ae213[m[33m ([m[1;36mHEAD -> [m[1;32mmain[m[33m)[m HEAD@{2}: checkout: moving from main to main
+[33m64ae213[m[33m ([m[1;36mHEAD -> [m[1;32mmain[m[33m)[m HEAD@{3}: checkout: moving from main to main
+[33m64ae213[m[33m ([m[1;36mHEAD -> [m[1;32mmain[m[33m)[m HEAD@{4}: checkout: moving from 85d7bd9d223aeb13ce591d712779221c2defe58d to main
+[33m85d7bd9[m HEAD@{5}: commit: more test for crasheshs dirtys
+[33m1a8d60b[m HEAD@{6}: commit: more fixs in crashed dirtys
+[33mc2535d8[m HEAD@{7}: commit: add hard test
+[33m258dddd[m HEAD@{8}: commit: add test stress engine
+[33m8ed3bbf[m HEAD@{9}: commit: add demo target
+[33ma06fe80[m HEAD@{10}: commit: fix speed ball
+[33md487449[m HEAD@{11}: commit: repair fire_demo
+[33md892518[m HEAD@{12}: commit: add skybox
+[33m6c99f28[m HEAD@{13}: reset: moving to 6c99f282c050c98f43651b68fa338b69792d9d18
+[33mada183b[m[33m ([m[1;32mtryNodeHandle[m[33m)[m HEAD@{14}: commit: fixs¡?
+[33m8e270d7[m HEAD@{15}: commit: add NodeHandle
+[33m6c99f28[m HEAD@{16}: checkout: moving from main to 6c99f282c050c98f43651b68fa338b69792d9d18
+[33m64ae213[m[33m ([m[1;36mHEAD -> [m[1;32mmain[m[33m)[m HEAD@{17}: commit: fix?
+[33m6c99f28[m HEAD@{18}: commit: errroes
+[33m029b3ad[m HEAD@{19}: commit: more fix in loader space
+[33md4d8e08[m HEAD@{20}: commit: add base fix loading space
+[33m2cd23a5[m HEAD@{21}: commit: fix load models
+[33mb34da51[m HEAD@{22}: commit: add rounted function
+[33m63cfdcb[m HEAD@{23}: commit: fix dimention and render colors
+[33mda29a94[m HEAD@{24}: commit: add border-radius in plane
+[33m1b15045[m HEAD@{25}: reset: moving to HEAD~
+[33mc0059e3[m HEAD@{26}: commit: add reload
+[33m1b15045[m HEAD@{27}: commit: add ws
+[33m5211fa7[m HEAD@{28}: commit: fix hsml and network
+[33me9a74ce[m HEAD@{29}: commit: repair logs
+[33mb237b12[m HEAD@{30}: commit: add console by tab
+[33m21a7e4b[m HEAD@{31}: commit: fix race in dimention root
+[33m0ac3e96[m HEAD@{32}: commit: fix witch of ux
+[33m62b2eac[m HEAD@{33}: commit: move menu config
+[33m42ce8b8[m HEAD@{34}: commit: remove special home
+[33me9bbe30[m HEAD@{35}: commit: fix: to 300 speed bala in demo disparos
+[33m64252fe[m HEAD@{36}: commit: add real demo disparos
+[33m37025fb[m HEAD@{37}: commit: fix crasheo delete and demo disparo
+[33m91a9e76[m HEAD@{38}: commit: add engine vm for avatars
+[33mfbdc5e3[m HEAD@{39}: commit: add avatar analis
+[33mb6d8ea9[m HEAD@{40}: commit: remove rust path by local-transform
+[33m00eeddc[m HEAD@{41}: commit: add local_transform
+[33m02ee95d[m HEAD@{42}: commit: add demo distance test
+[33m6ee3bcb[m HEAD@{43}: reset: moving to HEAD~
+[33mcec2e84[m HEAD@{44}: checkout: moving from 6ee3bcb796ba3ce4e97efaeb1c44493bb98374b5 to main
+[33m6ee3bcb[m HEAD@{45}: checkout: moving from main to 6ee3bcb796ba3ce4e97efaeb1c44493bb98374b5
+[33mcec2e84[m HEAD@{46}: commit: add local_transforms
+[33m6ee3bcb[m HEAD@{47}: checkout: moving from 30d12738473abbc783cbc62146a5fc58ab9f297c to main
+[33m30d1273[m HEAD@{48}: checkout: moving from main to 30d12738473abbc783cbc62146a5fc58ab9f297c
+[33m6ee3bcb[m HEAD@{49}: commit: add setTransformBatch
+[33m30d1273[m HEAD@{50}: commit: optimize translations face 1
+[33m4080d26[m HEAD@{51}: reset: moving to HEAD~
+[33m47601d8[m HEAD@{52}: commit: optimize translations
+[33m4080d26[m HEAD@{53}: commit: more rangue for demo distance
+[33m876ae0a[m HEAD@{54}: commit: fix escapado in js engine
+[33md46e0f2[m HEAD@{55}: commit: fix demos escaped
+[33m0b8891b[m HEAD@{56}: commit: fix touch hitbox
+[33m8994a63[m HEAD@{57}: commit: new demo
+[33m6651117[m HEAD@{58}: commit: optimize parent subtree
+[33m96dadf7[m HEAD@{59}: commit: fix camera control vr
+[33m7f2d7fb[m HEAD@{60}: commit: add logs fail in controls tv
+[33m19a36b8[m HEAD@{61}: commit: remove logs
+[33m86e3be8[m HEAD@{62}: commit: fix toque desktop
+[33m6c4224d[m HEAD@{63}: commit: more fixs in permisos
+[33me5fdc6c[m HEAD@{64}: commit: add avance toque system
+[33mcb25263[m HEAD@{65}: commit: add global toque base
+[33m7da3ad4[m HEAD@{66}: commit: add desktop controller
+[33m0f4f8f7[m HEAD@{67}: commit: fix traking locomotion in vr
+[33m80c7da7[m HEAD@{68}: commit: fix: add menu root
+[33me769d52[m HEAD@{69}: commit: more logs in mounSpace
+[33meb8ba26[m HEAD@{70}: reset: moving to HEAD~
+[33m147dc53[m[33m ([m[1;32mdemo1[m[33m)[m HEAD@{71}: pull . demo1: Fast-forward
+[33meb8ba26[m HEAD@{72}: reset: moving to HEAD~
+[33m147dc53[m[33m ([m[1;32mdemo1[m[33m)[m HEAD@{73}: commit: awfawf
+[33meb8ba26[m HEAD@{74}: commit: add real resources
+[33m9cc51f5[m HEAD@{75}: commit: fix dinamic include
+[33mf575866[m HEAD@{76}: commit: repairs of chatgpt
+[33m98cd41d[m HEAD@{77}: commit: face 3 wp
+[33m2de311b[m HEAD@{78}: commit: face 2 wp
+[33m21c70c7[m HEAD@{79}: commit: wp changes
+[33m8dae224[m HEAD@{80}: commit: ignore plane
+[33mf907368[m HEAD@{81}: commit: add plane codigo
+[33mfc68fc7[m HEAD@{82}: commit: fix dynamic include
+[33m5d76d3b[m HEAD@{83}: commit: update2 tabs ux
+[33m8c3645f[m HEAD@{84}: commit: update tabs real ux
+[33m97e2f7d[m HEAD@{85}: commit: add ux tabs
+[33m3f579d0[m HEAD@{86}: commit: more testing
+[33m1474aca[m HEAD@{87}: commit: add script inlines
+[33m5dfc7c1[m HEAD@{88}: commit: added controller base
+[33m7ab7b7c[m HEAD@{89}: commit: add dynamic speed move, and fix simple traking hands
+[33me7d62ae[m HEAD@{90}: commit: fix camera vr direcion move
+[33m9a44606[m HEAD@{91}: commit: restore simple traking
+[33m04d0ea4[m HEAD@{92}: commit: locomotion by openxr
+[33m853c3e6[m HEAD@{93}: commit: add locomotion vr base
+[33medc253d[m HEAD@{94}: commit: add simple traking move hands in vr
+[33m09a6093[m HEAD@{95}: commit: fix: add docker and hosts dns
+[33m16a69c5[m HEAD@{96}: checkout: moving from cloude-changes-controller to main
+[33m7173df6[m[33m ([m[1;32mcloude-changes-controller[m[33m)[m HEAD@{97}: checkout: moving from main to cloude-changes-controller
+[33m16a69c5[m HEAD@{98}: checkout: moving from cloude-changes-controller to main
+[33m7173df6[m[33m ([m[1;32mcloude-changes-controller[m[33m)[m HEAD@{99}: checkout: moving from main to cloude-changes-controller
+[33m16a69c5[m HEAD@{100}: reset: moving to 16a69c54b1039164ac77ff7601066b5f7a90888a
+[33m7173df6[m[33m ([m[1;32mcloude-changes-controller[m[33m)[m HEAD@{101}: commit: fix: more changes brokes
+[33m7e922b4[m HEAD@{102}: commit: update by claude part 2
+[33mc5227f3[m HEAD@{103}: commit: fix: update by cloude
+[33m16a69c5[m HEAD@{104}: commit: add root
+[33m2cc1420[m HEAD@{105}: commit: add config ux
+[33me81990d[m HEAD@{106}: commit: add SpaceHandleTable
+[33md863197[m HEAD@{107}: commit: add sphere, plane, cylinder
+[33m350092c[m HEAD@{108}: commit: add quick_xml
+[33m9667b13[m HEAD@{109}: commit: add step 2
+[33m030f2d5[m HEAD@{110}: commit: add step 1
+[33m288b65d[m HEAD@{111}: commit: fix: add color update
+[33mfe022a6[m HEAD@{112}: commit: fix: repair requestAnimationFrame
+[33m3bed71b[m HEAD@{113}: reset: moving to HEAD~
+[33m1bf6987[m HEAD@{114}: commit: fix: fix requestAnimationFrame
+[33m3bed71b[m HEAD@{115}: commit: fix Element creation
+[33m7173720[m HEAD@{116}: commit: remove logs
+[33m64f373d[m HEAD@{117}: commit: fix: more changes
+[33mf4bee24[m HEAD@{118}: commit: add test
+[33m961d283[m HEAD@{119}: commit: sort files
+[33mbe96af6[m HEAD@{120}: reset: moving to HEAD~
+[33m35cba4e[m HEAD@{121}: commit: sort files
+[33mbe96af6[m HEAD@{122}: commit: add border-radius
+[33m9d6aaa3[m HEAD@{123}: commit: add vr mode button
+[33mbae64c2[m HEAD@{124}: commit: optimization text
+[33m905cf0e[m HEAD@{125}: commit: add text block
+[33m6399c72[m HEAD@{126}: commit: more textos
+[33m4f229c7[m HEAD@{127}: commit: add text and box support
+[33mb28f112[m HEAD@{128}: commit: add events
+[33mfcdcf19[m HEAD@{129}: commit: more fixs
+[33m320f484[m HEAD@{130}: commit: add virtual paths
+[33m67ba65c[m HEAD@{131}: commit: separacioln de logica en hilos para js
+[33m02d3394[m HEAD@{132}: commit: more fixs
+[33ma35ab1c[m HEAD@{133}: commit: more fixs
+[33m1a358d2[m HEAD@{134}: commit: chagpt: fixs clear js context
+[33m1c7787d[m HEAD@{135}: commit: chatgpt
+[33mc32104b[m HEAD@{136}: commit: cloude
+[33m4371567[m HEAD@{137}: commit: stable
+[33meea9e3e[m HEAD@{138}: commit: feat: omite las camaras y las luces de los modelos importados
+[33me6ce80a[m HEAD@{139}: commit: add vr mode
+[33m3034de4[m HEAD@{140}: reset: moving to HEAD~
+[33m554fa7a[m HEAD@{141}: commit: add vr mode
+[33m3034de4[m HEAD@{142}: commit: fixs imports
+[33mee9612a[m HEAD@{143}: commit: add include tag
+[33ma71dcae[m HEAD@{144}: commit: src update model
+[33m498b9b8[m HEAD@{145}: commit: add delete attrs
+[33m91d20dd[m HEAD@{146}: commit: fix update attrs
+[33mffba367[m HEAD@{147}: reset: moving to HEAD~
+[33me9f4425[m HEAD@{148}: commit: awfwaf
+[33mffba367[m HEAD@{149}: commit: fixs
+[33m02971b4[m HEAD@{150}: reset: moving to HEAD~
+[33m0721356[m HEAD@{151}: commit: fixs
+[33m02971b4[m HEAD@{152}: reset: moving to HEAD~
+[33m640cfc9[m[33m ([m[1;32mtokyo[m[33m)[m HEAD@{153}: commit: seff
+[33m02971b4[m HEAD@{154}: commit: more changes
+[33m7a6243d[m HEAD@{155}: commit: more changes
+[33mffc6406[m HEAD@{156}: commit: more fixs
+[33ma385a84[m HEAD@{157}: commit: more fixs
+[33mebb6887[m HEAD@{158}: commit: more changes
+[33mab8678e[m HEAD@{159}: commit: finish ecs
+[33mfa0e91d[m HEAD@{160}: commit: more changes
+[33m26bbfa3[m HEAD@{161}: commit: added ecs
+[33m087b691[m HEAD@{162}: commit: pre ecs
+[33m85c90a9[m HEAD@{163}: commit: mroe changes
+[33ma55dbea[m HEAD@{164}: commit: more changes
+[33me6e344a[m HEAD@{165}: commit: more changes
+[33m632351b[m HEAD@{166}: commit: more changes
+[33mea0f0ec[m HEAD@{167}: commit: more changes
+[33md1d518e[m HEAD@{168}: commit: base
+[33m901b9bc[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{169}: clone: from https://github.com/awtterpip/bevy_oxr.git
