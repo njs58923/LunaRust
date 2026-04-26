@@ -1328,6 +1328,16 @@ pub fn dom_sync_system(
     if dirty_node_ids.is_empty() {
         return;
     }
+
+    // Despawns from in-place replacement (model/text/skybox) are deferred to
+    // the END of this system. Reason — engine_race step 7: queueing
+    // `despawn_recursive` before sibling/descendant inserts in the same
+    // command buffer fires B0003 on flush:
+    //   "Could not insert a bundle ... because [entity] doesn't exist"
+    // By queueing all despawns last, every queued insert applies onto an
+    // entity that is still alive at that point in the queue.
+    let mut deferred_despawns: Vec<(Entity, u32)> = Vec::new();
+
     let tokio_rt = &async_dom.tokio_rt;
     let io_service = &async_dom.io_service;
     let current_url = &async_dom.current_url;
@@ -1453,7 +1463,7 @@ pub fn dom_sync_system(
                     });
 
                 if let Some(asset_path) = resolved_asset_path {
-                    commands.entity(bevy_ent).despawn_recursive();
+                    deferred_despawns.push((bevy_ent, node_id));
                     entity_map.0.remove(&node_id);
 
                     let new_ent = spawn_model_entity(
@@ -1545,7 +1555,7 @@ pub fn dom_sync_system(
                     continue;
                 }
 
-                commands.entity(bevy_ent).despawn_recursive();
+                deferred_despawns.push((bevy_ent, node_id));
                 entity_map.0.remove(&node_id);
                 let new_ent = commands
                     .spawn((
@@ -1844,7 +1854,7 @@ pub fn dom_sync_system(
                         // Despawn previous skybox if different node
                         if let Some((old_node_id, old_ent)) = skybox.skybox_entity.0.take() {
                             if old_node_id != node_id {
-                                commands.entity(old_ent).despawn_recursive();
+                                deferred_despawns.push((old_ent, old_node_id));
                                 entity_map.0.remove(&old_node_id);
                             } else {
                                 skybox.skybox_entity.0 = Some((old_node_id, old_ent));
@@ -1987,6 +1997,63 @@ pub fn dom_sync_system(
             // (por ejemplo cuando un model pasa a Ready) entrará al fast-path y
             // salteará lógica importante.
             transform_only_dirty.0.remove(&node_id);
+        }
+    }
+
+    // Drain deferred despawns LAST so that every queued insert/component op
+    // earlier in this system targets a still-alive entity. For each despawn
+    // target we also walk its SPECS subtree, drop any dangling descendant
+    // entries from `entity_map` (the Bevy cascade kills those entities), and
+    // re-queue them as dirty so dom_sync recreates fresh Bevy entities for
+    // them next frame. See engine_race step5/step7 tests for the rationale.
+    if !deferred_despawns.is_empty() {
+        // Drop the storage borrows we are still holding on world.0 before
+        // walking the subtree (we re-borrow inside).
+        drop(hierarchies);
+        drop(tags);
+        drop(transforms);
+        drop(models);
+        drop(scripts_storage);
+        drop(attrs_storage);
+
+        let entities = world.0.entities();
+        let hier = world.0.read_storage::<Hierarchy>();
+
+        let mut next_dirty: Vec<u32> = Vec::new();
+
+        for (old_ent, root_node_id) in &deferred_despawns {
+            let root_spec = entities.entity(*root_node_id);
+            if !entities.is_alive(root_spec) {
+                continue;
+            }
+            // Collect descendants only (skip the root, which is being respawned).
+            let mut stack: Vec<SpecEntity> = Vec::new();
+            if let Some(h) = hier.get(root_spec) {
+                for &c in &h.children {
+                    if entities.is_alive(c) {
+                        stack.push(c);
+                    }
+                }
+            }
+            while let Some(ent) = stack.pop() {
+                let did = ent.id();
+                if entity_map.0.remove(&did).is_some() {
+                    next_dirty.push(did);
+                }
+                if let Some(h) = hier.get(ent) {
+                    for &c in &h.children {
+                        if entities.is_alive(c) {
+                            stack.push(c);
+                        }
+                    }
+                }
+            }
+
+            commands.entity(*old_ent).despawn_recursive();
+        }
+
+        if !next_dirty.is_empty() {
+            dirty_nodes.0.extend(next_dirty);
         }
     }
 
