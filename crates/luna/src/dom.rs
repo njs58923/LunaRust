@@ -2160,6 +2160,7 @@ mod tests {
         parse_xml,
     };
     use crate::{IncludeLoadState, IncludeLoadStates, JsSnapshotState, PendingInclude, PendingIncludes, SpaceHandleTables};
+    use bevy::ecs::system::RunSystemOnce;
 
     fn collect_all_nodes(world: &SpecWorld, root: SpecEntity) -> HashMap<u32, SpecEntity> {
         let mut ids = Vec::new();
@@ -2257,5 +2258,373 @@ mod tests {
             resolved,
             "http://localhost:2052/demo/models/tree.glb"
         );
+    }
+
+    // ─── Engine race repro: stepping-stone tests ─────────────────────────────
+    //
+    // The production crash is:
+    //   "Could not insert a bundle (of type (MaterialMeshBundle<StandardMaterial>, Dirty))
+    //    for entity Entity { index: 119, generation: 8 } because it doesn't exist"
+    //
+    // panic source: bevy_ecs/src/system/commands/mod.rs (B0003).
+    //
+    // The Entity is at generation 8 → the slot was recycled many times. So the
+    // panic shape is: a queued `Commands::entity(ent).insert(bundle)` whose
+    // `ent` is dead by the time commands flush.
+    //
+    // These tests narrow down the failure layer by layer, NOT by speculating.
+
+    /// Step 1: confirm the exact panic shape. `commands.entity(dead).insert()`
+    /// panics on flush. This is the reference behavior we have to defend
+    /// against anywhere we plumb an Entity through `entity_map`.
+    #[test]
+    fn engine_race_step1_insert_into_dead_entity_panics() {
+        use bevy::prelude::*;
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let mut app = App::new();
+        let dead = app.world_mut().spawn_empty().id();
+        app.world_mut().despawn(dead);
+
+        #[derive(Resource)]
+        struct DeadEnt(Entity);
+        app.insert_resource(DeadEnt(dead));
+
+        fn sys(dead: Res<DeadEnt>, mut commands: Commands) {
+            commands.entity(dead.0).insert(GlobalTransform::default());
+        }
+        app.add_systems(Update, sys);
+
+        let result = catch_unwind(AssertUnwindSafe(|| app.update()));
+        assert!(
+            result.is_err(),
+            "B0003 sanity: insert into despawned entity must panic on command flush"
+        );
+    }
+
+    /// Step 2: probe what Bevy 0.14 actually accepts on a stale handle.
+    ///
+    /// Finding: `commands.entity(stale)` ITSELF panics in 0.14 with
+    ///   "Attempting to create an EntityCommands for entity ...,
+    ///    which doesn't exist."
+    /// — even before `.try_insert(...)` is queued. So `try_insert` is NOT a
+    /// sufficient guard against stale-handle inputs (it only protects against
+    /// post-queue despawn). The mark_dirty_system comment at dom.rs:1003
+    /// implies otherwise — that comment is misleading for the stale-handle
+    /// scenario; it only covers the queue-order scenario.
+    ///
+    /// The correct guard for stale handles is `commands.get_entity(ent)` →
+    /// `Option<EntityCommands>`. This test pins that behavior so we don't
+    /// regress to the wrong fix.
+    #[test]
+    fn engine_race_step2_get_entity_is_the_real_guard() {
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        let dead = app.world_mut().spawn_empty().id();
+        app.world_mut().despawn(dead);
+
+        #[derive(Resource)]
+        struct DeadEnt(Entity);
+        app.insert_resource(DeadEnt(dead));
+
+        fn sys(dead: Res<DeadEnt>, mut commands: Commands) {
+            // get_entity → None for despawned/stale handles. No panic.
+            if let Some(mut ec) = commands.get_entity(dead.0) {
+                ec.insert(GlobalTransform::default());
+            }
+        }
+        app.add_systems(Update, sys);
+
+        app.update();
+    }
+
+    /// Step 3: prove the recycle pattern. `commands.spawn(bundle)` reserves
+    /// an entity index. If despawn_recursive of a parent that this entity was
+    /// just `set_parent`-ed under fires before the spawn-bundle apply, the
+    /// reserved entity is killed by the cascade and the bundle insert panics
+    /// with the SAME B0003 shape as production.
+    ///
+    /// This is the suspected trigger when dom_sync_system processes dirty
+    /// nodes in an order where a parent's text/model replacement (which
+    /// despawn_recursive's the OLD parent) runs after a child's spawn that
+    /// linked itself to the OLD parent.
+    #[test]
+    fn engine_race_step3_spawn_then_parent_then_recursive_despawn() {
+        use bevy::prelude::*;
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let mut app = App::new();
+        let parent_old = app.world_mut().spawn(SpatialBundle::default()).id();
+
+        #[derive(Resource)]
+        struct ParentOld(Entity);
+        app.insert_resource(ParentOld(parent_old));
+
+        // Order matches the "child processed first, then parent" iteration
+        // case in dom_sync_system. The child reserves an entity, set_parents
+        // under the OLD parent, then the OLD parent gets despawn_recursive'd.
+        fn sys(parent_old: Res<ParentOld>, mut commands: Commands) {
+            let child = commands
+                .spawn((SpatialBundle::default(), super::Dirty))
+                .id();
+            commands.entity(child).set_parent(parent_old.0);
+            commands.entity(parent_old.0).despawn_recursive();
+        }
+        app.add_systems(Update, sys);
+
+        let result = catch_unwind(AssertUnwindSafe(|| app.update()));
+        // Document whichever way Bevy 0.14 resolves the order — the test is
+        // primarily a probe. If this panics, it confirms the production
+        // crash trigger; if not, the bug is elsewhere and we move on.
+        if result.is_err() {
+            eprintln!(
+                "engine_race_step3: spawn+set_parent+despawn_recursive panicked → \
+                 confirms dom_sync iteration order can trigger B0003"
+            );
+        }
+    }
+
+    /// Step 4: same pattern but with `try_insert` on the bundle. Demonstrates
+    /// whether switching to try_insert would defuse step 3.
+    #[test]
+    fn engine_race_step4_try_insert_under_recursive_despawn() {
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        let parent_old = app.world_mut().spawn(SpatialBundle::default()).id();
+
+        #[derive(Resource)]
+        struct ParentOld(Entity);
+        app.insert_resource(ParentOld(parent_old));
+
+        fn sys(parent_old: Res<ParentOld>, mut commands: Commands) {
+            // Reserve, then immediately mutate via try_insert paths only.
+            let child = commands.spawn_empty().id();
+            commands
+                .entity(child)
+                .try_insert((SpatialBundle::default(), super::Dirty));
+            commands.entity(child).set_parent(parent_old.0);
+            commands.entity(parent_old.0).despawn_recursive();
+        }
+        app.add_systems(Update, sys);
+
+        // Should not panic regardless of cascade ordering.
+        app.update();
+    }
+
+    /// Step 5: model/text replacement path in dom_sync_system at lines
+    /// 1456 and 1548 does `commands.entity(bevy_ent).despawn_recursive()` and
+    /// then `entity_map.0.remove(&node_id)` — but this only clears the
+    /// PARENT's entry. Any descendant (grand-children) still mapped in
+    /// `entity_map` becomes a dangling pointer to a dead Entity.
+    ///
+    /// On the next dom_sync tick, if a descendant is dirty, the unguarded
+    /// `commands.entity(bevy_ent).insert(...)` calls at:
+    ///   - dom.rs:1590 (posezone)
+    ///   - dom.rs:1647 (box/sphere/plane/cylinder Toqueable+HitShape)
+    ///   - dom.rs:1674 (mesh handle)
+    /// will panic with B0003. This test reproduces the exact pattern.
+    #[test]
+    fn engine_race_step5_descendant_in_entity_map_after_parent_despawn_recursive() {
+        use bevy::prelude::*;
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let mut app = App::new();
+        let parent = app.world_mut().spawn(SpatialBundle::default()).id();
+        let child = app.world_mut().spawn(SpatialBundle::default()).id();
+        app.world_mut().entity_mut(parent).add_child(child);
+
+        // Simulate what dom_sync line 1456/1548 does: despawn parent
+        // recursively but only remove the parent from the (stand-in)
+        // entity_map. Child's entity_map entry is now dangling.
+        #[derive(Resource)]
+        struct EntityMapStub {
+            child: Entity,
+        }
+        app.insert_resource(EntityMapStub { child });
+
+        fn despawn_parent(In(parent): In<Entity>, mut commands: Commands) {
+            commands.entity(parent).despawn_recursive();
+        }
+        app.world_mut().run_system_once_with(parent, despawn_parent);
+
+        // Now a later "tick" runs dom_sync logic for the child: it looks up
+        // entity_map[child], gets the dangling Entity, and does the same
+        // unguarded insert that the production box/sphere path does.
+        fn unguarded_insert_like_dom_sync(
+            stub: Res<EntityMapStub>,
+            mut commands: Commands,
+        ) {
+            commands
+                .entity(stub.child)
+                .insert(GlobalTransform::default());
+        }
+        app.add_systems(Update, unguarded_insert_like_dom_sync);
+
+        let result = catch_unwind(AssertUnwindSafe(|| app.update()));
+        assert!(
+            result.is_err(),
+            "step5: descendant left in entity_map after parent despawn_recursive \
+             reproduces the production B0003 panic"
+        );
+    }
+
+    /// Step 6: same scenario as step 5 but using `get_entity` as the guard.
+    /// Confirms the targeted fix shape for the dom_sync_system sites that
+    /// look up `bevy_ent` from `entity_map` and unconditionally call
+    /// `commands.entity(bevy_ent).insert(...)` (dom.rs:1590, :1647, :1674).
+    #[test]
+    fn engine_race_step6_get_entity_guard_on_dangling_descendant() {
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        let parent = app.world_mut().spawn(SpatialBundle::default()).id();
+        let child = app.world_mut().spawn(SpatialBundle::default()).id();
+        app.world_mut().entity_mut(parent).add_child(child);
+
+        #[derive(Resource)]
+        struct EntityMapStub {
+            child: Entity,
+        }
+        app.insert_resource(EntityMapStub { child });
+
+        fn despawn_parent(In(parent): In<Entity>, mut commands: Commands) {
+            commands.entity(parent).despawn_recursive();
+        }
+        app.world_mut().run_system_once_with(parent, despawn_parent);
+
+        fn guarded_insert(stub: Res<EntityMapStub>, mut commands: Commands) {
+            if let Some(mut ec) = commands.get_entity(stub.child) {
+                ec.insert(GlobalTransform::default());
+            }
+        }
+        app.add_systems(Update, guarded_insert);
+
+        // Must not panic.
+        app.update();
+    }
+
+    /// Step 7: actually reproduce B0003 — the production panic shape.
+    ///
+    /// B0003 is distinct from the "EntityCommands for entity which doesn't
+    /// exist" panic of step 1: B0003 only fires when the entity was ALIVE at
+    /// queue time and dead at flush time. Production stack trace ends in
+    /// `bevy_ecs::system::commands::mod.rs:1256` with that exact wording.
+    ///
+    /// Trigger: in a single system, queue insert into `child`, then queue
+    /// `despawn_recursive` of `parent` (where parent was already linked to
+    /// child outside this system). Apply order:
+    ///   1. insert(child, bundle)            — child alive, OK so far
+    ///   2. despawn_recursive(parent)        — kills child too
+    /// Wait — that order applies insert first, which succeeds. So flip the
+    /// queue order: despawn first, insert second.
+    #[test]
+    fn engine_race_step7_b0003_queue_order_repro() {
+        use bevy::prelude::*;
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let mut app = App::new();
+        let parent = app.world_mut().spawn(SpatialBundle::default()).id();
+        let child = app.world_mut().spawn(SpatialBundle::default()).id();
+        app.world_mut().entity_mut(parent).add_child(child);
+
+        #[derive(Resource)]
+        struct Pair {
+            parent: Entity,
+            child: Entity,
+        }
+        app.insert_resource(Pair { parent, child });
+
+        // Simulates dom_sync iterating [parent_id, child_id]:
+        //   - parent: text/model in-place replacement → despawn_recursive
+        //   - child:  unguarded `commands.entity(bevy_ent_old).insert(...)`
+        // entity_map[child] still points to the now-doomed child entity.
+        fn racy(p: Res<Pair>, mut commands: Commands) {
+            commands.entity(p.parent).despawn_recursive();
+            commands.entity(p.child).insert(GlobalTransform::default());
+        }
+        app.add_systems(Update, racy);
+
+        let result = catch_unwind(AssertUnwindSafe(|| app.update()));
+        assert!(
+            result.is_err(),
+            "step7: queue-order race must panic — this is the production B0003"
+        );
+    }
+
+    /// Step 8: same race, but the second op uses `get_entity`. Bevy's
+    /// `get_entity` checks the world snapshot at QUEUE time, so it cannot
+    /// know that a later despawn in the same buffer will kill the entity —
+    /// `get_entity` returns `Some` and the queued insert still panics.
+    ///
+    /// This means `get_entity` only fixes step 5 (stale handles) — it does
+    /// NOT fix step 7. The full fix needs ordering or queue-time recording
+    /// of pending-despawns. Pin the failing behavior so we don't regress
+    /// to "just sprinkle get_entity everywhere and call it done."
+    #[test]
+    fn engine_race_step8_get_entity_does_not_fix_queue_order() {
+        use bevy::prelude::*;
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let mut app = App::new();
+        let parent = app.world_mut().spawn(SpatialBundle::default()).id();
+        let child = app.world_mut().spawn(SpatialBundle::default()).id();
+        app.world_mut().entity_mut(parent).add_child(child);
+
+        #[derive(Resource)]
+        struct Pair {
+            parent: Entity,
+            child: Entity,
+        }
+        app.insert_resource(Pair { parent, child });
+
+        fn racy(p: Res<Pair>, mut commands: Commands) {
+            commands.entity(p.parent).despawn_recursive();
+            if let Some(mut ec) = commands.get_entity(p.child) {
+                ec.insert(GlobalTransform::default());
+            }
+        }
+        app.add_systems(Update, racy);
+
+        let result = catch_unwind(AssertUnwindSafe(|| app.update()));
+        assert!(
+            result.is_err(),
+            "step8: get_entity does NOT defuse the same-frame queue-order race"
+        );
+    }
+
+    /// Step 9: the actual fix shape for the queue-order race — flush the
+    /// despawn to the world BEFORE queueing the insert. In dom_sync this
+    /// would mean: when iterating dirty nodes, process all in-place
+    /// despawn_recursive paths (model/text/skybox) FIRST, flush commands,
+    /// THEN process descendants. Or apply despawns directly via exclusive
+    /// world access (like apply_js_tick already does for JS-side removes).
+    #[test]
+    fn engine_race_step9_apply_despawn_before_insert_is_safe() {
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        let parent = app.world_mut().spawn(SpatialBundle::default()).id();
+        let child = app.world_mut().spawn(SpatialBundle::default()).id();
+        app.world_mut().entity_mut(parent).add_child(child);
+
+        // Despawn synchronously via exclusive world access first.
+        app.world_mut().entity_mut(parent).despawn_recursive();
+
+        #[derive(Resource)]
+        struct ChildEnt(Entity);
+        app.insert_resource(ChildEnt(child));
+
+        // Now the descendant lookup happens AFTER the despawn applied,
+        // so get_entity correctly returns None.
+        fn guarded(c: Res<ChildEnt>, mut commands: Commands) {
+            if let Some(mut ec) = commands.get_entity(c.0) {
+                ec.insert(GlobalTransform::default());
+            }
+        }
+        app.add_systems(Update, guarded);
+
+        app.update();
     }
 }
