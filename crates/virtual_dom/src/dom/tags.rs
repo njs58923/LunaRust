@@ -27,6 +27,7 @@ lazy_static! {
         m.insert("cylinder", vec![ElementType::Node, ElementType::Element]);
         m.insert("plane", vec![ElementType::Node, ElementType::Element]);
         m.insert("image", vec![ElementType::Node, ElementType::Element]);
+        m.insert("skybox", vec![ElementType::Node, ElementType::Element]);
 
         m
     };

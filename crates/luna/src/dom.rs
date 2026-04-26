@@ -1321,8 +1321,7 @@ pub fn dom_sync_system(
     mut async_dom: AsyncDomParams,
     mut text_render: TextRenderParams,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut pending_scripts: ResMut<crate::PendingScripts>,
-    mut include_load_states: ResMut<crate::IncludeLoadStates>
+    mut skybox: crate::SkyboxParams,
 ) {
     let start_time = Instant::now();
     let dirty_node_ids = dirty_nodes.take_unique();
@@ -1481,7 +1480,17 @@ pub fn dom_sync_system(
                 continue;
             }
 
-            
+            if tag == "skybox" {
+                if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
+                    *t = transform_b;
+                    if dirty.is_some() {
+                        commands.entity(bevy_ent).remove::<Dirty>();
+                    }
+                }
+                transform_only_dirty.0.remove(&node_id);
+                continue;
+            }
+
             if transform_only {
                 if tag == "text" {
                     let empty_map = HashMap::new();
@@ -1564,7 +1573,7 @@ pub fn dom_sync_system(
                     io_service,
                     &mut log_panel,
                     &world.0,
-                    &mut pending_scripts,
+                    &mut async_dom.pending_scripts,
                 );
                 if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
@@ -1617,7 +1626,7 @@ pub fn dom_sync_system(
                         &attrs_storage,
                         *node,
                         &current_url,
-                        &mut include_load_states,
+                        &mut async_dom.include_load_states,
                         tokio_rt,
                         io_service,
                         &mut log_panel,
@@ -1743,7 +1752,7 @@ pub fn dom_sync_system(
                         io_service,
                         &mut log_panel,
                         &world.0,
-                        &mut pending_scripts,
+                        &mut async_dom.pending_scripts,
                     );
                     commands
                         .spawn((
@@ -1762,7 +1771,7 @@ pub fn dom_sync_system(
                             &attrs_storage,
                             *node,
                             &current_url,
-                            &mut include_load_states,
+                            &mut async_dom.include_load_states,
                             tokio_rt,
                             io_service,
                             &mut log_panel,
@@ -1814,6 +1823,56 @@ pub fn dom_sync_system(
                         Dirty,
                     ))
                     .id(),
+                "skybox" => {
+                    let has_perm = crate::js::find_owner_space_id(&world.0, *node)
+                        .and_then(|sid| skybox.space_policies.by_space.get(&sid))
+                        .map(|p| p.effective_caps.contains(crate::permissions::CapabilityBits::SKYBOX))
+                        .unwrap_or(false);
+
+                    if !has_perm {
+                        log_panel.push_warn(format!(
+                            "Skybox blocked: space lacks 'skybox' permission (node {node_id})"
+                        ));
+                        commands.spawn((SpatialBundle { transform: transform_b, ..Default::default() }, Dirty)).id()
+                    } else {
+                        let src = attrs_storage
+                            .get(*node)
+                            .and_then(|a| a.0.get("src"))
+                            .cloned()
+                            .unwrap_or_default();
+
+                        // Despawn previous skybox if different node
+                        if let Some((old_node_id, old_ent)) = skybox.skybox_entity.0.take() {
+                            if old_node_id != node_id {
+                                commands.entity(old_ent).despawn_recursive();
+                                entity_map.0.remove(&old_node_id);
+                            } else {
+                                skybox.skybox_entity.0 = Some((old_node_id, old_ent));
+                            }
+                        }
+
+                        let skybox_root = commands
+                            .spawn((SpatialBundle { transform: transform_b, ..Default::default() }, Dirty))
+                            .id();
+
+                        spawn_skybox_faces(
+                            &src,
+                            &world.0,
+                            *node,
+                            &current_url.0,
+                            &tokio_rt.0,
+                            &asset_server,
+                            &mut text_render.materials,
+                            &shared_resources,
+                            &mut commands,
+                            skybox_root,
+                            &mut log_panel,
+                        );
+
+                        skybox.skybox_entity.0 = Some((node_id, skybox_root));
+                        skybox_root
+                    }
+                }
                 "box" => {
                     let attrs_opt = attrs_storage.get(*node);
                     let color = primitive_color(&attrs_storage, *node);
@@ -1986,6 +2045,106 @@ fn spawn_model_entity(
             Dirty,
         ))
         .id()
+}
+
+fn spawn_skybox_faces(
+    src_pattern: &str,
+    specs_world: &specs::World,
+    node: specs::Entity,
+    current_url: &str,
+    rt: &tokio::runtime::Runtime,
+    asset_server: &AssetServer,
+    materials: &mut Assets<StandardMaterial>,
+    shared_resources: &SharedResources,
+    commands: &mut Commands,
+    parent: Entity,
+    log_panel: &mut LogPanel,
+) {
+    use std::f32::consts::{FRAC_PI_2, PI};
+
+    const SKY_SIZE: f32 = 500.0;
+
+    let faces: &[(&str, [f32; 3], bevy::math::Quat)] = &[
+        ("pz", [0.0, 0.0, -SKY_SIZE], bevy::math::Quat::IDENTITY),
+        ("nz", [0.0, 0.0,  SKY_SIZE], bevy::math::Quat::from_rotation_y(PI)),
+        ("nx", [-SKY_SIZE, 0.0, 0.0], bevy::math::Quat::from_rotation_y(FRAC_PI_2)),
+        ("px", [ SKY_SIZE, 0.0, 0.0], bevy::math::Quat::from_rotation_y(-FRAC_PI_2)),
+        ("py", [0.0,  SKY_SIZE, 0.0], bevy::math::Quat::from_rotation_x(FRAC_PI_2)),
+        ("ny", [0.0, -SKY_SIZE, 0.0], bevy::math::Quat::from_rotation_x(-FRAC_PI_2)),
+    ];
+
+    for (face, pos, rot) in faces {
+        let face_src = src_pattern.replace("$1", face);
+        let resolved_url = resolve_node_relative_url(specs_world, node, current_url, &face_src)
+            .unwrap_or_else(|| face_src.clone());
+
+        let image_handle = load_skybox_face_image(&resolved_url, rt, asset_server, log_panel);
+
+        let mat = materials.add(StandardMaterial {
+            base_color_texture: Some(image_handle),
+            unlit: true,
+            cull_mode: None,
+            ..Default::default()
+        });
+
+        let face_ent = commands
+            .spawn(PbrBundle {
+                mesh: shared_resources.plane_mesh.clone(),
+                material: mat,
+                transform: Transform {
+                    translation: Vec3::from_array(*pos),
+                    rotation: *rot,
+                    scale: Vec3::splat(SKY_SIZE * 2.0),
+                },
+                ..Default::default()
+            })
+            .id();
+
+        commands.entity(face_ent).set_parent(parent);
+    }
+}
+
+fn load_skybox_face_image(
+    url: &str,
+    rt: &tokio::runtime::Runtime,
+    asset_server: &AssetServer,
+    log_panel: &mut LogPanel,
+) -> Handle<Image> {
+    let (assets_dir, cache_dir) = crate::utils::folder::resolve_assets_and_cache_dirs();
+    let _ = std::fs::create_dir_all(&cache_dir);
+    let filename = crate::render::encode_url_to_filename(url);
+    let local_path = cache_dir.join(&filename);
+
+    if !local_path.exists() {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            match rt.block_on(crate::render::load_bytes_from_url(url)) {
+                Ok(bytes) => {
+                    if let Err(e) = std::fs::write(&local_path, &bytes) {
+                        log_panel.push_error(format!("Skybox face write '{url}': {e}"));
+                        return Handle::default();
+                    }
+                }
+                Err(e) => {
+                    log_panel.push_error(format!("Skybox face download '{url}': {e}"));
+                    return Handle::default();
+                }
+            }
+        } else {
+            let from = std::path::PathBuf::from(url);
+            if let Err(e) = std::fs::copy(&from, &local_path) {
+                log_panel.push_error(format!("Skybox face copy '{url}': {e}"));
+                return Handle::default();
+            }
+        }
+    }
+
+    match crate::utils::folder::to_assets_relative(&local_path, &assets_dir) {
+        Some(rel) => asset_server.load(rel),
+        None => {
+            log_panel.push_error(format!("Skybox face outside assets dir: {}", local_path.display()));
+            Handle::default()
+        }
+    }
 }
 
 #[cfg(test)]

@@ -24,6 +24,7 @@ use luna::vr_locomotion::VrLocomotionPlugin;
 
 use luna::*;
 use luna::{dom, io, js, permissions, touch, ui, utils};
+use bevy::prelude::AmbientLight;
 
 // ─── main ────────────────────────────────────────────────────────────────────
 
@@ -99,6 +100,7 @@ fn main() {
         Runtime::new().expect("Failed to create Tokio runtime"),
     ));
     app.insert_resource(ModelCache::default());
+    app.insert_resource(crate::SkyboxEntity::default());
     app.insert_resource(TextMaterialCache::default());
     app.insert_resource(PrimitiveMaterialCache::default());
     app.insert_resource(PerformanceStats::default());
@@ -245,6 +247,13 @@ fn setup(
         },
         DesktopCamera,
     ));
+    
+    commands.insert_resource(AmbientLight {
+        color: Color::WHITE,
+        brightness: 500.0, // subí/bajá este valor
+        ..default()
+    });
+
     commands.spawn(Camera2dBundle {
         camera: Camera {
             order: 1,
@@ -444,7 +453,7 @@ fn process_space_mount_queue(
         return;
     }
     let urls: Vec<String> = mount_queue.0.drain(..).collect();
-    let grants = "['navigate_self','read_pose_stream']";
+    let grants = "['navigate_self','read_pose_stream','skybox']";
     for url in urls {
         let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
         let code = format!(

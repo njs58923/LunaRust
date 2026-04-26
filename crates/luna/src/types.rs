@@ -304,6 +304,10 @@ pub struct SharedResources {
     pub default_material: Handle<StandardMaterial>,
 }
 
+/// Tracks the active skybox: (node_id, root_entity). Last-wins singleton.
+#[derive(Resource, Default)]
+pub struct SkyboxEntity(pub Option<(u32, Entity)>);
+
 #[derive(Resource)]
 pub struct TokioRuntime(pub Runtime);
 
@@ -450,6 +454,14 @@ pub struct AsyncDomParams<'w> {
     pub pending_model_loads: ResMut<'w, crate::PendingModelLoads>,
     pub model_load_states: ResMut<'w, crate::ModelLoadStates>,
     pub transform_only_dirty: ResMut<'w, crate::TransformOnlyDirtyNodes>,
+    pub pending_scripts: ResMut<'w, PendingScripts>,
+    pub include_load_states: ResMut<'w, crate::IncludeLoadStates>,
+}
+
+#[derive(SystemParam)]
+pub struct SkyboxParams<'w> {
+    pub skybox_entity: ResMut<'w, SkyboxEntity>,
+    pub space_policies: Res<'w, crate::permissions::SpacePolicies>,
 }
 
 #[derive(SystemParam)]

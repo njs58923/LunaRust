@@ -26,6 +26,7 @@ bitflags! {
         const READ_CONTROLLER_POSE = 1 << 12;
         const DEVTOOLS_READ        = 1 << 13;
         const DEVTOOLS_WRITE       = 1 << 14;
+        const SKYBOX               = 1 << 15;
     }
 }
 
@@ -140,6 +141,15 @@ lazy_static! {
             "unmount_root_space",
             ResourceBundleDef {
                 capabilities: CapabilityBits::UNMOUNT_ROOT_SPACE,
+                native_services: NativeServiceBits::empty(),
+                auto_scripts: &[],
+            },
+        );
+
+        m.insert(
+            "skybox",
+            ResourceBundleDef {
+                capabilities: CapabilityBits::SKYBOX,
                 native_services: NativeServiceBits::empty(),
                 auto_scripts: &[],
             },
