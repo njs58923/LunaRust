@@ -23,6 +23,7 @@ impl VirtualRoutes {
         routes.insert("home".to_string(), RouteHandler::Static(LUNA_HOME));
         routes.insert("demos".to_string(), RouteHandler::Static(LUNA_DEMOS));
         routes.insert("fire_demo".to_string(), RouteHandler::Static(LUNA_FIRE_DEMO));
+        routes.insert("target_demo".to_string(), RouteHandler::Static(LUNA_TARGET_DEMO));
         routes.insert("settings".to_string(), RouteHandler::Static(LUNA_SETTINGS));
         routes.insert("about".to_string(), RouteHandler::Static(LUNA_ABOUT));
         routes.insert("error/404".to_string(), RouteHandler::Static(LUNA_404));
@@ -241,6 +242,9 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     <box x="1.70" y="-1.00" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#EF5350" id="btn_fire_demo" />
     <text x="1.70" y="-1.00" z="-2.94" value="Fire Demo" size="0.07" />
+
+    <box x="1.70" y="-1.29" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#FF1744" id="btn_target_demo" />
+    <text x="1.70" y="-1.29" z="-2.94" value="Target Demo" size="0.07" />
 
     <!-- Status bar -->
     <text x="0" y="-0.78" z="-2.96" value="Status: ready" size="0.085" id="demo_status" color="#FFFFFF" />
@@ -567,6 +571,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       btn_about:           () => { location.href = 'luna://about'; },
       btn_settings:        () => { location.href = 'luna://settings'; },
       btn_fire_demo:       () => { location.href = 'luna://fire_demo'; },
+      btn_target_demo:     () => { location.href = 'luna://target_demo'; },
       demo_mode: cycleTransformMode,
     };
 
@@ -1272,6 +1277,299 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     updateBulletCount();
     setStatus('Ready — right trigger uses posemove when available');
+    </script>
+  </space>
+</hsml>"##;
+
+const LUNA_TARGET_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head>
+    <name>Target Practice Demo</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space resources="navigate_self,read_pose_stream">
+    <posezone id="gun_zone" x="0" y="1.0" z="0" sx="40" sy="12" sz="40" visible="false" />
+
+    <plane x="0" y="-3" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#0a0a0a" id="ground" />
+
+    <plane x="0" y="0.50" z="-3.15" sx="2.50" sy="1.50" sz="1" color="#1a1a2e" id="control_panel" />
+
+    <text x="0" y="1.20" z="-3.0" value="Target Practice" size="0.20" color="#FF1744" />
+    <text x="0" y="0.85" z="-3.0" value="Right trigger fires. Hit moving targets to score." size="0.10" color="#888888" />
+
+    <box x="-0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#FF6B6B" id="fire_button" />
+    <text x="-0.6" y="0.50" z="-2.94" value="FIRE!" size="0.10" color="#FFFFFF" />
+
+    <box x="0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4ECDC4" id="reset_button" />
+    <text x="0.6" y="0.50" z="-2.94" value="RESET" size="0.10" color="#FFFFFF" />
+
+    <box x="0" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4CAF50" id="home_button" />
+    <text x="0" y="0.05" z="-2.94" value="HOME" size="0.10" color="#FFFFFF" />
+
+    <text x="0" y="-0.30" z="-3.0" value="Score: 0" size="0.12" id="score_text" color="#FFD700" />
+    <text x="0" y="-0.50" z="-3.0" value="Bullets: 0  Targets: 0" size="0.09" id="hud_text" color="#B0BEC5" />
+    <text x="0" y="-0.66" z="-3.0" value="Ready" size="0.08" id="status_text" color="#FFFFFF" />
+
+    <script>
+    const root = hiperspace.dimention;
+    const bullets = [];
+    const targets = [];
+    let bulletCount = 0;
+    let targetCount = 0;
+    let score = 0;
+    const BULLET_SPEED = 80;
+    const BULLET_SIZE = 0.16;
+    const BULLET_MAX_DISTANCE = 120;
+    const GRAVITY = 4.0;
+    const TARGET_RADIUS = 0.6;
+    const HIT_RADIUS = TARGET_RADIUS + BULLET_SIZE * 0.5;
+    const NUM_TARGETS = 5;
+    let lastFireTime = Number.NEGATIVE_INFINITY;
+    let loopRunning = false;
+    let lastFrameTs = 0;
+    let latestRightPose = null;
+    let triggerHeld = false;
+    const TRIGGER_DOWN = 0.75;
+    const TRIGGER_UP = 0.4;
+
+    function byId(id) { return root.getElementById(id); }
+
+    function setText(id, val) {
+      const el = byId(id);
+      if (el) el.setAttribute('value', val);
+    }
+
+    function setStatus(msg) {
+      setText('status_text', msg);
+      console.log('[target_demo]', msg);
+    }
+
+    function updateHud() {
+      setText('score_text', 'Score: ' + score);
+      setText('hud_text', 'Bullets: ' + bullets.length + '  Targets: ' + targets.length);
+    }
+
+    function spawnTarget() {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 6 + Math.random() * 10;
+      const baseX = Math.sin(angle) * dist;
+      const baseZ = -Math.abs(Math.cos(angle) * dist) - 3;
+      const baseY = 1.0 + Math.random() * 1.8;
+
+      const el = root.createElement('sphere');
+      el.id = 'target_' + targetCount++;
+      el.className = 'target';
+      el.setAttribute('color', '#FF1744');
+      el.setAttribute('sx', String(TARGET_RADIUS * 2));
+      el.setAttribute('sy', String(TARGET_RADIUS * 2));
+      el.setAttribute('sz', String(TARGET_RADIUS * 2));
+      el.position = { x: baseX, y: baseY, z: baseZ };
+
+      root.appendChild(el);
+
+      targets.push({
+        el,
+        bx: baseX,
+        by: baseY,
+        bz: baseZ,
+        x: baseX,
+        y: baseY,
+        z: baseZ,
+        ampX: 1.5 + Math.random() * 2.5,
+        ampY: 0.3 + Math.random() * 0.6,
+        ampZ: 0.5 + Math.random() * 1.5,
+        freqX: 0.5 + Math.random() * 0.8,
+        freqY: 0.8 + Math.random() * 1.2,
+        freqZ: 0.3 + Math.random() * 0.6,
+        phase: Math.random() * Math.PI * 2,
+      });
+    }
+
+    function spawnInitialTargets() {
+      for (let i = 0; i < NUM_TARGETS; i++) spawnTarget();
+      updateHud();
+    }
+
+    function resetGame() {
+      targets.forEach(t => { if (t.el) t.el.remove(); });
+      targets.length = 0;
+      bullets.forEach(b => { if (b.el) b.el.remove(); });
+      bullets.length = 0;
+      score = 0;
+      spawnInitialTargets();
+      setStatus('Reset');
+      ensureLoop();
+    }
+
+    function ensureLoop() {
+      if (!loopRunning) {
+        loopRunning = true;
+        lastFrameTs = 0;
+        requestAnimationFrame(animate);
+      }
+    }
+
+    function normalizePose(evt) {
+      const dx = Number(evt.dx ?? 0);
+      const dy = Number(evt.dy ?? 0);
+      const dz = Number(evt.dz ?? -1);
+      const len = Math.hypot(dx, dy, dz) || 1;
+      return {
+        hand: String(evt.hand || ''),
+        px: Number(evt.px ?? 0),
+        py: Number(evt.py ?? 0),
+        pz: Number(evt.pz ?? -2),
+        dx: dx / len,
+        dy: dy / len,
+        dz: dz / len,
+        trigger: Number(evt.trigger ?? 0),
+        grip: Number(evt.grip ?? 0),
+      };
+    }
+
+    function spawnBulletAt(startX, startY, startZ, dirX, dirY, dirZ, label) {
+      const now = performance.now();
+      if (now - lastFireTime < 100) return;
+      lastFireTime = now;
+
+      const bullet = root.createElement('sphere');
+      bullet.id = 'bullet_' + bulletCount++;
+      bullet.className = 'bullet';
+      bullet.setAttribute('color', '#FFD700');
+      bullet.setAttribute('sx', String(BULLET_SIZE));
+      bullet.setAttribute('sy', String(BULLET_SIZE));
+      bullet.setAttribute('sz', String(BULLET_SIZE));
+      bullet.position = { x: startX, y: startY, z: startZ };
+
+      root.appendChild(bullet);
+
+      bullets.push({
+        el: bullet,
+        x: startX, y: startY, z: startZ,
+        vx: dirX * BULLET_SPEED,
+        vy: dirY * BULLET_SPEED,
+        vz: dirZ * BULLET_SPEED,
+      });
+
+      ensureLoop();
+      updateHud();
+      setStatus(label);
+    }
+
+    function fireBulletFromPose(pose) {
+      const muzzle = 0.18;
+      spawnBulletAt(
+        pose.px + pose.dx * muzzle,
+        pose.py + pose.dy * muzzle,
+        pose.pz + pose.dz * muzzle,
+        pose.dx, pose.dy, pose.dz,
+        'Shot from ' + pose.hand
+      );
+    }
+
+    function fireBullet() {
+      if (latestRightPose) { fireBulletFromPose(latestRightPose); return; }
+      spawnBulletAt(0, 0.3, -2, 0, 0.02, -1, 'Shot from fallback');
+    }
+
+    function checkHits() {
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+        for (let j = targets.length - 1; j >= 0; j--) {
+          const t = targets[j];
+          const dx = b.x - t.x;
+          const dy = b.y - t.y;
+          const dz = b.z - t.z;
+          if (dx*dx + dy*dy + dz*dz <= HIT_RADIUS * HIT_RADIUS) {
+            if (b.el) b.el.remove();
+            if (t.el) t.el.remove();
+            bullets.splice(i, 1);
+            targets.splice(j, 1);
+            score++;
+            spawnTarget();
+            setStatus('HIT! +1');
+            break;
+          }
+        }
+      }
+    }
+
+    function animate(ts) {
+      if (bullets.length === 0 && targets.length === 0) {
+        loopRunning = false;
+        lastFrameTs = 0;
+        return;
+      }
+
+      if (!lastFrameTs) lastFrameTs = ts;
+      let dt = (ts - lastFrameTs) / 1000;
+      lastFrameTs = ts;
+      if (dt > 0.1) dt = 0.1;
+      if (dt <= 0) dt = 1 / 60;
+
+      const t = ts / 1000;
+
+      for (let i = 0; i < targets.length; i++) {
+        const tg = targets[i];
+        tg.x = tg.bx + Math.sin(t * tg.freqX + tg.phase) * tg.ampX;
+        tg.y = tg.by + Math.sin(t * tg.freqY + tg.phase) * tg.ampY;
+        tg.z = tg.bz + Math.cos(t * tg.freqZ + tg.phase) * tg.ampZ;
+        if (tg.el) tg.el.position = { x: tg.x, y: tg.y, z: tg.z };
+      }
+
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+        b.vy -= GRAVITY * dt;
+        b.x += b.vx * dt;
+        b.y += b.vy * dt;
+        b.z += b.vz * dt;
+
+        if (Math.abs(b.x) > BULLET_MAX_DISTANCE ||
+            Math.abs(b.z) > BULLET_MAX_DISTANCE ||
+            b.y < -5) {
+          if (b.el) b.el.remove();
+          bullets.splice(i, 1);
+          continue;
+        }
+        if (b.el) b.el.position = { x: b.x, y: b.y, z: b.z };
+      }
+
+      checkHits();
+      updateHud();
+      requestAnimationFrame(animate);
+    }
+
+    const fireBtn = byId('fire_button');
+    if (fireBtn) fireBtn.addEventListener('toque', fireBullet);
+
+    const resetBtn = byId('reset_button');
+    if (resetBtn) resetBtn.addEventListener('toque', resetGame);
+
+    const homeBtn = byId('home_button');
+    if (homeBtn) homeBtn.addEventListener('toque', () => {
+      location.href = 'luna://home';
+    });
+
+    const gunZone = byId('gun_zone');
+    if (gunZone) {
+      gunZone.addEventListener('posemove', (evt) => {
+        if (evt.hand !== 'right') return;
+        latestRightPose = normalizePose(evt);
+        const t = latestRightPose.trigger;
+        if (!triggerHeld && t > TRIGGER_DOWN) {
+          triggerHeld = true;
+          fireBulletFromPose(latestRightPose);
+        } else if (triggerHeld && t < TRIGGER_UP) {
+          triggerHeld = false;
+        }
+      });
+    }
+
+    spawnInitialTargets();
+    ensureLoop();
+    setStatus('Targets up — shoot them');
     </script>
   </space>
 </hsml>"##;
