@@ -1081,7 +1081,7 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     const root = hiperspace.dimention;
     const bullets = [];
     let bulletCount = 0;
-    const BULLET_SPEED = 45; // units per second
+    const BULLET_SPEED = 100; // units per second
     const BULLET_SIZE = 0.16;
     const BULLET_MAX_DISTANCE = 120;
     const GRAVITY = 9.8; // simple gravity
