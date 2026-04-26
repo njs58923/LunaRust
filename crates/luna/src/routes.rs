@@ -1081,9 +1081,11 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     const root = hiperspace.dimention;
     const bullets = [];
     let bulletCount = 0;
-    const BULLET_SPEED = 300; // units per second
+    const BULLET_SPEED = 45; // units per second
+    const BULLET_SIZE = 0.16;
+    const BULLET_MAX_DISTANCE = 120;
     const GRAVITY = 9.8; // simple gravity
-    let lastFireTime = 0;
+    let lastFireTime = Number.NEGATIVE_INFINITY;
     let loopRunning = false;
     let lastFrameTs = 0;
     let latestRightPose = null;
@@ -1131,9 +1133,9 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       bullet.id = 'bullet_' + bulletCount++;
       bullet.className = 'bullet';
       bullet.setAttribute('color', '#FFD700');
-      bullet.setAttribute('sx', '0.1');
-      bullet.setAttribute('sy', '0.1');
-      bullet.setAttribute('sz', '0.1');
+      bullet.setAttribute('sx', String(BULLET_SIZE));
+      bullet.setAttribute('sy', String(BULLET_SIZE));
+      bullet.setAttribute('sz', String(BULLET_SIZE));
 
       bullet.position = { x: startX, y: startY, z: startZ };
       bullet.rotation = { x: 0, y: 0, z: 0 };
@@ -1149,7 +1151,7 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
         vy: dirY * BULLET_SPEED,
         vz: dirZ * BULLET_SPEED,
         startTime: now,
-        maxDistance: 3000
+        maxDistance: BULLET_MAX_DISTANCE
       });
 
       // Start the loop only if it's not already running
@@ -1279,6 +1281,87 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use js_runtime::Engine;
+    use std::collections::HashMap;
+
+    fn fire_demo_script() -> String {
+        let start = LUNA_FIRE_DEMO.find("<script>").unwrap() + "<script>".len();
+        let end = LUNA_FIRE_DEMO.find("</script>").unwrap();
+        LUNA_FIRE_DEMO[start..end].trim().to_string()
+    }
+
+    fn fire_demo_engine() -> Engine {
+        let mut eng = Engine::new();
+
+        let mut attrs = HashMap::new();
+        attrs.insert(0, HashMap::new());
+        attrs.insert(1, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "fire_button".to_string());
+            m
+        });
+        attrs.insert(2, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "clear_button".to_string());
+            m
+        });
+        attrs.insert(3, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "home_button".to_string());
+            m
+        });
+        attrs.insert(4, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "bullet_count".to_string());
+            m
+        });
+        attrs.insert(5, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "status_text".to_string());
+            m
+        });
+        attrs.insert(6, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "gun_zone".to_string());
+            m
+        });
+        eng.update_attr_snapshot(attrs);
+
+        let mut tags = HashMap::new();
+        tags.insert(0, "hsml".to_string());
+        tags.insert(1, "box".to_string());
+        tags.insert(2, "box".to_string());
+        tags.insert(3, "box".to_string());
+        tags.insert(4, "text".to_string());
+        tags.insert(5, "text".to_string());
+        tags.insert(6, "posezone".to_string());
+        eng.update_tag_snapshot(tags);
+
+        let mut parents = HashMap::new();
+        parents.insert(0, -1);
+        for node_id in 1..=6 {
+            parents.insert(node_id, 0);
+        }
+
+        let mut children = HashMap::new();
+        children.insert(0, vec![1, 2, 3, 4, 5, 6]);
+        for node_id in 1..=6 {
+            children.insert(node_id, vec![]);
+        }
+        eng.update_hierarchy_snapshot(parents, children);
+
+        eng.update_transform_snapshot(
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        );
+
+        eng.eval(&fire_demo_script()).unwrap();
+        eng.drain_attr_updates();
+        eng.drain_logs();
+        eng
+    }
 
     // is_virtual_url
     #[test]
@@ -1417,5 +1500,45 @@ mod tests {
         assert!(content.contains(r#"resources="navigate_self""#));
         assert!(!content.contains("controller_desktop"));
         assert!(!content.contains("controller_vr"));
+    }
+
+    #[test]
+    fn fire_demo_manual_fire_spawns_bullet() {
+        let mut eng = fire_demo_engine();
+
+        eng.push_dom_toque_event(1, 0.0, 0.0, 0.0);
+        eng.fire_raf(16.0);
+
+        let created = eng.drain_element_creation_queue();
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].1, "sphere");
+
+        let attr_updates = eng.drain_attr_updates();
+        assert!(attr_updates.iter().any(|(node_id, key, value)| {
+            *node_id == 4 && key == "value" && value.contains("Bullets: 1")
+        }));
+        assert!(attr_updates.iter().any(|(node_id, key, value)| {
+            *node_id == 5 && key == "value" && value.contains("fallback origin")
+        }));
+    }
+
+    #[test]
+    fn fire_demo_posemove_trigger_spawns_bullet() {
+        let mut eng = fire_demo_engine();
+
+        eng.push_posemove_event(6, "right", 1.0, 1.5, -0.5, 0.0, 0.0, -1.0, 1.0, 0.0);
+        eng.fire_raf(16.0);
+
+        let created = eng.drain_element_creation_queue();
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].1, "sphere");
+
+        let attr_updates = eng.drain_attr_updates();
+        assert!(attr_updates.iter().any(|(node_id, key, value)| {
+            *node_id == 4 && key == "value" && value.contains("Bullets: 1")
+        }));
+        assert!(attr_updates.iter().any(|(node_id, key, value)| {
+            *node_id == 5 && key == "value" && value.contains("right controller")
+        }));
     }
 }

@@ -51,9 +51,14 @@ pub struct VrLocomotionPlugin;
 impl Plugin for VrLocomotionPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(SnapTurnCooldown::default())
-            // Create OXR objects once at startup (OxrInstance is available even in desktop mode)
+            // Create OXR objects as soon as OpenXR is available, and keep this
+            // resilient if the runtime comes up after Startup.
             .add_systems(
                 Startup,
+                create_locomotion_actions.run_if(openxr_session_available),
+            )
+            .add_systems(
+                Update,
                 create_locomotion_actions.run_if(openxr_session_available),
             )
             // Suggest bindings when the session is being created (OxrSendActionBindings schedule)
@@ -80,7 +85,15 @@ impl Plugin for VrLocomotionPlugin {
 
 // ─── Action creation (Startup) ────────────────────────────────────────────────
 
-fn create_locomotion_actions(instance: Res<OxrInstance>, mut cmds: Commands) {
+fn create_locomotion_actions(
+    instance: Res<OxrInstance>,
+    mut cmds: Commands,
+    actions: Option<Res<LunaLocomotionActions>>,
+) {
+    if actions.is_some() {
+        return;
+    }
+
     let set = instance
         .create_action_set("luna_locomotion", "Luna Locomotion", 0)
         .unwrap();
