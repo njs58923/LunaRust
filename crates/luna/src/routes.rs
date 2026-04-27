@@ -1837,10 +1837,29 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       bullets.push({
         el: b,
         x: sx, y: sy, z: sz,
+        // Previous-frame position for swept-sphere collision. Without this,
+        // at BULLET_SPEED=90 m/s a bullet moves ~1.5m per 16ms frame and
+        // tunnels straight past targets smaller than that step.
+        px: sx, py: sy, pz: sz,
         vx: dx * BULLET_SPEED,
         vy: dy * BULLET_SPEED,
         vz: dz * BULLET_SPEED,
       });
+    }
+
+    // Closest-point-on-segment-to-sphere-center test. Returns true iff the
+    // sweep from (a) to (b) intersects sphere centered at (c) with `radius`.
+    function segmentHitsSphere(ax, ay, az, bx, by, bz, cx, cy, cz, radius) {
+      const dx = bx - ax, dy = by - ay, dz = bz - az;
+      const wx = cx - ax, wy = cy - ay, wz = cz - az;
+      const len2 = dx * dx + dy * dy + dz * dz;
+      let s = len2 > 0 ? (wx * dx + wy * dy + wz * dz) / len2 : 0;
+      if (s < 0) s = 0; else if (s > 1) s = 1;
+      const px = ax + dx * s;
+      const py = ay + dy * s;
+      const pz = az + dz * s;
+      const ex = px - cx, ey = py - cy, ez = pz - cz;
+      return ex * ex + ey * ey + ez * ez <= radius * radius;
     }
 
     function fireFromPose(pose) {
@@ -1854,16 +1873,22 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     }
 
     // ── Collision ──────────────────────────────────────────────────────────
+    // Hit area = visual radius of the target only (bullet treated as a
+    // point for the test). The previous code added bullet_radius to the
+    // sphere radius, which on tiny targets (level 6 r=0.07) inflated the
+    // collision sphere to ~1.7× the visible diameter. With the bullet as a
+    // point + swept segment test, the hit area matches what the user sees.
     function checkHits() {
       for (let i = bullets.length - 1; i >= 0; i--) {
         const b = bullets[i];
         for (let j = targets.length - 1; j >= 0; j--) {
           const t = targets[j];
-          const dx = b.x - t.x;
-          const dy = b.y - t.y;
-          const dz = b.z - t.z;
-          const r = t.radius + BULLET_SIZE * 0.5;
-          if (dx*dx + dy*dy + dz*dz <= r*r) {
+          if (segmentHitsSphere(
+            b.px, b.py, b.pz,
+            b.x,  b.y,  b.z,
+            t.x,  t.y,  t.z,
+            t.radius
+          )) {
             if (b.el) b.el.remove();
             if (t.el) t.el.remove();
             bullets.splice(i, 1);
@@ -1900,6 +1925,11 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
       for (let i = bullets.length - 1; i >= 0; i--) {
         const b = bullets[i];
+        // Stash previous-frame position; checkHits() sweeps the segment
+        // (px,py,pz) → (x,y,z) against every target so fast bullets can't
+        // tunnel through small targets.
+        b.px = b.x; b.py = b.y; b.pz = b.z;
+
         b.vy -= GRAVITY * dt;
         b.x += b.vx * dt;
         b.y += b.vy * dt;
