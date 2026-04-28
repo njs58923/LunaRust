@@ -690,19 +690,27 @@ const LUNA_404: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <text x="0" y="3" z="-5" value="404 - Page Not Found" size="0.35" color="#F44336" />
   <text x="0" y="2.5" z="-5" value="The requested luna:// page does not exist" size="0.15" />
 
-  <text x="0" y="1.8" z="-5" value="Available Pages:" size="0.16" color="#4CAF50" />
-  <text x="0" y="1.4" z="-5" value="- luna://home" size="0.11" />
-  <text x="0" y="1.1" z="-5" value="- luna://demos" size="0.11" />
-  <text x="0" y="0.8" z="-5" value="- luna://settings" size="0.11" />
-  <text x="0" y="0.5" z="-5" value="- luna://about" size="0.11" />
-  <text x="0" y="0.2" z="-5" value="- luna://cache-stats" size="0.11" />
+  <text x="0" y="1.9" z="-5" value="Available Pages:" size="0.16" color="#4CAF50" />
+  <text x="0" y="1.55" z="-5" value="- luna://home" size="0.11" />
+  <text x="0" y="1.30" z="-5" value="- luna://demos" size="0.11" />
+  <text x="0" y="1.05" z="-5" value="- luna://settings" size="0.11" />
+  <text x="0" y="0.80" z="-5" value="- luna://about" size="0.11" />
+  <text x="0" y="0.55" z="-5" value="- luna://cache-stats" size="0.11" />
+  <text x="0" y="0.30" z="-5" value="- luna://fire_demo" size="0.11" />
+  <text x="0" y="0.05" z="-5" value="- luna://target_demo" size="0.11" />
+  <text x="0" y="-0.20" z="-5" value="- luna://range_demo" size="0.11" />
 
-  <box x="0" y="-1.5" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" />
-  <text x="0" y="-1.5" z="-3.95" value="Go Home" size="0.1" />
+  <box x="-0.7" y="-1.5" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" />
+  <text x="-0.7" y="-1.5" z="-3.95" value="Go Home" size="0.1" />
+
+  <box x="0.7" y="-1.5" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#7E57C2" id="btn_demos" />
+  <text x="0.7" y="-1.5" z="-3.95" value="Go to Demos" size="0.1" />
 
   <script>
-    const btn = hiperspace.dimention.getElementById('btn_home');
-    if (btn) btn.addEventListener('toque', () => { location.href = 'luna://home'; });
+    const btnHome = hiperspace.dimention.getElementById('btn_home');
+    const btnDemos = hiperspace.dimention.getElementById('btn_demos');
+    if (btnHome) btnHome.addEventListener('toque', () => { location.href = 'luna://home'; });
+    if (btnDemos) btnDemos.addEventListener('toque', () => { location.href = 'luna://demos'; });
     console.log('[luna://404] Error page loaded');
   </script>
   </space>
@@ -1080,8 +1088,12 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <text x="0.6" y="0.50" z="-2.94" value="CLEAR" size="0.10" color="#FFFFFF" />
 
     <!-- Home Button -->
-    <box x="0" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4CAF50" id="home_button" />
-    <text x="0" y="0.05" z="-2.94" value="HOME" size="0.10" color="#FFFFFF" />
+    <box x="-0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4CAF50" id="home_button" />
+    <text x="-0.35" y="0.05" z="-2.94" value="HOME" size="0.10" color="#FFFFFF" />
+
+    <!-- Demos Button -->
+    <box x="0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#7E57C2" id="demos_button" />
+    <text x="0.35" y="0.05" z="-2.94" value="DEMOS" size="0.10" color="#FFFFFF" />
 
     <!-- Status Text -->
     <text x="0" y="-0.40" z="-3.0" value="Bullets: 0" size="0.10" id="bullet_count" color="#FFD700" />
@@ -1280,6 +1292,11 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       location.href = 'luna://home';
     });
 
+    const demosBtn = byId('demos_button');
+    if (demosBtn) demosBtn.addEventListener('toque', () => {
+      location.href = 'luna://demos';
+    });
+
     updateBulletCount();
     setStatus('Ready — right trigger uses posemove when available');
     </script>
@@ -1310,8 +1327,11 @@ const LUNA_TARGET_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <box x="0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4ECDC4" id="reset_button" />
     <text x="0.6" y="0.50" z="-2.94" value="RESET" size="0.10" color="#FFFFFF" />
 
-    <box x="0" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4CAF50" id="home_button" />
-    <text x="0" y="0.05" z="-2.94" value="HOME" size="0.10" color="#FFFFFF" />
+    <box x="-0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4CAF50" id="home_button" />
+    <text x="-0.35" y="0.05" z="-2.94" value="HOME" size="0.10" color="#FFFFFF" />
+
+    <box x="0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#7E57C2" id="demos_button" />
+    <text x="0.35" y="0.05" z="-2.94" value="DEMOS" size="0.10" color="#FFFFFF" />
 
     <text x="0" y="-0.30" z="-3.0" value="Score: 0" size="0.12" id="score_text" color="#FFD700" />
     <text x="0" y="-0.50" z="-3.0" value="Bullets: 0  Targets: 0" size="0.09" id="hud_text" color="#B0BEC5" />
@@ -1557,6 +1577,11 @@ const LUNA_TARGET_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       location.href = 'luna://home';
     });
 
+    const demosBtn = byId('demos_button');
+    if (demosBtn) demosBtn.addEventListener('toque', () => {
+      location.href = 'luna://demos';
+    });
+
     const gunZone = byId('gun_zone');
     if (gunZone) {
       gunZone.addEventListener('posemove', (evt) => {
@@ -1615,14 +1640,17 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     <text x="0" y="0.18" z="-3.0" value="" size="0.085" id="banner_text" color="#4FC3F7" />
 
-    <box x="-0.60" y="-0.15" z="-3.0" sx="0.55" sy="0.22" sz="0.05" color="#D50000" id="start_button" />
-    <text x="-0.60" y="-0.15" z="-2.94" value="START" size="0.09" color="#FFFFFF" />
+    <box x="-0.92" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#D50000" id="start_button" />
+    <text x="-0.92" y="-0.15" z="-2.94" value="START" size="0.08" color="#FFFFFF" />
 
-    <box x="0.00" y="-0.15" z="-3.0" sx="0.55" sy="0.22" sz="0.05" color="#FF6B6B" id="reset_button" />
-    <text x="0.00" y="-0.15" z="-2.94" value="RESET" size="0.09" color="#FFFFFF" />
+    <box x="-0.31" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#FF6B6B" id="reset_button" />
+    <text x="-0.31" y="-0.15" z="-2.94" value="RESET" size="0.08" color="#FFFFFF" />
 
-    <box x="0.60" y="-0.15" z="-3.0" sx="0.55" sy="0.22" sz="0.05" color="#4CAF50" id="home_button" />
-    <text x="0.60" y="-0.15" z="-2.94" value="HOME" size="0.09" color="#FFFFFF" />
+    <box x="0.31" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#4CAF50" id="home_button" />
+    <text x="0.31" y="-0.15" z="-2.94" value="HOME" size="0.08" color="#FFFFFF" />
+
+    <box x="0.92" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#7E57C2" id="demos_button" />
+    <text x="0.92" y="-0.15" z="-2.94" value="DEMOS" size="0.08" color="#FFFFFF" />
 
     <text x="0" y="-0.50" z="-3.0" value="Idle" size="0.075" id="status_text" color="#FFFFFF" />
 
@@ -1966,6 +1994,11 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     const homeBtn = byId('home_button');
     if (homeBtn) homeBtn.addEventListener('toque', () => {
       location.href = 'luna://home';
+    });
+
+    const demosBtn = byId('demos_button');
+    if (demosBtn) demosBtn.addEventListener('toque', () => {
+      location.href = 'luna://demos';
     });
 
     const gunZone = byId('gun_zone');
