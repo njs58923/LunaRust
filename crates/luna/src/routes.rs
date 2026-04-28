@@ -22,6 +22,7 @@ impl VirtualRoutes {
         routes.insert("root".to_string(), RouteHandler::Static(LUNA_ROOT));
         routes.insert("home".to_string(), RouteHandler::Static(LUNA_HOME));
         routes.insert("demos".to_string(), RouteHandler::Static(LUNA_DEMOS));
+        routes.insert("scale_demo".to_string(), RouteHandler::Static(LUNA_SCALE_DEMO));
         routes.insert("fire_demo".to_string(), RouteHandler::Static(LUNA_FIRE_DEMO));
         routes.insert("target_demo".to_string(), RouteHandler::Static(LUNA_TARGET_DEMO));
         routes.insert("range_demo".to_string(), RouteHandler::Static(LUNA_RANGE_DEMO));
@@ -124,7 +125,77 @@ const LUNA_HOME: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 <hsml>
   <head>
-    <name>Luna Demos</name>
+    <name>Luna Demos Menu</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space resources="navigate_self">
+
+    <plane x="0" y="-3" z="0" rx="-1.5708" sx="40" sy="40" sz="1" color="#080D12" id="menu_ground" />
+
+    <plane x="0" y="0.6" z="-3.15" sx="3.0" sy="2.6" sz="1" color="#0D1B2A" id="menu_panel" />
+
+    <text x="0" y="1.65" z="-3.0" value="Demos" size="0.26" color="#64B5F6" />
+    <text x="0" y="1.32" z="-3.0" value="Pick a demo to launch" size="0.10" color="#90A4AE" />
+
+    <!-- Demo buttons -->
+    <box x="0" y="0.95" z="-3.0" sx="2.20" sy="0.26" sz="0.05" color="#7E57C2" id="btn_scale_demo" />
+    <text x="0" y="0.95" z="-2.94" value="Scale Demo  ·  spawn / animate / stress" size="0.085" color="#FFFFFF" />
+
+    <box x="0" y="0.62" z="-3.0" sx="2.20" sy="0.26" sz="0.05" color="#EF5350" id="btn_fire_demo" />
+    <text x="0" y="0.62" z="-2.94" value="Fire Demo  ·  free shooting" size="0.085" color="#FFFFFF" />
+
+    <box x="0" y="0.29" z="-3.0" sx="2.20" sy="0.26" sz="0.05" color="#FF1744" id="btn_target_demo" />
+    <text x="0" y="0.29" z="-2.94" value="Target Demo  ·  hit moving targets" size="0.085" color="#FFFFFF" />
+
+    <box x="0" y="-0.04" z="-3.0" sx="2.20" sy="0.26" sz="0.05" color="#D50000" id="btn_range_demo" />
+    <text x="0" y="-0.04" z="-2.94" value="Range Demo  ·  formal levels" size="0.085" color="#FFFFFF" />
+
+    <!-- Bottom row: navigation -->
+    <box x="-0.78" y="-0.45" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#4CAF50" id="btn_home" />
+    <text x="-0.78" y="-0.45" z="-2.94" value="HOME" size="0.085" color="#FFFFFF" />
+
+    <box x="0.00" y="-0.45" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#FF9800" id="btn_about" />
+    <text x="0.00" y="-0.45" z="-2.94" value="ABOUT" size="0.085" color="#FFFFFF" />
+
+    <box x="0.78" y="-0.45" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#9C27B0" id="btn_settings" />
+    <text x="0.78" y="-0.45" z="-2.94" value="SETTINGS" size="0.085" color="#FFFFFF" />
+
+    <text x="0" y="-0.78" z="-3.0" value="" size="0.075" id="menu_status" color="#B0BEC5" />
+
+    <script>
+      const root = hiperspace.dimention;
+      const byId = (id) => root.getElementById(id);
+      const setStatus = (msg) => {
+        const el = byId('menu_status');
+        if (el) el.setAttribute('value', msg || '');
+      };
+      const goto = (url) => () => { setStatus('Loading ' + url + '…'); location.href = url; };
+
+      const links = {
+        btn_scale_demo:  'luna://scale_demo',
+        btn_fire_demo:   'luna://fire_demo',
+        btn_target_demo: 'luna://target_demo',
+        btn_range_demo:  'luna://range_demo',
+        btn_home:        'luna://home',
+        btn_about:       'luna://about',
+        btn_settings:    'luna://settings',
+      };
+      Object.keys(links).forEach((id) => {
+        const el = byId(id);
+        if (el) el.addEventListener('toque', goto(links[id]));
+      });
+
+      console.log('[luna://demos] Menu ready');
+    </script>
+  </space>
+</hsml>"##;
+
+const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head>
+    <name>Luna Scale Demo</name>
     <meta type="position" x="0" y="0" z="0"/>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
@@ -249,6 +320,9 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     <box x="1.70" y="-1.58" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#D50000" id="btn_range_demo" />
     <text x="1.70" y="-1.58" z="-2.94" value="Range Demo" size="0.07" />
+
+    <box x="1.70" y="-1.87" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#7E57C2" id="btn_demos_menu" />
+    <text x="1.70" y="-1.87" z="-2.94" value="Demos Menu" size="0.07" />
 
     <!-- Status bar -->
     <text x="0" y="-0.78" z="-2.96" value="Status: ready" size="0.085" id="demo_status" color="#FFFFFF" />
@@ -577,6 +651,7 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       btn_fire_demo:       () => { location.href = 'luna://fire_demo'; },
       btn_target_demo:     () => { location.href = 'luna://target_demo'; },
       btn_range_demo:      () => { location.href = 'luna://range_demo'; },
+      btn_demos_menu:      () => { location.href = 'luna://demos'; },
       demo_mode: cycleTransformMode,
     };
 
@@ -696,15 +771,16 @@ const LUNA_404: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <text x="0" y="1.05" z="-5" value="- luna://settings" size="0.11" />
   <text x="0" y="0.80" z="-5" value="- luna://about" size="0.11" />
   <text x="0" y="0.55" z="-5" value="- luna://cache-stats" size="0.11" />
-  <text x="0" y="0.30" z="-5" value="- luna://fire_demo" size="0.11" />
-  <text x="0" y="0.05" z="-5" value="- luna://target_demo" size="0.11" />
-  <text x="0" y="-0.20" z="-5" value="- luna://range_demo" size="0.11" />
+  <text x="0" y="0.30" z="-5" value="- luna://scale_demo" size="0.11" />
+  <text x="0" y="0.05" z="-5" value="- luna://fire_demo" size="0.11" />
+  <text x="0" y="-0.20" z="-5" value="- luna://target_demo" size="0.11" />
+  <text x="0" y="-0.45" z="-5" value="- luna://range_demo" size="0.11" />
 
-  <box x="-0.7" y="-1.5" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" />
-  <text x="-0.7" y="-1.5" z="-3.95" value="Go Home" size="0.1" />
+  <box x="-0.7" y="-1.7" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" />
+  <text x="-0.7" y="-1.7" z="-3.95" value="Go Home" size="0.1" />
 
-  <box x="0.7" y="-1.5" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#7E57C2" id="btn_demos" />
-  <text x="0.7" y="-1.5" z="-3.95" value="Go to Demos" size="0.1" />
+  <box x="0.7" y="-1.7" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#7E57C2" id="btn_demos" />
+  <text x="0.7" y="-1.7" z="-3.95" value="Go to Demos" size="0.1" />
 
   <script>
     const btnHome = hiperspace.dimention.getElementById('btn_home');
