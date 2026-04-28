@@ -1734,13 +1734,17 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     const root = hiperspace.dimention;
 
     // ── Tunables ───────────────────────────────────────────────────────────
-    const BULLET_SPEED   = 90;
+    const BULLET_SPEED   = 180;
     const BULLET_SIZE    = 0.10;
     const BULLET_MAX_DIST = 200;
     const GRAVITY        = 4.0;
     const FIRE_COOLDOWN  = 90;       // ms between shots
     const TRIGGER_DOWN   = 0.75;
     const TRIGGER_UP     = 0.40;
+    // Sub-frame steps for bullet integration + target motion. Targets oscillate
+    // on sin/cos paths that the swept-segment test approximates as a straight
+    // line within a step — too coarse a step misses the curve.
+    const SUBSTEPS       = 6;
 
     // Level config: progressively smaller, faster, more targets.
     // radius drops; speed scales position oscillation; count = hits to clear.
@@ -1824,6 +1828,7 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
         radius: cfg.radius,
         bx: baseX, by: baseY, bz: baseZ,
         x: baseX,  y: baseY,  z: baseZ,
+        px: baseX, py: baseY, pz: baseZ,
         ampX: (0.4 + Math.random() * 1.5) * cfg.speed,
         ampY: (0.15 + Math.random() * 0.5) * cfg.speed,
         ampZ: (0.3 + Math.random() * 1.0) * cfg.speed,
@@ -1977,20 +1982,19 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     }
 
     // ── Collision ──────────────────────────────────────────────────────────
-    // Hit area = visual radius of the target only (bullet treated as a
-    // point for the test). The previous code added bullet_radius to the
-    // sphere radius, which on tiny targets (level 6 r=0.07) inflated the
-    // collision sphere to ~1.7× the visible diameter. With the bullet as a
-    // point + swept segment test, the hit area matches what the user sees.
+    // Sweep bullet path in the target's reference frame (subtract target
+    // motion) so a moving target is treated as stationary for the segment
+    // test. Without this, a bullet that crossed where the target *was* would
+    // miss after the target moved on by end of step.
     function checkHits() {
       for (let i = bullets.length - 1; i >= 0; i--) {
         const b = bullets[i];
         for (let j = targets.length - 1; j >= 0; j--) {
           const t = targets[j];
           if (segmentHitsSphere(
-            b.px, b.py, b.pz,
-            b.x,  b.y,  b.z,
-            t.x,  t.y,  t.z,
+            b.px - t.px, b.py - t.py, b.pz - t.pz,
+            b.x  - t.x,  b.y  - t.y,  b.z  - t.z,
+            0, 0, 0,
             t.radius
           )) {
             if (b.el) b.el.remove();
@@ -2017,39 +2021,50 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       if (dt > 0.1) dt = 0.1;
       if (dt <= 0) dt = 1 / 60;
 
-      const t = ts / 1000;
+      const subDt = dt / SUBSTEPS;
+      const t0 = (ts - dt * 1000) / 1000;
+
+      for (let s = 1; s <= SUBSTEPS; s++) {
+        const tSub = t0 + subDt * s;
+
+        for (let i = 0; i < targets.length; i++) {
+          const tg = targets[i];
+          tg.px = tg.x; tg.py = tg.y; tg.pz = tg.z;
+          tg.x = tg.bx + Math.sin(tSub * tg.freqX + tg.phase) * tg.ampX;
+          tg.y = tg.by + Math.sin(tSub * tg.freqY + tg.phase) * tg.ampY;
+          tg.z = tg.bz + Math.cos(tSub * tg.freqZ + tg.phase) * tg.ampZ;
+        }
+
+        for (let i = bullets.length - 1; i >= 0; i--) {
+          const b = bullets[i];
+          b.px = b.x; b.py = b.y; b.pz = b.z;
+          b.vy -= GRAVITY * subDt;
+          b.x += b.vx * subDt;
+          b.y += b.vy * subDt;
+          b.z += b.vz * subDt;
+        }
+
+        if (running) checkHits();
+
+        for (let i = bullets.length - 1; i >= 0; i--) {
+          const b = bullets[i];
+          if (Math.abs(b.x) > BULLET_MAX_DIST ||
+              Math.abs(b.z) > BULLET_MAX_DIST ||
+              b.y < -5) {
+            if (b.el) b.el.remove();
+            bullets.splice(i, 1);
+          }
+        }
+      }
 
       for (let i = 0; i < targets.length; i++) {
         const tg = targets[i];
-        tg.x = tg.bx + Math.sin(t * tg.freqX + tg.phase) * tg.ampX;
-        tg.y = tg.by + Math.sin(t * tg.freqY + tg.phase) * tg.ampY;
-        tg.z = tg.bz + Math.cos(t * tg.freqZ + tg.phase) * tg.ampZ;
         if (tg.el) tg.el.position = { x: tg.x, y: tg.y, z: tg.z };
       }
-
-      for (let i = bullets.length - 1; i >= 0; i--) {
+      for (let i = 0; i < bullets.length; i++) {
         const b = bullets[i];
-        // Stash previous-frame position; checkHits() sweeps the segment
-        // (px,py,pz) → (x,y,z) against every target so fast bullets can't
-        // tunnel through small targets.
-        b.px = b.x; b.py = b.y; b.pz = b.z;
-
-        b.vy -= GRAVITY * dt;
-        b.x += b.vx * dt;
-        b.y += b.vy * dt;
-        b.z += b.vz * dt;
-
-        if (Math.abs(b.x) > BULLET_MAX_DIST ||
-            Math.abs(b.z) > BULLET_MAX_DIST ||
-            b.y < -5) {
-          if (b.el) b.el.remove();
-          bullets.splice(i, 1);
-          continue;
-        }
         if (b.el) b.el.position = { x: b.x, y: b.y, z: b.z };
       }
-
-      if (running) checkHits();
 
       // Banner timeout
       if (bannerUntil && ts > bannerUntil) {
