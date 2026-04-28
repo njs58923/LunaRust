@@ -723,23 +723,19 @@ pub fn apply_transform_updates(
     let entities = world.0.entities();
     let mut tr_storage = world.0.write_storage::<Transform2>();
 
-    let mut last_positions: HashMap<u32, js_runtime::Vec3> = HashMap::new();
-    let mut last_rotations: HashMap<u32, js_runtime::Vec3> = HashMap::new();
-    let mut last_scales: HashMap<u32, js_runtime::Vec3> = HashMap::new();
+    // Stream-write directo a Transform2: el orden del Vec preserva
+    // last-wins para duplicados, sin HashMaps intermedios.
+    // Cada nodo afectado se marca dirty + transform-only sin un Set extra:
+    // `take_unique` deduplica al consumir, y el HashSet de transform-only
+    // ignora reinserciones.
+    let positions = transform_updates.positions.len();
+    let rotations = transform_updates.rotations.len();
+    let scales = transform_updates.scales.len();
+    let total = positions + rotations + scales;
+    dirty_nodes.0.reserve(total);
+    transform_only_dirty.0.reserve(total);
 
     for (node_id, pos) in transform_updates.positions.drain(..) {
-        last_positions.insert(node_id, pos);
-    }
-    for (node_id, rot) in transform_updates.rotations.drain(..) {
-        last_rotations.insert(node_id, rot);
-    }
-    for (node_id, scale) in transform_updates.scales.drain(..) {
-        last_scales.insert(node_id, scale);
-    }
-
-    let mut updated_nodes = HashSet::new();
-
-    for (node_id, pos) in last_positions {
         let ent = entities.entity(node_id);
         if !entities.is_alive(ent) {
             continue;
@@ -748,11 +744,14 @@ pub fn apply_transform_updates(
             tr.position.x = pos.x;
             tr.position.y = pos.y;
             tr.position.z = pos.z;
-            updated_nodes.insert(node_id);
+            if dom_data.nodes.contains_key(&node_id) {
+                dirty_nodes.0.push(node_id);
+                transform_only_dirty.0.insert(node_id);
+            }
         }
     }
 
-    for (node_id, rot) in last_rotations {
+    for (node_id, rot) in transform_updates.rotations.drain(..) {
         let ent = entities.entity(node_id);
         if !entities.is_alive(ent) {
             continue;
@@ -761,11 +760,14 @@ pub fn apply_transform_updates(
             tr.rotation.x = rot.x;
             tr.rotation.y = rot.y;
             tr.rotation.z = rot.z;
-            updated_nodes.insert(node_id);
+            if dom_data.nodes.contains_key(&node_id) {
+                dirty_nodes.0.push(node_id);
+                transform_only_dirty.0.insert(node_id);
+            }
         }
     }
 
-    for (node_id, scale) in last_scales {
+    for (node_id, scale) in transform_updates.scales.drain(..) {
         let ent = entities.entity(node_id);
         if !entities.is_alive(ent) {
             continue;
@@ -774,17 +776,12 @@ pub fn apply_transform_updates(
             tr.scale.x = scale.x;
             tr.scale.y = scale.y;
             tr.scale.z = scale.z;
-            updated_nodes.insert(node_id);
+            if dom_data.nodes.contains_key(&node_id) {
+                dirty_nodes.0.push(node_id);
+                transform_only_dirty.0.insert(node_id);
+            }
         }
     }
-
-    let attached_nodes: Vec<u32> = updated_nodes
-        .into_iter()
-        .filter(|node_id| dom_data.nodes.contains_key(node_id))
-        .collect();
-
-    dirty_nodes.0.extend(attached_nodes.iter().copied());
-    transform_only_dirty.0.extend(attached_nodes);
 }
 
 
@@ -990,21 +987,15 @@ pub fn process_delete_requests(
 }
 
 // ─── Mark dirty ──────────────────────────────────────────────────────────────
-
-pub fn mark_dirty_system(
-    mut commands: Commands,
-    entity_map: Res<EntityMap>,
-    mut dirty_nodes: ResMut<DirtyNodes>,
-) {
+//
+// El componente `Dirty` ya no se inserta por frame: causaba archetype churn de
+// O(N) cubos × 2 moves cada frame durante animaciones (3000 cubos→500 cubos a
+// <60fps). La señal real de "este nodo necesita re-sync" es `dirty_nodes.0`,
+// que ya garantizan `apply_transform_updates` y `apply_attribute_updates`.
+// `Dirty` se conserva como marker en spawns (compat con tests) y para señalar
+// "primer render pendiente" — no se toca en el hot-path por frame.
+pub fn mark_dirty_system(mut dirty_nodes: ResMut<DirtyNodes>) {
     dirty_nodes.dedup_in_place();
-    for node_id in dirty_nodes.0.iter().copied() {
-        if let Some(&ent) = entity_map.0.get(&node_id) {
-            // try_insert evita el panic B0003 cuando otro sistema (ej. process_delete_requests)
-            // encola un despawn_recursive en el mismo frame: los commands de este sistema pueden
-            // aplicarse después del despawn, dejando el entity_map temporalmente desincronizado.
-            commands.entity(ent).try_insert(Dirty);
-        }
-    }
 }
 
 // ─── Include loading ─────────────────────────────────────────────────────────
@@ -1310,7 +1301,6 @@ pub fn dom_sync_system(
     mut query: Query<(
         Entity,
         &mut Transform,
-        Option<&Dirty>,
         Option<&mut Handle<StandardMaterial>>,
         Option<&Parent>,
     )>,
@@ -1397,7 +1387,7 @@ pub fn dom_sync_system(
             // --- Update existing entity ---
             let current_parent = {
                 match query.get_mut(bevy_ent) {
-                    Ok((_, _, _, _, parent)) => parent.map(|p| p.get()),
+                    Ok((_, _, _, parent)) => parent.map(|p| p.get()),
                     Err(_) => None,
                 }
             };
@@ -1411,23 +1401,14 @@ pub fn dom_sync_system(
             );
 
             //
-            // REGLA: para aplicar cambios de atributos (setAttribute desde JS) hay que
-            // leer el valor directamente de `attrs_storage` en esta rama, no depender del
-            // componente Bevy `Dirty`.
-            //
-            // Por qué: `mark_dirty_system` inserta `Dirty` via Commands, que son diferidas
-            // (se aplican al final del schedule, no entre sistemas del mismo frame). Entonces
-            // cuando `dom_sync_system` corre en el mismo frame, `Option<&Dirty>` siempre
-            // llega como `None` para actualizaciones de JS, y el guard `if dirty.is_some()`
-            // nunca se cumple. La señal correcta es que el nodo esté en `dirty_nodes.0`
-            // (que `apply_attribute_updates` ya garantizó). El componente `Dirty` solo se
-            // usa para limpiar el marcador si ya estaba presente por otro motivo.
+            // REGLA: la señal de "este nodo necesita re-sync" es estar en `dirty_nodes.0`
+            // (lo garantizan `apply_transform_updates` y `apply_attribute_updates`).
+            // Los attrs deben leerse desde `attrs_storage` directamente.
             //
             // Patrón correcto para agregar soporte a un nuevo tag con atributos mutables:
             //   1. Leer los attrs desde `attrs_storage.get(*node)` directamente.
-            //   2. Aplicar el cambio al asset/componente Bevy sin condicionarlo a `dirty`.
-            //   3. Llamar `commands.entity(bevy_ent).remove::<Dirty>()` solo si `dirty.is_some()`.
-            //   4. Agregar `continue` para no caer en el default de transform-only.
+            //   2. Aplicar el cambio al asset/componente Bevy sin guard adicional.
+            //   3. Agregar `continue` para no caer en el default de transform-only.
             if tag == "model" {
                 let resolved_asset_path = models
                     .get(*node)
@@ -1475,11 +1456,8 @@ pub fn dom_sync_system(
                     );
                     set_parent(&mut commands, new_ent, parent_id, &entity_map);
                     entity_map.0.insert(node_id, new_ent);
-                } else if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
+                } else if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
-                    if dirty.is_some() {
-                        commands.entity(bevy_ent).remove::<Dirty>();
-                    }
                 }
                 // IMPORTANTE:
                 // un <model> puede haber recibido position/scale antes de que el asset
@@ -1491,11 +1469,8 @@ pub fn dom_sync_system(
             }
 
             if tag == "skybox" {
-                if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
+                if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
-                    if dirty.is_some() {
-                        commands.entity(bevy_ent).remove::<Dirty>();
-                    }
                 }
                 transform_only_dirty.0.remove(&node_id);
                 continue;
@@ -1507,18 +1482,12 @@ pub fn dom_sync_system(
                     let attrs_map = attrs_storage.get(*node).map(|a| &a.0).unwrap_or(&empty_map);
                     let (text_value, text_size, _) = parse_text_attrs(attrs_map);
                     let text_transform = build_text_transform(transform_b, &text_value, text_size);
-                    if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
+                    if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
                         *t = text_transform;
-                        if dirty.is_some() {
-                            commands.entity(bevy_ent).remove::<Dirty>();
-                        }
                     }
                 } else {
-                    if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
+                    if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
                         *t = transform_b;
-                        if dirty.is_some() {
-                            commands.entity(bevy_ent).remove::<Dirty>();
-                        }
                     }
                 }
 
@@ -1541,13 +1510,10 @@ pub fn dom_sync_system(
                 let text_transform = build_text_transform(transform_b, &text_value, text_size);
 
                 let mut updated_in_place = false;
-                if let Ok((_, mut t, dirty, maybe_material, _)) = query.get_mut(bevy_ent) {
+                if let Ok((_, mut t, maybe_material, _)) = query.get_mut(bevy_ent) {
                     *t = text_transform;
                     if let Some(mut material_handle) = maybe_material {
                         *material_handle = text_material.clone();
-                        if dirty.is_some() {
-                            commands.entity(bevy_ent).remove::<Dirty>();
-                        }
                         updated_in_place = true;
                     }
                 }
@@ -1585,11 +1551,8 @@ pub fn dom_sync_system(
                     &world.0,
                     &mut async_dom.pending_scripts,
                 );
-                if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
+                if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
-                    if dirty.is_some() {
-                        commands.entity(bevy_ent).remove::<Dirty>();
-                    }
                 }
                 continue;
             }
@@ -1598,11 +1561,8 @@ pub fn dom_sync_system(
                 commands
                     .entity(bevy_ent)
                     .insert((crate::touch::PoseZone(node_id), crate::touch::HitShape::Box));
-                if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
+                if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
-                    if dirty.is_some() {
-                        commands.entity(bevy_ent).remove::<Dirty>();
-                    }
                 }
                 if let Ok(mut visibility) = visibility_query.get_mut(bevy_ent) {
                     *visibility = if node_visible(&attrs_storage, *node) {
@@ -1616,11 +1576,8 @@ pub fn dom_sync_system(
 
 
             if tag == "space" || tag == "include" || is_structural_tag(&tag) {
-                if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
+                if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
-                    if dirty.is_some() {
-                        commands.entity(bevy_ent).remove::<Dirty>();
-                    }
                 }
                 if let Ok(mut visibility) = visibility_query.get_mut(bevy_ent) {
                     *visibility = if node_visible(&attrs_storage, *node) {
@@ -1684,24 +1641,18 @@ pub fn dom_sync_system(
                     commands.entity(bevy_ent).insert(mesh_handle);
                 }
 
-                if let Ok((_, mut t, dirty, maybe_material, _)) = query.get_mut(bevy_ent) {
+                if let Ok((_, mut t, maybe_material, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
                     if let Some(mut material_handle) = maybe_material {
                         *material_handle = material;
-                    }
-                    if dirty.is_some() {
-                        commands.entity(bevy_ent).remove::<Dirty>();
                     }
                 }
                 continue;
             }
 
-            // Default: update transform if dirty
-            if let Ok((_, mut t, dirty, _, _)) = query.get_mut(bevy_ent) {
-                if dirty.is_some() {
-                    *t = transform_b;
-                    commands.entity(bevy_ent).remove::<Dirty>();
-                }
+            // Default: nodo en `dirty_nodes.0` ⇒ transform desactualizado, escribir.
+            if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
+                *t = transform_b;
             }
         } else {
             // --- Create new entity ---
@@ -2693,5 +2644,200 @@ mod tests {
         app.add_systems(Update, guarded);
 
         app.update();
+    }
+
+    // ─── Performance regression: cube animation hot-path ─────────────────────
+    //
+    // Antes la demo de cubos sostenía 3000 cubos a ~400 fps; tras un cambio,
+    // 500 cubos caen por debajo de 60 fps. Causa raíz: `mark_dirty_system`
+    // encolaba `try_insert(Dirty)` por cubo cada frame, y `dom_sync_system`
+    // hacía `remove::<Dirty>` por cubo cada frame. Eso son 1–2 archetype
+    // moves por entidad por frame, copiando todos los componentes de
+    // `PbrBundle` a otro archetype. Estos tests pinchan la garantía de
+    // que el hot-path NO produce archetype churn.
+
+    /// `mark_dirty_system` no debe insertar `Dirty` por frame en entidades
+    /// existentes. Si lo hiciera, archetype churn O(N) por frame durante
+    /// animaciones masivas tira FPS.
+    #[test]
+    fn mark_dirty_system_no_dirty_insertion_during_animation() {
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        // Entidad creada sin `Dirty` (simula entidad ya sincronizada por
+        // dom_sync en frames anteriores).
+        let bevy_ent = app.world_mut().spawn(SpatialBundle::default()).id();
+
+        let mut entity_map = EntityMap::default();
+        entity_map.0.insert(42, bevy_ent);
+        app.insert_resource(entity_map);
+        app.insert_resource(DirtyNodes::default());
+        app.add_systems(Update, mark_dirty_system);
+
+        // Simula 30 "frames" de animación: cada frame el nodo se marca
+        // dirty (como hace `apply_transform_updates`).
+        for _ in 0..30 {
+            app.world_mut().resource_mut::<DirtyNodes>().0.push(42);
+            app.update();
+        }
+
+        assert!(
+            !app.world().entity(bevy_ent).contains::<Dirty>(),
+            "mark_dirty_system insertó Dirty: regresión perf cubos (archetype churn)"
+        );
+        // Tras dedup la lista de dirty queda con un único id por frame.
+        assert_eq!(app.world().resource::<DirtyNodes>().0.len(), 1);
+    }
+
+    /// `apply_transform_updates` debe escribir el Transform2 de SPECS,
+    /// drenar `TransformUpdates`, y marcar el nodo en `DirtyNodes` +
+    /// `TransformOnlyDirtyNodes` SIN reservar HashMaps intermedios.
+    /// (La forma observable: comportamiento correcto en una pasada.)
+    #[test]
+    fn apply_transform_updates_streams_directly_to_specs() {
+        use crate::{TransformUpdates, TransformOnlyDirtyNodes};
+        use virtual_dom::dom::element::{Attrs, build_world, Hierarchy, Tag, Transform2};
+
+        let mut specs_world = build_world();
+        let mut node_ids: Vec<u32> = Vec::new();
+        let mut node_ents: Vec<SpecEntity> = Vec::new();
+        {
+            let entities = specs_world.entities();
+            let mut tags = specs_world.write_storage::<Tag>();
+            let mut trs = specs_world.write_storage::<Transform2>();
+            let mut hier = specs_world.write_storage::<Hierarchy>();
+            let mut attrs = specs_world.write_storage::<Attrs>();
+            for _ in 0..128 {
+                let e = entities.create();
+                tags.insert(e, Tag("box".into())).ok();
+                trs.insert(
+                    e,
+                    Transform2 {
+                        position: virtual_dom::dom::element::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                        rotation: virtual_dom::dom::element::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                        scale: virtual_dom::dom::element::Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+                    },
+                )
+                .ok();
+                hier.insert(e, Hierarchy { parent: None, children: vec![] }).ok();
+                attrs.insert(e, Attrs(HashMap::new())).ok();
+                node_ids.push(e.id());
+                node_ents.push(e);
+            }
+        }
+        specs_world.maintain();
+
+        let dom_data = VirtualDomData {
+            nodes: node_ids
+                .iter()
+                .zip(node_ents.iter())
+                .map(|(id, e)| (*id, *e))
+                .collect(),
+        };
+
+        let mut app = App::new();
+        app.insert_resource(ElemenetWorld(specs_world));
+        app.insert_resource(dom_data);
+        app.insert_resource(DirtyNodes::default());
+        app.insert_resource(TransformUpdates::default());
+        app.insert_resource(TransformOnlyDirtyNodes::default());
+        app.add_systems(Update, apply_transform_updates);
+
+        // Push posición + rotación por nodo (pattern de setTransformBatch).
+        {
+            let mut upd = app.world_mut().resource_mut::<TransformUpdates>();
+            for (i, &id) in node_ids.iter().enumerate() {
+                upd.positions.push((
+                    id,
+                    js_runtime::Vec3 { x: i as f32, y: 0.0, z: 0.0 },
+                ));
+                upd.rotations.push((
+                    id,
+                    js_runtime::Vec3 { x: 0.0, y: i as f32 * 0.01, z: 0.0 },
+                ));
+            }
+        }
+        app.update();
+
+        // TransformUpdates drenado.
+        let upd = app.world().resource::<TransformUpdates>();
+        assert!(upd.is_empty(), "TransformUpdates no se drenó");
+
+        // SPECS Transform2 actualizado.
+        let world = &app.world().resource::<ElemenetWorld>().0;
+        let trs = world.read_storage::<Transform2>();
+        for (i, &id) in node_ids.iter().enumerate() {
+            let e = world.entities().entity(id);
+            let t = trs.get(e).expect("Transform2 missing");
+            assert_eq!(t.position.x, i as f32);
+            assert!((t.rotation.y - i as f32 * 0.01).abs() < 1e-5);
+        }
+
+        // Cada nodo aparece marcado (puede aparecer múltiples veces antes
+        // de dedup; lo importante es que esté presente).
+        let dirty = app.world().resource::<DirtyNodes>();
+        let to_dirty = app.world().resource::<TransformOnlyDirtyNodes>();
+        let dirty_set: HashSet<u32> = dirty.0.iter().copied().collect();
+        for &id in &node_ids {
+            assert!(dirty_set.contains(&id), "nodo {} no está dirty", id);
+            assert!(to_dirty.0.contains(&id), "nodo {} no está en transform-only", id);
+        }
+    }
+
+    /// Nodos no adjuntos al árbol (no en `VirtualDomData::nodes`) reciben
+    /// la actualización de Transform2 pero NO se marcan dirty — evita
+    /// gastar work de dom_sync en entidades sin Bevy entity.
+    #[test]
+    fn apply_transform_updates_ignores_detached_nodes_for_dirty() {
+        use crate::{TransformUpdates, TransformOnlyDirtyNodes};
+        use virtual_dom::dom::element::{build_world, Transform2};
+
+        let mut specs_world = build_world();
+        let nid = {
+            let entities = specs_world.entities();
+            let mut trs = specs_world.write_storage::<Transform2>();
+            let e = entities.create();
+            trs.insert(
+                e,
+                Transform2 {
+                    position: virtual_dom::dom::element::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                    rotation: virtual_dom::dom::element::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                    scale: virtual_dom::dom::element::Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+                },
+            )
+            .ok();
+            e.id()
+        };
+        specs_world.maintain();
+
+        let mut app = App::new();
+        app.insert_resource(ElemenetWorld(specs_world));
+        app.insert_resource(VirtualDomData::default()); // sin entradas → detached
+        app.insert_resource(DirtyNodes::default());
+        app.insert_resource(TransformUpdates::default());
+        app.insert_resource(TransformOnlyDirtyNodes::default());
+        app.add_systems(Update, apply_transform_updates);
+
+        {
+            let mut upd = app.world_mut().resource_mut::<TransformUpdates>();
+            upd.positions
+                .push((nid, js_runtime::Vec3 { x: 5.0, y: 0.0, z: 0.0 }));
+        }
+        app.update();
+
+        // Transform2 sí se escribe (mantener invariante).
+        let world = &app.world().resource::<ElemenetWorld>().0;
+        let trs = world.read_storage::<Transform2>();
+        let e = world.entities().entity(nid);
+        assert_eq!(trs.get(e).unwrap().position.x, 5.0);
+
+        // Pero el nodo no se marcó dirty.
+        assert!(app.world().resource::<DirtyNodes>().0.is_empty());
+        assert!(
+            app.world()
+                .resource::<TransformOnlyDirtyNodes>()
+                .0
+                .is_empty()
+        );
     }
 }
