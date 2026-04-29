@@ -153,6 +153,17 @@ fn main() {
     // Systems
     app.add_systems(Startup, (setup, js::init_js_runtime).chain());
 
+    // DOM pipeline: orden estricto via `.chain()`. Sin él, el scheduler de Bevy
+    // puede correr `dom_sync_system` ANTES de `apply_transform_updates` en el
+    // mismo frame, porque ambos compiten por `ResMut<DirtyNodes>` y sin Commands
+    // como barrera implícita Bevy elige cualquier orden válido. Resultado: las
+    // pos/attr updates de JS se aplican a SPECS pero `dom_sync` ya drenó la lista
+    // de dirty para ese frame, así que nunca escribe el Transform de Bevy →
+    // entidades creadas desde JS aparecen pero no se animan (97% de bullets
+    // "stuck in air" en demo zombies). Chain garantiza:
+    //   commit_pending_js_attaches → apply_transform → apply_attribute →
+    //   activate_first_render → mark_dirty → dom_sync
+    // que es el invariante temporal del que depende todo el flujo JS→render.
     app.add_systems(
         Update,
         (
@@ -172,7 +183,8 @@ fn main() {
             permissions::update_active_native_services_system,
             dom::mark_dirty_system,
             dom::dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
-        ),
+        )
+            .chain(),
     );
 
     app.add_systems(Update, ui::ui_system);

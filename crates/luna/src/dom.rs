@@ -2840,4 +2840,306 @@ mod tests {
                 .is_empty()
         );
     }
+
+    // ─── Regression: bullet stuck in air (zombies demo) ──────────────────────
+    //
+    // Tras quitar `Dirty` del hot-path, los sistemas del DOM dejaron de tener
+    // Commands como barrera implícita. Sin `.chain()` Bevy podía correr
+    // `dom_sync_system` ANTES que `apply_transform_updates` en el mismo frame:
+    //   - dom_sync drena `dirty_nodes` (vacío en ese momento) y sale.
+    //   - apply_transform_updates escribe SPECS y marca dirty para el frame
+    //     siguiente.
+    //   - dom_sync no vuelve a correr ese frame → Transform de Bevy nunca se
+    //     actualiza.
+    // Resultado visible: bullets de zombies aparecen pero quedan congelados
+    // ("se queda en el aire en el punto donde aparece sin ser afectada por
+    // su animacion"), 97% del tiempo, dependiendo del orden no-determinista
+    // que elige el scheduler.
+    //
+    // El fix es chain(). Estos tests pinchan el invariante.
+
+    /// Una única ronda de update con (a) entidad ya creada en Bevy, (b) un
+    /// transform_update pendiente: el Transform de Bevy debe quedar escrito
+    /// en el MISMO frame, sin importar el orden interno del scheduler.
+    #[test]
+    fn js_position_update_reaches_bevy_transform_same_frame() {
+        use crate::{
+            EntityMap, SharedResources, TextMaterialCache, PrimitiveMaterialCache,
+            TransformOnlyDirtyNodes, TransformUpdates,
+        };
+        use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
+
+        let mut app = App::new();
+        app.add_plugins(bevy::MinimalPlugins);
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<Mesh>();
+        app.init_asset::<StandardMaterial>();
+        app.init_asset::<Image>();
+        app.init_asset::<Scene>();
+
+        // SPECS: 1 nodo "sphere" attached al árbol.
+        let mut specs_world = virtual_dom::dom::element::build_world();
+        let nid = {
+            let entities = specs_world.entities();
+            let mut tags = specs_world.write_storage::<Tag>();
+            let mut trs = specs_world.write_storage::<Transform2>();
+            let mut hier = specs_world.write_storage::<Hierarchy>();
+            let mut attrs = specs_world.write_storage::<Attrs>();
+            let e = entities.create();
+            tags.insert(e, Tag("sphere".into())).ok();
+            trs.insert(
+                e,
+                Transform2 {
+                    position: virtual_dom::dom::element::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                    rotation: virtual_dom::dom::element::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                    scale: virtual_dom::dom::element::Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+                },
+            )
+            .ok();
+            hier.insert(e, Hierarchy { parent: None, children: vec![] }).ok();
+            attrs.insert(e, Attrs(HashMap::new())).ok();
+            e.id()
+        };
+        specs_world.maintain();
+        let nspec = specs_world.entities().entity(nid);
+
+        // Bevy: entidad real con PbrBundle (lo que dom_sync produciría tras CREATE).
+        let bevy_ent = app
+            .world_mut()
+            .spawn(SpatialBundle {
+                transform: Transform::from_xyz(0.0, 0.0, 0.0),
+                ..Default::default()
+            })
+            .id();
+
+        // Recursos del flujo DOM.
+        app.insert_resource(ElemenetWorld(specs_world));
+        let mut dom_data = VirtualDomData::default();
+        dom_data.nodes.insert(nid, nspec);
+        app.insert_resource(dom_data);
+
+        let mut entity_map = EntityMap::default();
+        entity_map.0.insert(nid, bevy_ent);
+        app.insert_resource(entity_map);
+
+        app.insert_resource(DirtyNodes::default());
+        app.insert_resource(TransformUpdates::default());
+        app.insert_resource(TransformOnlyDirtyNodes::default());
+        app.insert_resource(crate::AttributeUpdates::default());
+        app.insert_resource(crate::JsSnapshotState::default());
+        app.insert_resource(crate::permissions::SpacePolicies::default());
+        app.insert_resource(crate::CurrentUrl("luna://test".to_string()));
+        app.insert_resource(LogPanel::default());
+        app.insert_resource(crate::PerformanceStats::default());
+        app.insert_resource(crate::ScriptLoadStates::default());
+        app.insert_resource(crate::PendingModelLoads::default());
+        app.insert_resource(crate::ModelLoadStates::default());
+        app.insert_resource(crate::PendingScripts::default());
+        app.insert_resource(crate::IncludeLoadStates::default());
+        app.insert_resource(crate::SkyboxEntity::default());
+        app.insert_resource(crate::TokioRuntime(
+            tokio::runtime::Runtime::new().expect("tokio rt"),
+        ));
+        app.insert_resource(crate::IoService::default());
+
+        // Recursos compartidos: meshes/materials triviales.
+        let (cube, plane, sphere, cylinder, default_mat) = {
+            let mut meshes = app.world_mut().resource_mut::<Assets<Mesh>>();
+            let cube = meshes.add(bevy::math::primitives::Cuboid::new(1.0, 1.0, 1.0));
+            let plane = meshes.add(bevy::math::primitives::Rectangle::new(1.0, 1.0));
+            let sphere = meshes.add(bevy::math::primitives::Sphere::new(0.5).mesh());
+            let cylinder = meshes.add(bevy::math::primitives::Cylinder::new(0.5, 1.0).mesh());
+            let mut mats = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+            let default_mat = mats.add(StandardMaterial::default());
+            (cube, plane, sphere, cylinder, default_mat)
+        };
+        app.insert_resource(SharedResources {
+            cube_mesh: cube,
+            plane_mesh: plane,
+            sphere_mesh: sphere,
+            cylinder_mesh: cylinder,
+            default_material: default_mat,
+        });
+        app.insert_resource(TextMaterialCache::default());
+        app.insert_resource(PrimitiveMaterialCache::default());
+
+        // Schedule: el orden del binario real, con .chain() para forzar
+        // determinismo. Si .chain() se rompe, este test debería fallar.
+        app.add_systems(
+            Update,
+            (
+                apply_transform_updates,
+                apply_attribute_updates.run_if(|a: Res<crate::AttributeUpdates>| !a.0.is_empty()),
+                mark_dirty_system,
+                dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
+            )
+                .chain(),
+        );
+
+        // Simula JS: posición nueva en TransformUpdates (como apply_js_tick).
+        {
+            let mut upd = app.world_mut().resource_mut::<TransformUpdates>();
+            upd.positions
+                .push((nid, js_runtime::Vec3 { x: 7.0, y: 2.0, z: -3.0 }));
+        }
+
+        app.update();
+
+        // Bevy Transform debe reflejar la nueva posición EN ESTE FRAME.
+        let bevy_tr = app.world().entity(bevy_ent).get::<Transform>().unwrap();
+        assert!(
+            (bevy_tr.translation.x - 7.0).abs() < 1e-5,
+            "Transform.x = {} (esperado 7.0). Bullet stuck regression — orden de sistemas",
+            bevy_tr.translation.x
+        );
+        assert!((bevy_tr.translation.y - 2.0).abs() < 1e-5);
+        assert!((bevy_tr.translation.z - (-3.0)).abs() < 1e-5);
+    }
+
+    /// Múltiples frames de animación: cada frame inyecta una posición nueva,
+    /// y cada frame el Bevy Transform debe quedar al día. Replica el patrón
+    /// de `requestAnimationFrame(animate)` de zombies.js.
+    #[test]
+    fn js_position_animation_streams_each_frame_to_bevy() {
+        use crate::{
+            EntityMap, SharedResources, TextMaterialCache, PrimitiveMaterialCache,
+            TransformOnlyDirtyNodes, TransformUpdates,
+        };
+        use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
+
+        let mut app = App::new();
+        app.add_plugins(bevy::MinimalPlugins);
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<Mesh>();
+        app.init_asset::<StandardMaterial>();
+        app.init_asset::<Image>();
+        app.init_asset::<Scene>();
+
+        let mut specs_world = virtual_dom::dom::element::build_world();
+        let nid = {
+            let entities = specs_world.entities();
+            let mut tags = specs_world.write_storage::<Tag>();
+            let mut trs = specs_world.write_storage::<Transform2>();
+            let mut hier = specs_world.write_storage::<Hierarchy>();
+            let mut attrs = specs_world.write_storage::<Attrs>();
+            let e = entities.create();
+            tags.insert(e, Tag("sphere".into())).ok();
+            trs.insert(
+                e,
+                Transform2 {
+                    position: virtual_dom::dom::element::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                    rotation: virtual_dom::dom::element::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                    scale: virtual_dom::dom::element::Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+                },
+            )
+            .ok();
+            hier.insert(e, Hierarchy { parent: None, children: vec![] }).ok();
+            attrs.insert(e, Attrs(HashMap::new())).ok();
+            e.id()
+        };
+        specs_world.maintain();
+        let nspec = specs_world.entities().entity(nid);
+
+        let bevy_ent = app
+            .world_mut()
+            .spawn(SpatialBundle {
+                transform: Transform::from_xyz(0.0, 0.0, 0.0),
+                ..Default::default()
+            })
+            .id();
+
+        app.insert_resource(ElemenetWorld(specs_world));
+        let mut dom_data = VirtualDomData::default();
+        dom_data.nodes.insert(nid, nspec);
+        app.insert_resource(dom_data);
+        let mut entity_map = EntityMap::default();
+        entity_map.0.insert(nid, bevy_ent);
+        app.insert_resource(entity_map);
+        app.insert_resource(DirtyNodes::default());
+        app.insert_resource(TransformUpdates::default());
+        app.insert_resource(TransformOnlyDirtyNodes::default());
+        app.insert_resource(crate::AttributeUpdates::default());
+        app.insert_resource(crate::JsSnapshotState::default());
+        app.insert_resource(crate::permissions::SpacePolicies::default());
+        app.insert_resource(crate::CurrentUrl("luna://test".to_string()));
+        app.insert_resource(LogPanel::default());
+        app.insert_resource(crate::PerformanceStats::default());
+        app.insert_resource(crate::ScriptLoadStates::default());
+        app.insert_resource(crate::PendingModelLoads::default());
+        app.insert_resource(crate::ModelLoadStates::default());
+        app.insert_resource(crate::PendingScripts::default());
+        app.insert_resource(crate::IncludeLoadStates::default());
+        app.insert_resource(crate::SkyboxEntity::default());
+        app.insert_resource(crate::TokioRuntime(
+            tokio::runtime::Runtime::new().expect("tokio rt"),
+        ));
+        app.insert_resource(crate::IoService::default());
+
+        let (cube, plane, sphere, cylinder, default_mat) = {
+            let mut meshes = app.world_mut().resource_mut::<Assets<Mesh>>();
+            let cube = meshes.add(bevy::math::primitives::Cuboid::new(1.0, 1.0, 1.0));
+            let plane = meshes.add(bevy::math::primitives::Rectangle::new(1.0, 1.0));
+            let sphere = meshes.add(bevy::math::primitives::Sphere::new(0.5).mesh());
+            let cylinder = meshes.add(bevy::math::primitives::Cylinder::new(0.5, 1.0).mesh());
+            let mut mats = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+            let default_mat = mats.add(StandardMaterial::default());
+            (cube, plane, sphere, cylinder, default_mat)
+        };
+        app.insert_resource(SharedResources {
+            cube_mesh: cube,
+            plane_mesh: plane,
+            sphere_mesh: sphere,
+            cylinder_mesh: cylinder,
+            default_material: default_mat,
+        });
+        app.insert_resource(TextMaterialCache::default());
+        app.insert_resource(PrimitiveMaterialCache::default());
+
+        app.add_systems(
+            Update,
+            (
+                apply_transform_updates,
+                apply_attribute_updates.run_if(|a: Res<crate::AttributeUpdates>| !a.0.is_empty()),
+                mark_dirty_system,
+                dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
+            )
+                .chain(),
+        );
+
+        // 30 frames de animación parabólica.
+        for frame in 0..30 {
+            let t = frame as f32 * 0.016;
+            let x = 80.0 * t;
+            let y = 1.6 - 4.0 * t * t;
+            let z = -100.0 * t;
+            {
+                let mut upd = app.world_mut().resource_mut::<TransformUpdates>();
+                upd.positions.push((nid, js_runtime::Vec3 { x, y, z }));
+            }
+            app.update();
+
+            let bevy_tr = app.world().entity(bevy_ent).get::<Transform>().unwrap();
+            assert!(
+                (bevy_tr.translation.x - x).abs() < 1e-3,
+                "frame {}: Transform.x = {} (esperado {})",
+                frame,
+                bevy_tr.translation.x,
+                x
+            );
+            assert!(
+                (bevy_tr.translation.y - y).abs() < 1e-3,
+                "frame {}: Transform.y = {} (esperado {})",
+                frame,
+                bevy_tr.translation.y,
+                y
+            );
+            assert!(
+                (bevy_tr.translation.z - z).abs() < 1e-3,
+                "frame {}: Transform.z = {} (esperado {})",
+                frame,
+                bevy_tr.translation.z,
+                z
+            );
+        }
+    }
 }
