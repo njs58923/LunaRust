@@ -110,13 +110,13 @@ const LUNA_HOME: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <text x="0" y="1.5" z="-2" value="Luna Browser - Home" size="0.3" />
     <text x="0" y="1.2" z="-2" value="Welcome to Luna 3D Browser" size="0.15" />
 
-    <box x="-0.8" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#4CAF50" id="btn_demos" />
+    <box x="-0.8" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#4CAF50" id="btn_demos" touchable="true"/>
     <text x="-0.8" y="0.6" z="-1.9" value="Demos" size="0.1" />
 
-    <box x="0" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#2196F3" id="btn_settings" />
+    <box x="0" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#2196F3" id="btn_settings" touchable="true"/>
     <text x="0" y="0.6" z="-1.9" value="Settings" size="0.1" />
 
-    <box x="0.8" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#FF9800" id="btn_about" />
+    <box x="0.8" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#FF9800" id="btn_about" touchable="true"/>
     <text x="0.8" y="0.6" z="-1.9" value="About" size="0.1" />
     <script src="luna://internal/home_navigation.js" />
   </space>
@@ -140,26 +140,26 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <text x="0" y="1.32" z="-3.0" value="Pick a demo to launch" size="0.10" color="#90A4AE" />
 
     <!-- Demo buttons -->
-    <box x="0" y="0.95" z="-3.0" sx="2.20" sy="0.26" sz="0.05" color="#7E57C2" id="btn_scale_demo" />
+    <box x="0" y="0.95" z="-3.0" sx="2.20" sy="0.26" sz="0.05" color="#7E57C2" id="btn_scale_demo" touchable="true"/>
     <text x="0" y="0.95" z="-2.94" value="Scale Demo  ·  spawn / animate / stress" size="0.085" color="#FFFFFF" />
 
-    <box x="0" y="0.62" z="-3.0" sx="2.20" sy="0.26" sz="0.05" color="#EF5350" id="btn_fire_demo" />
+    <box x="0" y="0.62" z="-3.0" sx="2.20" sy="0.26" sz="0.05" color="#EF5350" id="btn_fire_demo" touchable="true"/>
     <text x="0" y="0.62" z="-2.94" value="Fire Demo  ·  free shooting" size="0.085" color="#FFFFFF" />
 
-    <box x="0" y="0.29" z="-3.0" sx="2.20" sy="0.26" sz="0.05" color="#FF1744" id="btn_target_demo" />
+    <box x="0" y="0.29" z="-3.0" sx="2.20" sy="0.26" sz="0.05" color="#FF1744" id="btn_target_demo" touchable="true"/>
     <text x="0" y="0.29" z="-2.94" value="Target Demo  ·  hit moving targets" size="0.085" color="#FFFFFF" />
 
-    <box x="0" y="-0.04" z="-3.0" sx="2.20" sy="0.26" sz="0.05" color="#D50000" id="btn_range_demo" />
+    <box x="0" y="-0.04" z="-3.0" sx="2.20" sy="0.26" sz="0.05" color="#D50000" id="btn_range_demo" touchable="true"/>
     <text x="0" y="-0.04" z="-2.94" value="Range Demo  ·  formal levels" size="0.085" color="#FFFFFF" />
 
     <!-- Bottom row: navigation -->
-    <box x="-0.78" y="-0.45" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#4CAF50" id="btn_home" />
+    <box x="-0.78" y="-0.45" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
     <text x="-0.78" y="-0.45" z="-2.94" value="HOME" size="0.085" color="#FFFFFF" />
 
-    <box x="0.00" y="-0.45" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#FF9800" id="btn_about" />
+    <box x="0.00" y="-0.45" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#FF9800" id="btn_about" touchable="true"/>
     <text x="0.00" y="-0.45" z="-2.94" value="ABOUT" size="0.085" color="#FFFFFF" />
 
-    <box x="0.78" y="-0.45" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#9C27B0" id="btn_settings" />
+    <box x="0.78" y="-0.45" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#9C27B0" id="btn_settings" touchable="true"/>
     <text x="0.78" y="-0.45" z="-2.94" value="SETTINGS" size="0.085" color="#FFFFFF" />
 
     <text x="0" y="-0.78" z="-3.0" value="" size="0.075" id="menu_status" color="#B0BEC5" />
@@ -657,7 +657,10 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     Object.keys(bindings).forEach((id) => {
       const el = byId(id);
-      if (el) el.addEventListener('toque', bindings[id]);
+      if (el) {
+        el.addEventListener('toque', bindings[id]);
+        el.setAttribute("touchable", "true");
+      }
     });
 
     // Extra toggle by keyboard for easy benchmarking:

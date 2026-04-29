@@ -37,7 +37,6 @@ use crate::{
 const DOM_SYNC_VERBOSE_LOGS: bool = false;
 const ATTR_DELETE_SENTINEL: &str = "[DEL]";
 
-
 pub fn commit_pending_js_attaches_system(
     mut pending_js_attaches: ResMut<PendingJsAttachNodes>,
     world: Res<ElemenetWorld>,
