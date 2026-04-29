@@ -341,6 +341,16 @@ pub fn commit_pending_document_load_system(
                         commit.space_handle_tables.next_runtime_id = 0;
                         commit.text_material_cache.materials.clear();
                         commit.primitive_material_cache.materials.clear();
+                        // Drenar colas JS→DOM del espacio anterior. Si quedan,
+                        // sus node_ids stale colisionan con slots del nuevo
+                        // SPECS world (build_world() reinicia desde 0) y
+                        // corrompen entidades del nuevo HSML.
+                        commit.transform_updates.positions.clear();
+                        commit.transform_updates.rotations.clear();
+                        commit.transform_updates.scales.clear();
+                        commit.transform_only_dirty.0.clear();
+                        commit.pending_js_attaches.0.clear();
+                        commit.pending_js_first_render.0.clear();
 
                         for bevy_ent in entity_map.0.drain().map(|(_, ent)| ent) {
                             commands.entity(bevy_ent).despawn_recursive();
@@ -3237,5 +3247,385 @@ mod tests {
         );
         // Mapping local→global preservado (lo que evita "Blocked invalid local position write").
         assert_eq!(table.local_to_global.get(&5), Some(&nid));
+    }
+
+    // ─── Navigation stress: stale state corrupts new space ───────────────────
+    //
+    // Repro user-reported: "si uso la demo de zombies un rato, luego voy a
+    // luna://home, no se carga ningún elemento".
+    //
+    // Causa: tras spam de createElement/remove desde JS, los Resources
+    // `TransformUpdates`, `TransformOnlyDirtyNodes`, `PendingJsAttachNodes`,
+    // `PendingJsFirstRenderNodes` acumulan node_ids del SPECS world viejo.
+    // En `commit_pending_document_load_system`, `world.0 = new_world;` (de
+    // `build_world()`) reinicia los slot ids desde 0. Las colas stale tienen
+    // ids como 5, 6, 7, ... que ahora coinciden con entidades del nuevo HSML
+    // (botones, textos, etc.) → escritura corrupta sobre el nuevo árbol.
+    //
+    // Fix: drenar todas esas colas en commit_pending_document_load_system.
+
+    fn build_dummy_bundle(xml: &str) -> crate::LoadedDocumentBundle {
+        crate::LoadedDocumentBundle {
+            root_xml: xml.to_string(),
+            includes: HashMap::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn populate_specs_with_bullets(specs_world: &mut SpecWorld, count: usize) -> Vec<u32> {
+        use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
+        let mut ids = Vec::new();
+        let entities = specs_world.entities();
+        let mut tags = specs_world.write_storage::<Tag>();
+        let mut trs = specs_world.write_storage::<Transform2>();
+        let mut hier = specs_world.write_storage::<Hierarchy>();
+        let mut attrs = specs_world.write_storage::<Attrs>();
+        for _ in 0..count {
+            let e = entities.create();
+            tags.insert(e, Tag("sphere".into())).ok();
+            trs.insert(
+                e,
+                Transform2 {
+                    position: virtual_dom::dom::element::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                    rotation: virtual_dom::dom::element::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                    scale: virtual_dom::dom::element::Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+                },
+            )
+            .ok();
+            hier.insert(e, Hierarchy { parent: None, children: vec![] }).ok();
+            attrs.insert(e, Attrs(HashMap::new())).ok();
+            ids.push(e.id());
+        }
+        ids
+    }
+
+    fn install_navigation_resources(app: &mut App) {
+        use crate::*;
+        app.insert_resource(VirtualDomData::default());
+        app.insert_resource(EntityMap::default());
+        app.insert_resource(DirtyNodes::default());
+        app.insert_resource(TransformUpdates::default());
+        app.insert_resource(TransformOnlyDirtyNodes::default());
+        app.insert_resource(AttributeUpdates::default());
+        app.insert_resource(JsSnapshotState::default());
+        app.insert_resource(crate::permissions::SpacePolicies::default());
+        app.insert_resource(CurrentUrl("luna://test".to_string()));
+        app.insert_resource(LogPanel::default());
+        app.insert_resource(PerformanceStats::default());
+        app.insert_resource(ScriptLoadStates::default());
+        app.insert_resource(PendingModelLoads::default());
+        app.insert_resource(ModelLoadStates::default());
+        app.insert_resource(PendingScripts::default());
+        app.insert_resource(IncludeLoadStates::default());
+        app.insert_resource(SkyboxEntity::default());
+        app.insert_resource(PendingDocumentLoads::default());
+        app.insert_resource(DocumentLoadState::default());
+        app.insert_resource(NavigationEpoch::default());
+        app.insert_resource(PendingJsAttachNodes::default());
+        app.insert_resource(PendingJsFirstRenderNodes::default());
+        app.insert_resource(PendingIncludes::default());
+        app.insert_resource(SpaceHandleTables::default());
+        app.insert_resource(DeleteRequests::default());
+        app.insert_resource(TextMaterialCache::default());
+        app.insert_resource(PrimitiveMaterialCache::default());
+        app.insert_resource(TokioRuntime(
+            tokio::runtime::Runtime::new().expect("tokio rt"),
+        ));
+        app.insert_resource(IoService::default());
+        app.insert_non_send_resource(crate::js::ScriptRuntimeManager::default());
+
+        let mut meshes = app.world_mut().resource_mut::<Assets<Mesh>>();
+        let cube = meshes.add(bevy::math::primitives::Cuboid::new(1.0, 1.0, 1.0));
+        let plane = meshes.add(bevy::math::primitives::Rectangle::new(1.0, 1.0));
+        let sphere = meshes.add(bevy::math::primitives::Sphere::new(0.5).mesh());
+        let cylinder = meshes.add(bevy::math::primitives::Cylinder::new(0.5, 1.0).mesh());
+        let mut mats = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+        let default_mat = mats.add(StandardMaterial::default());
+        app.insert_resource(SharedResources {
+            cube_mesh: cube,
+            plane_mesh: plane,
+            sphere_mesh: sphere,
+            cylinder_mesh: cylinder,
+            default_material: default_mat,
+        });
+    }
+
+    /// Stress: 50 ciclos de create-many+delete, luego navegación. Las colas
+    /// JS→DOM stale del espacio viejo NO deben sobrevivir el commit; si
+    /// sobreviven, se aplican a los slot ids del SPECS world nuevo.
+    #[test]
+    fn navigation_clears_stale_js_queues_after_heavy_churn() {
+        use crate::*;
+        let mut app = App::new();
+        app.add_plugins(bevy::MinimalPlugins);
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<Mesh>();
+        app.init_asset::<StandardMaterial>();
+        app.init_asset::<Image>();
+        app.init_asset::<Scene>();
+        install_navigation_resources(&mut app);
+
+        // Espacio inicial: SPECS world con un montón de bullets.
+        {
+            let mut specs_world = virtual_dom::dom::element::build_world();
+            let bullet_ids = populate_specs_with_bullets(&mut specs_world, 50);
+            specs_world.maintain();
+
+            // Simular spam JS→DOM: pos updates, attaches, first-render pendings.
+            {
+                let mut updates = app.world_mut().resource_mut::<TransformUpdates>();
+                for id in &bullet_ids {
+                    updates.positions.push((*id, js_runtime::Vec3 { x: 1.0, y: 0.0, z: 0.0 }));
+                    updates.rotations.push((*id, js_runtime::Vec3 { x: 0.0, y: 0.0, z: 0.0 }));
+                }
+            }
+            {
+                let mut to_dirty = app.world_mut().resource_mut::<TransformOnlyDirtyNodes>();
+                to_dirty.0.extend(bullet_ids.iter().copied());
+            }
+            {
+                let mut attaches = app.world_mut().resource_mut::<PendingJsAttachNodes>();
+                attaches.0.extend(bullet_ids.iter().copied());
+            }
+            {
+                let mut first = app.world_mut().resource_mut::<PendingJsFirstRenderNodes>();
+                for id in &bullet_ids {
+                    first.0.push((*id, 1));
+                }
+            }
+            {
+                let mut attrs = app.world_mut().resource_mut::<AttributeUpdates>();
+                for id in &bullet_ids {
+                    attrs.0.push((*id, "color".into(), "#FFD700".into()));
+                }
+            }
+            // Instalar el SPECS world viejo.
+            app.insert_resource(ElemenetWorld(specs_world));
+        }
+
+        // Sanity: las colas tienen contenido stale.
+        assert!(!app.world().resource::<TransformUpdates>().positions.is_empty());
+        assert!(!app.world().resource::<TransformOnlyDirtyNodes>().0.is_empty());
+        assert!(!app.world().resource::<PendingJsAttachNodes>().0.is_empty());
+        assert!(!app.world().resource::<PendingJsFirstRenderNodes>().0.is_empty());
+        assert!(!app.world().resource::<AttributeUpdates>().0.is_empty());
+
+        // Disparar navegación: poner pending document load con HSML mínimo.
+        app.world_mut().resource_mut::<NavigationEpoch>().0 += 1;
+        let epoch = app.world().resource::<NavigationEpoch>().0;
+        let url = "luna://home".to_string();
+        app.world_mut().resource_mut::<DocumentLoadState>().0 =
+            Some(ActiveDocumentLoad { epoch, url: url.clone() });
+        app.world_mut().resource_mut::<PendingDocumentLoads>().0.push(
+            CompletedDocumentLoad {
+                epoch,
+                url,
+                result: Ok(build_dummy_bundle(
+                    r#"<hsml><space><box id="home_btn" sx="1" sy="1" sz="1" /><text value="Home"/></space></hsml>"#,
+                )),
+            },
+        );
+
+        app.add_systems(Update, commit_pending_document_load_system);
+        app.update();
+
+        // Tras commit: TODAS las colas JS→DOM stale deben quedar drenadas.
+        let upd = app.world().resource::<TransformUpdates>();
+        assert!(upd.positions.is_empty(), "TransformUpdates.positions stale");
+        assert!(upd.rotations.is_empty(), "TransformUpdates.rotations stale");
+        assert!(upd.scales.is_empty(), "TransformUpdates.scales stale");
+        assert!(
+            app.world().resource::<TransformOnlyDirtyNodes>().0.is_empty(),
+            "TransformOnlyDirtyNodes stale"
+        );
+        assert!(
+            app.world().resource::<PendingJsAttachNodes>().0.is_empty(),
+            "PendingJsAttachNodes stale tras navegación: regresión home no carga"
+        );
+        assert!(
+            app.world().resource::<PendingJsFirstRenderNodes>().0.is_empty(),
+            "PendingJsFirstRenderNodes stale"
+        );
+        assert!(
+            app.world().resource::<AttributeUpdates>().0.is_empty(),
+            "AttributeUpdates stale"
+        );
+
+        // Y el HSML nuevo está cargado.
+        let dom_data = app.world().resource::<VirtualDomData>();
+        assert!(
+            !dom_data.nodes.is_empty(),
+            "Tras navegación, dom_data.nodes vacío: home no cargó"
+        );
+        let dirty = app.world().resource::<DirtyNodes>();
+        assert!(
+            !dirty.0.is_empty(),
+            "Tras navegación, dirty_nodes vacío: nodos del nuevo HSML no se procesarán"
+        );
+    }
+
+    /// Round-trip: A → B → A, con churn JS entre cada navegación. Debe quedar
+    /// limpio cada vez. Replica patrón "demo zombies → home → demo zombies".
+    #[test]
+    fn navigation_round_trip_with_churn_keeps_state_clean() {
+        use crate::*;
+        let mut app = App::new();
+        app.add_plugins(bevy::MinimalPlugins);
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<Mesh>();
+        app.init_asset::<StandardMaterial>();
+        app.init_asset::<Image>();
+        app.init_asset::<Scene>();
+        install_navigation_resources(&mut app);
+
+        // Necesitamos ElemenetWorld. Empezar con uno fresco.
+        {
+            let mut specs_world = virtual_dom::dom::element::build_world();
+            specs_world.maintain();
+            app.insert_resource(ElemenetWorld(specs_world));
+        }
+
+        app.add_systems(Update, commit_pending_document_load_system);
+
+        let pages = vec![
+            ("luna://zombies", r#"<hsml><space id="z1"><box id="fire" sx="1" sy="1" sz="1"/></space></hsml>"#),
+            ("luna://home",    r#"<hsml><space id="h1"><box id="btn1" sx="1" sy="1" sz="1"/><text value="A"/></space></hsml>"#),
+            ("luna://zombies", r#"<hsml><space id="z2"><box id="fire" sx="1" sy="1" sz="1"/></space></hsml>"#),
+            ("luna://home",    r#"<hsml><space id="h2"><box id="btn2" sx="1" sy="1" sz="1"/><text value="B"/></space></hsml>"#),
+        ];
+
+        for (i, (url, xml)) in pages.iter().enumerate() {
+            // Simular churn JS antes de navegar.
+            let mut churn_ids: Vec<u32> = Vec::new();
+            {
+                let mut world = app.world_mut().resource_mut::<ElemenetWorld>();
+                churn_ids = populate_specs_with_bullets(&mut world.0, 30);
+                world.0.maintain();
+            }
+            {
+                let mut updates = app.world_mut().resource_mut::<TransformUpdates>();
+                for id in &churn_ids {
+                    updates.positions.push((*id, js_runtime::Vec3 { x: 5.0, y: 1.0, z: -2.0 }));
+                }
+            }
+            {
+                let mut attaches = app.world_mut().resource_mut::<PendingJsAttachNodes>();
+                attaches.0.extend(churn_ids.iter().copied());
+            }
+            {
+                let mut first = app.world_mut().resource_mut::<PendingJsFirstRenderNodes>();
+                for id in &churn_ids {
+                    first.0.push((*id, 1));
+                }
+            }
+
+            // Navegar.
+            app.world_mut().resource_mut::<NavigationEpoch>().0 += 1;
+            let epoch = app.world().resource::<NavigationEpoch>().0;
+            app.world_mut().resource_mut::<DocumentLoadState>().0 =
+                Some(ActiveDocumentLoad { epoch, url: url.to_string() });
+            app.world_mut().resource_mut::<PendingDocumentLoads>().0.push(
+                CompletedDocumentLoad {
+                    epoch,
+                    url: url.to_string(),
+                    result: Ok(build_dummy_bundle(xml)),
+                },
+            );
+            app.update();
+
+            // Cada navegación debe limpiar y cargar el nuevo HSML.
+            let upd = app.world().resource::<TransformUpdates>();
+            assert!(
+                upd.positions.is_empty() && upd.rotations.is_empty() && upd.scales.is_empty(),
+                "page {}: TransformUpdates stale post-nav", i
+            );
+            assert!(
+                app.world().resource::<PendingJsAttachNodes>().0.is_empty(),
+                "page {}: PendingJsAttachNodes stale post-nav", i
+            );
+            assert!(
+                app.world().resource::<PendingJsFirstRenderNodes>().0.is_empty(),
+                "page {}: PendingJsFirstRenderNodes stale", i
+            );
+            assert!(
+                !app.world().resource::<VirtualDomData>().nodes.is_empty(),
+                "page {} ({}): dom_data vacío — HSML no cargó", i, url
+            );
+            assert!(
+                !app.world().resource::<DirtyNodes>().0.is_empty(),
+                "page {} ({}): dirty vacío — render no procesará", i, url
+            );
+        }
+    }
+
+    /// Pinchar la causa específica: un node_id stale en `PendingJsAttachNodes`
+    /// del espacio viejo NO debe acabar inyectado en `dom_data.nodes` del
+    /// espacio nuevo si ese slot id coincide con una entidad real del nuevo
+    /// SPECS world. Es el camino exacto del crash "luna://home no carga".
+    #[test]
+    fn navigation_does_not_leak_stale_attaches_into_new_dom_data() {
+        use crate::*;
+        let mut app = App::new();
+        app.add_plugins(bevy::MinimalPlugins);
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<Mesh>();
+        app.init_asset::<StandardMaterial>();
+        app.init_asset::<Image>();
+        app.init_asset::<Scene>();
+        install_navigation_resources(&mut app);
+
+        {
+            let mut specs_world = virtual_dom::dom::element::build_world();
+            specs_world.maintain();
+            app.insert_resource(ElemenetWorld(specs_world));
+        }
+
+        // Inyectar un set "stale" de ids como si quedaran de un espacio anterior.
+        {
+            let mut attaches = app.world_mut().resource_mut::<PendingJsAttachNodes>();
+            attaches.0.extend([0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        }
+        {
+            let mut first = app.world_mut().resource_mut::<PendingJsFirstRenderNodes>();
+            for id in 0u32..11 {
+                first.0.push((id, 1));
+            }
+        }
+
+        // Navegar a HSML nuevo (el commit reinicia ElemenetWorld desde build_world).
+        app.world_mut().resource_mut::<NavigationEpoch>().0 += 1;
+        let epoch = app.world().resource::<NavigationEpoch>().0;
+        let url = "luna://home".to_string();
+        app.world_mut().resource_mut::<DocumentLoadState>().0 =
+            Some(ActiveDocumentLoad { epoch, url: url.clone() });
+        app.world_mut().resource_mut::<PendingDocumentLoads>().0.push(
+            CompletedDocumentLoad {
+                epoch,
+                url,
+                result: Ok(build_dummy_bundle(
+                    r#"<hsml><space><box id="btn" sx="1" sy="1" sz="1"/><text value="OK"/></space></hsml>"#,
+                )),
+            },
+        );
+
+        app.add_systems(Update, commit_pending_document_load_system);
+        app.update();
+
+        // El nuevo dom_data está poblado solo por los nodos del nuevo HSML.
+        let dom_data = app.world().resource::<VirtualDomData>();
+        let world = &app.world().resource::<ElemenetWorld>().0;
+        let entities = world.entities();
+        for &id in dom_data.nodes.keys() {
+            let ent = entities.entity(id);
+            assert!(
+                entities.is_alive(ent),
+                "dom_data tiene id {} que no existe en el SPECS world nuevo (leak de attaches stale)",
+                id
+            );
+        }
+        assert!(
+            app.world().resource::<PendingJsAttachNodes>().0.is_empty(),
+            "PendingJsAttachNodes con stale ids tras commit — corromperán el próximo frame"
+        );
     }
 }

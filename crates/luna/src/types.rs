@@ -478,4 +478,12 @@ pub struct DocumentCommitParams<'w> {
     pub text_material_cache: ResMut<'w, TextMaterialCache>,
     pub primitive_material_cache: ResMut<'w, PrimitiveMaterialCache>,
     pub js_snapshot_state: ResMut<'w, JsSnapshotState>,
+    // Colas de ops del JS pendientes del documento anterior. Si no se limpian,
+    // las pos/rot/attr/attaches stale se aplicarían sobre el SPECS world nuevo,
+    // donde los slot ids pueden coincidir con entidades del nuevo HSML →
+    // corrupción ("luna://home no carga ningún elemento" tras uso intenso).
+    pub transform_updates: ResMut<'w, TransformUpdates>,
+    pub transform_only_dirty: ResMut<'w, TransformOnlyDirtyNodes>,
+    pub pending_js_attaches: ResMut<'w, PendingJsAttachNodes>,
+    pub pending_js_first_render: ResMut<'w, PendingJsFirstRenderNodes>,
 }
