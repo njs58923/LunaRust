@@ -281,10 +281,10 @@ fn setup(
         },
         ..default()
     });
-    commands.spawn(PointLightBundle {
-        transform: Transform::from_xyz(3.0, 8.0, 3.0),
-        ..default()
-    });
+    // commands.spawn(PointLightBundle {
+    //     transform: Transform::from_xyz(3.0, 8.0, 3.0),
+    //     ..default()
+    // });
 
     let cube_mesh = meshes.add(utils::shapes::create_cube());
     let plane_mesh = meshes.add(utils::shapes::create_plane());

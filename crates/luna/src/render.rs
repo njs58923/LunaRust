@@ -206,6 +206,7 @@ pub fn get_or_create_primitive_material(
 
     let material = materials.add(StandardMaterial {
         base_color: color,
+        unlit: true,
         cull_mode: if double_sided {
             None
         } else {
