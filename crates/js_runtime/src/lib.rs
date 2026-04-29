@@ -1,24 +1,58 @@
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
+    rc::Rc,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
+use anyhow::Result as AnyResult;
 use deno_core::{op2, Extension, FastString, JsRuntime, OpState, RuntimeOptions};
 
 // Public modules
 pub mod cache;
 pub mod csp;
 
-pub use cache::{ScriptCache, CachedScript, FetchCache, CachedResponse, CacheStats};
-pub use csp::{ContentSecurityPolicy, CorsValidator, CorsValidation};
+pub use cache::{CacheStats, CachedResponse, CachedScript, FetchCache, ScriptCache};
+pub use csp::{ContentSecurityPolicy, CorsValidation, CorsValidator};
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+type Shared<T> = Rc<RefCell<T>>;
+
+#[inline]
+fn shared<T>(value: T) -> Shared<T> {
+    Rc::new(RefCell::new(value))
+}
+
+#[inline]
+fn take_vec<T>(cell: &Shared<Vec<T>>) -> Vec<T> {
+    std::mem::take(&mut *cell.borrow_mut())
+}
+
+#[inline]
+fn take_map<K, V>(cell: &Shared<HashMap<K, V>>) -> HashMap<K, V> {
+    std::mem::take(&mut *cell.borrow_mut())
+}
+
+#[inline]
+fn replace_map<K, V>(cell: &Shared<HashMap<K, V>>, incoming: HashMap<K, V>)
+where
+    K: Eq + std::hash::Hash,
+{
+    let mut dst = cell.borrow_mut();
+    dst.clear();
+    dst.extend(incoming);
+}
 
 // ---------------------------------------------------------------------------
 // State structs for OpState
 // ---------------------------------------------------------------------------
 
+// Timers sí son cross-thread: setTimeout usa thread::spawn.
 struct Timers {
     ready: Arc<Mutex<Vec<i32>>>,
     cancelled: Arc<Mutex<HashSet<i32>>>,
@@ -33,14 +67,14 @@ impl Default for Timers {
 }
 
 struct RafState {
-    pending: Arc<Mutex<Vec<i32>>>,
-    ready: Arc<Mutex<Vec<(i32, f64)>>>,
+    pending: Shared<Vec<i32>>,
+    ready: Shared<Vec<(i32, f64)>>,
 }
 impl Default for RafState {
     fn default() -> Self {
         Self {
-            pending: Arc::new(Mutex::new(Vec::new())),
-            ready: Arc::new(Mutex::new(Vec::new())),
+            pending: shared(Vec::new()),
+            ready: shared(Vec::new()),
         }
     }
 }
@@ -50,104 +84,101 @@ struct PerfState {
 }
 impl Default for PerfState {
     fn default() -> Self {
-        Self { start: Instant::now() }
+        Self {
+            start: Instant::now(),
+        }
     }
 }
 
 /// Captured console output: Vec<(level, message)>
 pub struct ConsoleState {
-    pub logs: Arc<Mutex<Vec<(String, String)>>>,
+    pub logs: Shared<Vec<(String, String)>>,
 }
 impl Default for ConsoleState {
     fn default() -> Self {
         Self {
-            logs: Arc::new(Mutex::new(Vec::new())),
+            logs: shared(Vec::new()),
         }
     }
 }
 
 /// DOM attribute mutations from JS: Vec<(node_id, key, value)>
 pub struct AttrUpdates {
-    pub updates: Arc<Mutex<Vec<(i32, String, String)>>>,
+    pub updates: Shared<Vec<(i32, String, String)>>,
 }
 impl Default for AttrUpdates {
     fn default() -> Self {
         Self {
-            updates: Arc::new(Mutex::new(Vec::new())),
+            updates: shared(Vec::new()),
         }
     }
 }
 
 /// Read-only snapshot of attributes for JS to query
 pub struct AttrSnapshot {
-    pub data: Arc<Mutex<HashMap<i32, HashMap<String, String>>>>,
+    pub data: Shared<HashMap<i32, HashMap<String, String>>>,
 }
 impl Default for AttrSnapshot {
     fn default() -> Self {
         Self {
-            data: Arc::new(Mutex::new(HashMap::new())),
+            data: shared(HashMap::new()),
         }
     }
 }
 
-// --- NEW: DOM mutation queues ---
-
 /// Queue of createElement(tag) commands: Vec<(request_id, tag_name)>
-/// Returns node_id via ElementCreationResults
 pub struct ElementCreationQueue {
-    pub queue: Arc<Mutex<Vec<(i32, String)>>>,
-    next_request_id: Arc<Mutex<i32>>,
+    pub queue: Shared<Vec<(i32, String)>>,
+    next_request_id: Shared<i32>,
 }
 impl Default for ElementCreationQueue {
     fn default() -> Self {
         Self {
-            queue: Arc::new(Mutex::new(Vec::new())),
-            next_request_id: Arc::new(Mutex::new(1)),
+            queue: shared(Vec::new()),
+            next_request_id: shared(1),
         }
     }
 }
 
 /// Results of createElement: HashMap<request_id, node_id>
 pub struct ElementCreationResults {
-    pub results: Arc<Mutex<HashMap<i32, i32>>>,
+    pub results: Shared<HashMap<i32, i32>>,
 }
 impl Default for ElementCreationResults {
     fn default() -> Self {
         Self {
-            results: Arc::new(Mutex::new(HashMap::new())),
+            results: shared(HashMap::new()),
         }
     }
 }
 
-/// Queue of appendChild/removeChild commands: Vec<(parent_id, child_id)>
+/// Queue of appendChild/removeChild commands
 pub struct HierarchyUpdateQueue {
-    pub append: Arc<Mutex<Vec<(i32, i32)>>>,
-    pub remove_child: Arc<Mutex<Vec<(i32, i32)>>>,
+    pub append: Shared<Vec<(i32, i32)>>,
+    pub remove_child: Shared<Vec<(i32, i32)>>,
 }
 impl Default for HierarchyUpdateQueue {
     fn default() -> Self {
         Self {
-            append: Arc::new(Mutex::new(Vec::new())),
-            remove_child: Arc::new(Mutex::new(Vec::new())),
+            append: shared(Vec::new()),
+            remove_child: shared(Vec::new()),
         }
     }
 }
 
-/// Queue of remove(node_id) commands: Vec<node_id>
+/// Queue of remove(node_id) commands
 pub struct RemoveElementQueue {
-    pub queue: Arc<Mutex<Vec<i32>>>,
+    pub queue: Shared<Vec<i32>>,
 }
 impl Default for RemoveElementQueue {
     fn default() -> Self {
         Self {
-            queue: Arc::new(Mutex::new(Vec::new())),
+            queue: shared(Vec::new()),
         }
     }
 }
 
-// --- NEW: Transform snapshots (read-only for JS) ---
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Vec3 {
     pub x: f32,
     pub y: f32,
@@ -155,172 +186,160 @@ pub struct Vec3 {
 }
 
 pub struct TransformSnapshot {
-    pub positions: Arc<Mutex<HashMap<i32, Vec3>>>,
-    pub rotations: Arc<Mutex<HashMap<i32, Vec3>>>,
-    pub scales: Arc<Mutex<HashMap<i32, Vec3>>>,
-    pub global_positions: Arc<Mutex<HashMap<i32, Vec3>>>,
+    pub positions: Shared<HashMap<i32, Vec3>>,
+    pub rotations: Shared<HashMap<i32, Vec3>>,
+    pub scales: Shared<HashMap<i32, Vec3>>,
+    pub global_positions: Shared<HashMap<i32, Vec3>>,
 }
 impl Default for TransformSnapshot {
     fn default() -> Self {
         Self {
-            positions: Arc::new(Mutex::new(HashMap::new())),
-            rotations: Arc::new(Mutex::new(HashMap::new())),
-            scales: Arc::new(Mutex::new(HashMap::new())),
-            global_positions: Arc::new(Mutex::new(HashMap::new())),
+            positions: shared(HashMap::new()),
+            rotations: shared(HashMap::new()),
+            scales: shared(HashMap::new()),
+            global_positions: shared(HashMap::new()),
         }
     }
 }
 
-/// Transform mutation queue: Vec<(node_id, Vec3)>
+/// Transform mutation queue
 pub struct TransformUpdateQueue {
-    pub positions: Arc<Mutex<Vec<(i32, Vec3)>>>,
-    pub rotations: Arc<Mutex<Vec<(i32, Vec3)>>>,
-    pub scales: Arc<Mutex<Vec<(i32, Vec3)>>>,
-    pub global_positions: Arc<Mutex<Vec<(i32, Vec3)>>>,
+    pub positions: Shared<Vec<(i32, Vec3)>>,
+    pub rotations: Shared<Vec<(i32, Vec3)>>,
+    pub scales: Shared<Vec<(i32, Vec3)>>,
+    pub global_positions: Shared<Vec<(i32, Vec3)>>,
 }
 impl Default for TransformUpdateQueue {
     fn default() -> Self {
         Self {
-            positions: Arc::new(Mutex::new(Vec::new())),
-            rotations: Arc::new(Mutex::new(Vec::new())),
-            scales: Arc::new(Mutex::new(Vec::new())),
-            global_positions: Arc::new(Mutex::new(Vec::new())),
+            positions: shared(Vec::new()),
+            rotations: shared(Vec::new()),
+            scales: shared(Vec::new()),
+            global_positions: shared(Vec::new()),
         }
     }
 }
 
-// --- NEW: Hierarchy snapshot ---
-
 pub struct HierarchySnapshot {
-    pub parents: Arc<Mutex<HashMap<i32, i32>>>,    // node_id -> parent_id (or -1)
-    pub children: Arc<Mutex<HashMap<i32, Vec<i32>>>>, // node_id -> [child_ids]
+    pub parents: Shared<HashMap<i32, i32>>,
+    pub children: Shared<HashMap<i32, Vec<i32>>>,
 }
 impl Default for HierarchySnapshot {
     fn default() -> Self {
         Self {
-            parents: Arc::new(Mutex::new(HashMap::new())),
-            children: Arc::new(Mutex::new(HashMap::new())),
+            parents: shared(HashMap::new()),
+            children: shared(HashMap::new()),
         }
     }
 }
 
-// --- NEW: Tag snapshot ---
-
 pub struct TagSnapshot {
-    pub tags: Arc<Mutex<HashMap<i32, String>>>,
+    pub tags: Shared<HashMap<i32, String>>,
 }
 impl Default for TagSnapshot {
     fn default() -> Self {
         Self {
-            tags: Arc::new(Mutex::new(HashMap::new())),
+            tags: shared(HashMap::new()),
         }
     }
 }
 
-// --- NEW: Fetch queue ---
-
 pub struct FetchQueue {
-    pub requests: Arc<Mutex<Vec<(i32, String)>>>, // (request_id, url)
-    next_request_id: Arc<Mutex<i32>>,
+    pub requests: Shared<Vec<(i32, String)>>,
+    next_request_id: Shared<i32>,
 }
 impl Default for FetchQueue {
     fn default() -> Self {
         Self {
-            requests: Arc::new(Mutex::new(Vec::new())),
-            next_request_id: Arc::new(Mutex::new(1)),
+            requests: shared(Vec::new()),
+            next_request_id: shared(1),
         }
     }
 }
 
 pub struct FetchResults {
-    pub results: Arc<Mutex<HashMap<i32, Result<String, String>>>>, // request_id -> result
+    pub results: Shared<HashMap<i32, std::result::Result<String, String>>>,
 }
 impl Default for FetchResults {
     fn default() -> Self {
         Self {
-            results: Arc::new(Mutex::new(HashMap::new())),
+            results: shared(HashMap::new()),
         }
     }
 }
 
-// --- NEW: Navigate queue ---
-
 pub struct NavigateQueue {
-    pub queue: Arc<Mutex<Vec<String>>>,
+    pub queue: Shared<Vec<String>>,
 }
 impl Default for NavigateQueue {
     fn default() -> Self {
         Self {
-            queue: Arc::new(Mutex::new(Vec::new())),
+            queue: shared(Vec::new()),
         }
     }
 }
 
-// --- WebSocket queues ---
-
 /// Queue of ws connect requests from JS: Vec<(conn_id, url)>
 pub struct WsConnectQueue {
-    pub requests: Arc<Mutex<Vec<(i32, String)>>>,
-    next_id: Arc<Mutex<i32>>,
+    pub requests: Shared<Vec<(i32, String)>>,
+    next_id: Shared<i32>,
 }
 impl Default for WsConnectQueue {
     fn default() -> Self {
         Self {
-            requests: Arc::new(Mutex::new(Vec::new())),
-            next_id: Arc::new(Mutex::new(1)),
+            requests: shared(Vec::new()),
+            next_id: shared(1),
         }
     }
 }
 
 /// Inbox of messages received from remote: HashMap<conn_id, Vec<message>>
 pub struct WsInbox {
-    pub messages: Arc<Mutex<HashMap<i32, Vec<String>>>>,
+    pub messages: Shared<HashMap<i32, Vec<String>>>,
 }
 impl Default for WsInbox {
     fn default() -> Self {
         Self {
-            messages: Arc::new(Mutex::new(HashMap::new())),
+            messages: shared(HashMap::new()),
         }
     }
 }
 
 /// Queue of messages JS wants to send: Vec<(conn_id, message)>
 pub struct WsSendQueue {
-    pub queue: Arc<Mutex<Vec<(i32, String)>>>,
+    pub queue: Shared<Vec<(i32, String)>>,
 }
 impl Default for WsSendQueue {
     fn default() -> Self {
         Self {
-            queue: Arc::new(Mutex::new(Vec::new())),
+            queue: shared(Vec::new()),
         }
     }
 }
 
-/// Status per connection: "connecting" | "open" | "closed" | "error:<msg>"
+/// Status per connection
 pub struct WsStatusMap {
-    pub status: Arc<Mutex<HashMap<i32, String>>>,
+    pub status: Shared<HashMap<i32, String>>,
 }
 impl Default for WsStatusMap {
     fn default() -> Self {
         Self {
-            status: Arc::new(Mutex::new(HashMap::new())),
+            status: shared(HashMap::new()),
         }
     }
 }
 
-/// Queue of close requests from JS: Vec<conn_id>
+/// Queue of close requests from JS
 pub struct WsCloseQueue {
-    pub queue: Arc<Mutex<Vec<i32>>>,
+    pub queue: Shared<Vec<i32>>,
 }
 impl Default for WsCloseQueue {
     fn default() -> Self {
         Self {
-            queue: Arc::new(Mutex::new(Vec::new())),
+            queue: shared(Vec::new()),
         }
     }
 }
-
-// --- Touch raw events ---
 
 #[derive(Clone, Debug)]
 pub struct DomEvent {
@@ -340,26 +359,26 @@ pub struct DomEvent {
     pub grip: Option<f32>,
 }
 
-/// DOM events normalizados host -> JS runtime (default-on)
+/// DOM events normalizados host -> JS runtime
 pub struct DomEventQueue {
-    pub events: Arc<Mutex<Vec<DomEvent>>>,
+    pub events: Shared<Vec<DomEvent>>,
 }
 impl Default for DomEventQueue {
     fn default() -> Self {
         Self {
-            events: Arc::new(Mutex::new(Vec::new())),
+            events: shared(Vec::new()),
         }
     }
 }
 
-/// Touch raw events pushed from Rust into JS: Vec<(node_id, x, y, z)>
+/// Touch raw events pushed from Rust into JS
 pub struct TouchEventQueue {
-    pub events: Arc<Mutex<Vec<(i32, f32, f32, f32)>>>,
+    pub events: Shared<Vec<(i32, f32, f32, f32)>>,
 }
 impl Default for TouchEventQueue {
     fn default() -> Self {
         Self {
-            events: Arc::new(Mutex::new(Vec::new())),
+            events: shared(Vec::new()),
         }
     }
 }
@@ -373,19 +392,28 @@ impl Default for TouchEventQueue {
 #[op2(fast)]
 fn op_console_log(state: &mut OpState, #[string] msg: &str) {
     let console = state.borrow::<ConsoleState>();
-    console.logs.lock().unwrap().push(("log".to_string(), msg.to_string()));
+    console
+        .logs
+        .borrow_mut()
+        .push(("log".to_string(), msg.to_string()));
 }
 
 #[op2(fast)]
 fn op_console_warn(state: &mut OpState, #[string] msg: &str) {
     let console = state.borrow::<ConsoleState>();
-    console.logs.lock().unwrap().push(("warn".to_string(), msg.to_string()));
+    console
+        .logs
+        .borrow_mut()
+        .push(("warn".to_string(), msg.to_string()));
 }
 
 #[op2(fast)]
 fn op_console_error(state: &mut OpState, #[string] msg: &str) {
     let console = state.borrow::<ConsoleState>();
-    console.logs.lock().unwrap().push(("error".to_string(), msg.to_string()));
+    console
+        .logs
+        .borrow_mut()
+        .push(("error".to_string(), msg.to_string()));
 }
 
 // --- Performance ops ---
@@ -403,13 +431,14 @@ fn op_set_timeout(state: &mut OpState, #[smi] id: i32, #[smi] ms: i32) {
     let timers = state.borrow::<Timers>();
     let ready = timers.ready.clone();
     let cancelled = timers.cancelled.clone();
-    // setTimeout(fn, 0) fires on the next pump — no thread needed.
+
     if ms <= 0 {
         if !cancelled.lock().unwrap().contains(&id) {
             ready.lock().unwrap().push(id);
         }
         return;
     }
+
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(ms as u64));
         if cancelled.lock().unwrap().contains(&id) {
@@ -439,32 +468,40 @@ fn op_timers_poll(state: &mut OpState) -> serde_json::Value {
 #[op2(fast)]
 fn op_raf_register(state: &mut OpState, #[smi] id: i32) {
     let raf = state.borrow::<RafState>();
-    raf.pending.lock().unwrap().push(id);
+    raf.pending.borrow_mut().push(id);
 }
 
 #[op2]
 #[serde]
 fn op_raf_poll(state: &mut OpState) -> serde_json::Value {
     let raf = state.borrow::<RafState>();
-    let mut ready = raf.ready.lock().unwrap();
-    let list: Vec<(i32, f64)> = ready.drain(..).collect();
+    let list = take_vec(&raf.ready);
     serde_json::to_value(list).unwrap()
 }
 
 // --- Attribute ops ---
 
 #[op2(fast)]
-fn op_hsml_set_attr(state: &mut OpState, #[smi] node_id: i32, #[string] key: &str, #[string] value: &str) {
+fn op_hsml_set_attr(
+    state: &mut OpState,
+    #[smi] node_id: i32,
+    #[string] key: &str,
+    #[string] value: &str,
+) {
     let updates = state.borrow::<AttrUpdates>();
-    updates.updates.lock().unwrap().push((node_id, key.to_string(), value.to_string()));
+    updates
+        .updates
+        .borrow_mut()
+        .push((node_id, key.to_string(), value.to_string()));
 }
 
 #[op2]
 #[string]
 fn op_hsml_get_attr(state: &mut OpState, #[smi] node_id: i32, #[string] key: &str) -> String {
     let snap = state.borrow::<AttrSnapshot>();
-    let data = snap.data.lock().unwrap();
-    data.get(&node_id)
+    snap.data
+        .borrow()
+        .get(&node_id)
         .and_then(|m| m.get(key))
         .cloned()
         .unwrap_or_default()
@@ -475,17 +512,24 @@ fn op_hsml_get_attr(state: &mut OpState, #[smi] node_id: i32, #[string] key: &st
 #[op2(fast)]
 fn op_hsml_create_element(state: &mut OpState, #[string] tag: &str) -> i32 {
     let queue = state.borrow::<ElementCreationQueue>();
-    let mut next_id = queue.next_request_id.lock().unwrap();
+    let mut next_id = queue.next_request_id.borrow_mut();
     let request_id = *next_id;
     *next_id += 1;
-    queue.queue.lock().unwrap().push((request_id, tag.to_string()));
+    queue
+        .queue
+        .borrow_mut()
+        .push((request_id, tag.to_string()));
     request_id
 }
 
 #[op2(fast)]
 fn op_hsml_poll_created_element(state: &mut OpState, #[smi] request_id: i32) -> i32 {
     let results = state.borrow::<ElementCreationResults>();
-    results.results.lock().unwrap().remove(&request_id).unwrap_or(-1)
+    results
+        .results
+        .borrow_mut()
+        .remove(&request_id)
+        .unwrap_or(-1)
 }
 
 // --- Hierarchy ops ---
@@ -493,26 +537,30 @@ fn op_hsml_poll_created_element(state: &mut OpState, #[smi] request_id: i32) -> 
 #[op2(fast)]
 fn op_hsml_append_child(state: &mut OpState, #[smi] parent_id: i32, #[smi] child_id: i32) {
     let queue = state.borrow::<HierarchyUpdateQueue>();
-    queue.append.lock().unwrap().push((parent_id, child_id));
+    queue.append.borrow_mut().push((parent_id, child_id));
 }
 
 #[op2(fast)]
 fn op_hsml_remove(state: &mut OpState, #[smi] node_id: i32) {
     let queue = state.borrow::<RemoveElementQueue>();
-    queue.queue.lock().unwrap().push(node_id);
+    queue.queue.borrow_mut().push(node_id);
 }
 
 #[op2]
 #[serde]
 fn op_hsml_get_children(state: &mut OpState, #[smi] node_id: i32) -> Vec<i32> {
     let snap = state.borrow::<HierarchySnapshot>();
-    snap.children.lock().unwrap().get(&node_id).cloned().unwrap_or_default()
+    snap.children
+        .borrow()
+        .get(&node_id)
+        .cloned()
+        .unwrap_or_default()
 }
 
 #[op2(fast)]
 fn op_hsml_get_parent(state: &mut OpState, #[smi] node_id: i32) -> i32 {
     let snap = state.borrow::<HierarchySnapshot>();
-    snap.parents.lock().unwrap().get(&node_id).cloned().unwrap_or(-1)
+    snap.parents.borrow().get(&node_id).copied().unwrap_or(-1)
 }
 
 // --- Tag ops ---
@@ -521,7 +569,7 @@ fn op_hsml_get_parent(state: &mut OpState, #[smi] node_id: i32) -> i32 {
 #[string]
 fn op_hsml_get_tag(state: &mut OpState, #[smi] node_id: i32) -> String {
     let snap = state.borrow::<TagSnapshot>();
-    snap.tags.lock().unwrap().get(&node_id).cloned().unwrap_or_default()
+    snap.tags.borrow().get(&node_id).cloned().unwrap_or_default()
 }
 
 // --- Transform ops (getters) ---
@@ -530,7 +578,12 @@ fn op_hsml_get_tag(state: &mut OpState, #[smi] node_id: i32) -> String {
 #[serde]
 fn op_hsml_get_position(state: &mut OpState, #[smi] node_id: i32) -> Vec<f32> {
     let snap = state.borrow::<TransformSnapshot>();
-    let pos = snap.positions.lock().unwrap().get(&node_id).cloned().unwrap_or(Vec3 { x: 0.0, y: 0.0, z: 0.0 });
+    let pos = snap
+        .positions
+        .borrow()
+        .get(&node_id)
+        .copied()
+        .unwrap_or_default();
     vec![pos.x, pos.y, pos.z]
 }
 
@@ -538,7 +591,12 @@ fn op_hsml_get_position(state: &mut OpState, #[smi] node_id: i32) -> Vec<f32> {
 #[serde]
 fn op_hsml_get_rotation(state: &mut OpState, #[smi] node_id: i32) -> Vec<f32> {
     let snap = state.borrow::<TransformSnapshot>();
-    let rot = snap.rotations.lock().unwrap().get(&node_id).cloned().unwrap_or(Vec3 { x: 0.0, y: 0.0, z: 0.0 });
+    let rot = snap
+        .rotations
+        .borrow()
+        .get(&node_id)
+        .copied()
+        .unwrap_or_default();
     vec![rot.x, rot.y, rot.z]
 }
 
@@ -546,7 +604,16 @@ fn op_hsml_get_rotation(state: &mut OpState, #[smi] node_id: i32) -> Vec<f32> {
 #[serde]
 fn op_hsml_get_scale(state: &mut OpState, #[smi] node_id: i32) -> Vec<f32> {
     let snap = state.borrow::<TransformSnapshot>();
-    let scale = snap.scales.lock().unwrap().get(&node_id).cloned().unwrap_or(Vec3 { x: 1.0, y: 1.0, z: 1.0 });
+    let scale = snap
+        .scales
+        .borrow()
+        .get(&node_id)
+        .copied()
+        .unwrap_or(Vec3 {
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+        });
     vec![scale.x, scale.y, scale.z]
 }
 
@@ -554,7 +621,12 @@ fn op_hsml_get_scale(state: &mut OpState, #[smi] node_id: i32) -> Vec<f32> {
 #[serde]
 fn op_hsml_get_global_position(state: &mut OpState, #[smi] node_id: i32) -> Vec<f32> {
     let snap = state.borrow::<TransformSnapshot>();
-    let pos = snap.global_positions.lock().unwrap().get(&node_id).cloned().unwrap_or(Vec3 { x: 0.0, y: 0.0, z: 0.0 });
+    let pos = snap
+        .global_positions
+        .borrow()
+        .get(&node_id)
+        .copied()
+        .unwrap_or_default();
     vec![pos.x, pos.y, pos.z]
 }
 
@@ -563,30 +635,47 @@ fn op_hsml_get_global_position(state: &mut OpState, #[smi] node_id: i32) -> Vec<
 #[op2(fast)]
 fn op_hsml_set_position(state: &mut OpState, #[smi] node_id: i32, x: f32, y: f32, z: f32) {
     let queue = state.borrow::<TransformUpdateQueue>();
-    queue.positions.lock().unwrap().push((node_id, Vec3 { x, y, z }));
+    queue
+        .positions
+        .borrow_mut()
+        .push((node_id, Vec3 { x, y, z }));
 }
 
 #[op2(fast)]
 fn op_hsml_set_rotation(state: &mut OpState, #[smi] node_id: i32, x: f32, y: f32, z: f32) {
     let queue = state.borrow::<TransformUpdateQueue>();
-    queue.rotations.lock().unwrap().push((node_id, Vec3 { x, y, z }));
+    queue
+        .rotations
+        .borrow_mut()
+        .push((node_id, Vec3 { x, y, z }));
 }
 
 #[op2(fast)]
 fn op_hsml_set_scale(state: &mut OpState, #[smi] node_id: i32, x: f32, y: f32, z: f32) {
     let queue = state.borrow::<TransformUpdateQueue>();
-    queue.scales.lock().unwrap().push((node_id, Vec3 { x, y, z }));
+    queue
+        .scales
+        .borrow_mut()
+        .push((node_id, Vec3 { x, y, z }));
 }
 
 #[op2(fast)]
-fn op_hsml_set_global_position(state: &mut OpState, #[smi] node_id: i32, x: f32, y: f32, z: f32) {
+fn op_hsml_set_global_position(
+    state: &mut OpState,
+    #[smi] node_id: i32,
+    x: f32,
+    y: f32,
+    z: f32,
+) {
     let queue = state.borrow::<TransformUpdateQueue>();
-    queue.global_positions.lock().unwrap().push((node_id, Vec3 { x, y, z }));
+    queue
+        .global_positions
+        .borrow_mut()
+        .push((node_id, Vec3 { x, y, z }));
 }
 
 // --- Transform batch op ---
-// Flat numeric layout:
-// [node_id, px, py, pz, rx, ry, rz, node_id, px, py, pz, rx, ry, rz, ...]
+// Conservado por compatibilidad, aunque ya no lo uses.
 #[op2]
 fn op_hsml_set_transform_batch(state: &mut OpState, #[serde] updates: Vec<f64>) {
     if updates.len() < 7 {
@@ -596,15 +685,29 @@ fn op_hsml_set_transform_batch(state: &mut OpState, #[serde] updates: Vec<f64>) 
     let queue = state.borrow::<TransformUpdateQueue>();
     let count = updates.len() / 7;
 
-    let mut positions = queue.positions.lock().unwrap();
-    let mut rotations = queue.rotations.lock().unwrap();
+    let mut positions = queue.positions.borrow_mut();
+    let mut rotations = queue.rotations.borrow_mut();
     positions.reserve(count);
     rotations.reserve(count);
 
     for chunk in updates.chunks_exact(7) {
         let node_id = chunk[0] as i32;
-        positions.push((node_id, Vec3 { x: chunk[1] as f32, y: chunk[2] as f32, z: chunk[3] as f32 }));
-        rotations.push((node_id, Vec3 { x: chunk[4] as f32, y: chunk[5] as f32, z: chunk[6] as f32 }));
+        positions.push((
+            node_id,
+            Vec3 {
+                x: chunk[1] as f32,
+                y: chunk[2] as f32,
+                z: chunk[3] as f32,
+            },
+        ));
+        rotations.push((
+            node_id,
+            Vec3 {
+                x: chunk[4] as f32,
+                y: chunk[5] as f32,
+                z: chunk[6] as f32,
+            },
+        ));
     }
 }
 
@@ -613,10 +716,13 @@ fn op_hsml_set_transform_batch(state: &mut OpState, #[serde] updates: Vec<f64>) 
 #[op2(fast)]
 fn op_fetch_request(state: &mut OpState, #[string] url: &str) -> i32 {
     let queue = state.borrow::<FetchQueue>();
-    let mut next_id = queue.next_request_id.lock().unwrap();
+    let mut next_id = queue.next_request_id.borrow_mut();
     let request_id = *next_id;
     *next_id += 1;
-    queue.requests.lock().unwrap().push((request_id, url.to_string()));
+    queue
+        .requests
+        .borrow_mut()
+        .push((request_id, url.to_string()));
     request_id
 }
 
@@ -624,7 +730,7 @@ fn op_fetch_request(state: &mut OpState, #[string] url: &str) -> i32 {
 #[serde]
 fn op_fetch_poll(state: &mut OpState, #[smi] request_id: i32) -> serde_json::Value {
     let results = state.borrow::<FetchResults>();
-    let mut map = results.results.lock().unwrap();
+    let mut map = results.results.borrow_mut();
     if let Some(result) = map.remove(&request_id) {
         match result {
             Ok(text) => serde_json::json!({"status": "ok", "text": text}),
@@ -640,7 +746,7 @@ fn op_fetch_poll(state: &mut OpState, #[smi] request_id: i32) -> serde_json::Val
 #[op2(fast)]
 fn op_navigate(state: &mut OpState, #[string] url: &str) {
     let queue = state.borrow::<NavigateQueue>();
-    queue.queue.lock().unwrap().push(url.to_string());
+    queue.queue.borrow_mut().push(url.to_string());
 }
 
 // --- WebSocket ops ---
@@ -648,27 +754,38 @@ fn op_navigate(state: &mut OpState, #[string] url: &str) {
 #[op2(fast)]
 fn op_ws_connect(state: &mut OpState, #[string] url: &str) -> i32 {
     let queue = state.borrow::<WsConnectQueue>();
-    let mut next_id = queue.next_id.lock().unwrap();
+    let mut next_id = queue.next_id.borrow_mut();
     let conn_id = *next_id;
     *next_id += 1;
-    // Set initial status
+
     let status_map = state.borrow::<WsStatusMap>();
-    status_map.status.lock().unwrap().insert(conn_id, "connecting".to_string());
-    queue.requests.lock().unwrap().push((conn_id, url.to_string()));
+    status_map
+        .status
+        .borrow_mut()
+        .insert(conn_id, "connecting".to_string());
+
+    queue
+        .requests
+        .borrow_mut()
+        .push((conn_id, url.to_string()));
+
     conn_id
 }
 
 #[op2(fast)]
 fn op_ws_send(state: &mut OpState, #[smi] conn_id: i32, #[string] message: &str) {
     let queue = state.borrow::<WsSendQueue>();
-    queue.queue.lock().unwrap().push((conn_id, message.to_string()));
+    queue
+        .queue
+        .borrow_mut()
+        .push((conn_id, message.to_string()));
 }
 
 #[op2]
 #[serde]
 fn op_ws_recv(state: &mut OpState, #[smi] conn_id: i32) -> serde_json::Value {
     let inbox = state.borrow::<WsInbox>();
-    let mut messages = inbox.messages.lock().unwrap();
+    let mut messages = inbox.messages.borrow_mut();
     if let Some(msgs) = messages.get_mut(&conn_id) {
         if !msgs.is_empty() {
             let msg = msgs.remove(0);
@@ -682,7 +799,9 @@ fn op_ws_recv(state: &mut OpState, #[smi] conn_id: i32) -> serde_json::Value {
 #[string]
 fn op_ws_get_status(state: &mut OpState, #[smi] conn_id: i32) -> String {
     let status_map = state.borrow::<WsStatusMap>();
-    status_map.status.lock().unwrap()
+    status_map
+        .status
+        .borrow()
         .get(&conn_id)
         .cloned()
         .unwrap_or_else(|| "closed".to_string())
@@ -691,23 +810,28 @@ fn op_ws_get_status(state: &mut OpState, #[smi] conn_id: i32) -> String {
 #[op2(fast)]
 fn op_ws_close(state: &mut OpState, #[smi] conn_id: i32) {
     let queue = state.borrow::<WsCloseQueue>();
-    queue.queue.lock().unwrap().push(conn_id);
+    queue.queue.borrow_mut().push(conn_id);
+
     let status_map = state.borrow::<WsStatusMap>();
-    status_map.status.lock().unwrap().insert(conn_id, "closed".to_string());
+    status_map
+        .status
+        .borrow_mut()
+        .insert(conn_id, "closed".to_string());
 }
 
-// --- Touch raw ops ---
+// --- DOM events + touch raw ops ---
 
 #[op2]
 #[serde]
 fn op_poll_dom_events(state: &mut OpState) -> serde_json::Value {
     let queue = state.borrow::<DomEventQueue>();
-    let mut events = queue.events.lock().unwrap();
+    let events = take_vec(&queue.events);
     if events.is_empty() {
         return serde_json::json!([]);
     }
+
     let result: Vec<serde_json::Value> = events
-        .drain(..)
+        .into_iter()
         .map(|evt| {
             serde_json::json!({
                 "type": evt.event_type,
@@ -727,6 +851,7 @@ fn op_poll_dom_events(state: &mut OpState) -> serde_json::Value {
             })
         })
         .collect();
+
     serde_json::Value::Array(result)
 }
 
@@ -734,16 +859,18 @@ fn op_poll_dom_events(state: &mut OpState) -> serde_json::Value {
 #[serde]
 fn op_poll_touch_events(state: &mut OpState) -> serde_json::Value {
     let queue = state.borrow::<TouchEventQueue>();
-    let mut events = queue.events.lock().unwrap();
+    let events = take_vec(&queue.events);
     if events.is_empty() {
         return serde_json::json!([]);
     }
+
     let result: Vec<serde_json::Value> = events
-        .drain(..)
+        .into_iter()
         .map(|(node_id, x, y, z)| {
             serde_json::json!({"nodeId": node_id, "x": x, "y": y, "z": z})
         })
         .collect();
+
     serde_json::Value::Array(result)
 }
 
@@ -751,13 +878,9 @@ fn op_poll_touch_events(state: &mut OpState) -> serde_json::Value {
 // V8 Platform Initialization
 // ---------------------------------------------------------------------------
 
-/// Initialize V8 platform. MUST be called once before creating any Engine.
-/// This is NOT thread-safe and should be called from main thread.
 pub fn init_v8_platform() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
-        // V8 platform initialization happens automatically in deno_core
-        // when first JsRuntime is created, but we can force it here
         eprintln!("[js_runtime] V8 platform initializing...");
     });
 }
@@ -770,62 +893,62 @@ pub struct Engine {
     rt: JsRuntime,
 
     // RAF
-    raf_pending: Arc<Mutex<Vec<i32>>>,
-    raf_ready: Arc<Mutex<Vec<(i32, f64)>>>,
+    raf_pending: Shared<Vec<i32>>,
+    raf_ready: Shared<Vec<(i32, f64)>>,
 
     // Console
-    console_logs: Arc<Mutex<Vec<(String, String)>>>,
+    console_logs: Shared<Vec<(String, String)>>,
 
     // Attributes
-    attr_updates: Arc<Mutex<Vec<(i32, String, String)>>>,
-    attr_snapshot: Arc<Mutex<HashMap<i32, HashMap<String, String>>>>,
+    attr_updates: Shared<Vec<(i32, String, String)>>,
+    attr_snapshot: Shared<HashMap<i32, HashMap<String, String>>>,
 
     // Element creation
-    element_creation_queue: Arc<Mutex<Vec<(i32, String)>>>,
-    element_creation_results: Arc<Mutex<HashMap<i32, i32>>>,
+    element_creation_queue: Shared<Vec<(i32, String)>>,
+    element_creation_results: Shared<HashMap<i32, i32>>,
 
     // Hierarchy
-    hierarchy_update_queue_append: Arc<Mutex<Vec<(i32, i32)>>>,
-    remove_element_queue: Arc<Mutex<Vec<i32>>>,
-    hierarchy_snapshot_parents: Arc<Mutex<HashMap<i32, i32>>>,
-    hierarchy_snapshot_children: Arc<Mutex<HashMap<i32, Vec<i32>>>>,
+    hierarchy_update_queue_append: Shared<Vec<(i32, i32)>>,
+    remove_element_queue: Shared<Vec<i32>>,
+    hierarchy_snapshot_parents: Shared<HashMap<i32, i32>>,
+    hierarchy_snapshot_children: Shared<HashMap<i32, Vec<i32>>>,
 
     // Tags
-    tag_snapshot: Arc<Mutex<HashMap<i32, String>>>,
+    tag_snapshot: Shared<HashMap<i32, String>>,
 
     // Transforms
-    transform_update_positions: Arc<Mutex<Vec<(i32, Vec3)>>>,
-    transform_update_rotations: Arc<Mutex<Vec<(i32, Vec3)>>>,
-    transform_update_scales: Arc<Mutex<Vec<(i32, Vec3)>>>,
-    transform_update_global_positions: Arc<Mutex<Vec<(i32, Vec3)>>>,
-    transform_snapshot_positions: Arc<Mutex<HashMap<i32, Vec3>>>,
-    transform_snapshot_rotations: Arc<Mutex<HashMap<i32, Vec3>>>,
-    transform_snapshot_scales: Arc<Mutex<HashMap<i32, Vec3>>>,
-    transform_snapshot_global_positions: Arc<Mutex<HashMap<i32, Vec3>>>,
+    transform_update_positions: Shared<Vec<(i32, Vec3)>>,
+    transform_update_rotations: Shared<Vec<(i32, Vec3)>>,
+    transform_update_scales: Shared<Vec<(i32, Vec3)>>,
+    transform_update_global_positions: Shared<Vec<(i32, Vec3)>>,
+    transform_snapshot_positions: Shared<HashMap<i32, Vec3>>,
+    transform_snapshot_rotations: Shared<HashMap<i32, Vec3>>,
+    transform_snapshot_scales: Shared<HashMap<i32, Vec3>>,
+    transform_snapshot_global_positions: Shared<HashMap<i32, Vec3>>,
 
     // Fetch
-    fetch_queue: Arc<Mutex<Vec<(i32, String)>>>,
-    fetch_results: Arc<Mutex<HashMap<i32, Result<String, String>>>>,
+    fetch_queue: Shared<Vec<(i32, String)>>,
+    fetch_results: Shared<HashMap<i32, std::result::Result<String, String>>>,
 
     // Navigate
-    navigate_queue: Arc<Mutex<Vec<String>>>,
+    navigate_queue: Shared<Vec<String>>,
 
     // WebSocket
-    ws_connect_queue: Arc<Mutex<Vec<(i32, String)>>>,
-    ws_inbox: Arc<Mutex<HashMap<i32, Vec<String>>>>,
-    ws_send_queue: Arc<Mutex<Vec<(i32, String)>>>,
-    ws_status_map: Arc<Mutex<HashMap<i32, String>>>,
-    ws_close_queue: Arc<Mutex<Vec<i32>>>,
+    ws_connect_queue: Shared<Vec<(i32, String)>>,
+    ws_inbox: Shared<HashMap<i32, Vec<String>>>,
+    ws_send_queue: Shared<Vec<(i32, String)>>,
+    ws_status_map: Shared<HashMap<i32, String>>,
+    ws_close_queue: Shared<Vec<i32>>,
 
     // DOM events + Touch raw
-    dom_events: Arc<Mutex<Vec<DomEvent>>>,
-    touch_events: Arc<Mutex<Vec<(i32, f32, f32, f32)>>>,
+    dom_events: Shared<Vec<DomEvent>>,
+    touch_events: Shared<Vec<(i32, f32, f32, f32)>>,
 
     // HTTP Cache & Security
-    script_cache: Arc<Mutex<ScriptCache>>,
-    fetch_cache: Arc<Mutex<FetchCache>>,
-    csp: Arc<Mutex<ContentSecurityPolicy>>,
-    document_origin: Arc<Mutex<String>>,
+    script_cache: Shared<ScriptCache>,
+    fetch_cache: Shared<FetchCache>,
+    csp: Shared<ContentSecurityPolicy>,
+    document_origin: Shared<String>,
 }
 
 impl Engine {
@@ -854,7 +977,6 @@ impl Engine {
         let dom_event_queue = DomEventQueue::default();
         let touch_event_queue = TouchEventQueue::default();
 
-        // Clone Arcs for OpState
         let timers_for_state = Timers {
             ready: timers.ready.clone(),
             cancelled: timers.cancelled.clone(),
@@ -940,55 +1062,41 @@ impl Engine {
 
         let ext = Extension::builder("luna_runtime")
             .ops(vec![
-                // Console
                 op_console_log::decl(),
                 op_console_warn::decl(),
                 op_console_error::decl(),
-                // Performance
                 op_now::decl(),
-                // Timers
                 op_set_timeout::decl(),
                 op_clear_timeout::decl(),
                 op_timers_poll::decl(),
-                // RAF
                 op_raf_register::decl(),
                 op_raf_poll::decl(),
-                // Attributes
                 op_hsml_set_attr::decl(),
                 op_hsml_get_attr::decl(),
-                // Element creation
                 op_hsml_create_element::decl(),
                 op_hsml_poll_created_element::decl(),
-                // Hierarchy
                 op_hsml_append_child::decl(),
                 op_hsml_remove::decl(),
                 op_hsml_get_children::decl(),
                 op_hsml_get_parent::decl(),
-                // Tags
                 op_hsml_get_tag::decl(),
-                // Transforms (getters)
                 op_hsml_get_position::decl(),
                 op_hsml_get_rotation::decl(),
                 op_hsml_get_scale::decl(),
                 op_hsml_get_global_position::decl(),
-                // Transforms (setters)
                 op_hsml_set_position::decl(),
                 op_hsml_set_rotation::decl(),
                 op_hsml_set_scale::decl(),
                 op_hsml_set_transform_batch::decl(),
                 op_hsml_set_global_position::decl(),
-                // Fetch
                 op_fetch_request::decl(),
                 op_fetch_poll::decl(),
-                // Navigate
                 op_navigate::decl(),
-                // WebSocket
                 op_ws_connect::decl(),
                 op_ws_send::decl(),
                 op_ws_recv::decl(),
                 op_ws_get_status::decl(),
                 op_ws_close::decl(),
-                // DOM events + Touch raw
                 op_poll_dom_events::decl(),
                 op_poll_touch_events::decl(),
             ])
@@ -1086,12 +1194,10 @@ impl Engine {
         });
 
         eprintln!("[js_runtime] Injecting bootstrap...");
-        // Inject bootstrap
         rt.execute_script("<bootstrap>", FastString::Static(BOOTSTRAP_JS))
             .expect("bootstrap failed");
 
         eprintln!("[js_runtime] Injecting runtime.js...");
-        // Inject runtime.js
         rt.execute_script("<runtime>", FastString::Static(RUNTIME_JS))
             .expect("runtime.js failed");
 
@@ -1129,93 +1235,94 @@ impl Engine {
             ws_close_queue: ws_close_queue.queue,
             dom_events: dom_event_queue.events,
             touch_events: touch_event_queue.events,
-            // HTTP Cache & Security (initialized with defaults)
-            script_cache: Arc::new(Mutex::new(ScriptCache::new(100))), // Max 100 scripts
-            fetch_cache: Arc::new(Mutex::new(FetchCache::new(200))),   // Max 200 responses
-            csp: Arc::new(Mutex::new(ContentSecurityPolicy::permissive())), // Permissive by default
-            document_origin: Arc::new(Mutex::new(String::new())), // Will be set when document loads
+            script_cache: shared(ScriptCache::new(100)),
+            fetch_cache: shared(FetchCache::new(200)),
+            csp: shared(ContentSecurityPolicy::permissive()),
+            document_origin: shared(String::new()),
         }
     }
 
-    pub fn eval(&mut self, code: &str) -> Result<()> {
+    pub fn eval(&mut self, code: &str) -> AnyResult<()> {
         let script_fast = FastString::Owned(code.to_string().into_boxed_str());
         self.rt.execute_script("<eval>", script_fast)?;
         Ok(())
     }
 
     pub fn fire_raf(&mut self, timestamp_ms: f64) {
-        let mut pend = self.raf_pending.lock().unwrap();
-        let ids: Vec<i32> = pend.drain(..).collect();
-        drop(pend);
+        let ids = take_vec(&self.raf_pending);
 
         if !ids.is_empty() {
-            let mut ready = self.raf_ready.lock().unwrap();
+            let mut ready = self.raf_ready.borrow_mut();
+            ready.reserve(ids.len());
             for id in ids {
                 ready.push((id, timestamp_ms));
             }
-            drop(ready);
         }
 
-        // Always pump timers/fetch callbacks, even when no RAF callbacks are pending.
-        if let Err(e) = self.rt.execute_script("<pump>", FastString::Static("__luna_pump()")) {
+        if let Err(e) = self
+            .rt
+            .execute_script("<pump>", FastString::Static("__luna_pump()"))
+        {
             eprintln!("[js_runtime] Error calling pump: {:?}", e);
         }
     }
 
-    // --- Drain methods (called by Bevy systems) ---
+    // --- Drain methods ---
 
     pub fn drain_logs(&self) -> Vec<(String, String)> {
-        self.console_logs.lock().unwrap().drain(..).collect()
+        take_vec(&self.console_logs)
     }
 
     pub fn drain_attr_updates(&self) -> Vec<(i32, String, String)> {
-        self.attr_updates.lock().unwrap().drain(..).collect()
+        take_vec(&self.attr_updates)
     }
 
     pub fn drain_element_creation_queue(&self) -> Vec<(i32, String)> {
-        self.element_creation_queue.lock().unwrap().drain(..).collect()
+        take_vec(&self.element_creation_queue)
     }
 
     pub fn drain_hierarchy_append_queue(&self) -> Vec<(i32, i32)> {
-        self.hierarchy_update_queue_append.lock().unwrap().drain(..).collect()
+        take_vec(&self.hierarchy_update_queue_append)
     }
 
     pub fn drain_remove_element_queue(&self) -> Vec<i32> {
-        self.remove_element_queue.lock().unwrap().drain(..).collect()
+        take_vec(&self.remove_element_queue)
     }
 
     pub fn drain_transform_position_updates(&self) -> Vec<(i32, Vec3)> {
-        self.transform_update_positions.lock().unwrap().drain(..).collect()
+        take_vec(&self.transform_update_positions)
     }
 
     pub fn drain_transform_rotation_updates(&self) -> Vec<(i32, Vec3)> {
-        self.transform_update_rotations.lock().unwrap().drain(..).collect()
+        take_vec(&self.transform_update_rotations)
     }
 
     pub fn drain_transform_scale_updates(&self) -> Vec<(i32, Vec3)> {
-        self.transform_update_scales.lock().unwrap().drain(..).collect()
+        take_vec(&self.transform_update_scales)
     }
 
     pub fn drain_transform_global_position_updates(&self) -> Vec<(i32, Vec3)> {
-        self.transform_update_global_positions.lock().unwrap().drain(..).collect()
+        take_vec(&self.transform_update_global_positions)
     }
 
     pub fn drain_fetch_queue(&self) -> Vec<(i32, String)> {
-        self.fetch_queue.lock().unwrap().drain(..).collect()
+        take_vec(&self.fetch_queue)
     }
 
     pub fn drain_navigate_queue(&self) -> Vec<String> {
-        self.navigate_queue.lock().unwrap().drain(..).collect()
+        take_vec(&self.navigate_queue)
     }
 
-    // --- Update snapshot methods (called by Bevy systems) ---
+    // --- Update snapshot methods ---
 
     pub fn update_attr_snapshot(&self, snapshot: HashMap<i32, HashMap<String, String>>) {
-        *self.attr_snapshot.lock().unwrap() = snapshot;
+        replace_map(&self.attr_snapshot, snapshot);
     }
 
     pub fn push_element_creation_result(&self, request_id: i32, node_id: i32) {
-        self.element_creation_results.lock().unwrap().insert(request_id, node_id);
+        self.element_creation_results
+            .borrow_mut()
+            .insert(request_id, node_id);
     }
 
     pub fn update_hierarchy_snapshot(
@@ -1223,12 +1330,12 @@ impl Engine {
         parents: HashMap<i32, i32>,
         children: HashMap<i32, Vec<i32>>,
     ) {
-        *self.hierarchy_snapshot_parents.lock().unwrap() = parents;
-        *self.hierarchy_snapshot_children.lock().unwrap() = children;
+        replace_map(&self.hierarchy_snapshot_parents, parents);
+        replace_map(&self.hierarchy_snapshot_children, children);
     }
 
     pub fn update_tag_snapshot(&self, tags: HashMap<i32, String>) {
-        *self.tag_snapshot.lock().unwrap() = tags;
+        replace_map(&self.tag_snapshot, tags);
     }
 
     pub fn update_transform_snapshot(
@@ -1238,55 +1345,53 @@ impl Engine {
         scales: HashMap<i32, Vec3>,
         global_positions: HashMap<i32, Vec3>,
     ) {
-        *self.transform_snapshot_positions.lock().unwrap() = positions;
-        *self.transform_snapshot_rotations.lock().unwrap() = rotations;
-        *self.transform_snapshot_scales.lock().unwrap() = scales;
-        *self.transform_snapshot_global_positions.lock().unwrap() = global_positions;
+        replace_map(&self.transform_snapshot_positions, positions);
+        replace_map(&self.transform_snapshot_rotations, rotations);
+        replace_map(&self.transform_snapshot_scales, scales);
+        replace_map(&self.transform_snapshot_global_positions, global_positions);
     }
 
-    pub fn push_fetch_result(&self, request_id: i32, result: Result<String, String>) {
-        self.fetch_results.lock().unwrap().insert(request_id, result);
+    pub fn push_fetch_result(
+        &self,
+        request_id: i32,
+        result: std::result::Result<String, String>,
+    ) {
+        self.fetch_results.borrow_mut().insert(request_id, result);
     }
 
     // --- WebSocket methods ---
 
-    /// Drain pending WS connection requests: Vec<(conn_id, url)>
     pub fn drain_ws_connect_queue(&self) -> Vec<(i32, String)> {
-        self.ws_connect_queue.lock().unwrap().drain(..).collect()
+        take_vec(&self.ws_connect_queue)
     }
 
-    /// Drain pending WS send requests: Vec<(conn_id, message)>
     pub fn drain_ws_send_queue(&self) -> Vec<(i32, String)> {
-        self.ws_send_queue.lock().unwrap().drain(..).collect()
+        take_vec(&self.ws_send_queue)
     }
 
-    /// Drain pending WS close requests: Vec<conn_id>
     pub fn drain_ws_close_queue(&self) -> Vec<i32> {
-        self.ws_close_queue.lock().unwrap().drain(..).collect()
+        take_vec(&self.ws_close_queue)
     }
 
-    /// Push a received message into JS inbox
     pub fn push_ws_message(&self, conn_id: i32, message: String) {
-        self.ws_inbox.lock().unwrap()
+        self.ws_inbox
+            .borrow_mut()
             .entry(conn_id)
             .or_default()
             .push(message);
     }
 
-    /// Update connection status ("connecting" | "open" | "closed" | "error:<msg>")
     pub fn set_ws_status(&self, conn_id: i32, status: String) {
-        self.ws_status_map.lock().unwrap().insert(conn_id, status);
+        self.ws_status_map.borrow_mut().insert(conn_id, status);
     }
 
-    /// Remove all state for a closed connection
     pub fn remove_ws_connection(&self, conn_id: i32) {
-        self.ws_inbox.lock().unwrap().remove(&conn_id);
-        self.ws_status_map.lock().unwrap().remove(&conn_id);
+        self.ws_inbox.borrow_mut().remove(&conn_id);
+        self.ws_status_map.borrow_mut().remove(&conn_id);
     }
 
     // --- DOM events ---
 
-    /// Push a normalized DOM event into this engine's JS-visible queue
     pub fn push_dom_event(
         &self,
         event_type: impl Into<String>,
@@ -1295,7 +1400,7 @@ impl Engine {
         y: Option<f32>,
         z: Option<f32>,
     ) {
-        self.dom_events.lock().unwrap().push(DomEvent {
+        self.dom_events.borrow_mut().push(DomEvent {
             event_type: event_type.into(),
             node_id,
             x,
@@ -1330,104 +1435,94 @@ impl Engine {
         trigger: f32,
         grip: f32,
     ) {
-        self.dom_events.lock().unwrap().push(DomEvent {
+        self.dom_events.borrow_mut().push(DomEvent {
             event_type: "posemove".to_string(),
             node_id,
             x: None,
             y: None,
             z: None,
             hand: Some(hand.into()),
-            px: Some(px), py: Some(py), pz: Some(pz),
-            dx: Some(dx), dy: Some(dy), dz: Some(dz),
-            trigger: Some(trigger), grip: Some(grip),
+            px: Some(px),
+            py: Some(py),
+            pz: Some(pz),
+            dx: Some(dx),
+            dy: Some(dy),
+            dz: Some(dz),
+            trigger: Some(trigger),
+            grip: Some(grip),
         });
     }
 
-    // --- Controller + Touch ---
-
-    /// Push a touch event into this engine's JS-visible queue
     pub fn push_touch_event(&self, node_id: i32, x: f32, y: f32, z: f32) {
-        self.touch_events.lock().unwrap().push((node_id, x, y, z));
+        self.touch_events.borrow_mut().push((node_id, x, y, z));
     }
 
     // -------------------------------------------------------------------------
     // HTTP Cache & Security Methods
     // -------------------------------------------------------------------------
 
-    /// Set the document origin (for CSP and CORS validation)
     pub fn set_document_origin(&self, origin: String) {
-        *self.document_origin.lock().unwrap() = origin;
+        *self.document_origin.borrow_mut() = origin;
     }
 
-    /// Get the document origin
     pub fn get_document_origin(&self) -> String {
-        self.document_origin.lock().unwrap().clone()
+        self.document_origin.borrow().clone()
     }
 
-    /// Update the CSP
     pub fn set_csp(&self, csp: ContentSecurityPolicy) {
-        *self.csp.lock().unwrap() = csp;
+        *self.csp.borrow_mut() = csp;
     }
 
-    /// Get a reference to the CSP for validation
     pub fn get_csp(&self) -> ContentSecurityPolicy {
-        self.csp.lock().unwrap().clone()
+        self.csp.borrow().clone()
     }
 
-    /// Check if a script URL is allowed by CSP
     pub fn csp_allows_script(&self, url: &str) -> bool {
-        let csp = self.csp.lock().unwrap();
-        let origin = self.document_origin.lock().unwrap();
+        let csp = self.csp.borrow();
+        let origin = self.document_origin.borrow();
         csp.allows_script(url, &origin)
     }
 
-    /// Check if a fetch URL is allowed by CSP
     pub fn csp_allows_fetch(&self, url: &str) -> bool {
-        let csp = self.csp.lock().unwrap();
-        let origin = self.document_origin.lock().unwrap();
+        let csp = self.csp.borrow();
+        let origin = self.document_origin.borrow();
         csp.allows_connect(url, &origin)
     }
 
-    /// Get a cached script if valid
     pub fn get_cached_script(&self, url: &str) -> Option<CachedScript> {
-        self.script_cache.lock().unwrap().get(url)
+        self.script_cache.borrow_mut().get(url)
     }
 
-    /// Get script for revalidation (even if expired)
     pub fn get_script_for_revalidation(&self, url: &str) -> Option<CachedScript> {
-        self.script_cache.lock().unwrap().get_for_revalidation(url)
+        self.script_cache.borrow_mut().get_for_revalidation(url)
     }
 
-    /// Cache a script
     pub fn cache_script(&self, url: String, script: CachedScript) {
-        self.script_cache.lock().unwrap().insert(url, script);
+        self.script_cache.borrow_mut().insert(url, script);
     }
 
-    /// Get cache statistics
     pub fn get_cache_stats(&self) -> CacheStats {
-        self.script_cache.lock().unwrap().stats()
+        self.script_cache.borrow().stats()
     }
 
-    /// Clear all caches
     pub fn clear_caches(&self) {
-        self.script_cache.lock().unwrap().clear();
-        self.fetch_cache.lock().unwrap().clear();
+        self.script_cache.borrow_mut().clear();
+        self.fetch_cache.borrow_mut().clear();
     }
 
-    /// Get a cached fetch response if valid
     pub fn get_cached_response(&self, url: &str) -> Option<CachedResponse> {
-        self.fetch_cache.lock().unwrap().get(url)
+        self.fetch_cache.borrow_mut().get(url)
     }
 
-    /// Cache a fetch response
     pub fn cache_response(&self, url: String, response: CachedResponse) {
-        self.fetch_cache.lock().unwrap().insert(url, response);
+        self.fetch_cache.borrow_mut().insert(url, response);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Bootstrap JS (minimal console/timers/RAF setup)
+// Bootstrap JS
 // ---------------------------------------------------------------------------
+
 const BOOTSTRAP_JS: &str = r#"
 (function (global) {
   global.window = global;
@@ -1466,8 +1561,6 @@ const BOOTSTRAP_JS: &str = r#"
     rafCallbacks.delete(id|0);
   };
 
-  // Pump function - polls timers and RAF callbacks
-  // Called externally by fire_raf, not automatically
   function pump() {
     const tids = core.ops.op_timers_poll();
     for (const id of tids) {
@@ -1496,23 +1589,22 @@ const BOOTSTRAP_JS: &str = r#"
     }
   }
 
-  // Expose pump globally so it can be called from Rust
   global.__luna_pump = pump;
 
 })(globalThis);
 "#;
 
 // ---------------------------------------------------------------------------
-// Runtime JS (HSML DOM API)
+// Runtime JS
 // ---------------------------------------------------------------------------
+
 const RUNTIME_JS: &str = include_str!("../runtime.js");
 
 // ---------------------------------------------------------------------------
-// Standalone run_js (kept for backward compat)
+// Standalone run_js
 // ---------------------------------------------------------------------------
-use deno_core::{
-    error::AnyError, serde_v8,
-};
+
+use deno_core::{error::AnyError, serde_v8};
 use serde_json::Value;
 
 pub fn run_js(script: &str) -> Result<Value, AnyError> {
