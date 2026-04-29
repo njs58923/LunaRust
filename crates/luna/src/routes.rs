@@ -633,7 +633,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     // ── bindings ──────────────────────────────────────────────────────────────
 
     const bindings = {
-      demo_spawn_box:      () => spawn('box', 25),
+      demo_spawn_box:      () => spawn('box', 100),
       demo_spawn_sphere:   () => spawn('sphere', 25),
       demo_spawn_cylinder: () => spawn('cylinder', 25),
       demo_spawn_plane:    () => spawn('plane', 25),
