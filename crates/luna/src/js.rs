@@ -1484,11 +1484,20 @@ pub fn js_tick_system(world: &mut World) {
 
         let dirty_ids_vec: Vec<u32> = already_attached_dirty_ids.into_iter().collect();
 
+        // IMPORTANT: solo retiramos de detached_globals para nodos YA presentes
+        // en dom_data (`already_attached_dirty_ids`). Para `newly_attached_ids`,
+        // dom_data aún no los conoce (commit_pending_js_attaches los inserta
+        // en el mismo frame, pero js_update_snapshots_system del frame siguiente
+        // podría correr antes que ese commit y `sync_space_handle_table` podaría
+        // el mapping local→global, dejando futuras escrituras de pos/rot del JS
+        // como "Blocked invalid local position write" (zombies bullets stuck).
+        // El retiro de detached_globals para newly_attached lo hace
+        // `commit_pending_js_attaches_system` cuando dom_data ya los contiene.
         if let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() {
             let Some(table) = space_handle_tables.by_space.get_mut(&space_id) else {
                 return;
             };
-            for node_id in newly_attached_ids.iter().chain(dirty_ids_vec.iter()) {
+            for node_id in dirty_ids_vec.iter() {
                 table.detached_globals.remove(node_id);
             }
         }

@@ -219,6 +219,13 @@ fn main() {
     );
     app.add_systems(Update, touch::dispatch_toque_events_to_js);
     app.add_systems(Update, touch::dispatch_posemove_events_to_js.run_if(|e: Res<touch::HostPoseMoveEvents>| !e.0.is_empty()));
+    // JS pipeline: forzado a correr DESPUÉS del DOM pipeline. Si
+    // `js_update_snapshots_system` corre antes que
+    // `commit_pending_js_attaches_system`, los nodos recién creados desde JS
+    // (bullets) aún no están en `dom_data.nodes`, no entran a `allowed_globals`
+    // del snapshot, y `sync_space_handle_table` poda su mapping local→global.
+    // Resultado: futuras escrituras de pos/rot del JS para ese nodo fallan
+    // como "Blocked invalid local position write" — bullets stuck in air.
     app.add_systems(
         Update,
         (
@@ -232,7 +239,8 @@ fn main() {
             process_space_unmount_queue.run_if(|q: Res<SpaceUnmountQueue>| !q.0.is_empty()),
             process_space_mount_queue.run_if(|q: Res<SpaceMountQueue>| !q.0.is_empty()),
         )
-            .chain(),
+            .chain()
+            .after(dom::dom_sync_system),
     );
 
     app.run();

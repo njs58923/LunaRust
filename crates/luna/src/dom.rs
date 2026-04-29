@@ -43,6 +43,7 @@ pub fn commit_pending_js_attaches_system(
     world: Res<ElemenetWorld>,
     mut dom_data: ResMut<VirtualDomData>,
     mut pending_first_render: ResMut<PendingJsFirstRenderNodes>,
+    mut space_handle_tables: ResMut<crate::SpaceHandleTables>,
 ) {
     if pending_js_attaches.0.is_empty() {
         return;
@@ -51,13 +52,22 @@ pub fn commit_pending_js_attaches_system(
     let pending: Vec<u32> = pending_js_attaches.0.drain(..).collect();
     let entities = world.0.entities();
 
-    for node_id in pending {
-        let ent = entities.entity(node_id);
+    for node_id in &pending {
+        let ent = entities.entity(*node_id);
         if !entities.is_alive(ent) {
             continue;
         }
-        dom_data.nodes.insert(node_id, ent);
-        pending_first_render.0.push((node_id, 1));
+        dom_data.nodes.insert(*node_id, ent);
+        pending_first_render.0.push((*node_id, 1));
+    }
+
+    // Ahora que dom_data tiene los nodos, podemos sacarlos de
+    // `detached_globals` sin riesgo de que `sync_space_handle_table` pode
+    // su mapping local→global. Ver nota en apply_js_tick (hierarchy append).
+    for table in space_handle_tables.by_space.values_mut() {
+        for node_id in &pending {
+            table.detached_globals.remove(node_id);
+        }
     }
 }
 
@@ -3141,5 +3151,91 @@ mod tests {
                 z
             );
         }
+    }
+
+    // ─── Regression: "Blocked invalid local position write" (zombies) ───────
+    //
+    // Bug shape: tras `appendChild` desde JS, `apply_js_tick` retiraba el
+    // node_id de `detached_globals` aunque dom_data aún no lo tuviera. En el
+    // siguiente frame, si `js_update_snapshots_system` corría antes que
+    // `commit_pending_js_attaches_system`, `sync_space_handle_table` veía el
+    // node_id ni en `allowed` ni en `detached_globals` → poda mapping local→
+    // global. Próximas escrituras de pos/rot del JS para ese local_id fallan
+    // con "Blocked invalid local position write" (logged por miles).
+    //
+    // Fix: `apply_js_tick` solo retira de `detached_globals` para nodos ya
+    // attached antes (`already_attached_dirty_ids`). El retiro para
+    // `newly_attached_ids` lo hace `commit_pending_js_attaches_system`.
+
+    /// Pinchar invariante: tras `commit_pending_js_attaches_system`, los nodos
+    /// recién attached deben quedar fuera de `detached_globals` para todos los
+    /// space tables que los conozcan.
+    #[test]
+    fn commit_pending_js_attaches_clears_detached_globals() {
+        use crate::{PendingJsAttachNodes, PendingJsFirstRenderNodes, SpaceHandleTables};
+        use crate::types::SpaceHandleTable;
+        use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
+
+        let mut specs_world = virtual_dom::dom::element::build_world();
+        let nid = {
+            let entities = specs_world.entities();
+            let mut tags = specs_world.write_storage::<Tag>();
+            let mut trs = specs_world.write_storage::<Transform2>();
+            let mut hier = specs_world.write_storage::<Hierarchy>();
+            let mut attrs = specs_world.write_storage::<Attrs>();
+            let e = entities.create();
+            tags.insert(e, Tag("sphere".into())).ok();
+            trs.insert(
+                e,
+                Transform2 {
+                    position: virtual_dom::dom::element::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                    rotation: virtual_dom::dom::element::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                    scale: virtual_dom::dom::element::Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+                },
+            )
+            .ok();
+            hier.insert(e, Hierarchy { parent: None, children: vec![] }).ok();
+            attrs.insert(e, Attrs(HashMap::new())).ok();
+            e.id()
+        };
+        specs_world.maintain();
+
+        let mut tables = SpaceHandleTables::default();
+        let space_id = 100u32;
+        let mut t = SpaceHandleTable {
+            runtime_id: 1,
+            next_local_id: 5,
+            ..Default::default()
+        };
+        // Bullet asignado pero todavía NO attached → en detached_globals.
+        t.global_to_local.insert(nid, 5);
+        t.local_to_global.insert(5, nid);
+        t.detached_globals.insert(nid);
+        tables.by_space.insert(space_id, t);
+
+        let mut app = App::new();
+        app.insert_resource(ElemenetWorld(specs_world));
+        app.insert_resource(VirtualDomData::default());
+        app.insert_resource(PendingJsFirstRenderNodes::default());
+        let mut pending = PendingJsAttachNodes::default();
+        pending.0.push(nid);
+        app.insert_resource(pending);
+        app.insert_resource(tables);
+        app.add_systems(Update, commit_pending_js_attaches_system);
+        app.update();
+
+        // dom_data ahora contiene el nodo.
+        let dom_data = app.world().resource::<VirtualDomData>();
+        assert!(dom_data.nodes.contains_key(&nid));
+
+        // detached_globals limpio para ese nodo.
+        let tables = app.world().resource::<SpaceHandleTables>();
+        let table = tables.by_space.get(&space_id).unwrap();
+        assert!(
+            !table.detached_globals.contains(&nid),
+            "commit no retiró nodo de detached_globals: regresión bullets"
+        );
+        // Mapping local→global preservado (lo que evita "Blocked invalid local position write").
+        assert_eq!(table.local_to_global.get(&5), Some(&nid));
     }
 }
