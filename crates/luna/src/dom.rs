@@ -231,7 +231,18 @@ fn node_visible(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> bool {
         "false" | "0" | "no" | "off" | "hidden"
     )
 }
-
+fn node_touchable(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> bool {
+    let Some(attrs) = attrs_storage.get(node) else {
+        return false;
+    };
+    let Some(value) = attrs.0.get("touchable") else {
+        return false;
+    };
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "true" | "1" | "yes" | "on"
+    )
+}
 fn spawn_colored_primitive(
     commands: &mut Commands,
     materials: &mut Assets<StandardMaterial>,
@@ -1629,9 +1640,15 @@ pub fn dom_sync_system(
                     "plane" => crate::touch::HitShape::Plane,
                     _ => crate::touch::HitShape::Sphere,
                 };
-                commands
-                    .entity(bevy_ent)
-                    .insert((crate::touch::Toqueable(node_id), hit_shape));
+                let touchable = node_touchable(&attrs_storage, *node);
+                if touchable {
+                    commands
+                        .entity(bevy_ent)
+                        .insert((crate::touch::Toqueable(node_id), hit_shape));
+                } else {
+                    commands.entity(bevy_ent).remove::<crate::touch::Toqueable>();
+                    commands.entity(bevy_ent).remove::<crate::touch::HitShape>();
+                }
                 let color = primitive_color(&attrs_storage, *node);
                 let double_sided = tag == "plane";
                 let material = get_or_create_primitive_material(
@@ -1857,6 +1874,7 @@ pub fn dom_sync_system(
                 "box" => {
                     let attrs_opt = attrs_storage.get(*node);
                     let color = primitive_color(&attrs_storage, *node);
+                    let touchable = node_touchable(&attrs_storage, *node);
                     let border_radius: Option<f32> = attrs_opt
                         .and_then(|a| a.0.get("border-radius"))
                         .and_then(|v| v.parse().ok());
@@ -1874,23 +1892,27 @@ pub fn dom_sync_system(
                         color,
                         transform_b,
                         false,
-                        Some(node_id),
-                        Some(crate::touch::HitShape::Box),
+                        if touchable { Some(node_id) } else { None },
+                        if touchable { Some(crate::touch::HitShape::Box) } else { None },
                     )
                 }
-                "sphere" => spawn_colored_primitive(
-                    &mut commands,
-                    &mut text_render.materials,
-                    &mut text_render.primitive_material_cache,
-                    shared_resources.sphere_mesh.clone(),
-                    primitive_color(&attrs_storage, *node),
-                    transform_b,
-                    false,
-                    Some(node_id),
-                    Some(crate::touch::HitShape::Sphere),
-                ),
+                "sphere" => {
+                    let touchable = node_touchable(&attrs_storage, *node);
+                    spawn_colored_primitive(
+                        &mut commands,
+                        &mut text_render.materials,
+                        &mut text_render.primitive_material_cache,
+                        shared_resources.sphere_mesh.clone(),
+                        primitive_color(&attrs_storage, *node),
+                        transform_b,
+                        false,
+                        if touchable { Some(node_id) } else { None },
+                        if touchable { Some(crate::touch::HitShape::Sphere) } else { None },
+                    )
+                },
                 "plane" => {
                     let attrs_opt = attrs_storage.get(*node);
+                    let touchable = node_touchable(&attrs_storage, *node);
                     let border_radius: Option<f32> = attrs_opt
                         .and_then(|a| a.0.get("border-radius"))
                         .and_then(|v| v.parse().ok());
@@ -1907,21 +1929,24 @@ pub fn dom_sync_system(
                         primitive_color(&attrs_storage, *node),
                         transform_b,
                         true,
-                        Some(node_id),
-                        Some(crate::touch::HitShape::Plane),
+                        if touchable { Some(node_id) } else { None },
+                        if touchable { Some(crate::touch::HitShape::Plane) } else { None },
                     )
                 }
-                "cylinder" => spawn_colored_primitive(
-                    &mut commands,
-                    &mut text_render.materials,
-                    &mut text_render.primitive_material_cache,
-                    shared_resources.cylinder_mesh.clone(),
-                    primitive_color(&attrs_storage, *node),
-                    transform_b,
-                    false,
-                    Some(node_id),
-                    Some(crate::touch::HitShape::Sphere),
-                ),
+                "cylinder" => {
+                    let touchable = node_touchable(&attrs_storage, *node);
+                    spawn_colored_primitive(
+                        &mut commands,
+                        &mut text_render.materials,
+                        &mut text_render.primitive_material_cache,
+                        shared_resources.cylinder_mesh.clone(),
+                        primitive_color(&attrs_storage, *node),
+                        transform_b,
+                        false,
+                        if touchable { Some(node_id) } else { None },
+                        if touchable { Some(crate::touch::HitShape::Sphere) } else { None },
+                    )
+                },
                 "text" => {
                     let empty_map = HashMap::new();
                     let attrs_map = attrs_storage.get(*node).map(|a| &a.0).unwrap_or(&empty_map);
