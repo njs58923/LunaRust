@@ -6,7 +6,8 @@ use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
 use crate::{
     ActiveSpaceIndex, AttributeUpdates, CurrentUrl, DeleteRequests, DevtoolParams, DevtoolTab,
     DeferredSpaceMount, DeferredSpaceMounts, EntityMap, GlobalDevtoolVisible, IoService, LogLevel, LogPanel, MountedSpaceEntry,
-    PreferredRenderMode, RenderMode, RootConfig, SpaceParams, UiSystemParams, VirtualDomData,
+    PreferredRenderMode, RenderMode, RootConfig, SpaceMountRequest, SpaceParams,
+    SpaceUnmountRequest, UiSystemParams, VirtualDomData,
 };
 
 pub fn ui_system(
@@ -53,7 +54,10 @@ pub fn ui_system(
 
                 // [+] creates an empty tab
                 if ui.small_button("+").clicked() {
+                    let tab_id = space_params.next_tab_id.0;
+                    space_params.next_tab_id.0 += 1;
                     space_params.mounted_spaces.0.push(MountedSpaceEntry {
+                        tab_id,
                         url: String::new(),
                         title: "New Tab".to_string(),
                     });
@@ -130,9 +134,11 @@ pub fn ui_system(
 
                 if reload_clicked {
                     if let Some(idx) = active_space.0 {
-                        let tab_url = space_params.mounted_spaces.0[idx].url.clone();
+                        let tab = space_params.mounted_spaces.0[idx].clone();
                         if !devtool.keep_logs.0 {
-                            if let Some(space_id) = find_mounted_space_by_url(&world.0, &tab_url) {
+                            if let Some(space_id) =
+                                find_mounted_space_by_tab_id(&world.0, tab.tab_id)
+                            {
                                 log_panel.clear_for_space(space_id);
                             }
                         }
@@ -143,8 +149,8 @@ pub fn ui_system(
                             &mut space_params.deferred_mounts.0,
                             idx,
                         );
-                        if !tab_url.is_empty() {
-                            log_panel.push_info(format!("Reloading tab: {}", tab_url));
+                        if !tab.url.is_empty() {
+                            log_panel.push_info(format!("Reloading tab: {}", tab.url));
                         }
                     }
                 }
@@ -219,8 +225,10 @@ pub fn ui_system(
     for idx in pending_unmounts.into_iter().rev() {
         if idx < space_params.mounted_spaces.0.len() {
             let removed = space_params.mounted_spaces.0.remove(idx);
-            space_params.unmount_queue.0.push(removed.url.clone());
-            log_panel.push_info(format!("Unmounting space: {}", removed.url));
+            enqueue_tab_unmount(&mut space_params.unmount_queue.0, &removed);
+            if !removed.url.trim().is_empty() {
+                log_panel.push_info(format!("Unmounting space: {}", removed.url));
+            }
             // Adjust active index
             match active_space.0 {
                 Some(a) if a == idx => {
@@ -273,7 +281,7 @@ pub fn ui_system(
 
                 let active_tab_space_id: Option<u32> = active_space.0
                     .and_then(|idx| space_params.mounted_spaces.0.get(idx))
-                    .and_then(|entry| find_mounted_space_by_url(&world.0, &entry.url));
+                    .and_then(|entry| find_mounted_space_by_tab_id(&world.0, entry.tab_id));
 
                 match devtool.state.active_tab {
                     DevtoolTab::Status => {
@@ -336,7 +344,9 @@ pub fn ui_system(
                         if let Some(idx) = active_space.0 {
                             if let Some(entry) = space_params.mounted_spaces.0.get(idx) {
                                 ui.label(format!("Tab URL: {}", entry.url));
-                                if let Some(space_id) = find_mounted_space_by_url(&world.0, &entry.url) {
+                                if let Some(space_id) =
+                                    find_mounted_space_by_tab_id(&world.0, entry.tab_id)
+                                {
                                     ui.label(format!("DOM Space ID: {}", space_id));
                                     if let Some(spaces) = find_root_managed_spaces(&world.0).iter().find(|s| s.id() == space_id) {
                                         ui.label(format!("Space Title: {}", get_space_debug_title(&world.0, *spaces)));
@@ -407,13 +417,16 @@ pub fn ui_system(
                         let is_active = active_space.0 == Some(idx);
                         ui.horizontal(|ui| {
                             ui.label(format!(
-                                "{}[{}] {}",
+                                "{}[{}|tab:{}] {}",
                                 if is_active { "▶ " } else { "  " },
                                 idx,
+                                entry.tab_id,
                                 short_title(&entry.url, 40),
                             ));
                         });
-                        if let Some(space_id) = find_mounted_space_by_url(&world.0, &entry.url) {
+                        if let Some(space_id) =
+                            find_mounted_space_by_tab_id(&world.0, entry.tab_id)
+                        {
                             ui.indent(format!("mounted_{}", idx), |ui| {
                                 ui.label(format!("  DOM space_id: {}", space_id));
                             });
@@ -479,8 +492,8 @@ pub fn ui_system(
 
 fn navigate_tab_to_url(
     mounted_spaces: &mut Vec<MountedSpaceEntry>,
-    mount_queue: &mut Vec<String>,
-    unmount_queue: &mut Vec<String>,
+    mount_queue: &mut Vec<SpaceMountRequest>,
+    unmount_queue: &mut Vec<SpaceUnmountRequest>,
     deferred_mounts: &mut Vec<DeferredSpaceMount>,
     idx: usize,
     new_url: String,
@@ -489,18 +502,24 @@ fn navigate_tab_to_url(
         return;
     }
 
-    let old_url = mounted_spaces[idx].url.clone();
+    let old = mounted_spaces[idx].clone();
 
-    if !old_url.is_empty() {
-        if old_url != new_url {
-            unmount_queue.push(old_url.clone());
+    if !old.url.is_empty() {
+        if old.url != new_url {
+            enqueue_tab_unmount(unmount_queue, &old);
             deferred_mounts.push(DeferredSpaceMount {
-                wait_gone_url: old_url.clone(),
-                mount_url: new_url.clone(),
+                wait_gone_tab_id: old.tab_id,
+                mount: SpaceMountRequest {
+                    tab_id: old.tab_id,
+                    url: new_url.clone(),
+                },
             });
         }
     } else {
-        mount_queue.push(new_url.clone());
+        mount_queue.push(SpaceMountRequest {
+            tab_id: old.tab_id,
+            url: new_url.clone(),
+        });
     }
 
     mounted_spaces[idx].url = new_url.clone();
@@ -509,19 +528,32 @@ fn navigate_tab_to_url(
 
 fn reload_tab(
     mounted_spaces: &[MountedSpaceEntry],
-    mount_queue: &mut Vec<String>,
-    unmount_queue: &mut Vec<String>,
+    _mount_queue: &mut Vec<SpaceMountRequest>,
+    unmount_queue: &mut Vec<SpaceUnmountRequest>,
     deferred_mounts: &mut Vec<DeferredSpaceMount>,
     idx: usize,
 ) {
-    let url = mounted_spaces[idx].url.clone();
-    if url.trim().is_empty() {
+    let tab = &mounted_spaces[idx];
+    if tab.url.trim().is_empty() {
         return;
     }
-    unmount_queue.push(url.clone());
+    enqueue_tab_unmount(unmount_queue, tab);
     deferred_mounts.push(DeferredSpaceMount {
-        wait_gone_url: url.clone(),
-        mount_url: url,
+        wait_gone_tab_id: tab.tab_id,
+        mount: SpaceMountRequest {
+            tab_id: tab.tab_id,
+            url: tab.url.clone(),
+        },
+    });
+}
+
+fn enqueue_tab_unmount(unmount_queue: &mut Vec<SpaceUnmountRequest>, entry: &MountedSpaceEntry) {
+    if entry.url.trim().is_empty() {
+        return;
+    }
+    unmount_queue.push(SpaceUnmountRequest {
+        tab_id: entry.tab_id,
+        url: entry.url.clone(),
     });
 }
 
@@ -532,22 +564,6 @@ fn find_root_space_entity(world: &SpecWorld) -> Option<SpecEntity> {
     for (ent, tag, attr) in (&world.entities(), &tags, &attrs).join() {
         if tag.0 == "space" && attr.0.get("id").map(|v| v.as_str()) == Some("luna_root") {
             return Some(ent);
-        }
-    }
-    None
-}
-
-fn find_primary_include_child(world: &SpecWorld, space: SpecEntity) -> Option<SpecEntity> {
-    let hier = world.read_storage::<Hierarchy>();
-    let tags = world.read_storage::<Tag>();
-
-    if let Some(h) = hier.get(space) {
-        for &child in &h.children {
-            if let Some(tag) = tags.get(child) {
-                if tag.0 == "include" {
-                    return Some(child);
-                }
-            }
         }
     }
     None
@@ -577,17 +593,18 @@ fn find_root_managed_spaces(world: &SpecWorld) -> Vec<SpecEntity> {
     result
 }
 
-fn find_mounted_space_by_url(world: &SpecWorld, url: &str) -> Option<u32> {
+fn find_mounted_space_by_tab_id(world: &SpecWorld, tab_id: u64) -> Option<u32> {
+    let attrs = world.read_storage::<Attrs>();
+    let tab_id = tab_id.to_string();
+
     for space_ent in find_root_managed_spaces(world) {
-        if let Some(include_ent) = find_primary_include_child(world, space_ent) {
-            let attrs = world.read_storage::<Attrs>();
-            if let Some(attr) = attrs.get(include_ent) {
-                if attr.0.get("src").map(|v| v.as_str()) == Some(url) {
-                    return Some(space_ent.id());
-                }
+        if let Some(attr) = attrs.get(space_ent) {
+            if attr.0.get("data-luna-tab-id").map(|v| v.as_str()) == Some(tab_id.as_str()) {
+                return Some(space_ent.id());
             }
         }
     }
+
     None
 }
 
@@ -602,25 +619,14 @@ pub fn flush_deferred_space_mounts_system(
 
     let pending = deferred_mounts.0.drain(..).collect::<Vec<_>>();
     for item in pending {
-        let old_gone = item.wait_gone_url.trim().is_empty()
-            || find_mounted_space_by_url(&world.0, &item.wait_gone_url).is_none();
+        let old_gone = find_mounted_space_by_tab_id(&world.0, item.wait_gone_tab_id).is_none();
 
         if old_gone {
-            mount_queue.0.push(item.mount_url);
+            mount_queue.0.push(item.mount);
         } else {
             deferred_mounts.0.push(item);
         }
     }
-}
-
-fn get_space_debug_url(world: &SpecWorld, space: SpecEntity) -> Option<String> {
-    if let Some(include_ent) = find_primary_include_child(world, space) {
-        let attrs = world.read_storage::<Attrs>();
-        if let Some(attr) = attrs.get(include_ent) {
-            return attr.0.get("src").cloned();
-        }
-    }
-    None
 }
 
 fn get_space_debug_title(world: &SpecWorld, space: SpecEntity) -> String {
@@ -631,65 +637,6 @@ fn get_space_debug_title(world: &SpecWorld, space: SpecEntity) -> String {
         }
     }
     format!("space:{}", space.id())
-}
-
-fn build_space_resource_report(
-    world: &SpecWorld,
-    active_tab_url: &str,
-    policies: &crate::permissions::SpacePolicies,
-    active_native: crate::permissions::ActiveNativeServices,
-    history: Option<&crate::permissions::SpacePolicyHistory>,
-) -> String {
-    let mut report = String::new();
-    report.push_str("=== Space Resources Report ===\n\n");
-    report.push_str(&format!("Current Tab URL: {}\n", active_tab_url));
-
-    if let Some(space_id) = find_mounted_space_by_url(world, active_tab_url) {
-        report.push_str(&format!("Matched DOM Space ID: {}\n\n", space_id));
-
-        if let Some(policy) = policies.by_space.get(&space_id) {
-            report.push_str("=== Policy ===\n");
-            report.push_str(&format!("Requested Resources: {}\n", policy.requested_resources.join(", ")));
-            report.push_str(&format!(
-                "Effective Capabilities: {}\n",
-                crate::permissions::describe_capability_bits(policy.effective_caps)
-            ));
-            report.push_str(&format!(
-                "Effective Native Services: {}\n",
-                crate::permissions::describe_native_service_bits(policy.effective_native)
-            ));
-            report.push_str(&format!("Auto Scripts: {}\n", policy.auto_scripts.join(", ")));
-        } else {
-            report.push_str("No policy found for space\n");
-        }
-    } else {
-        report.push_str("Space not found in DOM\n");
-    }
-
-    report.push_str("\n=== Active Native Services (Global) ===\n");
-    report.push_str(&format!(
-        "{}\n",
-        crate::permissions::describe_native_service_bits(active_native.0)
-    ));
-
-    report.push_str("\n=== Policy Generation ===\n");
-    report.push_str(&format!("Generation: {}\n", policies.generation));
-
-    if let Some(hist) = history {
-        report.push_str(&format!("Total Snapshots: {}\n\n", hist.entries.len()));
-        report.push_str("=== Recent Snapshots ===\n");
-        for entry in hist.entries.iter().rev().take(5) {
-            report.push_str(&format!(
-                "[Gen {}] space:{} caps=[{}] native=[{}]\n",
-                entry.generation,
-                entry.space_id,
-                crate::permissions::describe_capability_bits(entry.effective_caps),
-                crate::permissions::describe_native_service_bits(entry.effective_native)
-            ));
-        }
-    }
-
-    report
 }
 
 fn short_title(title: &str, max: usize) -> String {
@@ -798,6 +745,206 @@ fn render_network(ui: &mut egui::Ui, io_service: &IoService, filter_space: Optio
                     });
                 }
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::prelude::App;
+    use specs::{Join, WorldExt};
+    use virtual_dom::{dom::element::build_world, parse_xml};
+
+    fn mounted_entry(tab_id: u64, url: &str) -> MountedSpaceEntry {
+        MountedSpaceEntry {
+            tab_id,
+            url: url.to_string(),
+            title: url.to_string(),
+        }
+    }
+
+    fn world_with_duplicate_urls() -> SpecWorld {
+        let mut world = build_world();
+        parse_xml(
+            &mut world,
+            r#"
+            <hsml>
+              <space id="luna_root">
+                <space managed-by="dimension.luna" data-luna-tab-id="11">
+                  <include src="luna://same" />
+                </space>
+                <space managed-by="dimension.luna" data-luna-tab-id="22">
+                  <include src="luna://same" />
+                </space>
+              </space>
+            </hsml>
+            "#,
+        )
+        .expect("xml parse failed");
+        world
+    }
+
+    fn expected_space_id_for_tab(world: &SpecWorld, tab_id: &str) -> u32 {
+        let entities = world.entities();
+        let tags = world.read_storage::<Tag>();
+        let attrs = world.read_storage::<Attrs>();
+
+        (&entities, &tags, &attrs)
+            .join()
+            .find_map(|(ent, tag, attrs)| {
+                (tag.0 == "space"
+                    && attrs.0.get("managed-by").is_some()
+                    && attrs.0.get("data-luna-tab-id").map(|v| v.as_str()) == Some(tab_id))
+                .then_some(ent.id())
+            })
+            .expect("tab space not found")
+    }
+
+    #[test]
+    fn navigate_empty_tab_queues_mount_with_tab_id() {
+        let mut mounted = vec![mounted_entry(7, "")];
+        let mut mount_queue = Vec::new();
+        let mut unmount_queue = Vec::new();
+        let mut deferred_mounts = Vec::new();
+
+        navigate_tab_to_url(
+            &mut mounted,
+            &mut mount_queue,
+            &mut unmount_queue,
+            &mut deferred_mounts,
+            0,
+            "luna://home".to_string(),
+        );
+
+        assert_eq!(
+            mount_queue,
+            vec![SpaceMountRequest {
+                tab_id: 7,
+                url: "luna://home".to_string(),
+            }]
+        );
+        assert!(unmount_queue.is_empty());
+        assert!(deferred_mounts.is_empty());
+        assert_eq!(mounted[0].url, "luna://home");
+    }
+
+    #[test]
+    fn navigate_loaded_tab_to_new_url_unmounts_and_defers_same_tab_id() {
+        let mut mounted = vec![mounted_entry(7, "luna://home")];
+        let mut mount_queue = Vec::new();
+        let mut unmount_queue = Vec::new();
+        let mut deferred_mounts = Vec::new();
+
+        navigate_tab_to_url(
+            &mut mounted,
+            &mut mount_queue,
+            &mut unmount_queue,
+            &mut deferred_mounts,
+            0,
+            "luna://about".to_string(),
+        );
+
+        assert!(mount_queue.is_empty());
+        assert_eq!(
+            unmount_queue,
+            vec![SpaceUnmountRequest {
+                tab_id: 7,
+                url: "luna://home".to_string(),
+            }]
+        );
+        assert_eq!(deferred_mounts.len(), 1);
+        assert_eq!(deferred_mounts[0].wait_gone_tab_id, 7);
+        assert_eq!(
+            deferred_mounts[0].mount,
+            SpaceMountRequest {
+                tab_id: 7,
+                url: "luna://about".to_string(),
+            }
+        );
+        assert_eq!(mounted[0].url, "luna://about");
+    }
+
+    #[test]
+    fn reload_tab_unmounts_and_defers_same_tab_id() {
+        let mounted = vec![mounted_entry(9, "luna://same")];
+        let mut mount_queue = Vec::new();
+        let mut unmount_queue = Vec::new();
+        let mut deferred_mounts = Vec::new();
+
+        reload_tab(
+            &mounted,
+            &mut mount_queue,
+            &mut unmount_queue,
+            &mut deferred_mounts,
+            0,
+        );
+
+        assert!(mount_queue.is_empty());
+        assert_eq!(
+            unmount_queue,
+            vec![SpaceUnmountRequest {
+                tab_id: 9,
+                url: "luna://same".to_string(),
+            }]
+        );
+        assert_eq!(deferred_mounts.len(), 1);
+        assert_eq!(deferred_mounts[0].wait_gone_tab_id, 9);
+        assert_eq!(
+            deferred_mounts[0].mount,
+            SpaceMountRequest {
+                tab_id: 9,
+                url: "luna://same".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn find_mounted_space_by_tab_id_disambiguates_duplicate_urls() {
+        let world = world_with_duplicate_urls();
+
+        assert_eq!(
+            find_mounted_space_by_tab_id(&world, 11),
+            Some(expected_space_id_for_tab(&world, "11"))
+        );
+        assert_eq!(
+            find_mounted_space_by_tab_id(&world, 22),
+            Some(expected_space_id_for_tab(&world, "22"))
+        );
+    }
+
+    #[test]
+    fn flush_deferred_mounts_releases_when_other_tab_keeps_same_url() {
+        let mut app = App::new();
+        app.insert_resource(crate::ElemenetWorld(world_with_duplicate_urls()));
+        app.insert_resource(DeferredSpaceMounts(vec![DeferredSpaceMount {
+            wait_gone_tab_id: 33,
+            mount: SpaceMountRequest {
+                tab_id: 33,
+                url: "luna://next".to_string(),
+            },
+        }]));
+        app.insert_resource(crate::SpaceMountQueue::default());
+        app.add_systems(Update, flush_deferred_space_mounts_system);
+
+        app.update();
+
+        assert!(app.world().resource::<DeferredSpaceMounts>().0.is_empty());
+        assert_eq!(
+            app.world().resource::<crate::SpaceMountQueue>().0,
+            vec![SpaceMountRequest {
+                tab_id: 33,
+                url: "luna://next".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn enqueue_tab_unmount_skips_blank_urls() {
+        let mut unmount_queue = Vec::new();
+
+        enqueue_tab_unmount(&mut unmount_queue, &mounted_entry(4, ""));
+
+        assert!(unmount_queue.is_empty());
     }
 }
 

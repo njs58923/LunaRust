@@ -909,6 +909,10 @@ const SCRIPT_ROOT_API: &str = r##"
     const opts = options || {};
     const space = entry.space;
 
+    if (opts.tabId != null) {
+      space.setAttribute('data-luna-tab-id', String(opts.tabId));
+    }
+
     if (opts.visible != null) {
       space.setAttribute('visible', opts.visible ? 'true' : 'false');
     }
@@ -945,6 +949,7 @@ const SCRIPT_ROOT_API: &str = r##"
     return {
       id: publicId,
       nodeId: entry.space.nodeId,
+      tabId: entry.space.getAttribute('data-luna-tab-id') || '',
       url: include ? include.getAttribute('src') : '',
       visible: entry.space.getAttribute('visible') !== 'false',
       loaded: include ? include.children.length > 0 : entry.space.children.length > 0,
@@ -2313,6 +2318,16 @@ mod tests {
         assert!(content.contains("switchMode"));
         assert!(content.contains("luna://ux_desktop"));
         assert!(content.contains("luna://ux_vr"));
+    }
+
+    #[test]
+    fn root_api_exposes_tab_id_contract_for_managed_spaces() {
+        let content = VIRTUAL_ROUTES
+            .resolve("luna://internal/root_api.js")
+            .unwrap();
+        assert!(content.contains("opts.tabId"));
+        assert!(content.contains("data-luna-tab-id"));
+        assert!(content.contains("tabId: entry.space.getAttribute('data-luna-tab-id')"));
     }
 
     #[test]

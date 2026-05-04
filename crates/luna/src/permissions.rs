@@ -614,12 +614,29 @@ mod tests {
     use specs::{Join, WorldExt};
     use virtual_dom::{dom::element::build_world, parse_xml};
 
+    fn collect_attached_nodes(world: &specs::World, root: specs::Entity) -> HashMap<u32, specs::Entity> {
+        let mut out = HashMap::new();
+        let mut stack = vec![root];
+        let hier = world.read_storage::<Hierarchy>();
+        while let Some(ent) = stack.pop() {
+            out.insert(ent.id(), ent);
+            if let Some(node) = hier.get(ent) {
+                for &child in &node.children {
+                    stack.push(child);
+                }
+            }
+        }
+        out
+    }
+
     fn build_app_with_xml(xml: &str) -> App {
         let mut specs_world = build_world();
-        parse_xml(&mut specs_world, xml).expect("xml parse failed");
+        let root = parse_xml(&mut specs_world, xml).expect("xml parse failed");
+        let dom_nodes = collect_attached_nodes(&specs_world, root);
 
         let mut app = App::new();
         app.insert_resource(crate::ElemenetWorld(specs_world));
+        app.insert_resource(crate::VirtualDomData { nodes: dom_nodes });
         app.insert_resource(SpacePolicies::default());
         app.insert_resource(crate::LogPanel::default());
         app.insert_resource(SpacePolicyHistory {

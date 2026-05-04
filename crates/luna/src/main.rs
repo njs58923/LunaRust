@@ -127,7 +127,10 @@ fn main() {
     app.insert_resource(IncludeLoadStates::default());
     app.insert_resource(SpaceMountQueue(
         if root_config.auto_load_home {
-            vec![initial_home_url.clone()]
+            vec![SpaceMountRequest {
+                tab_id: 1,
+                url: initial_home_url.clone(),
+            }]
         } else {
             Vec::new()
         }
@@ -136,6 +139,7 @@ fn main() {
     app.insert_resource(MountedSpaceList(
         if root_config.auto_load_home {
             vec![MountedSpaceEntry {
+                tab_id: 1,
                 url: initial_home_url.clone(),
                 title: initial_home_url.clone(),
             }]
@@ -143,6 +147,7 @@ fn main() {
             Vec::new()
         }
     ));
+    app.insert_resource(NextTabId(if root_config.auto_load_home { 2 } else { 1 }));
     app.insert_resource(ActiveSpaceIndex(
         if root_config.auto_load_home { Some(0) } else { None }
     ));
@@ -472,16 +477,16 @@ fn process_space_mount_queue(
         }
         return;
     }
-    let urls: Vec<String> = mount_queue.0.drain(..).collect();
+    let requests: Vec<SpaceMountRequest> = mount_queue.0.drain(..).collect();
     let grants = "['navigate_self','read_pose_stream','skybox']";
-    for url in urls {
-        let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
+    for request in requests {
+        let escaped = request.url.replace('\\', "\\\\").replace('\'', "\\'");
         let code = format!(
-            "dimension.luna.mountSpace('{}', {{ grants: {} }});",
-            escaped, grants
+            "dimension.luna.mountSpace('{}', {{ grants: {}, tabId: {} }});",
+            escaped, grants, request.tab_id
         );
         let _ = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
-            url: format!("eval://mount/{}", url),
+            url: format!("eval://mount/{}", request.url),
             code,
         });
     }
@@ -502,15 +507,14 @@ fn process_space_unmount_queue(
     let Some(worker) = manager.contexts.get(&root_id) else {
         return;
     };
-    let urls: Vec<String> = unmount_queue.0.drain(..).collect();
-    for url in urls {
-        let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
+    let requests: Vec<SpaceUnmountRequest> = unmount_queue.0.drain(..).collect();
+    for request in requests {
         let code = format!(
-            "(() => {{ var list = dimension.luna.listMountedSpaces(); for (var i = 0; i < list.length; i++) {{ if (list[i].url === '{}') {{ dimension.luna.unmountSpace(list[i].id); break; }} }} }})()",
-            escaped
+            "(() => {{ var list = dimension.luna.listMountedSpaces(); for (var i = 0; i < list.length; i++) {{ if (String(list[i].tabId) === '{}' ) {{ dimension.luna.unmountSpace(list[i].id); break; }} }} }})()",
+            request.tab_id
         );
         let _ = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
-            url: format!("eval://unmount/{}", url),
+            url: format!("eval://unmount/{}", request.url),
             code,
         });
     }

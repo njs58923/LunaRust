@@ -252,24 +252,46 @@ pub struct DeleteRequests(pub Vec<u32>);
 
 #[derive(Debug, Clone)]
 pub struct MountedSpaceEntry {
+    pub tab_id: u64,
     pub url: String,
     pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaceMountRequest {
+    pub tab_id: u64,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaceUnmountRequest {
+    pub tab_id: u64,
+    pub url: String,
 }
 
 #[derive(Resource, Default)]
 pub struct AddressBarState(pub String);
 
 #[derive(Resource, Default)]
-pub struct SpaceMountQueue(pub Vec<String>);
+pub struct SpaceMountQueue(pub Vec<SpaceMountRequest>);
 
 #[derive(Resource, Default)]
-pub struct SpaceUnmountQueue(pub Vec<String>);
+pub struct SpaceUnmountQueue(pub Vec<SpaceUnmountRequest>);
 
 #[derive(Resource, Default)]
 pub struct MountedSpaceList(pub Vec<MountedSpaceEntry>);
 
 #[derive(Resource, Default)]
 pub struct ActiveSpaceIndex(pub Option<usize>);
+
+#[derive(Resource)]
+pub struct NextTabId(pub u64);
+
+impl Default for NextTabId {
+    fn default() -> Self {
+        Self(1)
+    }
+}
 
 #[derive(Resource, Default)]
 pub struct GlobalDevtoolVisible(pub bool);
@@ -360,8 +382,8 @@ pub struct PendingScripts(pub Vec<(u32, String, String)>);
 
 #[derive(Debug, Clone)]
 pub struct DeferredSpaceMount {
-    pub wait_gone_url: String,
-    pub mount_url: String,
+    pub wait_gone_tab_id: u64,
+    pub mount: SpaceMountRequest,
 }
 
 #[derive(Resource, Default)]
@@ -433,6 +455,7 @@ pub struct SpaceParams<'w> {
     pub unmount_queue: ResMut<'w, SpaceUnmountQueue>,
     pub mounted_spaces: ResMut<'w, MountedSpaceList>,
     pub deferred_mounts: ResMut<'w, DeferredSpaceMounts>,
+    pub next_tab_id: ResMut<'w, NextTabId>,
 }
 
 #[derive(SystemParam)]
