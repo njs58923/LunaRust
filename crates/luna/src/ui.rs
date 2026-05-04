@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use specs::{Entity as SpecEntity, Join, World as SpecWorld, WorldExt};
+use std::collections::HashMap;
 use virtual_dom::dom::element::{Attrs, Hierarchy, Tag, Transform2};
 
 use crate::{
@@ -30,6 +31,20 @@ pub fn ui_system(
 ) {
     let mut pending_unmounts: Vec<usize> = Vec::new();
     let prev_active = active_space.0;
+    let prev_active_url = active_space
+        .0
+        .and_then(|idx| space_params.mounted_spaces.0.get(idx))
+        .map(|entry| entry.url.clone());
+
+    sync_mounted_spaces_from_dom(&world.0, &mut space_params.mounted_spaces.0);
+
+    if let (Some(idx), Some(prev_url)) = (active_space.0, prev_active_url) {
+        if let Some(entry) = space_params.mounted_spaces.0.get(idx) {
+            if entry.url != prev_url {
+                address_bar.0 = entry.url.clone();
+            }
+        }
+    }
 
     egui::Window::new("Navegador")
         .default_width(600.0)
@@ -593,6 +608,75 @@ fn find_root_managed_spaces(world: &SpecWorld) -> Vec<SpecEntity> {
     result
 }
 
+fn sync_mounted_spaces_from_dom(world: &SpecWorld, mounted_spaces: &mut [MountedSpaceEntry]) {
+    let dom_spaces = collect_mounted_space_snapshots(world);
+
+    for entry in mounted_spaces.iter_mut() {
+        let Some(snapshot) = dom_spaces.get(&entry.tab_id) else {
+            continue;
+        };
+
+        if entry.url != snapshot.url {
+            entry.url = snapshot.url.clone();
+        }
+
+        if entry.title != snapshot.title {
+            entry.title = snapshot.title.clone();
+        }
+    }
+}
+
+fn collect_mounted_space_snapshots(world: &SpecWorld) -> HashMap<u64, MountedSpaceEntry> {
+    let hier = world.read_storage::<Hierarchy>();
+    let tags = world.read_storage::<Tag>();
+    let attrs = world.read_storage::<Attrs>();
+    let mut snapshots = HashMap::new();
+
+    for space_ent in find_root_managed_spaces(world) {
+        let Some(space_attrs) = attrs.get(space_ent) else {
+            continue;
+        };
+        let Some(tab_id) = space_attrs
+            .0
+            .get("data-luna-tab-id")
+            .and_then(|raw| raw.parse::<u64>().ok())
+        else {
+            continue;
+        };
+
+        let mut url = String::new();
+        if let Some(node) = hier.get(space_ent) {
+            for &child in &node.children {
+                if tags.get(child).map(|t| t.0.as_str()) != Some("include") {
+                    continue;
+                }
+                if let Some(include_attrs) = attrs.get(child) {
+                    url = include_attrs.0.get("src").cloned().unwrap_or_default();
+                }
+                break;
+            }
+        }
+
+        let title = space_attrs
+            .0
+            .get("title")
+            .cloned()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| url.clone());
+
+        snapshots.insert(
+            tab_id,
+            MountedSpaceEntry {
+                tab_id,
+                url,
+                title,
+            },
+        );
+    }
+
+    snapshots
+}
+
 fn find_mounted_space_by_tab_id(world: &SpecWorld, tab_id: u64) -> Option<u32> {
     let attrs = world.read_storage::<Attrs>();
     let tab_id = tab_id.to_string();
@@ -798,6 +882,35 @@ mod tests {
                 .then_some(ent.id())
             })
             .expect("tab space not found")
+    }
+
+    #[test]
+    fn sync_mounted_spaces_from_dom_updates_url_after_self_navigation() {
+        let mut world = build_world();
+        parse_xml(
+            &mut world,
+            r#"
+            <hsml>
+              <space id="luna_root">
+                <space managed-by="dimension.luna" data-luna-tab-id="11">
+                  <include src="luna://updated" />
+                </space>
+              </space>
+            </hsml>
+            "#,
+        )
+        .expect("xml parse failed");
+
+        let mut mounted = vec![MountedSpaceEntry {
+            tab_id: 11,
+            url: "luna://old".to_string(),
+            title: "luna://old".to_string(),
+        }];
+
+        sync_mounted_spaces_from_dom(&world, &mut mounted);
+
+        assert_eq!(mounted[0].url, "luna://updated");
+        assert_eq!(mounted[0].title, "luna://updated");
     }
 
     #[test]
