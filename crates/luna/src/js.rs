@@ -79,6 +79,10 @@ pub struct PoseMoveEventData {
     pub dz: f32,
     pub trigger: f32,
     pub grip: f32,
+    pub qx: f32,
+    pub qy: f32,
+    pub qz: f32,
+    pub qw: f32,
 }
 
 pub enum JsWorkerCommand {
@@ -295,6 +299,10 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                                 evt.dz,
                                 evt.trigger,
                                 evt.grip,
+                                evt.qx,
+                                evt.qy,
+                                evt.qz,
+                                evt.qw,
                             );
                         }
                     }

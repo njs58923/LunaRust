@@ -357,6 +357,11 @@ pub struct DomEvent {
     pub dz: Option<f32>,
     pub trigger: Option<f32>,
     pub grip: Option<f32>,
+    // Orientación del controlador (cuaternión), solo en posemove.
+    pub qx: Option<f32>,
+    pub qy: Option<f32>,
+    pub qz: Option<f32>,
+    pub qw: Option<f32>,
 }
 
 /// DOM events normalizados host -> JS runtime
@@ -848,6 +853,10 @@ fn op_poll_dom_events(state: &mut OpState) -> serde_json::Value {
                 "dz": evt.dz,
                 "trigger": evt.trigger,
                 "grip": evt.grip,
+                "qx": evt.qx,
+                "qy": evt.qy,
+                "qz": evt.qz,
+                "qw": evt.qw,
             })
         })
         .collect();
@@ -1415,6 +1424,10 @@ impl Engine {
             dz: None,
             trigger: None,
             grip: None,
+            qx: None,
+            qy: None,
+            qz: None,
+            qw: None,
         });
     }
 
@@ -1434,6 +1447,10 @@ impl Engine {
         dz: f32,
         trigger: f32,
         grip: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
     ) {
         self.dom_events.borrow_mut().push(DomEvent {
             event_type: "posemove".to_string(),
@@ -1450,6 +1467,10 @@ impl Engine {
             dz: Some(dz),
             trigger: Some(trigger),
             grip: Some(grip),
+            qx: Some(qx),
+            qy: Some(qy),
+            qz: Some(qz),
+            qw: Some(qw),
         });
     }
 

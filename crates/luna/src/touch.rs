@@ -174,6 +174,11 @@ pub struct HostPoseMoveHit {
     pub dz: f32,
     pub trigger: f32,
     pub grip: f32,
+    // Orientación del controlador (cuaternión world-space).
+    pub qx: f32,
+    pub qy: f32,
+    pub qz: f32,
+    pub qw: f32,
 }
 
 /// posemove detectado por el host; se despacha como DOM event si el space tiene permiso.
@@ -324,6 +329,7 @@ fn push_pose_events_for_hand(
     if dir == Vec3::ZERO {
         return;
     }
+    let (_, controller_rot, _) = controller_tf.to_scale_rotation_translation();
 
     for (global_transform, posezone, hit_shape) in posezone_query.iter() {
         let (scale, rotation, entity_pos) = global_transform.to_scale_rotation_translation();
@@ -341,6 +347,10 @@ fn push_pose_events_for_hand(
                 dz: dir.z,
                 trigger,
                 grip,
+                qx: controller_rot.x,
+                qy: controller_rot.y,
+                qz: controller_rot.z,
+                qw: controller_rot.w,
             });
         }
     }
@@ -498,6 +508,10 @@ pub fn dispatch_posemove_events_to_js(
                 dz: evt.dz,
                 trigger: evt.trigger,
                 grip: evt.grip,
+                qx: evt.qx,
+                qy: evt.qy,
+                qz: evt.qz,
+                qw: evt.qw,
             });
     }
 
