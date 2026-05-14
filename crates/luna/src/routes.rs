@@ -1164,19 +1164,19 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <text x="0" y="0.68" z="-3.0" value="FIRE button stays as manual fallback" size="0.08" color="#666666" />
 
     <!-- Fire Button -->
-    <box x="-0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#FF6B6B" id="fire_button" />
+    <box x="-0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#FF6B6B" id="fire_button" touchable="true"/>
     <text x="-0.6" y="0.50" z="-2.94" value="FIRE!" size="0.10" color="#FFFFFF" />
 
     <!-- Clear Button -->
-    <box x="0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4ECDC4" id="clear_button" />
+    <box x="0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4ECDC4" id="clear_button" touchable="true"/>
     <text x="0.6" y="0.50" z="-2.94" value="CLEAR" size="0.10" color="#FFFFFF" />
 
     <!-- Home Button -->
-    <box x="-0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4CAF50" id="home_button" />
+    <box x="-0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4CAF50" id="home_button" touchable="true"/>
     <text x="-0.35" y="0.05" z="-2.94" value="HOME" size="0.10" color="#FFFFFF" />
 
     <!-- Demos Button -->
-    <box x="0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#7E57C2" id="demos_button" />
+    <box x="0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#7E57C2" id="demos_button" touchable="true"/>
     <text x="0.35" y="0.05" z="-2.94" value="DEMOS" size="0.10" color="#FFFFFF" />
 
     <!-- Status Text -->
@@ -1405,16 +1405,16 @@ const LUNA_TARGET_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <text x="0" y="1.20" z="-3.0" value="Target Practice" size="0.20" color="#FF1744" />
     <text x="0" y="0.85" z="-3.0" value="Right trigger fires. Hit moving targets to score." size="0.10" color="#888888" />
 
-    <box x="-0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#FF6B6B" id="fire_button" />
+    <box x="-0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#FF6B6B" id="fire_button" touchable="true"/>
     <text x="-0.6" y="0.50" z="-2.94" value="FIRE!" size="0.10" color="#FFFFFF" />
 
-    <box x="0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4ECDC4" id="reset_button" />
+    <box x="0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4ECDC4" id="reset_button" touchable="true"/>
     <text x="0.6" y="0.50" z="-2.94" value="RESET" size="0.10" color="#FFFFFF" />
 
-    <box x="-0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4CAF50" id="home_button" />
+    <box x="-0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4CAF50" id="home_button" touchable="true"/>
     <text x="-0.35" y="0.05" z="-2.94" value="HOME" size="0.10" color="#FFFFFF" />
 
-    <box x="0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#7E57C2" id="demos_button" />
+    <box x="0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#7E57C2" id="demos_button" touchable="true"/>
     <text x="0.35" y="0.05" z="-2.94" value="DEMOS" size="0.10" color="#FFFFFF" />
 
     <text x="0" y="-0.30" z="-3.0" value="Score: 0" size="0.12" id="score_text" color="#FFD700" />
@@ -1724,16 +1724,16 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     <text x="0" y="0.18" z="-3.0" value="" size="0.085" id="banner_text" color="#4FC3F7" />
 
-    <box x="-0.92" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#D50000" id="start_button" />
+    <box x="-0.92" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#D50000" id="start_button" touchable="true"/>
     <text x="-0.92" y="-0.15" z="-2.94" value="START" size="0.08" color="#FFFFFF" />
 
-    <box x="-0.31" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#FF6B6B" id="reset_button" />
+    <box x="-0.31" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#FF6B6B" id="reset_button" touchable="true"/>
     <text x="-0.31" y="-0.15" z="-2.94" value="RESET" size="0.08" color="#FFFFFF" />
 
-    <box x="0.31" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#4CAF50" id="home_button" />
+    <box x="0.31" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#4CAF50" id="home_button" touchable="true"/>
     <text x="0.31" y="-0.15" z="-2.94" value="HOME" size="0.08" color="#FFFFFF" />
 
-    <box x="0.92" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#7E57C2" id="demos_button" />
+    <box x="0.92" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#7E57C2" id="demos_button" touchable="true"/>
     <text x="0.92" y="-0.15" z="-2.94" value="DEMOS" size="0.08" color="#FFFFFF" />
 
     <text x="0" y="-0.50" z="-3.0" value="Idle" size="0.075" id="status_text" color="#FFFFFF" />
