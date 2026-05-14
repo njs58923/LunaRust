@@ -9,6 +9,7 @@ pub mod js;
 pub mod permissions;
 pub mod render;
 pub mod routes;
+pub mod system_input;
 pub mod touch;
 pub mod types;
 pub mod ui;

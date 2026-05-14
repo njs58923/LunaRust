@@ -50,6 +50,7 @@ fn desktop_shooter_toggle_system(
     devtool_visible: Res<DevtoolVisible>,
     global_devtool: Res<GlobalDevtoolVisible>,
     mut shooter: ResMut<DesktopShooterActive>,
+    mut sys_events: ResMut<crate::system_input::HostSystemInputEvents>,
 ) {
     // Devtool open → force off
     if devtool_visible.0 || global_devtool.0 {
@@ -59,9 +60,17 @@ fn desktop_shooter_toggle_system(
         return;
     }
 
-    // Escape → exit shooter mode
-    if keyboard.just_pressed(KeyCode::Escape) && shooter.0 {
-        shooter.0 = false;
+    // Escape: si shooter activo → consume y sale (preserva comportamiento).
+    // Si shooter inactivo → dispatcha systeminput (shell open via UX).
+    if keyboard.just_pressed(KeyCode::Escape) {
+        if shooter.0 {
+            shooter.0 = false;
+        } else {
+            sys_events.0.push(crate::system_input::SystemInputEvent {
+                action: crate::system_input::SystemInputAction::Shell,
+                source: crate::system_input::SystemInputSource::KbEscape,
+            });
+        }
         return;
     }
 

@@ -96,6 +96,8 @@ pub enum JsWorkerCommand {
     PushDomToqueEvents(Vec<(i32, f32, f32, f32)>),
     PushPoseMoveEvents(Vec<PoseMoveEventData>),
     PushToqueRawEvents(Vec<(i32, f32, f32, f32)>),
+    /// (action, source) pairs — broadcast a spaces con READ_SYSTEM_INPUT.
+    PushSystemInputEvents(Vec<(String, String)>),
     RequestDebugState,
     Shutdown,
 }
@@ -309,6 +311,11 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                     JsWorkerCommand::PushToqueRawEvents(events) => {
                         for (node_id, x, y, z) in events {
                             ctx.engine.push_touch_event(node_id, x, y, z);
+                        }
+                    }
+                    JsWorkerCommand::PushSystemInputEvents(events) => {
+                        for (action, source) in events {
+                            ctx.engine.push_system_input_event(action, source);
                         }
                     }
                     JsWorkerCommand::RequestDebugState => {

@@ -44,6 +44,19 @@ impl Default for SnapTurnCooldown {
     }
 }
 
+// ─── Menu button debounce ─────────────────────────────────────────────────────
+
+#[derive(Resource)]
+pub struct MenuButtonDebounce(pub Timer);
+
+impl Default for MenuButtonDebounce {
+    fn default() -> Self {
+        let mut t = Timer::from_seconds(0.2, TimerMode::Once);
+        t.tick(t.duration());
+        Self(t)
+    }
+}
+
 // ─── Plugin ──────────────────────────────────────────────────────────────────
 
 pub struct VrLocomotionPlugin;
@@ -51,6 +64,7 @@ pub struct VrLocomotionPlugin;
 impl Plugin for VrLocomotionPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(SnapTurnCooldown::default())
+            .insert_resource(MenuButtonDebounce::default())
             // Create OXR objects as soon as OpenXR is available, and keep this
             // resilient if the runtime comes up after Startup.
             .add_systems(
@@ -75,7 +89,12 @@ impl Plugin for VrLocomotionPlugin {
             // Read + act on input after sync
             .add_systems(
                 Update,
-                (handle_smooth_locomotion, handle_snap_turn, log_buttons)
+                (
+                    handle_smooth_locomotion,
+                    handle_snap_turn,
+                    handle_menu_button,
+                    log_buttons,
+                )
                     .run_if(openxr_session_running)
                     .run_if(crate::permissions::vr_locomotion_enabled)
                     .run_if(resource_exists::<LunaLocomotionActions>),
@@ -294,4 +313,30 @@ fn log_buttons(actions: Res<LunaLocomotionActions>, session: Res<OxrSession>) {
     log_bool!(actions.left_stick_click,   "Left Stick Click");
     log_bool!(actions.right_stick_click,  "Right Stick Click");
     log_bool!(actions.menu,               "Menu");
+}
+
+// ─── Menu button → systeminput dispatch ───────────────────────────────────────
+
+fn handle_menu_button(
+    actions: Res<LunaLocomotionActions>,
+    session: Res<OxrSession>,
+    mut debounce: ResMut<MenuButtonDebounce>,
+    mut events: ResMut<crate::system_input::HostSystemInputEvents>,
+    time: Res<Time>,
+) {
+    debounce.0.tick(time.delta());
+
+    let Ok(state) = actions.menu.state(&session, Path::NULL) else { return };
+    if !(state.current_state && state.changed_since_last_sync) {
+        return;
+    }
+    if !debounce.0.finished() {
+        return;
+    }
+    debounce.0.reset();
+
+    events.0.push(crate::system_input::SystemInputEvent {
+        action: crate::system_input::SystemInputAction::Shell,
+        source: crate::system_input::SystemInputSource::VrMenu,
+    });
 }

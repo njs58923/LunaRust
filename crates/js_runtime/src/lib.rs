@@ -362,6 +362,10 @@ pub struct DomEvent {
     pub qy: Option<f32>,
     pub qz: Option<f32>,
     pub qw: Option<f32>,
+    // systeminput: acción semántica normalizada (ej. "shell") y origen
+    // hardware-agnóstico ("vr_menu" | "kb_escape" | ...).
+    pub action: Option<String>,
+    pub source: Option<String>,
 }
 
 /// DOM events normalizados host -> JS runtime
@@ -857,6 +861,8 @@ fn op_poll_dom_events(state: &mut OpState) -> serde_json::Value {
                 "qy": evt.qy,
                 "qz": evt.qz,
                 "qw": evt.qw,
+                "action": evt.action,
+                "source": evt.source,
             })
         })
         .collect();
@@ -1428,6 +1434,8 @@ impl Engine {
             qy: None,
             qz: None,
             qw: None,
+            action: None,
+            source: None,
         });
     }
 
@@ -1471,6 +1479,40 @@ impl Engine {
             qy: Some(qy),
             qz: Some(qz),
             qw: Some(qw),
+            action: None,
+            source: None,
+        });
+    }
+
+    /// systeminput: evento system-level normalizado, dispatcheado en el root (nodeId=0).
+    /// `action` es la acción semántica ("shell", futuro: "back", "capture"...);
+    /// `source` el origen hardware-agnóstico ("vr_menu", "kb_escape", ...).
+    pub fn push_system_input_event(
+        &self,
+        action: impl Into<String>,
+        source: impl Into<String>,
+    ) {
+        self.dom_events.borrow_mut().push(DomEvent {
+            event_type: "systeminput".to_string(),
+            node_id: 0,
+            x: None,
+            y: None,
+            z: None,
+            hand: None,
+            px: None,
+            py: None,
+            pz: None,
+            dx: None,
+            dy: None,
+            dz: None,
+            trigger: None,
+            grip: None,
+            qx: None,
+            qy: None,
+            qz: None,
+            qw: None,
+            action: Some(action.into()),
+            source: Some(source.into()),
         });
     }
 

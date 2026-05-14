@@ -118,6 +118,7 @@ fn main() {
     app.insert_resource(ModelLoadStates::default());
     app.insert_resource(touch::HostToqueHits::default());
     app.insert_resource(touch::HostPoseMoveEvents::default());
+    app.insert_resource(luna::system_input::HostSystemInputEvents::default());
     app.insert_resource(SpacePolicies::default());
     app.insert_resource(ActiveNativeServices::default());
     app.insert_resource(permissions::SpacePolicyHistory {
@@ -226,6 +227,11 @@ fn main() {
     );
     app.add_systems(Update, touch::dispatch_toque_events_to_js);
     app.add_systems(Update, touch::dispatch_posemove_events_to_js.run_if(|e: Res<touch::HostPoseMoveEvents>| !e.0.is_empty()));
+    app.add_systems(
+        Update,
+        luna::system_input::dispatch_system_input_events_to_js
+            .run_if(|e: Res<luna::system_input::HostSystemInputEvents>| !e.0.is_empty()),
+    );
     // JS pipeline: forzado a correr DESPUÉS del DOM pipeline. Si
     // `js_update_snapshots_system` corre antes que
     // `commit_pending_js_attaches_system`, los nodos recién creados desde JS

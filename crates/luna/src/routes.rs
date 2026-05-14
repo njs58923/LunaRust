@@ -1053,8 +1053,8 @@ const SCRIPT_ROOT_API: &str = r##"
 
       const uxUrl = mode === 'vr' ? 'luna://ux_vr' : 'luna://ux_desktop';
       const grants = mode === 'vr'
-        ? ['navigate_self', 'vr_locomotion']
-        : ['navigate_self', 'desktop_camera_control'];
+        ? ['navigate_self', 'vr_locomotion', 'read_system_input']
+        : ['navigate_self', 'desktop_camera_control', 'read_system_input'];
       this._uxSpaceId = this.mountSpace(uxUrl, { visible: true, grants });
       this._currentMode = mode;
       console.log('[root] ux mounted id=', this._uxSpaceId, 'url=', uxUrl);
@@ -1118,7 +1118,6 @@ const LUNA_UX_DESKTOP: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
   <space id="ux_desktop" resources="desktop_camera_control">
-    <text x="0" y="2.0" z="-3" value="UX Desktop Mounted" size="0.15" color="#00FF00" />
     <script>
       console.log('[ux_desktop] Desktop UX loaded');
     </script>
@@ -1133,10 +1132,87 @@ const LUNA_UX_VR: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space id="ux_vr" resources="vr_locomotion">
-    <text x="0" y="2.0" z="-3" value="UX VR Mounted" size="0.15" color="#00FF00" />
+  <space id="ux_vr" resources="vr_locomotion,read_system_input">
+    <!-- Panel oculto por defecto. Se muestra cuando llega systeminput action=shell
+         (botón menu del Touch izquierdo). El estado lo maneja este script. -->
+    <group id="ux_vr_panel" visible="false">
+      <plane x="0" y="1.5" z="-1.8" sx="2.20" sy="1.60" sz="1" color="#0D1B2A" id="ux_vr_panel_bg" />
+
+      <text x="0" y="2.10" z="-1.75" value="Luna Shell" size="0.14" color="#64B5F6" />
+      <text x="0" y="1.92" z="-1.75" value="Bookmarks — press menu to toggle" size="0.06" color="#90A4AE" />
+
+      <!-- Bookmarks grid (2 cols × 2 rows) -->
+      <box x="-0.55" y="1.55" z="-1.75" sx="0.90" sy="0.30" sz="0.05" color="#4CAF50" id="ux_vr_bm_home" touchable="true"/>
+      <text x="-0.55" y="1.55" z="-1.69" value="Home" size="0.09" color="#FFFFFF" />
+
+      <box x="0.55" y="1.55" z="-1.75" sx="0.90" sy="0.30" sz="0.05" color="#7E57C2" id="ux_vr_bm_demos" touchable="true"/>
+      <text x="0.55" y="1.55" z="-1.69" value="Demos" size="0.09" color="#FFFFFF" />
+
+      <box x="-0.55" y="1.18" z="-1.75" sx="0.90" sy="0.30" sz="0.05" color="#9C27B0" id="ux_vr_bm_settings" touchable="true"/>
+      <text x="-0.55" y="1.18" z="-1.69" value="Settings" size="0.09" color="#FFFFFF" />
+
+      <box x="0.55" y="1.18" z="-1.75" sx="0.90" sy="0.30" sz="0.05" color="#FF9800" id="ux_vr_bm_about" touchable="true"/>
+      <text x="0.55" y="1.18" z="-1.69" value="About" size="0.09" color="#FFFFFF" />
+
+      <text x="0" y="0.85" z="-1.75" value="" size="0.05" id="ux_vr_status" color="#B0BEC5" />
+    </group>
+
     <script>
-      console.log('[ux_vr] VR UX loaded');
+      const root = hiperspace.dimention;
+      const byId = (id) => root.getElementById(id);
+
+      // TODO(persistence): bookmarks hardcodeados por ahora. Cuando exista
+      // storage API o settings file, leer desde ahí.
+      const BOOKMARKS = [
+        { id: 'ux_vr_bm_home',     url: 'luna://home' },
+        { id: 'ux_vr_bm_demos',    url: 'luna://demos' },
+        { id: 'ux_vr_bm_settings', url: 'luna://settings' },
+        { id: 'ux_vr_bm_about',    url: 'luna://about' },
+      ];
+
+      const panel = byId('ux_vr_panel');
+      let visible = false;
+
+      function setVisible(v) {
+        visible = !!v;
+        if (panel) panel.setAttribute('visible', visible ? 'true' : 'false');
+        console.log('[ux_vr] panel visible=', visible);
+      }
+
+      function setStatus(msg) {
+        const el = byId('ux_vr_status');
+        if (el) el.setAttribute('value', msg || '');
+      }
+
+      // TODO(multi-tab): location.href reemplaza el contenido del space actual.
+      // Cuando dimension.luna.mountSpace esté disponible desde ux_vr (requiere
+      // grants extra: mount_root_space + auto-inject root_api.js), reemplazar
+      // por un mountSpace que abra cada bookmark como tab aparte.
+      function openBookmark(url) {
+        setStatus('Opening ' + url + '...');
+        location.href = url;
+      }
+
+      // Bind bookmarks
+      for (const bm of BOOKMARKS) {
+        const el = byId(bm.id);
+        if (el) {
+          el.addEventListener('toque', () => openBookmark(bm.url));
+        } else {
+          console.warn('[ux_vr] bookmark element missing:', bm.id);
+        }
+      }
+
+      // Listener system input: action='shell' alterna visibilidad del panel.
+      // Fuente puede ser 'vr_menu' (botón Touch izq) o 'kb_escape' (desktop).
+      root.addEventListener('systeminput', (evt) => {
+        console.log('[ux_vr] systeminput action=', evt.action, 'source=', evt.source);
+        if (evt.action === 'shell') {
+          setVisible(!visible);
+        }
+      });
+
+      console.log('[ux_vr] Shell loaded — press left Touch menu to toggle');
     </script>
   </space>
 </hsml>"##;

@@ -27,8 +27,15 @@ bitflags! {
         const DEVTOOLS_READ        = 1 << 13;
         const DEVTOOLS_WRITE       = 1 << 14;
         const SKYBOX               = 1 << 15;
+        const READ_SYSTEM_INPUT    = 1 << 16;
     }
 }
+
+/// Permissions "elevadas" — requieren confirmación explícita del usuario.
+/// Por ahora sólo concedidas a spaces `managed-by="dimension.luna"` (UX shell).
+/// TODO(perm-prompt): cuando exista el UX de prompt de permisos, las apps no
+/// trusted que las pidan deberían disparar un alert al usuario en vez de denegar.
+pub const ELEVATED_CAPABILITIES: CapabilityBits = CapabilityBits::READ_SYSTEM_INPUT;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -155,6 +162,15 @@ lazy_static! {
             },
         );
 
+        m.insert(
+            "read_system_input",
+            ResourceBundleDef {
+                capabilities: CapabilityBits::READ_SYSTEM_INPUT,
+                native_services: NativeServiceBits::empty(),
+                auto_scripts: &[],
+            },
+        );
+
         m
     };
 }
@@ -216,6 +232,8 @@ pub fn capability_labels(bits: CapabilityBits) -> Vec<&'static str> {
         ("READ_CONTROLLER_POSE", CapabilityBits::READ_CONTROLLER_POSE),
         ("DEVTOOLS_READ", CapabilityBits::DEVTOOLS_READ),
         ("DEVTOOLS_WRITE", CapabilityBits::DEVTOOLS_WRITE),
+        ("SKYBOX", CapabilityBits::SKYBOX),
+        ("READ_SYSTEM_INPUT", CapabilityBits::READ_SYSTEM_INPUT),
     ]
     .iter()
     .filter(|(_, flag)| bits.contains(*flag))
@@ -338,6 +356,27 @@ fn is_root_space(attrs: Option<&HashMap<String, String>>) -> bool {
         || attrs.get("id").map(|v| v.as_str()) == Some("luna_root")
 }
 
+/// El space declara ser parte del UX shell trusted (montado por dimension.luna).
+fn is_dimension_luna_managed(attrs: Option<&HashMap<String, String>>) -> bool {
+    let Some(attrs) = attrs else { return false };
+    attrs.get("managed-by").map(|v| v.as_str()) == Some("dimension.luna")
+}
+
+/// Filtra capabilities elevadas si el space no es trusted UX shell.
+/// TODO(perm-prompt): en el futuro, si una cap elevada se solicita por una app
+/// no-managed, en lugar de filtrarla aquí, encolar una solicitud a la UX para
+/// que pregunte al usuario via alert/confirm.
+fn gate_elevated_capabilities(
+    requested_caps: CapabilityBits,
+    is_managed: bool,
+    is_root: bool,
+) -> CapabilityBits {
+    if is_managed || is_root {
+        return requested_caps;
+    }
+    requested_caps & !ELEVATED_CAPABILITIES
+}
+
 pub fn space_has_capability(space_id: u32, cap: CapabilityBits, policies: &SpacePolicies) -> bool {
     policies
         .by_space
@@ -419,10 +458,16 @@ pub fn rebuild_space_policies_system(
                 .map(|raw| parse_resource_tokens(raw))
                 .unwrap_or_default();
 
-            let (requested_caps, requested_native, auto_scripts) =
+            let (requested_caps_raw, requested_native, auto_scripts) =
                 resolve_resource_set(&requested_resources);
 
             let root_space = is_root_space(attrs_map);
+            let managed = is_dimension_luna_managed(attrs_map);
+            // Caps elevadas: sólo otorgables a root, spaces managed-by=dimension.luna,
+            // o spaces cuyo padre managed las haya propagado vía entry_caps.
+            let requested_caps =
+                gate_elevated_capabilities(requested_caps_raw, managed, root_space);
+
             let effective_caps = if root_space {
                 if requested_caps.is_empty() {
                     CapabilityBits::all()
@@ -430,10 +475,12 @@ pub fn rebuild_space_policies_system(
                     requested_caps
                 }
             } else if !entry_caps.is_empty() {
-                // Grant no heredable consumido al entrar al documento/space
+                // El entry_caps ya fue gated en su origen (sólo se propaga si el
+                // padre era managed). Usamos requested_caps_raw aquí para permitir
+                // que caps elevadas heredadas crucen — el gate de entrada las protege.
                 intersect_requested_or_take_entry(
                     &requested_resources,
-                    requested_caps,
+                    requested_caps_raw,
                     entry_caps,
                 )
             } else {
