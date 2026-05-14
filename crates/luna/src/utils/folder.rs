@@ -29,20 +29,10 @@ fn find_cargo_root() -> Option<PathBuf> {
 }
 
 /// Returns:
-/// - `assets_dir`: Bevy asset root
+/// - `assets_dir`: Bevy asset root (CWD-relative, matches `AssetPlugin.file_path = "assets"`)
 /// - `cache_dir`:  `assets/cache` for downloaded files
 pub fn resolve_assets_and_cache_dirs() -> (PathBuf, PathBuf) {
-    if let Some(root) = find_cargo_root() {
-        let assets_dir = root.join("crates/luna/assets");
-        let cache_dir = assets_dir.join("cache");
-        return (assets_dir, cache_dir);
-    }
-
-    let base = env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| env::current_dir().unwrap());
-
+    let base = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let assets_dir = base.join("assets");
     let cache_dir = assets_dir.join("cache");
     (assets_dir, cache_dir)

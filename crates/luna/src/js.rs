@@ -54,6 +54,17 @@ pub struct JsTickData {
     pub remove_queue: Vec<i32>,
     pub fetch_queue: Vec<(i32, String)>,
     pub navigate_queue: Vec<String>,
+    pub ws_connect_queue: Vec<(i32, String)>,
+    pub ws_send_queue: Vec<(i32, String)>,
+    pub ws_close_queue: Vec<i32>,
+}
+
+/// Evento que el bridge WS (`ws.rs`) inyecta de vuelta en un worker JS.
+pub enum WsWorkerEvent {
+    /// Cambio de estado: "open" | "closed" | "error: ...".
+    Status { conn_id: i32, status: String },
+    /// Mensaje entrante de texto.
+    Message { conn_id: i32, data: String },
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +88,7 @@ pub enum JsWorkerCommand {
     Tick { elapsed_ms: f64 },
     PushElementCreationResults(Vec<(i32, i32)>),
     PushFetchResults(Vec<(i32, std::result::Result<String, String>)>),
+    PushWsEvents(Vec<WsWorkerEvent>),
     PushDomToqueEvents(Vec<(i32, f32, f32, f32)>),
     PushPoseMoveEvents(Vec<PoseMoveEventData>),
     PushToqueRawEvents(Vec<(i32, f32, f32, f32)>),
@@ -237,6 +249,9 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                             remove_queue: ctx.engine.drain_remove_element_queue(),
                             fetch_queue: ctx.engine.drain_fetch_queue(),
                             navigate_queue: ctx.engine.drain_navigate_queue(),
+                            ws_connect_queue: ctx.engine.drain_ws_connect_queue(),
+                            ws_send_queue: ctx.engine.drain_ws_send_queue(),
+                            ws_close_queue: ctx.engine.drain_ws_close_queue(),
                         };
                         let _ = event_tx.send(JsWorkerEvent::TickData(tick_data));
                     }
@@ -248,6 +263,18 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                     JsWorkerCommand::PushFetchResults(results) => {
                         for (request_id, result) in results {
                             ctx.engine.push_fetch_result(request_id, result);
+                        }
+                    }
+                    JsWorkerCommand::PushWsEvents(events) => {
+                        for evt in events {
+                            match evt {
+                                WsWorkerEvent::Status { conn_id, status } => {
+                                    ctx.engine.set_ws_status(conn_id, status);
+                                }
+                                WsWorkerEvent::Message { conn_id, data } => {
+                                    ctx.engine.push_ws_message(conn_id, data);
+                                }
+                            }
                         }
                     }
                     JsWorkerCommand::PushDomToqueEvents(events) => {
@@ -1143,6 +1170,9 @@ pub fn js_tick_system(world: &mut World) {
     let mut remove_batches = Vec::new();
     let mut fetch_batches = Vec::new();
     let mut navigate_batches = Vec::new();
+    let mut ws_connect_batches: Vec<(u32, Vec<(i32, String)>)> = Vec::new();
+    let mut ws_send_batches: Vec<(u32, Vec<(i32, String)>)> = Vec::new();
+    let mut ws_close_batches: Vec<(u32, Vec<i32>)> = Vec::new();
     let mut snapshot_dirty = false;
 
     let capabilities_by_space = space_capabilities_snapshot(world);
@@ -1165,6 +1195,15 @@ pub fn js_tick_system(world: &mut World) {
         }
         if !data.navigate_queue.is_empty() {
             navigate_batches.push((space_id, data.navigate_queue));
+        }
+        if !data.ws_connect_queue.is_empty() {
+            ws_connect_batches.push((space_id, data.ws_connect_queue));
+        }
+        if !data.ws_send_queue.is_empty() {
+            ws_send_batches.push((space_id, data.ws_send_queue));
+        }
+        if !data.ws_close_queue.is_empty() {
+            ws_close_batches.push((space_id, data.ws_close_queue));
         }
         if !data.attr_updates.is_empty() {
             attr_update_batches.push((space_id, data.attr_updates));
@@ -1702,6 +1741,35 @@ pub fn js_tick_system(world: &mut World) {
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
             for (_, url) in &fetch_queue {
                 log_panel.push_info(format!("[JS][space:{}] fetch queued: {}", space_id, url));
+            }
+        }
+    }
+
+    // WebSocket: abre conexiones, encola sends, cierra. El transporte real vive
+    // en `ws.rs`; aquí sólo encaminamos las colas drenadas del engine.
+    if !ws_connect_batches.is_empty()
+        || !ws_send_batches.is_empty()
+        || !ws_close_batches.is_empty()
+    {
+        let (Some(tokio_rt), Some(ws_service)) = (
+            world.get_resource::<crate::TokioRuntime>(),
+            world.get_resource::<crate::WsService>(),
+        ) else {
+            return;
+        };
+        for (space_id, queue) in ws_connect_batches {
+            for (conn_id, url) in queue {
+                crate::ws::request_ws_connect(&tokio_rt.0, ws_service, space_id, conn_id, url);
+            }
+        }
+        for (space_id, queue) in ws_send_batches {
+            for (conn_id, msg) in queue {
+                crate::ws::ws_send(ws_service, space_id, conn_id, msg);
+            }
+        }
+        for (space_id, queue) in ws_close_batches {
+            for conn_id in queue {
+                crate::ws::ws_close(ws_service, space_id, conn_id);
             }
         }
     }

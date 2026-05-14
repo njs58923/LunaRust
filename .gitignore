@@ -8,3 +8,4 @@
 node_modules/
 crates/luna/assets/cache/**
 codigo-completo.txt
+assets/cache

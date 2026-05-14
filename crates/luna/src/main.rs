@@ -23,7 +23,7 @@ use luna::desktop_locomotion::DesktopLocomotionPlugin;
 use luna::vr_locomotion::VrLocomotionPlugin;
 
 use luna::*;
-use luna::{dom, io, js, permissions, touch, ui, utils};
+use luna::{dom, io, js, permissions, touch, ui, utils, ws};
 use bevy::prelude::AmbientLight;
 
 // ─── main ────────────────────────────────────────────────────────────────────
@@ -109,6 +109,7 @@ fn main() {
     app.insert_resource(PendingScripts::default());
     app.insert_resource(DeferredSpaceMounts::default());
     app.insert_resource(IoService::default());
+    app.insert_resource(ws::WsService::default());
     app.insert_resource(PendingDocumentLoads::default());
     app.insert_resource(DocumentLoadState::default());
     app.insert_resource(NavigationEpoch::default());
@@ -173,6 +174,7 @@ fn main() {
         Update,
         (
             io::poll_io_results_system,
+            ws::poll_ws_results_system,
             dom::commit_pending_js_attaches_system
                 .run_if(|p: Res<PendingJsAttachNodes>| !p.0.is_empty()),
             dom::apply_transform_updates.run_if(|u: Res<TransformUpdates>| !u.is_empty()),
