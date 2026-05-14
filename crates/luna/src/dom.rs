@@ -91,7 +91,7 @@ pub fn activate_pending_js_first_render_system(
 fn is_structural_tag(tag: &str) -> bool {
     matches!(
         tag,
-        "" | "hsml" | "head" | "name" | "meta" | "state" | "div"
+        "" | "hsml" | "head" | "name" | "meta" | "state" | "group" | "div"
     )
 }
 

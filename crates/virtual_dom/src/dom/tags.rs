@@ -11,13 +11,15 @@ lazy_static! {
         m.insert("head", vec![ElementType::Node]);
         m.insert("name", vec![ElementType::Node]);
         m.insert("state", vec![ElementType::Node]);
-        m.insert("div", vec![ElementType::Node]);
         m.insert("meta", vec![ElementType::Node]);
         m.insert("script", vec![ElementType::Node, ElementType::HSMLElement]);
         m.insert("include", vec![ElementType::Node, ElementType::Element, ElementType::HSMLElement]);
         m.insert("space", vec![ElementType::Node, ElementType::Element, ElementType::HSMLElement]);
         m.insert("posezone", vec![ElementType::Node, ElementType::Element]);
         m.insert("model", vec![ElementType::Node, ElementType::Element, ElementType::HSMLElement]);
+        // `group` es el tag nativo HSML para agrupación. `div` se mantiene como
+        // alias por compatibilidad con costumbre de navegador.
+        m.insert("group", vec![ElementType::Node, ElementType::Element, ElementType::HSMLElement]);
         m.insert("div", vec![ElementType::Node, ElementType::Element, ElementType::HSMLElement]);
 
         // Visual elements
