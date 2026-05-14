@@ -251,7 +251,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
          CONTROL PANEL  (at z = -3.1, eye level)
          ═══════════════════════════════════════════════════════════════════════ -->
 
-    <plane x="0" y="0.50" z="-3.15" sx="5.10" sy="2.50" sz="1" color="#0D1B2A" id="demo_panel" />
+    <plane x="0" y="0.20" z="-3.15" sx="5.10" sy="3.40" sz="1" color="#0D1B2A" id="demo_panel" />
 
     <text x="0" y="1.68" z="-3.0" value="Luna Scale Demo" size="0.22" color="#64B5F6" />
     <text x="0" y="1.38" z="-3.0" value="size = distance × 0.1  (all same angular size)" size="0.088" color="#546E7A" />
@@ -259,7 +259,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <!-- Column headers -->
     <text x="-1.70" y="1.07" z="-3.0" value="Spawn" size="0.10" color="#8BC34A" />
     <text x="0.00"  y="1.07" z="-3.0" value="Modify" size="0.10" color="#03A9F4" />
-    <text x="1.70"  y="1.07" z="-3.0" value="Navigate" size="0.10" color="#FFB74D" />
+    <text x="1.70"  y="1.07" z="-3.0" value="Inspect" size="0.10" color="#FFB74D" />
 
     <!-- ── Spawn column ── -->
     <box x="-1.70" y="0.74" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#4CAF50" id="demo_spawn_box" />
@@ -293,42 +293,43 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <box x="0.00" y="-0.42" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#E53935" id="demo_clear" />
     <text x="0.00" y="-0.42" z="-2.94" value="Clear All" size="0.07" />
 
-    <!-- ── Navigate column ── -->
-    <box x="1.70" y="0.74" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#4CAF50" id="btn_home" />
-    <text x="1.70" y="0.74" z="-2.94" value="Home" size="0.07" />
+    <!-- ── Inspect column (read-only / diagnostic actions) ── -->
+    <box x="1.70" y="0.74" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#795548" id="demo_query" />
+    <text x="1.70" y="0.74" z="-2.94" value="Query Test" size="0.07" />
 
-    <box x="1.70" y="0.45" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#FF9800" id="btn_about" />
-    <text x="1.70" y="0.45" z="-2.94" value="About" size="0.07" />
+    <box x="1.70" y="0.45" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#546E7A" id="demo_wave" />
+    <text x="1.70" y="0.45" z="-2.94" value="Ring Arrange" size="0.07" />
 
-    <box x="1.70" y="0.16" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#9C27B0" id="btn_settings" />
-    <text x="1.70" y="0.16" z="-2.94" value="Settings" size="0.07" />
-
-    <box x="1.70" y="-0.13" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#795548" id="demo_query" />
-    <text x="1.70" y="-0.13" z="-2.94" value="Query Test" size="0.07" />
-
-    <box x="1.70" y="-0.42" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#546E7A" id="demo_wave" />
-    <text x="1.70" y="-0.42" z="-2.94" value="Ring Arrange" size="0.07" />
-
-    <box x="1.70" y="-0.71" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#455A64" id="demo_mode" />
-    <text x="1.70" y="-0.71" z="-2.94" value="Mode" size="0.07" />
-
-    <box x="1.70" y="-1.00" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#EF5350" id="btn_fire_demo" />
-    <text x="1.70" y="-1.00" z="-2.94" value="Fire Demo" size="0.07" />
-
-    <box x="1.70" y="-1.29" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#FF1744" id="btn_target_demo" />
-    <text x="1.70" y="-1.29" z="-2.94" value="Target Demo" size="0.07" />
-
-    <box x="1.70" y="-1.58" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#D50000" id="btn_range_demo" />
-    <text x="1.70" y="-1.58" z="-2.94" value="Range Demo" size="0.07" />
-
-    <box x="1.70" y="-1.87" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#7E57C2" id="btn_demos_menu" />
-    <text x="1.70" y="-1.87" z="-2.94" value="Demos Menu" size="0.07" />
+    <box x="1.70" y="0.16" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#455A64" id="demo_mode" />
+    <text x="1.70" y="0.16" z="-2.94" value="Mode" size="0.07" />
 
     <!-- Status bar -->
-    <text x="0" y="-0.78" z="-2.96" value="Status: ready" size="0.085" id="demo_status" color="#FFFFFF" />
-    <text x="0" y="-0.96" z="-2.96" value="Dynamic nodes: 0" size="0.075" id="demo_count" color="#B0BEC5" />
-    <text x="0" y="-1.12" z="-2.96" value="Animation: off" size="0.075" id="demo_anim" color="#B0BEC5" />
-    <text x="0" y="-1.28" z="-2.96" value="Objects scale 1:10 of distance — spawns appear around you" size="0.063" id="demo_hint" color="#546E7A" />
+    <text x="0" y="-0.70" z="-2.96" value="Status: ready" size="0.085" id="demo_status" color="#FFFFFF" />
+    <text x="0" y="-0.88" z="-2.96" value="Dynamic nodes: 0" size="0.075" id="demo_count" color="#B0BEC5" />
+    <text x="0" y="-1.04" z="-2.96" value="Animation: off" size="0.075" id="demo_anim" color="#B0BEC5" />
+    <text x="0" y="-1.20" z="-2.96" value="Objects scale 1:10 of distance — spawns appear around you" size="0.063" id="demo_hint" color="#546E7A" />
+
+    <!-- Bottom navigation row -->
+    <box x="-2.10" y="-1.42" z="-3.0" sx="0.55" sy="0.20" sz="0.05" color="#4CAF50" id="btn_home" />
+    <text x="-2.10" y="-1.42" z="-2.94" value="HOME" size="0.07" color="#FFFFFF" />
+
+    <box x="-1.40" y="-1.42" z="-3.0" sx="0.55" sy="0.20" sz="0.05" color="#FF9800" id="btn_about" />
+    <text x="-1.40" y="-1.42" z="-2.94" value="ABOUT" size="0.07" color="#FFFFFF" />
+
+    <box x="-0.70" y="-1.42" z="-3.0" sx="0.55" sy="0.20" sz="0.05" color="#9C27B0" id="btn_settings" />
+    <text x="-0.70" y="-1.42" z="-2.94" value="SETTINGS" size="0.07" color="#FFFFFF" />
+
+    <box x="0.00" y="-1.42" z="-3.0" sx="0.55" sy="0.20" sz="0.05" color="#7E57C2" id="btn_demos_menu" />
+    <text x="0.00" y="-1.42" z="-2.94" value="DEMOS" size="0.07" color="#FFFFFF" />
+
+    <box x="0.70" y="-1.42" z="-3.0" sx="0.55" sy="0.20" sz="0.05" color="#EF5350" id="btn_fire_demo" />
+    <text x="0.70" y="-1.42" z="-2.94" value="FIRE" size="0.07" color="#FFFFFF" />
+
+    <box x="1.40" y="-1.42" z="-3.0" sx="0.55" sy="0.20" sz="0.05" color="#FF1744" id="btn_target_demo" />
+    <text x="1.40" y="-1.42" z="-2.94" value="TARGET" size="0.07" color="#FFFFFF" />
+
+    <box x="2.10" y="-1.42" z="-3.0" sx="0.55" sy="0.20" sz="0.05" color="#D50000" id="btn_range_demo" />
+    <text x="2.10" y="-1.42" z="-2.94" value="RANGE" size="0.07" color="#FFFFFF" />
 
     <script>
     const root = hiperspace.dimention;
@@ -1154,34 +1155,41 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <posezone id="gun_zone" x="0" y="1.0" z="0" sx="40" sy="12" sz="40" visible="false" />
 
     <!-- Ground -->
-    <plane x="0" y="-3" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#0a0a0a" id="ground" />
+    <plane x="0" y="-3" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#080D12" id="ground" />
 
-    <!-- Control Panel -->
-    <plane x="0" y="0.50" z="-3.15" sx="2.50" sy="1.50" sz="1" color="#1a1a2e" id="control_panel" />
+    <!-- Control Panel (side-mounted left to clear forward firing arc) -->
+    <plane x="-2.5" y="0.50" z="-3.15" sx="2.50" sy="2.40" sz="1" color="#1a1a2e" id="control_panel" />
 
-    <text x="0" y="1.20" z="-3.0" value="Fire Bullet Demo" size="0.20" color="#FF6B6B" />
-    <text x="0" y="0.85" z="-3.0" value="Right trigger fires from the right controller" size="0.10" color="#888888" />
-    <text x="0" y="0.68" z="-3.0" value="FIRE button stays as manual fallback" size="0.08" color="#666666" />
+    <text x="-2.5" y="1.20" z="-3.0" value="Fire Bullet Demo" size="0.20" color="#FF6B6B" />
+    <text x="-2.5" y="0.85" z="-3.0" value="Right trigger fires from the right controller" size="0.10" color="#888888" />
+    <text x="-2.5" y="0.68" z="-3.0" value="FIRE button stays as manual fallback" size="0.08" color="#666666" />
 
-    <!-- Fire Button -->
-    <box x="-0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#FF6B6B" id="fire_button" touchable="true"/>
-    <text x="-0.6" y="0.50" z="-2.94" value="FIRE!" size="0.10" color="#FFFFFF" />
+    <!-- Action row -->
+    <box x="-3.1" y="0.30" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#FF6B6B" id="btn_fire" touchable="true"/>
+    <text x="-3.1" y="0.30" z="-2.94" value="FIRE!" size="0.10" color="#FFFFFF" />
 
-    <!-- Clear Button -->
-    <box x="0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4ECDC4" id="clear_button" touchable="true"/>
-    <text x="0.6" y="0.50" z="-2.94" value="CLEAR" size="0.10" color="#FFFFFF" />
+    <box x="-1.9" y="0.30" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4ECDC4" id="btn_clear" touchable="true"/>
+    <text x="-1.9" y="0.30" z="-2.94" value="CLEAR" size="0.10" color="#FFFFFF" />
 
-    <!-- Home Button -->
-    <box x="-0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4CAF50" id="home_button" touchable="true"/>
-    <text x="-0.35" y="0.05" z="-2.94" value="HOME" size="0.10" color="#FFFFFF" />
+    <!-- Status -->
+    <text x="-2.5" y="-0.05" z="-3.0" value="Bullets: 0" size="0.10" id="bullet_count" color="#FFD700" />
+    <text x="-2.5" y="-0.22" z="-3.0" value="Ready to fire!" size="0.08" id="status_text" color="#FFFFFF" />
 
-    <!-- Demos Button -->
-    <box x="0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#7E57C2" id="demos_button" touchable="true"/>
-    <text x="0.35" y="0.05" z="-2.94" value="DEMOS" size="0.10" color="#FFFFFF" />
+    <!-- Cross-demo nav row -->
+    <box x="-3.20" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
+    <text x="-3.20" y="-0.55" z="-2.94" value="HOME" size="0.07" color="#FFFFFF" />
 
-    <!-- Status Text -->
-    <text x="0" y="-0.40" z="-3.0" value="Bullets: 0" size="0.10" id="bullet_count" color="#FFD700" />
-    <text x="0" y="-0.60" z="-3.0" value="Ready to fire!" size="0.08" id="status_text" color="#FFFFFF" />
+    <box x="-2.70" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
+    <text x="-2.70" y="-0.55" z="-2.94" value="DEMOS" size="0.07" color="#FFFFFF" />
+
+    <box x="-2.20" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#7E57C2" id="btn_scale_demo" touchable="true"/>
+    <text x="-2.20" y="-0.55" z="-2.94" value="SCALE" size="0.07" color="#FFFFFF" />
+
+    <box x="-1.70" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#FF1744" id="btn_target_demo" touchable="true"/>
+    <text x="-1.70" y="-0.55" z="-2.94" value="TARGET" size="0.07" color="#FFFFFF" />
+
+    <box x="-1.20" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#D50000" id="btn_range_demo" touchable="true"/>
+    <text x="-1.20" y="-0.55" z="-2.94" value="RANGE" size="0.07" color="#FFFFFF" />
 
     <script>
     const root = hiperspace.dimention;
@@ -1352,7 +1360,7 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     }
 
     // Bindings
-    const fireBtn = byId('fire_button');
+    const fireBtn = byId('btn_fire');
     if (fireBtn) fireBtn.addEventListener('toque', fireBullet);
 
     const gunZone = byId('gun_zone');
@@ -1368,17 +1376,19 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       });
     }
 
-    const clearBtn = byId('clear_button');
+    const clearBtn = byId('btn_clear');
     if (clearBtn) clearBtn.addEventListener('toque', clearBullets);
 
-    const homeBtn = byId('home_button');
-    if (homeBtn) homeBtn.addEventListener('toque', () => {
-      location.href = 'luna://home';
-    });
-
-    const demosBtn = byId('demos_button');
-    if (demosBtn) demosBtn.addEventListener('toque', () => {
-      location.href = 'luna://demos';
+    const navLinks = {
+      btn_home:        'luna://home',
+      btn_demos:       'luna://demos',
+      btn_scale_demo:  'luna://scale_demo',
+      btn_target_demo: 'luna://target_demo',
+      btn_range_demo:  'luna://range_demo',
+    };
+    Object.keys(navLinks).forEach((id) => {
+      const el = byId(id);
+      if (el) el.addEventListener('toque', () => { location.href = navLinks[id]; });
     });
 
     updateBulletCount();
@@ -1398,28 +1408,38 @@ const LUNA_TARGET_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <space resources="navigate_self,read_pose_stream">
     <posezone id="gun_zone" x="0" y="1.0" z="0" sx="40" sy="12" sz="40" visible="false" />
 
-    <plane x="0" y="-3" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#0a0a0a" id="ground" />
+    <plane x="0" y="-3" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#080D12" id="ground" />
 
-    <plane x="0" y="0.50" z="-3.15" sx="2.50" sy="1.50" sz="1" color="#1a1a2e" id="control_panel" />
+    <plane x="-2.5" y="0.50" z="-3.15" sx="2.50" sy="2.40" sz="1" color="#1a1a2e" id="control_panel" />
 
-    <text x="0" y="1.20" z="-3.0" value="Target Practice" size="0.20" color="#FF1744" />
-    <text x="0" y="0.85" z="-3.0" value="Right trigger fires. Hit moving targets to score." size="0.10" color="#888888" />
+    <text x="-2.5" y="1.20" z="-3.0" value="Target Practice" size="0.20" color="#FF1744" />
+    <text x="-2.5" y="0.85" z="-3.0" value="Right trigger fires. Hit moving targets to score." size="0.10" color="#888888" />
 
-    <box x="-0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#FF6B6B" id="fire_button" touchable="true"/>
-    <text x="-0.6" y="0.50" z="-2.94" value="FIRE!" size="0.10" color="#FFFFFF" />
+    <box x="-3.1" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#FF6B6B" id="btn_fire" touchable="true"/>
+    <text x="-3.1" y="0.50" z="-2.94" value="FIRE!" size="0.10" color="#FFFFFF" />
 
-    <box x="0.6" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4ECDC4" id="reset_button" touchable="true"/>
-    <text x="0.6" y="0.50" z="-2.94" value="RESET" size="0.10" color="#FFFFFF" />
+    <box x="-1.9" y="0.50" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4ECDC4" id="btn_reset" touchable="true"/>
+    <text x="-1.9" y="0.50" z="-2.94" value="RESET" size="0.10" color="#FFFFFF" />
 
-    <box x="-0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#4CAF50" id="home_button" touchable="true"/>
-    <text x="-0.35" y="0.05" z="-2.94" value="HOME" size="0.10" color="#FFFFFF" />
+    <text x="-2.5" y="0.20" z="-3.0" value="Score: 0" size="0.12" id="score_text" color="#FFD700" />
+    <text x="-2.5" y="0.02" z="-3.0" value="Bullets: 0  Targets: 0" size="0.09" id="hud_text" color="#B0BEC5" />
+    <text x="-2.5" y="-0.16" z="-3.0" value="Ready" size="0.08" id="status_text" color="#FFFFFF" />
 
-    <box x="0.35" y="0.05" z="-3.0" sx="0.6" sy="0.25" sz="0.05" color="#7E57C2" id="demos_button" touchable="true"/>
-    <text x="0.35" y="0.05" z="-2.94" value="DEMOS" size="0.10" color="#FFFFFF" />
+    <!-- Cross-demo nav row -->
+    <box x="-3.20" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
+    <text x="-3.20" y="-0.55" z="-2.94" value="HOME" size="0.07" color="#FFFFFF" />
 
-    <text x="0" y="-0.30" z="-3.0" value="Score: 0" size="0.12" id="score_text" color="#FFD700" />
-    <text x="0" y="-0.50" z="-3.0" value="Bullets: 0  Targets: 0" size="0.09" id="hud_text" color="#B0BEC5" />
-    <text x="0" y="-0.66" z="-3.0" value="Ready" size="0.08" id="status_text" color="#FFFFFF" />
+    <box x="-2.70" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
+    <text x="-2.70" y="-0.55" z="-2.94" value="DEMOS" size="0.07" color="#FFFFFF" />
+
+    <box x="-2.20" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#7E57C2" id="btn_scale_demo" touchable="true"/>
+    <text x="-2.20" y="-0.55" z="-2.94" value="SCALE" size="0.07" color="#FFFFFF" />
+
+    <box x="-1.70" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#EF5350" id="btn_fire_demo" touchable="true"/>
+    <text x="-1.70" y="-0.55" z="-2.94" value="FIRE" size="0.07" color="#FFFFFF" />
+
+    <box x="-1.20" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#D50000" id="btn_range_demo" touchable="true"/>
+    <text x="-1.20" y="-0.55" z="-2.94" value="RANGE" size="0.07" color="#FFFFFF" />
 
     <script>
     const root = hiperspace.dimention;
@@ -1650,20 +1670,22 @@ const LUNA_TARGET_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       requestAnimationFrame(animate);
     }
 
-    const fireBtn = byId('fire_button');
+    const fireBtn = byId('btn_fire');
     if (fireBtn) fireBtn.addEventListener('toque', fireBullet);
 
-    const resetBtn = byId('reset_button');
+    const resetBtn = byId('btn_reset');
     if (resetBtn) resetBtn.addEventListener('toque', resetGame);
 
-    const homeBtn = byId('home_button');
-    if (homeBtn) homeBtn.addEventListener('toque', () => {
-      location.href = 'luna://home';
-    });
-
-    const demosBtn = byId('demos_button');
-    if (demosBtn) demosBtn.addEventListener('toque', () => {
-      location.href = 'luna://demos';
+    const navLinks = {
+      btn_home:       'luna://home',
+      btn_demos:      'luna://demos',
+      btn_scale_demo: 'luna://scale_demo',
+      btn_fire_demo:  'luna://fire_demo',
+      btn_range_demo: 'luna://range_demo',
+    };
+    Object.keys(navLinks).forEach((id) => {
+      const el = byId(id);
+      if (el) el.addEventListener('toque', () => { location.href = navLinks[id]; });
     });
 
     const gunZone = byId('gun_zone');
@@ -1699,44 +1721,54 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <space resources="navigate_self,read_pose_stream">
     <posezone id="gun_zone" x="0" y="1.0" z="0" sx="40" sy="12" sz="40" visible="false" />
 
-    <plane x="0" y="-3" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#0a0a0a" id="ground" />
+    <plane x="0" y="-3" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#080D12" id="ground" />
 
     <!-- Range walls / lane markers -->
     <plane x="-6" y="0" z="-15" ry="1.5708" sx="30" sy="6" sz="1" color="#1a1a2e" id="lane_left" />
     <plane x="6" y="0" z="-15" ry="-1.5708" sx="30" sy="6" sz="1" color="#1a1a2e" id="lane_right" />
     <plane x="0" y="0" z="-30" sx="14" sy="6" sz="1" color="#161628" id="lane_back" />
 
-    <!-- Control panel -->
-    <plane x="0" y="0.50" z="-3.15" sx="2.80" sy="1.60" sz="1" color="#0d1b2a" id="control_panel" />
+    <!-- Control panel (side-mounted left, clear of forward shooting axis) -->
+    <plane x="-3.5" y="0.50" z="-3.15" sx="2.80" sy="2.40" sz="1" color="#0d1b2a" id="control_panel" />
 
-    <text x="0" y="1.30" z="-3.0" value="Shooting Range" size="0.20" color="#D50000" />
-    <text x="0" y="1.00" z="-3.0" value="One pull = one shot. Hit all targets to advance." size="0.085" color="#888888" />
+    <text x="-3.5" y="1.30" z="-3.0" value="Shooting Range" size="0.20" color="#D50000" />
+    <text x="-3.5" y="1.00" z="-3.0" value="One pull = one shot. Hit all targets to advance." size="0.085" color="#888888" />
 
     <!-- Status / HUD -->
-    <text x="-0.95" y="0.65" z="-3.0" value="LEVEL" size="0.075" color="#888888" />
-    <text x="-0.95" y="0.50" z="-3.0" value="1" size="0.18" id="level_text" color="#FFD700" />
+    <text x="-4.45" y="0.65" z="-3.0" value="LEVEL" size="0.075" color="#888888" />
+    <text x="-4.45" y="0.50" z="-3.0" value="1" size="0.18" id="level_text" color="#FFD700" />
 
-    <text x="0.00" y="0.65" z="-3.0" value="SCORE" size="0.075" color="#888888" />
-    <text x="0.00" y="0.50" z="-3.0" value="0" size="0.18" id="score_text" color="#FFD700" />
+    <text x="-3.50" y="0.65" z="-3.0" value="SCORE" size="0.075" color="#888888" />
+    <text x="-3.50" y="0.50" z="-3.0" value="0" size="0.18" id="score_text" color="#FFD700" />
 
-    <text x="0.95" y="0.65" z="-3.0" value="LEFT" size="0.075" color="#888888" />
-    <text x="0.95" y="0.50" z="-3.0" value="0" size="0.18" id="left_text" color="#00E676" />
+    <text x="-2.55" y="0.65" z="-3.0" value="LEFT" size="0.075" color="#888888" />
+    <text x="-2.55" y="0.50" z="-3.0" value="0" size="0.18" id="left_text" color="#00E676" />
 
-    <text x="0" y="0.18" z="-3.0" value="" size="0.085" id="banner_text" color="#4FC3F7" />
+    <text x="-3.5" y="0.18" z="-3.0" value="" size="0.085" id="banner_text" color="#4FC3F7" />
 
-    <box x="-0.92" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#D50000" id="start_button" touchable="true"/>
-    <text x="-0.92" y="-0.15" z="-2.94" value="START" size="0.08" color="#FFFFFF" />
+    <box x="-4.42" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#D50000" id="btn_start" touchable="true"/>
+    <text x="-4.42" y="-0.15" z="-2.94" value="START" size="0.08" color="#FFFFFF" />
 
-    <box x="-0.31" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#FF6B6B" id="reset_button" touchable="true"/>
-    <text x="-0.31" y="-0.15" z="-2.94" value="RESET" size="0.08" color="#FFFFFF" />
+    <box x="-3.81" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#FF6B6B" id="btn_reset" touchable="true"/>
+    <text x="-3.81" y="-0.15" z="-2.94" value="RESET" size="0.08" color="#FFFFFF" />
 
-    <box x="0.31" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#4CAF50" id="home_button" touchable="true"/>
-    <text x="0.31" y="-0.15" z="-2.94" value="HOME" size="0.08" color="#FFFFFF" />
+    <text x="-3.5" y="-0.40" z="-3.0" value="Idle" size="0.075" id="status_text" color="#FFFFFF" />
 
-    <box x="0.92" y="-0.15" z="-3.0" sx="0.42" sy="0.22" sz="0.05" color="#7E57C2" id="demos_button" touchable="true"/>
-    <text x="0.92" y="-0.15" z="-2.94" value="DEMOS" size="0.08" color="#FFFFFF" />
+    <!-- Cross-demo nav row -->
+    <box x="-4.45" y="-0.70" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
+    <text x="-4.45" y="-0.70" z="-2.94" value="HOME" size="0.07" color="#FFFFFF" />
 
-    <text x="0" y="-0.50" z="-3.0" value="Idle" size="0.075" id="status_text" color="#FFFFFF" />
+    <box x="-3.95" y="-0.70" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
+    <text x="-3.95" y="-0.70" z="-2.94" value="DEMOS" size="0.07" color="#FFFFFF" />
+
+    <box x="-3.45" y="-0.70" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#7E57C2" id="btn_scale_demo" touchable="true"/>
+    <text x="-3.45" y="-0.70" z="-2.94" value="SCALE" size="0.07" color="#FFFFFF" />
+
+    <box x="-2.95" y="-0.70" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#EF5350" id="btn_fire_demo" touchable="true"/>
+    <text x="-2.95" y="-0.70" z="-2.94" value="FIRE" size="0.07" color="#FFFFFF" />
+
+    <box x="-2.45" y="-0.70" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#FF1744" id="btn_target_demo" touchable="true"/>
+    <text x="-2.45" y="-0.70" z="-2.94" value="TARGET" size="0.07" color="#FFFFFF" />
 
     <script>
     const root = hiperspace.dimention;
@@ -2084,20 +2116,22 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     }
 
     // ── Bindings ───────────────────────────────────────────────────────────
-    const startBtn = byId('start_button');
+    const startBtn = byId('btn_start');
     if (startBtn) startBtn.addEventListener('toque', startRun);
 
-    const resetBtn = byId('reset_button');
+    const resetBtn = byId('btn_reset');
     if (resetBtn) resetBtn.addEventListener('toque', resetRun);
 
-    const homeBtn = byId('home_button');
-    if (homeBtn) homeBtn.addEventListener('toque', () => {
-      location.href = 'luna://home';
-    });
-
-    const demosBtn = byId('demos_button');
-    if (demosBtn) demosBtn.addEventListener('toque', () => {
-      location.href = 'luna://demos';
+    const navLinks = {
+      btn_home:        'luna://home',
+      btn_demos:       'luna://demos',
+      btn_scale_demo:  'luna://scale_demo',
+      btn_fire_demo:   'luna://fire_demo',
+      btn_target_demo: 'luna://target_demo',
+    };
+    Object.keys(navLinks).forEach((id) => {
+      const el = byId(id);
+      if (el) el.addEventListener('toque', () => { location.href = navLinks[id]; });
     });
 
     const gunZone = byId('gun_zone');
@@ -2144,17 +2178,17 @@ mod tests {
         attrs.insert(0, HashMap::new());
         attrs.insert(1, {
             let mut m = HashMap::new();
-            m.insert("id".to_string(), "fire_button".to_string());
+            m.insert("id".to_string(), "btn_fire".to_string());
             m
         });
         attrs.insert(2, {
             let mut m = HashMap::new();
-            m.insert("id".to_string(), "clear_button".to_string());
+            m.insert("id".to_string(), "btn_clear".to_string());
             m
         });
         attrs.insert(3, {
             let mut m = HashMap::new();
-            m.insert("id".to_string(), "home_button".to_string());
+            m.insert("id".to_string(), "btn_home".to_string());
             m
         });
         attrs.insert(4, {
