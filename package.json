@@ -6,12 +6,14 @@
     "luna":          "cargo run -p luna",
     "luna:ar":       "cargo run -p luna -- --ar",
     "luna:release":  "cargo run -p luna --release",
+    "luna:release-fast": "cargo run -p luna --profile release-fast",
 
     "check":         "cargo check -p luna",
     "check:all":     "cargo check --workspace",
 
     "build":         "cargo build -p luna",
     "build:release": "cargo build -p luna --release",
+    "build:release-fast": "cargo build -p luna --profile release-fast",
     "build:all":     "cargo build --workspace",
 
     "test":          "cargo test --workspace",

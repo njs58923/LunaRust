@@ -63,4 +63,23 @@ codegen-units = 64
 [profile.dev-optimized.package."*"]
 opt-level = 3
 
+# Release optimizado: lto fat + codegen-units 1 = compila lento, runtime/fps max
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+incremental = false
+
+[profile.release.package."*"]
+opt-level = 3
+
+# Release rapido para iterar: ~90% ganancia, mitad de coste de compilacion
+# uso: cargo build -p luna --profile release-fast
+[profile.release-fast]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
 # ⚠️ Optimizaciones Mias ⚠️
