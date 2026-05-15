@@ -156,7 +156,11 @@
       function startEnterAnimation() {
         // Reset todos a 0 (cascada renacerá).
         for (const ref of itemRefs) applyScale(ref, 0);
-        animStartTs = performance.now();
+        // -1 = sentinel: se setea en la 1ra llamada a tickAnim usando el
+        // timestamp que pasa raf. NO usar performance.now() acá: el ts del
+        // raf viene del clock de Bevy (time.elapsed) y performance.now() del
+        // clock del isolate — timebases distintos, daría elapsed enorme.
+        animStartTs = -1;
         animMode = 'enter';
         animActive = true;
         requestAnimationFrame(tickAnim);
@@ -165,7 +169,7 @@
       function startExitAnimation() {
         // Asume items en estado final (scale 1). Si vienen colapsados (anim
         // interrumpida), arrancan desde donde estén — visualmente OK.
-        animStartTs = performance.now();
+        animStartTs = -1;
         animMode = 'exit';
         animActive = true;
         requestAnimationFrame(tickAnim);
@@ -173,6 +177,7 @@
 
       function tickAnim(ts) {
         if (!animActive) return;
+        if (animStartTs < 0) animStartTs = ts;
         const elapsed = ts - animStartTs;
         const n = itemRefs.length;
         let stillRunning = false;
