@@ -1322,9 +1322,11 @@ pub fn js_tick_system(world: &mut World) {
         let mut validated_scales = Vec::new();
 
         for (space_id, updates) in attr_update_batches {
+            let Some(table) = space_handle_tables.by_space.get(&space_id) else {
+                continue;
+            };
             for (local_id, key, value) in updates {
-                if let Some(global_id) = resolve_global_id(&space_handle_tables, space_id, local_id)
-                {
+                if let Some(global_id) = table.local_to_global.get(&local_id).copied() {
                     validated.push((global_id, key, value));
                 } else {
                     ownership_logs.push(format!(
@@ -1335,9 +1337,11 @@ pub fn js_tick_system(world: &mut World) {
         }
 
         for (space_id, updates) in pos_update_batches {
+            let Some(table) = space_handle_tables.by_space.get(&space_id) else {
+                continue;
+            };
             for (local_id, pos) in updates {
-                if let Some(global_id) = resolve_global_id(&space_handle_tables, space_id, local_id)
-                {
+                if let Some(global_id) = table.local_to_global.get(&local_id).copied() {
                     validated_positions.push((global_id, pos));
                 } else {
                     ownership_logs.push(format!(
@@ -1348,9 +1352,11 @@ pub fn js_tick_system(world: &mut World) {
         }
 
         for (space_id, updates) in rot_update_batches {
+            let Some(table) = space_handle_tables.by_space.get(&space_id) else {
+                continue;
+            };
             for (local_id, rot) in updates {
-                if let Some(global_id) = resolve_global_id(&space_handle_tables, space_id, local_id)
-                {
+                if let Some(global_id) = table.local_to_global.get(&local_id).copied() {
                     validated_rotations.push((global_id, rot));
                 } else {
                     ownership_logs.push(format!(
@@ -1361,9 +1367,11 @@ pub fn js_tick_system(world: &mut World) {
         }
 
         for (space_id, updates) in scale_update_batches {
+            let Some(table) = space_handle_tables.by_space.get(&space_id) else {
+                continue;
+            };
             for (local_id, scale) in updates {
-                if let Some(global_id) = resolve_global_id(&space_handle_tables, space_id, local_id)
-                {
+                if let Some(global_id) = table.local_to_global.get(&local_id).copied() {
                     validated_scales.push((global_id, scale));
                 } else {
                     ownership_logs.push(format!(

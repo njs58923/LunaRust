@@ -828,11 +828,11 @@ pub fn apply_transform_updates(
             tr.position.x = pos.x;
             tr.position.y = pos.y;
             tr.position.z = pos.z;
-            // Marcar dirty siempre — `dom_sync_system` filtra internamente
-            // por `dom_data.nodes`. Si el node está ya attached, se sincroniza
-            // al Transform Bevy en el frame siguiente; si no, queda no-op.
-            dirty_nodes.0.push(node_id);
-            transform_only_dirty.0.insert(node_id);
+            // Para nodos ya attached: un único dirty por frame alcanza aunque
+            // lleguen position+rotation+scale por separado.
+            if dom_data.nodes.contains_key(&node_id) && transform_only_dirty.0.insert(node_id) {
+                dirty_nodes.0.push(node_id);
+            }
         }
     }
 
@@ -845,8 +845,9 @@ pub fn apply_transform_updates(
             tr.rotation.x = rot.x;
             tr.rotation.y = rot.y;
             tr.rotation.z = rot.z;
-            dirty_nodes.0.push(node_id);
-            transform_only_dirty.0.insert(node_id);
+            if dom_data.nodes.contains_key(&node_id) && transform_only_dirty.0.insert(node_id) {
+                dirty_nodes.0.push(node_id);
+            }
         }
     }
 
@@ -859,8 +860,9 @@ pub fn apply_transform_updates(
             tr.scale.x = scale.x;
             tr.scale.y = scale.y;
             tr.scale.z = scale.z;
-            dirty_nodes.0.push(node_id);
-            transform_only_dirty.0.insert(node_id);
+            if dom_data.nodes.contains_key(&node_id) && transform_only_dirty.0.insert(node_id) {
+                dirty_nodes.0.push(node_id);
+            }
         }
     }
 }
