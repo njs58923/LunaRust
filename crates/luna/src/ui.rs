@@ -524,17 +524,11 @@ fn navigate_tab_to_url(
             enqueue_tab_unmount(unmount_queue, &old);
             deferred_mounts.push(DeferredSpaceMount {
                 wait_gone_tab_id: old.tab_id,
-                mount: SpaceMountRequest {
-                    tab_id: old.tab_id,
-                    url: new_url.clone(),
-                },
+                mount: SpaceMountRequest::new(old.tab_id, new_url.clone()),
             });
         }
     } else {
-        mount_queue.push(SpaceMountRequest {
-            tab_id: old.tab_id,
-            url: new_url.clone(),
-        });
+        mount_queue.push(SpaceMountRequest::new(old.tab_id, new_url.clone()));
     }
 
     mounted_spaces[idx].url = new_url.clone();
@@ -555,10 +549,7 @@ fn reload_tab(
     enqueue_tab_unmount(unmount_queue, tab);
     deferred_mounts.push(DeferredSpaceMount {
         wait_gone_tab_id: tab.tab_id,
-        mount: SpaceMountRequest {
-            tab_id: tab.tab_id,
-            url: tab.url.clone(),
-        },
+        mount: SpaceMountRequest::new(tab.tab_id, tab.url.clone()),
     });
 }
 

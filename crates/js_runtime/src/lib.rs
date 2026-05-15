@@ -281,10 +281,14 @@ impl Default for NavigateQueue {
 
 /// chrome.tabs-like requests desde JS. El host valida cap y traduce a
 /// SpaceMountQueue / SpaceUnmountQueue / etc.
+///
+/// El `kind` en `Open` es un string opaco para el engine — la semántica
+/// (cerrar otras spatial, persistir app, etc.) vive en JS (`root_api.js`).
+/// Convenciones: `"spatial"` (default si vacío) | `"app"` | futuro: `"app-embedded"`.
 #[derive(Clone, Debug)]
 pub enum TabAction {
-    /// Abre nueva tab cargando url. La tab queda visible.
-    Open { url: String },
+    /// Abre nueva tab cargando url. `kind` opaco — JS shell aplica policy.
+    Open { url: String, kind: String },
     /// Cierra tab por su tab_id.
     Close { tab_id: u64 },
     /// Cambia visibilidad de una tab existente.
@@ -819,12 +823,15 @@ fn op_navigate(state: &mut OpState, #[string] url: &str) {
 // --- Tabs ops (chrome.tabs-like, gated por cap manage_tabs en main thread) ---
 
 #[op2(fast)]
-fn op_tab_open(state: &mut OpState, #[string] url: &str) {
+fn op_tab_open(state: &mut OpState, #[string] url: &str, #[string] kind: &str) {
     let queue = state.borrow::<TabActionQueue>();
     queue
         .queue
         .borrow_mut()
-        .push(TabAction::Open { url: url.to_string() });
+        .push(TabAction::Open {
+            url: url.to_string(),
+            kind: kind.to_string(),
+        });
 }
 
 #[op2(fast)]

@@ -27,15 +27,22 @@
 
       // ── Bookmarks ──────────────────────────────────────────────────────
       // TODO(persistence): mover a storage cuando exista API.
+      //
+      // kind:
+      //   'spatial' (default): al abrir cierra otras spatial — "moverse a otro lugar"
+      //   'app':              aditiva, persiste entre cambios de spatial
+      //
+      // En el futuro este kind lo sugerirá el doc destino (<space role=...>)
+      // o lo declarará el usuario al guardar marcador. Hoy lo hardcodeamos.
       const BOOKMARKS = [
-        { name: 'Home',     url: 'luna://home' },
-        { name: 'Demos',    url: 'luna://demos' },
-        { name: 'Settings', url: 'luna://settings' },
-        { name: 'About',    url: 'luna://about' },
-        { name: 'Scale',    url: 'luna://scale_demo' },
-        { name: 'Fire',     url: 'luna://fire_demo' },
-        { name: 'Target',   url: 'luna://target_demo' },
-        { name: 'Range',    url: 'luna://range_demo' },
+        { name: 'Home',     url: 'luna://home',        kind: 'spatial' },
+        { name: 'Demos',    url: 'luna://demos',       kind: 'spatial' },
+        { name: 'Settings', url: 'luna://settings',    kind: 'app' },
+        { name: 'About',    url: 'luna://about',       kind: 'app' },
+        { name: 'Scale',    url: 'luna://scale_demo',  kind: 'spatial' },
+        { name: 'Fire',     url: 'luna://fire_demo',   kind: 'spatial' },
+        { name: 'Target',   url: 'luna://target_demo', kind: 'spatial' },
+        { name: 'Range',    url: 'luna://range_demo',  kind: 'spatial' },
       ];
 
       const PALETTE = [
@@ -141,7 +148,7 @@
           box.position = { x: px, y: py, z: Z };
           // Empieza colapsado para que la anim de entrada se note.
           box.scale = { x: 0.001, y: 0.001, z: 0.001 };
-          box.addEventListener('toque', () => openBookmark(bm.url));
+          box.addEventListener('toque', () => openBookmark(bm));
           panel.appendChild(box);
 
           const text = root.createElement('text');
@@ -289,13 +296,14 @@
         }
       }
 
-      function openBookmark(url) {
+      function openBookmark(bm) {
         if (dimention && dimention.tabs && typeof dimention.tabs.open === 'function') {
-          dimention.tabs.open(url);
+          // kind ∈ {'spatial', 'app'}; default 'spatial' si bookmark no lo declara.
+          dimention.tabs.open(bm.url, { kind: bm.kind || 'spatial' });
           setVisibleAndAnimate(false);
         } else {
           console.warn('[ux_vr] dimention.tabs unavailable — fallback location.href');
-          location.href = url;
+          location.href = bm.url;
         }
       }
 

@@ -50,11 +50,15 @@
     return null;
   }
 
-  function registerSpace(space) {
+  function registerSpace(space, kind) {
     for (const [publicId, entry] of registry) {
       if (entry.space.nodeId === space.nodeId) {
         if (!entry.include) {
           entry.include = findPrimaryInclude(space);
+        }
+        // Si re-discover sin kind explícito, no pisar lo que ya teníamos.
+        if (kind && !entry.kind) {
+          entry.kind = kind;
         }
         return publicId;
       }
@@ -64,6 +68,10 @@
     registry.set(publicId, {
       space,
       include: findPrimaryInclude(space),
+      // kind opaco. Convenciones: "spatial" | "app". Default spatial.
+      // Spaces descubiertos via discoverDirectSpaces() (sin pasar por mountSpace)
+      // se asumen spatial hasta que algo declare lo contrario.
+      kind: kind || 'spatial',
     });
     return publicId;
   }
@@ -150,6 +158,7 @@
       rotation: cloneVec3(entry.space.rotation, { x: 0, y: 0, z: 0 }),
       scale: cloneVec3(entry.space.scale, { x: 1, y: 1, z: 1 }),
       title: entry.space.getAttribute('title') || '',
+      kind: entry.kind || 'spatial',
     };
   }
 
@@ -161,20 +170,48 @@
       discoverDirectSpaces();
       cleanupRegistry();
 
+      // ── Kind & policy ──────────────────────────────────────────────────
+      // "spatial" (default): cierra todas las OTRAS tabs spatial antes de
+      //                       montar. El UX shell (managed-by=dimension.luna)
+      //                       y las apps NO se cierran.
+      // "app":               sólo se monta, no toca nada.
+      // ───────────────────────────────────────────────────────────────────
+      const kind = (options.kind === 'app') ? 'app' : 'spatial';
+
+      if (kind === 'spatial') {
+        // Cerrar todas las spatial existentes ANTES de crear la nueva, para
+        // evitar que la nueva entre transitoria al barrido si fuera ya child.
+        const toUnmount = [];
+        for (const [id, entry] of registry) {
+          if (id === this._uxSpaceId) continue;
+          // Las managed-by=dimension.luna que no son el shell son tabs spatiales
+          // o apps que abrimos nosotros — distinguimos por entry.kind.
+          if ((entry.kind || 'spatial') === 'spatial') {
+            toUnmount.push(id);
+          }
+        }
+        if (toUnmount.length) {
+          console.log('[root] mountSpace spatial', url, '— closing', toUnmount.length, 'previous spatial(s)');
+          for (const id of toUnmount) this.unmountSpace(id);
+        }
+      }
+
       const space = root.createElement('space');
-      const publicId = registerSpace(space);
+      const publicId = registerSpace(space, kind);
       const entry = registry.get(publicId);
       if (!entry) return -1;
 
       space.setAttribute('visible', options.visible === false ? 'false' : 'true');
       space.setAttribute('managed-by', 'dimension.luna');
+      space.setAttribute('data-luna-kind', kind);
 
       if (Array.isArray(options.grants) && options.grants.length) {
         space.setAttribute('resources', options.grants.join(','));
       }
 
       root.appendChild(space);
-      console.log('[root] mountSpace url=', url, 'grants=', Array.isArray(options.grants) ? options.grants.join(',') : '(none)');
+      console.log('[root] mountSpace url=', url, 'kind=', kind,
+        'grants=', Array.isArray(options.grants) ? options.grants.join(',') : '(none)');
       const include = ensureInclude(entry);
       if (Array.isArray(options.grants)) {
         include.setAttribute('resources', options.grants.join(','));

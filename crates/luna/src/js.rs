@@ -1877,26 +1877,26 @@ pub fn js_tick_system(world: &mut World) {
     // Cada acción se valida por cap del space caller, luego se traduce a la
     // queue host correspondiente (SpaceMountQueue / SpaceUnmountQueue).
     if !tab_action_batches.is_empty() {
-        let mut open_requests: Vec<(u32, String)> = Vec::new();
+        let mut open_requests: Vec<(u32, String, String)> = Vec::new(); // (space_id, url, kind)
         let mut close_requests: Vec<(u32, u64)> = Vec::new();
         let mut visibility_requests: Vec<(u32, u64, bool)> = Vec::new();
 
         for (space_id, actions) in tab_action_batches {
             for action in actions {
                 match action {
-                    js_runtime::TabAction::Open { url } => {
+                    js_runtime::TabAction::Open { url, kind } => {
                         let caps = capabilities_by_space
                             .get(&space_id)
                             .copied()
                             .unwrap_or_default();
                         if caps.contains(CapabilityBits::MOUNT_ROOT_SPACE) {
-                            open_requests.push((space_id, url));
+                            open_requests.push((space_id, url, kind));
                         } else if let Some(mut log_panel) =
                             world.get_resource_mut::<LogPanel>()
                         {
                             log_panel.push_warn(format!(
-                                "[JS][space:{}] tabs.open denied (missing MOUNT_ROOT_SPACE): {}",
-                                space_id, url
+                                "[JS][space:{}] tabs.open denied (missing MOUNT_ROOT_SPACE): {} ({})",
+                                space_id, url, kind
                             ));
                         }
                     }
@@ -1945,10 +1945,11 @@ pub fn js_tick_system(world: &mut World) {
                 .map(|n| n.0)
                 .unwrap_or(1);
             let mut mount_pushes: Vec<crate::SpaceMountRequest> = Vec::new();
-            for (_space_id, url) in open_requests {
+            for (_space_id, url, kind) in open_requests {
                 mount_pushes.push(crate::SpaceMountRequest {
                     tab_id: next_id_value,
                     url,
+                    kind,
                 });
                 next_id_value = next_id_value.saturating_add(1);
             }

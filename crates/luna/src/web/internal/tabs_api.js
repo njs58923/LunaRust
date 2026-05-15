@@ -12,11 +12,27 @@
     return;
   }
 
+  // Kinds soportados. La policy real (cerrar otras spatial, etc) se aplica en
+  // root_api.js — acá sólo propagamos el string al host.
+  //   "spatial" — al abrir, el shell cierra otras tabs spatial.
+  //   "app"     — aditiva, persiste entre cambios de spatial.
+  // Default si no se pasa: "spatial" (equivale a window.open con _blank).
+  const VALID_KINDS = new Set(['spatial', 'app']);
+
   const tabsApi = {
-    // Abre nueva tab cargando `url`. Devuelve void; el tab_id real lo asigna
-    // el host. Para identificar tabs por url, usar list() (TODO).
-    open(url, _opts) {
-      ops.op_tab_open(String(url));
+    // Abre nueva tab cargando `url`. `opts.kind` define semantics.
+    // Devuelve void; el tab_id lo asigna el host. Para identificar por url,
+    // usar list() (TODO).
+    open(url, opts) {
+      let kind = 'spatial';
+      if (opts && typeof opts.kind === 'string') {
+        if (VALID_KINDS.has(opts.kind)) {
+          kind = opts.kind;
+        } else {
+          console.warn('[tabs] unknown kind', opts.kind, '— defaulting to spatial');
+        }
+      }
+      ops.op_tab_open(String(url), kind);
     },
     close(tabId) {
       ops.op_tab_close(BigInt(tabId));

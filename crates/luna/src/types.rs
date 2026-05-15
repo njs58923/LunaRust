@@ -261,6 +261,20 @@ pub struct MountedSpaceEntry {
 pub struct SpaceMountRequest {
     pub tab_id: u64,
     pub url: String,
+    /// Hint opaco al shell JS. Convenciones: "spatial" | "app". Vacío = default spatial.
+    pub kind: String,
+}
+
+impl SpaceMountRequest {
+    /// Constructor para callers que no especifican kind — quedan como spatial
+    /// (compat con código pre-Phase 1 tab kinds).
+    pub fn new(tab_id: u64, url: String) -> Self {
+        Self {
+            tab_id,
+            url,
+            kind: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
