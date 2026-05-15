@@ -35,7 +35,11 @@ bitflags! {
 /// Por ahora sólo concedidas a spaces `managed-by="dimension.luna"` (UX shell).
 /// TODO(perm-prompt): cuando exista el UX de prompt de permisos, las apps no
 /// trusted que las pidan deberían disparar un alert al usuario en vez de denegar.
-pub const ELEVATED_CAPABILITIES: CapabilityBits = CapabilityBits::READ_SYSTEM_INPUT;
+pub const ELEVATED_CAPABILITIES: CapabilityBits = CapabilityBits::READ_SYSTEM_INPUT
+    .union(CapabilityBits::MOUNT_ROOT_SPACE)
+    .union(CapabilityBits::UNMOUNT_ROOT_SPACE)
+    .union(CapabilityBits::UPDATE_ROOT_SPACE)
+    .union(CapabilityBits::LIST_ROOT_SPACES);
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -168,6 +172,21 @@ lazy_static! {
                 capabilities: CapabilityBits::READ_SYSTEM_INPUT,
                 native_services: NativeServiceBits::empty(),
                 auto_scripts: &[],
+            },
+        );
+
+        // API chrome.tabs-like — sólo para spaces UX shell (managed-by=dimension.luna).
+        // Bundle agrupa las 4 caps de mount/unmount/update/list root spaces +
+        // auto-inject del script que expone dimention.tabs.* en el isolate.
+        m.insert(
+            "manage_tabs",
+            ResourceBundleDef {
+                capabilities: CapabilityBits::MOUNT_ROOT_SPACE
+                    .union(CapabilityBits::UNMOUNT_ROOT_SPACE)
+                    .union(CapabilityBits::UPDATE_ROOT_SPACE)
+                    .union(CapabilityBits::LIST_ROOT_SPACES),
+                native_services: NativeServiceBits::empty(),
+                auto_scripts: &["luna://internal/tabs_api.js"],
             },
         );
 

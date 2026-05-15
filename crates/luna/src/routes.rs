@@ -45,6 +45,10 @@ impl VirtualRoutes {
             "internal/root_api.js".to_string(),
             RouteHandler::Static(SCRIPT_ROOT_API),
         );
+        routes.insert(
+            "internal/tabs_api.js".to_string(),
+            RouteHandler::Static(SCRIPT_TABS_API),
+        );
 
         // UX routes
         routes.insert("ux_desktop".to_string(), RouteHandler::Static(LUNA_UX_DESKTOP));
@@ -800,6 +804,54 @@ const LUNA_404: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 // SCRIPTS INTERNOS
 // ============================================================================
 
+/// chrome.tabs-like API expuesta como `dimention.tabs` (y `hiperspace.dimention.tabs`).
+/// Auto-inyectado vía bundle `manage_tabs` — sólo accesible para spaces UX shell
+/// con `managed-by="dimension.luna"`. Las ops pushean a colas internas; el host
+/// (luna js_tick_system) drena, chequea cap, y reenvía a SpaceMountQueue/etc.
+const SCRIPT_TABS_API: &str = r##"
+(function (global) {
+  const core = Deno.core;
+  const ops = core.ops;
+  if (!ops.op_tab_open) {
+    console.error('[tabs_api] op_tab_open missing — runtime lacks tabs ops');
+    return;
+  }
+
+  const tabsApi = {
+    /// Abre nueva tab cargando `url`. Devuelve void; el tab_id real lo asigna
+    /// el host. Para identificar tabs por url, usar list() (TODO).
+    open(url, _opts) {
+      ops.op_tab_open(String(url));
+    },
+    close(tabId) {
+      ops.op_tab_close(BigInt(tabId));
+    },
+    setVisible(tabId, visible) {
+      ops.op_tab_set_visible(BigInt(tabId), !!visible);
+    },
+    // TODO(tabs-list): expone una snapshot consultable. Hoy no implementado.
+    list() {
+      console.warn('[tabs] list() not yet implemented');
+      return [];
+    },
+  };
+
+  // Expone dos handles:
+  //   global.dimention.tabs       (forma compacta, post setHiperSpace)
+  //   hiperspace.dimention.tabs   (idem, mismo objeto)
+  function attach(target) {
+    if (target && !target.tabs) {
+      target.tabs = tabsApi;
+    }
+  }
+
+  attach(global.hiperspace && global.hiperspace.dimention);
+  attach(global.dimention);
+
+  console.log('[tabs_api] dimention.tabs ready');
+})(globalThis);
+"##;
+
 const SCRIPT_HOME_NAV: &str = r##"
 const btnDemos = hiperspace.dimention.getElementById('btn_demos');
 const btnSettings = hiperspace.dimention.getElementById('btn_settings');
@@ -1053,8 +1105,8 @@ const SCRIPT_ROOT_API: &str = r##"
 
       const uxUrl = mode === 'vr' ? 'luna://ux_vr' : 'luna://ux_desktop';
       const grants = mode === 'vr'
-        ? ['navigate_self', 'vr_locomotion', 'read_system_input']
-        : ['navigate_self', 'desktop_camera_control', 'read_system_input'];
+        ? ['navigate_self', 'vr_locomotion', 'read_system_input', 'manage_tabs']
+        : ['navigate_self', 'desktop_camera_control', 'read_system_input', 'manage_tabs'];
       this._uxSpaceId = this.mountSpace(uxUrl, { visible: true, grants });
       this._currentMode = mode;
       console.log('[root] ux mounted id=', this._uxSpaceId, 'url=', uxUrl);
@@ -1132,7 +1184,7 @@ const LUNA_UX_VR: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space id="ux_vr" resources="vr_locomotion,read_system_input">
+  <space id="ux_vr" resources="vr_locomotion,read_system_input,manage_tabs">
     <!-- Panel oculto por defecto. Se muestra cuando llega systeminput action=shell
          (botón menu del Touch izquierdo). El estado lo maneja este script. -->
     <group id="ux_vr_panel" visible="false">
@@ -1184,13 +1236,18 @@ const LUNA_UX_VR: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
         if (el) el.setAttribute('value', msg || '');
       }
 
-      // TODO(multi-tab): location.href reemplaza el contenido del space actual.
-      // Cuando dimension.luna.mountSpace esté disponible desde ux_vr (requiere
-      // grants extra: mount_root_space + auto-inject root_api.js), reemplazar
-      // por un mountSpace que abra cada bookmark como tab aparte.
       function openBookmark(url) {
-        setStatus('Opening ' + url + '...');
-        location.href = url;
+        if (dimention && dimention.tabs && typeof dimention.tabs.open === 'function') {
+          setStatus('Opening tab ' + url);
+          dimention.tabs.open(url);
+          // Auto-cerrar shell tras abrir bookmark, estilo Quest home.
+          setVisible(false);
+        } else {
+          // Fallback (no debería pasar si manage_tabs está concedido):
+          console.warn('[ux_vr] dimention.tabs unavailable — falling back to location.href');
+          setStatus('Opening ' + url + ' (no tabs API)');
+          location.href = url;
+        }
       }
 
       // Bind bookmarks

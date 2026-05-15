@@ -279,6 +279,29 @@ impl Default for NavigateQueue {
     }
 }
 
+/// chrome.tabs-like requests desde JS. El host valida cap y traduce a
+/// SpaceMountQueue / SpaceUnmountQueue / etc.
+#[derive(Clone, Debug)]
+pub enum TabAction {
+    /// Abre nueva tab cargando url. La tab queda visible.
+    Open { url: String },
+    /// Cierra tab por su tab_id.
+    Close { tab_id: u64 },
+    /// Cambia visibilidad de una tab existente.
+    SetVisible { tab_id: u64, visible: bool },
+}
+
+pub struct TabActionQueue {
+    pub queue: Shared<Vec<TabAction>>,
+}
+impl Default for TabActionQueue {
+    fn default() -> Self {
+        Self {
+            queue: shared(Vec::new()),
+        }
+    }
+}
+
 /// Queue of ws connect requests from JS: Vec<(conn_id, url)>
 pub struct WsConnectQueue {
     pub requests: Shared<Vec<(i32, String)>>,
@@ -758,6 +781,35 @@ fn op_navigate(state: &mut OpState, #[string] url: &str) {
     queue.queue.borrow_mut().push(url.to_string());
 }
 
+// --- Tabs ops (chrome.tabs-like, gated por cap manage_tabs en main thread) ---
+
+#[op2(fast)]
+fn op_tab_open(state: &mut OpState, #[string] url: &str) {
+    let queue = state.borrow::<TabActionQueue>();
+    queue
+        .queue
+        .borrow_mut()
+        .push(TabAction::Open { url: url.to_string() });
+}
+
+#[op2(fast)]
+fn op_tab_close(state: &mut OpState, #[bigint] tab_id: u64) {
+    let queue = state.borrow::<TabActionQueue>();
+    queue
+        .queue
+        .borrow_mut()
+        .push(TabAction::Close { tab_id });
+}
+
+#[op2(fast)]
+fn op_tab_set_visible(state: &mut OpState, #[bigint] tab_id: u64, visible: bool) {
+    let queue = state.borrow::<TabActionQueue>();
+    queue
+        .queue
+        .borrow_mut()
+        .push(TabAction::SetVisible { tab_id, visible });
+}
+
 // --- WebSocket ops ---
 
 #[op2(fast)]
@@ -948,6 +1000,9 @@ pub struct Engine {
     // Navigate
     navigate_queue: Shared<Vec<String>>,
 
+    // Tabs (chrome.tabs-like)
+    tab_action_queue: Shared<Vec<TabAction>>,
+
     // WebSocket
     ws_connect_queue: Shared<Vec<(i32, String)>>,
     ws_inbox: Shared<HashMap<i32, Vec<String>>>,
@@ -984,6 +1039,7 @@ impl Engine {
         let fetch_queue = FetchQueue::default();
         let fetch_results = FetchResults::default();
         let navigate_queue = NavigateQueue::default();
+        let tab_action_queue = TabActionQueue::default();
         let ws_connect_queue = WsConnectQueue::default();
         let ws_inbox = WsInbox::default();
         let ws_send_queue = WsSendQueue::default();
@@ -1052,6 +1108,9 @@ impl Engine {
         let navigate_queue_for_state = NavigateQueue {
             queue: navigate_queue.queue.clone(),
         };
+        let tab_action_queue_for_state = TabActionQueue {
+            queue: tab_action_queue.queue.clone(),
+        };
         let ws_connect_queue_for_state = WsConnectQueue {
             requests: ws_connect_queue.requests.clone(),
             next_id: ws_connect_queue.next_id.clone(),
@@ -1107,6 +1166,9 @@ impl Engine {
                 op_fetch_request::decl(),
                 op_fetch_poll::decl(),
                 op_navigate::decl(),
+                op_tab_open::decl(),
+                op_tab_close::decl(),
+                op_tab_set_visible::decl(),
                 op_ws_connect::decl(),
                 op_ws_send::decl(),
                 op_ws_recv::decl(),
@@ -1177,6 +1239,9 @@ impl Engine {
                 state.put::<NavigateQueue>(NavigateQueue {
                     queue: navigate_queue_for_state.queue.clone(),
                 });
+                state.put::<TabActionQueue>(TabActionQueue {
+                    queue: tab_action_queue_for_state.queue.clone(),
+                });
                 state.put::<WsConnectQueue>(WsConnectQueue {
                     requests: ws_connect_queue_for_state.requests.clone(),
                     next_id: ws_connect_queue_for_state.next_id.clone(),
@@ -1243,6 +1308,7 @@ impl Engine {
             fetch_queue: fetch_queue.requests,
             fetch_results: fetch_results.results,
             navigate_queue: navigate_queue.queue,
+            tab_action_queue: tab_action_queue.queue,
             ws_connect_queue: ws_connect_queue.requests,
             ws_inbox: ws_inbox.messages,
             ws_send_queue: ws_send_queue.queue,
@@ -1326,6 +1392,10 @@ impl Engine {
 
     pub fn drain_navigate_queue(&self) -> Vec<String> {
         take_vec(&self.navigate_queue)
+    }
+
+    pub fn drain_tab_action_queue(&self) -> Vec<TabAction> {
+        take_vec(&self.tab_action_queue)
     }
 
     // --- Update snapshot methods ---

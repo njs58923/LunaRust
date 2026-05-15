@@ -54,6 +54,7 @@ pub struct JsTickData {
     pub remove_queue: Vec<i32>,
     pub fetch_queue: Vec<(i32, String)>,
     pub navigate_queue: Vec<String>,
+    pub tab_action_queue: Vec<js_runtime::TabAction>,
     pub ws_connect_queue: Vec<(i32, String)>,
     pub ws_send_queue: Vec<(i32, String)>,
     pub ws_close_queue: Vec<i32>,
@@ -255,6 +256,7 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                             remove_queue: ctx.engine.drain_remove_element_queue(),
                             fetch_queue: ctx.engine.drain_fetch_queue(),
                             navigate_queue: ctx.engine.drain_navigate_queue(),
+                            tab_action_queue: ctx.engine.drain_tab_action_queue(),
                             ws_connect_queue: ctx.engine.drain_ws_connect_queue(),
                             ws_send_queue: ctx.engine.drain_ws_send_queue(),
                             ws_close_queue: ctx.engine.drain_ws_close_queue(),
@@ -1185,6 +1187,7 @@ pub fn js_tick_system(world: &mut World) {
     let mut remove_batches = Vec::new();
     let mut fetch_batches = Vec::new();
     let mut navigate_batches = Vec::new();
+    let mut tab_action_batches: Vec<(u32, Vec<js_runtime::TabAction>)> = Vec::new();
     let mut ws_connect_batches: Vec<(u32, Vec<(i32, String)>)> = Vec::new();
     let mut ws_send_batches: Vec<(u32, Vec<(i32, String)>)> = Vec::new();
     let mut ws_close_batches: Vec<(u32, Vec<i32>)> = Vec::new();
@@ -1210,6 +1213,9 @@ pub fn js_tick_system(world: &mut World) {
         }
         if !data.navigate_queue.is_empty() {
             navigate_batches.push((space_id, data.navigate_queue));
+        }
+        if !data.tab_action_queue.is_empty() {
+            tab_action_batches.push((space_id, data.tab_action_queue));
         }
         if !data.ws_connect_queue.is_empty() {
             ws_connect_batches.push((space_id, data.ws_connect_queue));
@@ -1858,6 +1864,121 @@ pub fn js_tick_system(world: &mut World) {
         }
         if let Some(mut reload_trigger) = world.get_resource_mut::<ReloadTrigger>() {
             reload_trigger.0 = true;
+        }
+    }
+
+    // ── Tab actions (chrome.tabs-like API) ──────────────────────────────────
+    // Cada acción se valida por cap del space caller, luego se traduce a la
+    // queue host correspondiente (SpaceMountQueue / SpaceUnmountQueue).
+    if !tab_action_batches.is_empty() {
+        let mut open_requests: Vec<(u32, String)> = Vec::new();
+        let mut close_requests: Vec<(u32, u64)> = Vec::new();
+        let mut visibility_requests: Vec<(u32, u64, bool)> = Vec::new();
+
+        for (space_id, actions) in tab_action_batches {
+            for action in actions {
+                match action {
+                    js_runtime::TabAction::Open { url } => {
+                        let caps = capabilities_by_space
+                            .get(&space_id)
+                            .copied()
+                            .unwrap_or_default();
+                        if caps.contains(CapabilityBits::MOUNT_ROOT_SPACE) {
+                            open_requests.push((space_id, url));
+                        } else if let Some(mut log_panel) =
+                            world.get_resource_mut::<LogPanel>()
+                        {
+                            log_panel.push_warn(format!(
+                                "[JS][space:{}] tabs.open denied (missing MOUNT_ROOT_SPACE): {}",
+                                space_id, url
+                            ));
+                        }
+                    }
+                    js_runtime::TabAction::Close { tab_id } => {
+                        let caps = capabilities_by_space
+                            .get(&space_id)
+                            .copied()
+                            .unwrap_or_default();
+                        if caps.contains(CapabilityBits::UNMOUNT_ROOT_SPACE) {
+                            close_requests.push((space_id, tab_id));
+                        } else if let Some(mut log_panel) =
+                            world.get_resource_mut::<LogPanel>()
+                        {
+                            log_panel.push_warn(format!(
+                                "[JS][space:{}] tabs.close denied (missing UNMOUNT_ROOT_SPACE): tab_id={}",
+                                space_id, tab_id
+                            ));
+                        }
+                    }
+                    js_runtime::TabAction::SetVisible { tab_id, visible } => {
+                        let caps = capabilities_by_space
+                            .get(&space_id)
+                            .copied()
+                            .unwrap_or_default();
+                        if caps.contains(CapabilityBits::UPDATE_ROOT_SPACE) {
+                            visibility_requests.push((space_id, tab_id, visible));
+                        } else if let Some(mut log_panel) =
+                            world.get_resource_mut::<LogPanel>()
+                        {
+                            log_panel.push_warn(format!(
+                                "[JS][space:{}] tabs.setVisible denied (missing UPDATE_ROOT_SPACE)",
+                                space_id
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        if !open_requests.is_empty() {
+            // Allocate tab IDs y empujar a SpaceMountQueue. El procesador
+            // (process_space_mount_queue) reenvía al root worker como
+            // dimension.luna.mountSpace(url, {grants, tabId}).
+            let mut next_id_value: u64 = world
+                .get_resource::<crate::NextTabId>()
+                .map(|n| n.0)
+                .unwrap_or(1);
+            let mut mount_pushes: Vec<crate::SpaceMountRequest> = Vec::new();
+            for (_space_id, url) in open_requests {
+                mount_pushes.push(crate::SpaceMountRequest {
+                    tab_id: next_id_value,
+                    url,
+                });
+                next_id_value = next_id_value.saturating_add(1);
+            }
+            if let Some(mut next_tab_id) = world.get_resource_mut::<crate::NextTabId>() {
+                next_tab_id.0 = next_id_value;
+            }
+            if let Some(mut mount_queue) = world.get_resource_mut::<crate::SpaceMountQueue>() {
+                mount_queue.0.extend(mount_pushes);
+            }
+        }
+
+        if !close_requests.is_empty() {
+            let mut unmount_pushes: Vec<crate::SpaceUnmountRequest> = Vec::new();
+            for (_space_id, tab_id) in close_requests {
+                unmount_pushes.push(crate::SpaceUnmountRequest {
+                    tab_id,
+                    url: String::new(),
+                });
+            }
+            if let Some(mut unmount_queue) =
+                world.get_resource_mut::<crate::SpaceUnmountQueue>()
+            {
+                unmount_queue.0.extend(unmount_pushes);
+            }
+        }
+
+        // TODO(tabs-setVisible): visibility_requests no tienen aún un host queue
+        // dedicado. Reenviar como EvalScript al root worker llamando
+        // dimension.luna.setSpaceVisible(tabId, visible) cuando se necesite.
+        if !visibility_requests.is_empty() {
+            if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
+                log_panel.push_info(format!(
+                    "[JS] tabs.setVisible buffered ({} requests) — host bridge pending",
+                    visibility_requests.len()
+                ));
+            }
         }
     }
 
