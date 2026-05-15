@@ -9,7 +9,7 @@ name = "luna"
 path = "src/main.rs"
 
 [dependencies]
-bevy = { workspace = true, default-features = true }
+bevy = { workspace = true, default-features = true, features = ["trace_tracy"] }
 bevy_egui = { workspace = true, default-features = true }
 bevy_mod_openxr = { path = "../bevy_openxr" }
 openxr = { version = "0.18.0", features = ["mint", "static"] }
