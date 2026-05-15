@@ -145,18 +145,17 @@
         return true;
       }
 
+      // Regla literal del doc:
+      //   bottom_bar.visible = bookmarks_visible && (focus.is_some() || anchored.len > 0)
+      // bookmarksVisible se mantiene `true` durante toda la sesión del shell
+      // (incluyendo cuando se abre una app embedded — el panel se oculta solo
+      // por la regla de shouldShowBookmarks, pero el flag sigue true). Eso
+      // hace que la bar quede visible para volver a marcadores desde una app.
       function shouldShowBottomBar() {
+        if (!shellState.bookmarksVisible) return false;
         const hasFocus = shellState.focusApp !== null;
         const hasAnchored = shellState.anchored.length > 0;
-        if (!hasFocus && !hasAnchored) return false;
-
-        // Caso: focus visible (no minimizado). Bar visible aunque bookmarks
-        // estén ocultos — permite al user tocar Menu/Home en la bar para
-        // minimizar focus y volver a marcadores.
-        if (hasFocus && !shellState.focusApp.minimized) return true;
-
-        // Resto: bar visible si bookmarks visibles (= menu abierto).
-        return shellState.bookmarksVisible;
+        return hasFocus || hasAnchored;
       }
 
       // ── DOM refs ───────────────────────────────────────────────────────
@@ -264,29 +263,24 @@
         }
       }
 
-      // ── Bottom bar build (esqueleto) ───────────────────────────────────
-      // En este commit construimos sólo el slot Menu. Commits siguientes
-      // agregan Focus indicator + Anchored entries.
-      let barRefs = []; // { box, text }
+      // ── Bottom bar (diff incremental) ──────────────────────────────────
+      // Las entries se reusan entre `applyVisibility()` calls — solo cambian
+      // attrs (color, label, onTap) y position cuando hace falta. Sin esto,
+      // cada applyVisibility destruía/recreaba todos los boxes → parpadeo.
+      let barEntries = []; // { box, text, key, onTap, label, color, x }
 
-      function clearBottomBar() {
-        for (const r of barRefs) {
-          try { if (r.box)  r.box.remove();  } catch (e) {}
-          try { if (r.text) r.text.remove(); } catch (e) {}
-        }
-        barRefs = [];
-      }
-
-      function addBarSlot(x, label, color, onTap) {
+      function buildBarSlot(x, label, color, onTap, key) {
         const box = root.createElement('box');
         box.setAttribute('border-radius', BAR_SLOT_BORDER);
         box.setAttribute('color', color);
         box.setAttribute('touchable', 'true');
         box.position = { x, y: BAR_Y, z: BAR_Z };
         box.scale = { x: BAR_SLOT_SIZE_X, y: BAR_SLOT_SIZE_Y, z: BAR_SLOT_DEPTH };
-        if (typeof onTap === 'function') {
-          box.addEventListener('toque', onTap);
-        }
+        const onTapWrapper = () => {
+          const entry = barEntries.find(e => e.box === box);
+          if (entry && typeof entry.onTap === 'function') entry.onTap();
+        };
+        box.addEventListener('toque', onTapWrapper);
         bottomBar.appendChild(box);
 
         const text = root.createElement('text');
@@ -296,36 +290,56 @@
         text.position = { x, y: BAR_Y, z: BAR_Z + 0.002 };
         bottomBar.appendChild(text);
 
-        barRefs.push({ box, text });
+        return { box, text, key, onTap, label, color, x };
+      }
+
+      function updateBarSlot(entry, x, label, color, onTap) {
+        if (entry.color !== color) {
+          entry.box.setAttribute('color', color);
+          entry.color = color;
+        }
+        if (entry.label !== label) {
+          entry.text.setAttribute('value', label);
+          entry.label = label;
+        }
+        if (Math.abs(entry.x - x) > 0.0001) {
+          entry.box.position = { x, y: BAR_Y, z: BAR_Z };
+          entry.text.position = { x, y: BAR_Y, z: BAR_Z + 0.002 };
+          entry.x = x;
+        }
+        // onTap puede cambiar (indices anchored). Actualizar solo la ref;
+        // el wrapper interno lee de barEntries.
+        entry.onTap = onTap;
+      }
+
+      function removeBarSlot(entry) {
+        try { if (entry.box)  entry.box.remove();  } catch (e) {}
+        try { if (entry.text) entry.text.remove(); } catch (e) {}
       }
 
       function rebuildBottomBar() {
-        clearBottomBar();
         if (!bottomBar) return;
 
+        // Lista lógica de slots (key estable + props actuales).
         const slots = [];
-
-        // Slot 1: Menu — siempre primero.
-        slots.push({ label: 'Menu', color: '#4CAF50', onTap: onTapBarMenu });
-
-        // Slot 2: Focus indicator (si existe focus).
+        slots.push({ key: 'menu', label: 'Menu', color: '#4CAF50', onTap: onTapBarMenu });
         if (shellState.focusApp) {
           slots.push({
+            key: 'focus',
             label: 'Focus',
             color: shellState.focusApp.minimized ? '#90A4AE' : '#FFC107',
             onTap: onTapBarFocus,
           });
         }
-
-        // Slot 3..N: anchored apps.
         for (let i = 0; i < shellState.anchored.length; i++) {
           const a = shellState.anchored[i];
+          const idx = i;
           slots.push({
+            key: 'anc:' + idx,
             label: 'Anc' + (i + 1),
             color: a.minimized ? '#607D8B' : '#7E57C2',
-            onTap: () => onTapBarAnchored(i),
+            onTap: () => onTapBarAnchored(idx),
           });
-          // TODO(commit 4): botón ✕ pequeño al lado de cada anchored.
         }
 
         // Layout horizontal centrado.
@@ -333,8 +347,27 @@
         const span = total * BAR_SLOT_SIZE_X + (total - 1) * BAR_SLOT_GAP;
         let cursor = -span / 2 + BAR_SLOT_SIZE_X / 2;
         for (const s of slots) {
-          addBarSlot(cursor, s.label, s.color, s.onTap);
+          s.x = cursor;
           cursor += BAR_SLOT_SIZE_X + BAR_SLOT_GAP;
+        }
+
+        // Diff: actualiza existentes, agrega nuevos, remueve obsoletos.
+        const keepKeys = new Set(slots.map(s => s.key));
+        // Remover los que ya no están.
+        barEntries = barEntries.filter(e => {
+          if (keepKeys.has(e.key)) return true;
+          removeBarSlot(e);
+          return false;
+        });
+
+        // Para cada slot deseado, actualizar o crear.
+        for (const s of slots) {
+          const existing = barEntries.find(e => e.key === s.key);
+          if (existing) {
+            updateBarSlot(existing, s.x, s.label, s.color, s.onTap);
+          } else {
+            barEntries.push(buildBarSlot(s.x, s.label, s.color, s.onTap, s.key));
+          }
         }
       }
 
@@ -356,7 +389,8 @@
       function onTapBarFocus() {
         if (!shellState.focusApp) return;
         shellState.focusApp.minimized = false;
-        shellState.bookmarksVisible = false;
+        // bookmarksVisible queda true (sesión sigue activa). Las reglas de
+        // visibilidad ocultan panel automáticamente porque focus !minimized.
         if (shellState.focusApp.tabId > 0) {
           if (dimention.tabs) dimention.tabs.setVisible(shellState.focusApp.tabId, true);
           sendMessageToApp(shellState.focusApp.tabId, 'focus');
@@ -381,8 +415,13 @@
         if (bottomBar) bottomBar.setAttribute('visible', shouldShowBottomBar() ? 'true' : 'false');
         rebuildBottomBar();
 
-        // Focus zone (frame): visible si hay focus no-minimizado.
-        const showFocus = shellState.focusApp && !shellState.focusApp.minimized;
+        // Focus zone (frame): visible si hay focus no-minimizado Y el frame
+        // ya está construido (focusApp.tabId > 0). Esto evita el parpadeo de
+        // un focusZone vacío durante los ~100ms entre openEmbeddedApp() y la
+        // llegada del primer mensaje de la app que dispara buildFocusFrame.
+        const showFocus = shellState.focusApp
+          && !shellState.focusApp.minimized
+          && shellState.focusApp.tabId > 0;
         if (focusZone) focusZone.setAttribute('visible', showFocus ? 'true' : 'false');
       }
 
@@ -422,33 +461,39 @@
       }
 
       // ── Toggle shell (menu press del controller) ───────────────────────
+      // Transiciones del doc (docs/embedded_apps.md sección "Transiciones"):
+      //   focus visible (!minimized)     → focus.minimized=true, bookmarks visible.
+      //   shell hidden (algo visible)    → bookmarks visible, bar visible, anchored restaurados.
+      //   bookmarks visible (sin focus)  → bookmarks hidden, bar hidden, anchored !always_on ocultos.
+      //
+      // `bookmarksVisible` es el flag de sesión: true mientras cualquier
+      // pieza del shell sea visible o esté minimizada-pero-vigente. Volverá
+      // a false sólo cuando el user oculta todo via menu press.
       function toggleShell() {
-        // Si hay focus visible (no minimizado): el shell aparece + focus minimizado.
-        // Igual semántica que click en Menu de la bar.
+        // Branch: focus visible → minimizar focus, mostrar bookmarks. (= 🏠)
         if (shellState.focusApp && !shellState.focusApp.minimized) {
           shellState.focusApp.minimized = true;
           if (shellState.focusApp.tabId > 0) {
             if (dimention.tabs) dimention.tabs.setVisible(shellState.focusApp.tabId, false);
             sendMessageToApp(shellState.focusApp.tabId, 'blur');
           }
-          shellState.bookmarksVisible = true;
-          repositionShellAtViewer();
+          // bookmarksVisible ya era true (sesión activa con focus). Idempotent.
           applyVisibility();
           startEnterAnimation();
           return;
         }
 
-        // Toggle simple del shell.
-        const want = !shellState.bookmarksVisible;
-        shellState.bookmarksVisible = want;
+        // Branch: simple toggle on/off.
+        const wasActive = shellState.bookmarksVisible;
+        shellState.bookmarksVisible = !wasActive;
 
-        if (want) {
+        if (!wasActive) {
+          // off → on: reposicionar al frente del user (sesión nueva).
           repositionShellAtViewer();
           applyVisibility();
           startEnterAnimation();
         } else {
-          // Exit anim de los bookmarks. applyVisibility refresca la bar
-          // según la nueva regla (oculta si nada de focus/anchored).
+          // on → off: cerrar sesión. Exit anim.
           applyVisibility();
           startExitAnimation();
         }
@@ -548,23 +593,26 @@
       // Posición world del focus slot = pose del shell + offset al frente.
       // El frame visual (focusZone) está local al space ux_vr, así que el
       // shell mueve focusZone en local coords (mismo origen del panel).
+      // La pose del slot del focus es la MISMA pose que el shell.
+      // Ambos comparten posición/rotación porque el frame se renderiza junto
+      // a los bookmarks. Leemos del panel, que es el source-of-truth de la
+      // pose del shell — se actualiza solo en `repositionShellAtViewer` cuando
+      // el menú aparece. Si abriéramos una app y leyéramos del viewer en
+      // tiempo real, el shell se reposicionaría según la cabeza del user en
+      // ese instante → la app + frame saltarían respecto al menú visible.
       function computeFocusSlotPose() {
-        if (typeof dimention.readViewerPose !== 'function') {
-          return { position: { x: 0, y: 1.5, z: -1.5 }, rotation: { x: 0, y: 0, z: 0 }, size: { x: FOCUS_SLOT_W, y: FOCUS_SLOT_H, z: FOCUS_SLOT_D } };
-        }
-        const pose = dimention.readViewerPose();
-        if (!pose) {
-          return { position: { x: 0, y: 1.5, z: -1.5 }, rotation: { x: 0, y: 0, z: 0 }, size: { x: FOCUS_SLOT_W, y: FOCUS_SLOT_H, z: FOCUS_SLOT_D } };
-        }
-        const fwdX = -Math.sin(pose.yaw);
-        const fwdZ = -Math.cos(pose.yaw);
+        const fallback = {
+          position: { x: 0, y: 1.5, z: -1.5 },
+          rotation: { x: 0, y: 0, z: 0 },
+          size: { x: FOCUS_SLOT_W, y: FOCUS_SLOT_H, z: FOCUS_SLOT_D },
+        };
+        if (!panel) return fallback;
+        let p, r;
+        try { p = panel.position; } catch (_) { return fallback; }
+        try { r = panel.rotation; } catch (_) { return fallback; }
         return {
-          position: {
-            x: pose.px + fwdX * SHELL_SPAWN_DISTANCE,
-            y: pose.py,
-            z: pose.pz + fwdZ * SHELL_SPAWN_DISTANCE,
-          },
-          rotation: { x: 0, y: pose.yaw, z: 0 },
+          position: { x: Number(p.x || 0), y: Number(p.y || 0), z: Number(p.z || 0) },
+          rotation: { x: Number(r.x || 0), y: Number(r.y || 0), z: Number(r.z || 0) },
           size: { x: FOCUS_SLOT_W, y: FOCUS_SLOT_H, z: FOCUS_SLOT_D },
         };
       }
@@ -625,10 +673,11 @@
       //   - Setea focusApp en ShellState.
       //   - Cuando la app pida 'requestSlot', shell le manda el slot y oculta bookmarks.
       function openEmbeddedApp(bm) {
-        // Refresca la pose del shell ANTES de abrir — así el slot del focus
-        // se calcula con la pose actual del user, no con una vieja.
-        repositionShellAtViewer();
-
+        // El shell mantiene su pose actual (la que tenía cuando aparecieron
+        // los bookmarks). NO re-leemos viewer pose acá: si el user movió la
+        // cabeza entre abrir el menú y clickear la app, el shell se saltaría
+        // visualmente — todo el menú parpadearía al moverse. El frame del
+        // focus aparece exactamente sobre la posición del shell visible.
         if (shellState.focusApp) {
           sendMessageToApp(shellState.focusApp.tabId, 'close');
           if (dimention.tabs) dimention.tabs.close(shellState.focusApp.tabId);
@@ -649,10 +698,12 @@
         };
         dimention.tabs.open(bm.url, { kind: 'app-embedded' });
 
-        // Transición optimista al estado focused (bookmarks ocultos).
-        // El frame del focus aparecerá cuando llegue requestSlot/ready
-        // y focusApp.tabId se complete.
-        shellState.bookmarksVisible = false;
+        // Mantenemos bookmarksVisible=true: la sesión del shell sigue activa.
+        // Las reglas derivadas (shouldShowBookmarks / shouldShowBottomBar) hacen
+        // el resto — panel se oculta porque focus está visible, bar queda
+        // visible para volver a marcadores. Modelo literal del doc:
+        //   panel = bookmarks_visible && (no focus || focus.minimized)
+        //   bar   = bookmarks_visible && (focus.is_some() || anchored.len > 0)
         applyVisibility();
       }
 
@@ -688,9 +739,21 @@
         // el tabId del primer mensaje que llegue de la app correcta.
         if (shellState.focusApp && shellState.focusApp.tabId === 0 && fromTabId > 0) {
           shellState.focusApp.tabId = fromTabId;
+          // Construir frame con tabId temporalmente "pending" → applyVisibility
+          // mantiene focusZone oculto mientras los spawn commands se commitean.
+          // Tras un par de frames, marcamos tabId definitivo + slot a la app.
           buildFocusFrame(shellState.focusApp.title || 'App');
-          applyVisibility();
           sendFocusSlotToApp();
+          // Defer reveal del frame hasta que los spawn commits (boxes/text del
+          // titlebar) ya estén renderizados. Sin esto, applyVisibility hace
+          // visible focusZone antes de que los hijos tengan Transform Bevy
+          // sincronizado → parpadeo de frame vacío durante 1-3 frames.
+          const revealId = shellState.focusApp.tabId;
+          setTimeout(() => {
+            if (shellState.focusApp && shellState.focusApp.tabId === revealId) {
+              applyVisibility();
+            }
+          }, 50);
         }
 
         if (type === 'requestslot') {
