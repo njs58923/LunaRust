@@ -6,7 +6,11 @@
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space role="application-embedded">
+  <!-- resources= debe declarar `ux_embed` para que se auto-inyecte
+       embedded_api.js en este worker. La cap proviene por entry-grant del
+       wrapper outer (managed-by=dimension.luna con ux_embed); el inner la
+       acepta porque la solicita explícitamente. -->
+  <space role="application-embedded" resources="navigate_self,ux_embed">
     <!-- Contenido construido dinámicamente cuando el shell asigna slot. -->
     <group id="demo_root">
     </group>

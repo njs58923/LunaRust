@@ -2065,26 +2065,19 @@ pub fn js_tick_system(world: &mut World) {
     // Mensaje al destino lleva el tab_id del origen como "fromTabId".
     if !shell_message_batches.is_empty() {
         // Lookup tab_id del space sender + space del shell.
+        // `find_tab_id_for_space` sube por ancestors hasta encontrar la attr
+        // — necesario porque la app vive en el inner space cargado por include
+        // (sin la attr), mientras la attr la lleva el outer wrapper.
         let (shell_space_id, sender_tab_ids): (Option<u32>, std::collections::HashMap<u32, u64>) = {
             let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
                 return;
             };
             let shell_id = crate::ui::find_system_shell_space(&specs_world.0);
-            // Para cada space sender, encontrar su tab_id en el DOM.
-            let attrs = specs_world.0.read_storage::<Attrs>();
             let mut sender_map: std::collections::HashMap<u32, u64> =
                 std::collections::HashMap::new();
             for (sid, _) in &shell_message_batches {
-                let ent = specs_world.0.entities().entity(*sid);
-                if !specs_world.0.entities().is_alive(ent) {
-                    continue;
-                }
-                if let Some(a) = attrs.get(ent) {
-                    if let Some(tid_str) = a.0.get("data-luna-tab-id") {
-                        if let Ok(tid) = tid_str.parse::<u64>() {
-                            sender_map.insert(*sid, tid);
-                        }
-                    }
+                if let Some(tid) = crate::ui::find_tab_id_for_space(&specs_world.0, *sid) {
+                    sender_map.insert(*sid, tid);
                 }
             }
             (shell_id, sender_map)
@@ -2114,14 +2107,16 @@ pub fn js_tick_system(world: &mut World) {
 
             for msg in msgs {
                 let target_space_id: Option<u32> = if msg.target_tab_id == 0 {
-                    // Apps que mandan a tab_id=0 → shell.
+                    // Apps que mandan a tab_id=0 → shell. El shell vive en el
+                    // inner space del HSML cargado por include — busca por attr.
                     shell_space_id
                 } else {
-                    // Shell o app que manda a otra tab.
+                    // Shell o app que manda a otra tab. Rutea al worker del
+                    // inner (donde vive la app), no al outer wrapper.
                     let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
                         return;
                     };
-                    crate::ui::find_mounted_space_by_tab_id(&specs_world.0, msg.target_tab_id)
+                    crate::ui::find_app_worker_space_by_tab_id(&specs_world.0, msg.target_tab_id)
                 };
 
                 let Some(target_space_id) = target_space_id else {

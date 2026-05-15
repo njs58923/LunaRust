@@ -575,18 +575,90 @@ fn find_root_space_entity(world: &SpecWorld) -> Option<SpecEntity> {
     None
 }
 
-/// Devuelve el space_id del shell (managed-by="dimension.luna" + attr
-/// `system-shell="true"`). Sólo debería haber uno. Si no se encuentra, None.
+/// Devuelve el space_id del shell. Busca `system-shell="true"` en cualquier
+/// space del world, no sólo en root_managed. El shell suele vivir como
+/// `<space>` interno cargado por un `<include>` (HSML model), así que no es
+/// root-direct child sino descendiente del outer wrapper managed-by.
 pub fn find_system_shell_space(world: &SpecWorld) -> Option<u32> {
+    use specs::Join;
+    let entities = world.entities();
     let attrs = world.read_storage::<Attrs>();
-    for space_ent in find_root_managed_spaces(world) {
-        if let Some(attr) = attrs.get(space_ent) {
-            if attr.0.get("system-shell").map(|v| v.as_str()) == Some("true") {
-                return Some(space_ent.id());
-            }
+    let tags = world.read_storage::<Tag>();
+    for (ent, attr, tag) in (&entities, &attrs, &tags).join() {
+        if tag.0 != "space" {
+            continue;
+        }
+        if attr.0.get("system-shell").map(|v| v.as_str()) == Some("true") {
+            return Some(ent.id());
         }
     }
     None
+}
+
+/// Sube por la jerarquía buscando el ancestor con `data-luna-tab-id`.
+/// Útil cuando un script corre en un space inner (cargado por include) que
+/// no lleva la attr — la lleva el outer wrapper creado por dimension.luna.
+pub fn find_tab_id_for_space(world: &SpecWorld, space_id: u32) -> Option<u64> {
+    let entities = world.entities();
+    let hier = world.read_storage::<Hierarchy>();
+    let attrs = world.read_storage::<Attrs>();
+
+    let mut current_opt = Some(entities.entity(space_id));
+    while let Some(current) = current_opt {
+        if !entities.is_alive(current) {
+            break;
+        }
+        if let Some(a) = attrs.get(current) {
+            if let Some(tid_str) = a.0.get("data-luna-tab-id") {
+                if let Ok(tid) = tid_str.parse::<u64>() {
+                    return Some(tid);
+                }
+            }
+        }
+        current_opt = hier
+            .get(current)
+            .and_then(|h| h.parent)
+            .map(|p_id| entities.entity(p_id));
+    }
+    None
+}
+
+/// Versión "active worker" de `find_mounted_space_by_tab_id`. Encuentra el
+/// outer wrapper por tab_id, luego desciende al primer `<space>` descendiente
+/// — donde vive el worker JS de la app. Si no hay inner, retorna outer.
+pub fn find_app_worker_space_by_tab_id(world: &SpecWorld, tab_id: u64) -> Option<u32> {
+    let outer_id = find_mounted_space_by_tab_id(world, tab_id)?;
+    let entities = world.entities();
+    let tags = world.read_storage::<Tag>();
+    let hier = world.read_storage::<Hierarchy>();
+
+    // BFS bajando desde outer buscando primer `<space>` descendiente.
+    let outer_ent = entities.entity(outer_id);
+    if !entities.is_alive(outer_ent) {
+        return Some(outer_id);
+    }
+    let mut stack: Vec<specs::Entity> = Vec::new();
+    if let Some(h) = hier.get(outer_ent) {
+        for &c in &h.children {
+            stack.push(c);
+        }
+    }
+    while let Some(ent) = stack.pop() {
+        if !entities.is_alive(ent) {
+            continue;
+        }
+        if let Some(t) = tags.get(ent) {
+            if t.0 == "space" {
+                return Some(ent.id());
+            }
+        }
+        if let Some(h) = hier.get(ent) {
+            for &c in &h.children {
+                stack.push(c);
+            }
+        }
+    }
+    Some(outer_id)
 }
 
 fn find_root_managed_spaces(world: &SpecWorld) -> Vec<SpecEntity> {
