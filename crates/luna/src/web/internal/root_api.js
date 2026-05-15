@@ -245,8 +245,8 @@
 
       const uxUrl = mode === 'vr' ? 'luna://ux_vr' : 'luna://ux_desktop';
       const grants = mode === 'vr'
-        ? ['navigate_self', 'vr_locomotion', 'read_system_input', 'manage_tabs']
-        : ['navigate_self', 'desktop_camera_control', 'read_system_input', 'manage_tabs'];
+        ? ['navigate_self', 'vr_locomotion', 'read_system_input', 'manage_tabs', 'read_hmd_pose']
+        : ['navigate_self', 'desktop_camera_control', 'read_system_input', 'manage_tabs', 'read_hmd_pose'];
       this._uxSpaceId = this.mountSpace(uxUrl, { visible: true, grants });
       this._currentMode = mode;
       console.log('[root] ux mounted id=', this._uxSpaceId, 'url=', uxUrl);

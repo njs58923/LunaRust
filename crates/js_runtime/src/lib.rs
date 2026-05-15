@@ -302,6 +302,41 @@ impl Default for TabActionQueue {
     }
 }
 
+/// Snapshot de la pose del usuario (HMD en VR, cámara en desktop), actualizado
+/// por el host cada frame para workers con cap READ_HMD_POSE. Workers sin la
+/// cap mantienen `None` y `op_read_viewer_pose` devuelve null.
+#[derive(Clone, Debug)]
+pub struct ViewerPoseData {
+    pub mode: String,         // "vr" | "desktop"
+    pub px: f32,
+    pub py: f32,
+    pub pz: f32,
+    pub forward_x: f32,
+    pub forward_y: f32,
+    pub forward_z: f32,
+    pub yaw: f32,             // rotación Y (rad), 0 = mirando -Z
+    pub pitch: f32,           // rotación X (rad), 0 = horizonte
+    // VR extras (quaternion completo del HMD).
+    pub qx: f32,
+    pub qy: f32,
+    pub qz: f32,
+    pub qw: f32,
+    // Desktop extras (proyección).
+    pub aspect: f32,
+    pub fov_y_rad: f32,
+}
+
+pub struct ViewerPoseState {
+    pub data: Shared<Option<ViewerPoseData>>,
+}
+impl Default for ViewerPoseState {
+    fn default() -> Self {
+        Self {
+            data: shared(None),
+        }
+    }
+}
+
 /// Queue of ws connect requests from JS: Vec<(conn_id, url)>
 pub struct WsConnectQueue {
     pub requests: Shared<Vec<(i32, String)>>,
@@ -810,6 +845,28 @@ fn op_tab_set_visible(state: &mut OpState, #[bigint] tab_id: u64, visible: bool)
         .push(TabAction::SetVisible { tab_id, visible });
 }
 
+// --- Viewer pose op (read-only, cap READ_HMD_POSE) ---
+
+#[op2]
+#[serde]
+fn op_read_viewer_pose(state: &mut OpState) -> serde_json::Value {
+    let snap = state.borrow::<ViewerPoseState>();
+    let borrow = snap.data.borrow();
+    match borrow.as_ref() {
+        None => serde_json::Value::Null,
+        Some(d) => serde_json::json!({
+            "mode": d.mode,
+            "px": d.px, "py": d.py, "pz": d.pz,
+            "forwardX": d.forward_x, "forwardY": d.forward_y, "forwardZ": d.forward_z,
+            "yaw": d.yaw,
+            "pitch": d.pitch,
+            "qx": d.qx, "qy": d.qy, "qz": d.qz, "qw": d.qw,
+            "aspect": d.aspect,
+            "fovY": d.fov_y_rad,
+        }),
+    }
+}
+
 // --- WebSocket ops ---
 
 #[op2(fast)]
@@ -1003,6 +1060,9 @@ pub struct Engine {
     // Tabs (chrome.tabs-like)
     tab_action_queue: Shared<Vec<TabAction>>,
 
+    // Viewer pose (HMD/desktop camera) — populated solo si worker tiene READ_HMD_POSE.
+    viewer_pose: Shared<Option<ViewerPoseData>>,
+
     // WebSocket
     ws_connect_queue: Shared<Vec<(i32, String)>>,
     ws_inbox: Shared<HashMap<i32, Vec<String>>>,
@@ -1040,6 +1100,7 @@ impl Engine {
         let fetch_results = FetchResults::default();
         let navigate_queue = NavigateQueue::default();
         let tab_action_queue = TabActionQueue::default();
+        let viewer_pose_state = ViewerPoseState::default();
         let ws_connect_queue = WsConnectQueue::default();
         let ws_inbox = WsInbox::default();
         let ws_send_queue = WsSendQueue::default();
@@ -1111,6 +1172,9 @@ impl Engine {
         let tab_action_queue_for_state = TabActionQueue {
             queue: tab_action_queue.queue.clone(),
         };
+        let viewer_pose_state_for_state = ViewerPoseState {
+            data: viewer_pose_state.data.clone(),
+        };
         let ws_connect_queue_for_state = WsConnectQueue {
             requests: ws_connect_queue.requests.clone(),
             next_id: ws_connect_queue.next_id.clone(),
@@ -1169,6 +1233,7 @@ impl Engine {
                 op_tab_open::decl(),
                 op_tab_close::decl(),
                 op_tab_set_visible::decl(),
+                op_read_viewer_pose::decl(),
                 op_ws_connect::decl(),
                 op_ws_send::decl(),
                 op_ws_recv::decl(),
@@ -1242,6 +1307,9 @@ impl Engine {
                 state.put::<TabActionQueue>(TabActionQueue {
                     queue: tab_action_queue_for_state.queue.clone(),
                 });
+                state.put::<ViewerPoseState>(ViewerPoseState {
+                    data: viewer_pose_state_for_state.data.clone(),
+                });
                 state.put::<WsConnectQueue>(WsConnectQueue {
                     requests: ws_connect_queue_for_state.requests.clone(),
                     next_id: ws_connect_queue_for_state.next_id.clone(),
@@ -1309,6 +1377,7 @@ impl Engine {
             fetch_results: fetch_results.results,
             navigate_queue: navigate_queue.queue,
             tab_action_queue: tab_action_queue.queue,
+            viewer_pose: viewer_pose_state.data,
             ws_connect_queue: ws_connect_queue.requests,
             ws_inbox: ws_inbox.messages,
             ws_send_queue: ws_send_queue.queue,
@@ -1396,6 +1465,13 @@ impl Engine {
 
     pub fn drain_tab_action_queue(&self) -> Vec<TabAction> {
         take_vec(&self.tab_action_queue)
+    }
+
+    /// Setea/limpia el snapshot de viewer pose. Llamar con `None` para
+    /// limpiar (ej. cuando el worker pierde la cap). El op JS ve el nuevo
+    /// valor inmediatamente (referencia compartida).
+    pub fn set_viewer_pose(&self, data: Option<ViewerPoseData>) {
+        *self.viewer_pose.borrow_mut() = data;
     }
 
     // --- Update snapshot methods ---

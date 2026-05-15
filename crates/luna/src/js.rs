@@ -99,6 +99,9 @@ pub enum JsWorkerCommand {
     PushToqueRawEvents(Vec<(i32, f32, f32, f32)>),
     /// (action, source) pairs — broadcast a spaces con READ_SYSTEM_INPUT.
     PushSystemInputEvents(Vec<(String, String)>),
+    /// Actualiza snapshot de viewer pose visible vía op_read_viewer_pose.
+    /// `None` limpia (worker sin cap READ_HMD_POSE).
+    SetViewerPose(Option<js_runtime::ViewerPoseData>),
     RequestDebugState,
     Shutdown,
 }
@@ -319,6 +322,9 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                         for (action, source) in events {
                             ctx.engine.push_system_input_event(action, source);
                         }
+                    }
+                    JsWorkerCommand::SetViewerPose(data) => {
+                        ctx.engine.set_viewer_pose(data);
                     }
                     JsWorkerCommand::RequestDebugState => {
                         let _ = event_tx.send(JsWorkerEvent::DebugState {

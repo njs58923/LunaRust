@@ -98,6 +98,13 @@ impl Plugin for VrLocomotionPlugin {
                     .run_if(openxr_session_running)
                     .run_if(crate::permissions::vr_locomotion_enabled)
                     .run_if(resource_exists::<LunaLocomotionActions>),
+            )
+            // Snapshot HMD pose: corre siempre en sesión VR (independiente de
+            // vr_locomotion_enabled). Workers sin READ_HMD_POSE no la reciben
+            // — el filtrado pasa en propagate_viewer_pose_to_workers.
+            .add_systems(
+                Update,
+                update_vr_viewer_pose.run_if(openxr_session_running),
             );
     }
 }
@@ -313,6 +320,51 @@ fn log_buttons(actions: Res<LunaLocomotionActions>, session: Res<OxrSession>) {
     log_bool!(actions.left_stick_click,   "Left Stick Click");
     log_bool!(actions.right_stick_click,  "Right Stick Click");
     log_bool!(actions.menu,               "Menu");
+}
+
+// ─── Viewer pose snapshot (HMD en world space) ────────────────────────────────
+
+/// Actualiza el snapshot global de pose del usuario para que workers JS con
+/// READ_HMD_POSE puedan leerlo vía `dimention.readViewerPose()`. Compone
+/// pose del HMD (tracking space) con `XrTrackingRoot` para coords mundo.
+pub fn update_vr_viewer_pose(
+    views: Res<OxrViews>,
+    tracking_root: Query<&Transform, With<XrTrackingRoot>>,
+    mut snapshot: ResMut<crate::viewer_pose::ViewerPoseGlobalSnapshot>,
+) {
+    let Some(view) = views.first() else { return };
+    let Ok(root_tf) = tracking_root.get_single() else { return };
+
+    let hmd_pos_tracking = vec3(
+        view.pose.position.x,
+        view.pose.position.y,
+        view.pose.position.z,
+    );
+    let hmd_rot_tracking: Quat = view.pose.orientation.to_quat();
+
+    // Transformar a world space.
+    let world_pos = root_tf.translation + root_tf.rotation * hmd_pos_tracking;
+    let world_rot = root_tf.rotation * hmd_rot_tracking;
+    let forward = world_rot * Vec3::NEG_Z;
+    let (yaw, pitch, _roll) = world_rot.to_euler(EulerRot::YXZ);
+
+    snapshot.0 = Some(crate::viewer_pose::ViewerPose {
+        mode: crate::viewer_pose::ViewerMode::Vr,
+        px: world_pos.x,
+        py: world_pos.y,
+        pz: world_pos.z,
+        forward_x: forward.x,
+        forward_y: forward.y,
+        forward_z: forward.z,
+        yaw,
+        pitch,
+        qx: world_rot.x,
+        qy: world_rot.y,
+        qz: world_rot.z,
+        qw: world_rot.w,
+        aspect: 0.0,
+        fov_y_rad: 0.0,
+    });
 }
 
 // ─── Menu button → systeminput dispatch ───────────────────────────────────────

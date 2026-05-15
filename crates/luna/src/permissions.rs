@@ -190,6 +190,18 @@ lazy_static! {
             },
         );
 
+        // Pose del usuario (HMD en VR, cámara en desktop) — vía dimention.readViewerPose().
+        // Cap regular (no elevada). Apps pueden pedirla; UX shell la usa para
+        // posicionar el panel al frente al hacer toggle.
+        m.insert(
+            "read_hmd_pose",
+            ResourceBundleDef {
+                capabilities: CapabilityBits::READ_HMD_POSE,
+                native_services: NativeServiceBits::empty(),
+                auto_scripts: &["luna://internal/viewer_pose_api.js"],
+            },
+        );
+
         m
     };
 }

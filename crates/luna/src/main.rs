@@ -119,6 +119,7 @@ fn main() {
     app.insert_resource(touch::HostToqueHits::default());
     app.insert_resource(touch::HostPoseMoveEvents::default());
     app.insert_resource(luna::system_input::HostSystemInputEvents::default());
+    app.insert_resource(luna::viewer_pose::ViewerPoseGlobalSnapshot::default());
     app.insert_resource(SpacePolicies::default());
     app.insert_resource(ActiveNativeServices::default());
     app.insert_resource(permissions::SpacePolicyHistory {
@@ -231,6 +232,16 @@ fn main() {
         Update,
         luna::system_input::dispatch_system_input_events_to_js
             .run_if(|e: Res<luna::system_input::HostSystemInputEvents>| !e.0.is_empty()),
+    );
+    // Viewer pose: snapshot desktop (VR snapshot vive en vr_locomotion plugin)
+    // + propagación a workers JS con cap READ_HMD_POSE.
+    app.add_systems(
+        Update,
+        (
+            luna::viewer_pose::update_desktop_viewer_pose,
+            luna::viewer_pose::propagate_viewer_pose_to_workers,
+        )
+            .chain(),
     );
     // JS pipeline: forzado a correr DESPUÉS del DOM pipeline. Si
     // `js_update_snapshots_system` corre antes que

@@ -6,7 +6,7 @@
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space id="ux_vr" resources="vr_locomotion,read_system_input,manage_tabs">
+  <space id="ux_vr" resources="vr_locomotion,read_system_input,manage_tabs,read_hmd_pose">
     <!-- Panel oculto por defecto. Se muestra al recibir systeminput action=shell
          (botón menu Touch izq en VR, ESC desktop). El estado lo maneja este
          script — el dispatcher Bevy sólo emite el press. -->
@@ -45,11 +45,14 @@
       ];
 
       // ── Tamaños (Quest 2 home style: ~2x más chico que el original) ────
-      const SIZE_APP    = 0.22;   // era 0.45
-      const BOX_DEPTH   = 0.025;  // era 0.05
-      const Z           = -2;     // era -3 (más cerca, ~2m)
-      const LABEL_DY    = -0.15;  // era -0.30 (proporcional)
-      const LABEL_SIZE  = 0.040;  // era 0.08
+      const SIZE_APP    = 0.22;
+      const BOX_DEPTH   = 0.025;
+      // Items son LOCAL al panel; Z=0 los pone en el plano del panel. El
+      // panel se mueve al frente del user en repositionPanelAtViewer().
+      const Z           = 0;
+      const Z_TEXT      = 0.001;  // levemente al frente para no z-fight con boxes
+      const LABEL_DY    = -0.15;
+      const LABEL_SIZE  = 0.040;
       const BORDER_R    = '0.2';
 
       // ── buildPositions (ported de script_menu.js) ──────────────────────
@@ -76,7 +79,13 @@
             '— layout truncado');
           count = POSITIONS_TABLE.length;
         }
-        return POSITIONS_TABLE[count - 1].map(([x, y]) => [x / POS_DIV, y / POS_DIV]);
+        const raw = POSITIONS_TABLE[count - 1].map(([x, y]) => [x / POS_DIV, y / POS_DIV]);
+        // Centrar en (0, 0) restando el centroide — local space del panel.
+        let cx = 0, cy = 0;
+        for (const [x, y] of raw) { cx += x; cy += y; }
+        cx /= raw.length;
+        cy /= raw.length;
+        return raw.map(([x, y]) => [x - cx, y - cy]);
       }
 
       // ── Animación enter/exit ───────────────────────────────────────────
@@ -139,7 +148,7 @@
           text.setAttribute('name', 'app-name-' + bm.name);
           text.setAttribute('value', bm.name);
           text.setAttribute('size', String(LABEL_SIZE));
-          text.position = { x: px, y: py + LABEL_DY, z: Z };
+          text.position = { x: px, y: py + LABEL_DY, z: Z_TEXT };
           panel.appendChild(text);
 
           itemRefs.push({ box, text, idx: i });
@@ -225,12 +234,53 @@
         }
       }
 
+      // Distancia panel ↔ viewer al spawnearlo enfrente.
+      const SHELL_SPAWN_DISTANCE = 1.5;
+
+      function repositionPanelAtViewer() {
+        if (!panel) return;
+        if (typeof dimention.readViewerPose !== 'function') {
+          console.warn('[ux_vr] readViewerPose unavailable — panel queda en posición previa');
+          return;
+        }
+        const pose = dimention.readViewerPose();
+        if (!pose) {
+          // No hay snapshot todavía (sesión recién iniciando). Dejar default.
+          return;
+        }
+
+        // Sólo usamos yaw (no pitch ni roll) para que el panel quede vertical
+        // como un cuadro colgado, no se incline si el user mira arriba/abajo.
+        // Forward XZ-plano normalizado a partir de yaw:
+        //   yaw=0 mira -Z, yaw=PI/2 mira -X, etc.
+        const fwdX = -Math.sin(pose.yaw);
+        const fwdZ = -Math.cos(pose.yaw);
+
+        panel.position = {
+          x: pose.px + fwdX * SHELL_SPAWN_DISTANCE,
+          y: pose.py,                          // altura ojos del user
+          z: pose.pz + fwdZ * SHELL_SPAWN_DISTANCE,
+        };
+        // Rotar panel para que mire al user (yaw del viewer).
+        panel.rotation = { x: 0, y: pose.yaw, z: 0 };
+
+        // Extras según modo — UX puede especializarse acá.
+        if (pose.mode === 'vr') {
+          // VR: podríamos usar pose.qx..qw para una rotación más fina si
+          // quisiéramos incluir pitch. Por ahora yaw-only feel más estable.
+        } else if (pose.mode === 'desktop') {
+          // Desktop: pose.fovY/aspect disponibles si necesitamos un panel
+          // tipo HUD en screen space. No usado por ahora.
+        }
+      }
+
       function setVisibleAndAnimate(v) {
         const want = !!v;
         if (want === visible && !animActive) return;
         visible = want;
 
         if (want) {
+          repositionPanelAtViewer();
           if (panel) panel.setAttribute('visible', 'true');
           startEnterAnimation();
         } else {
