@@ -146,11 +146,17 @@
       }
 
       function shouldShowBottomBar() {
-        // Bar sólo aparece si hay algo (focus o anchored) y el shell está visible.
-        if (!shellState.bookmarksVisible) return false;
         const hasFocus = shellState.focusApp !== null;
         const hasAnchored = shellState.anchored.length > 0;
-        return hasFocus || hasAnchored;
+        if (!hasFocus && !hasAnchored) return false;
+
+        // Caso: focus visible (no minimizado). Bar visible aunque bookmarks
+        // estén ocultos — permite al user tocar Menu/Home en la bar para
+        // minimizar focus y volver a marcadores.
+        if (hasFocus && !shellState.focusApp.minimized) return true;
+
+        // Resto: bar visible si bookmarks visibles (= menu abierto).
+        return shellState.bookmarksVisible;
       }
 
       // ── DOM refs ───────────────────────────────────────────────────────
@@ -437,9 +443,9 @@
           applyVisibility();
           startEnterAnimation();
         } else {
-          // Exit anim de los bookmarks; oculta bar inmediatamente
-          // (la bar no tiene anim de exit propia por ahora).
-          if (bottomBar) bottomBar.setAttribute('visible', 'false');
+          // Exit anim de los bookmarks. applyVisibility refresca la bar
+          // según la nueva regla (oculta si nada de focus/anchored).
+          applyVisibility();
           startExitAnimation();
         }
       }
@@ -635,12 +641,10 @@
         };
         dimention.tabs.open(bm.url, { kind: 'app-embedded' });
 
-        // No tocar bookmarksVisible — esperamos 'ready' o 'requestSlot' para
-        // transicionar. Pero como visualmente el bookmark fue clickeado, podemos
-        // hacer la transición optimista.
+        // Transición optimista al estado focused (bookmarks ocultos).
+        // El frame del focus aparecerá cuando llegue requestSlot/ready
+        // y focusApp.tabId se complete.
         shellState.bookmarksVisible = false;
-        if (bottomBar) bottomBar.setAttribute('visible', 'false');
-        // El focus zone aparecerá cuando llegue requestSlot/ready (focusApp se completa).
         applyVisibility();
       }
 
@@ -660,7 +664,7 @@
         // Spatial / app normal — comportamiento previo.
         dimention.tabs.open(bm.url, { kind: bm.kind || 'spatial' });
         shellState.bookmarksVisible = false;
-        if (bottomBar) bottomBar.setAttribute('visible', 'false');
+        applyVisibility();
         startExitAnimation();
       }
 
