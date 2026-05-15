@@ -577,6 +577,11 @@ fn remove_dom_subtree(
     // y sin pagar el costo de despawnear entidad por entidad.
     let bevy_roots = collect_bevy_subtree_roots_from_bevy(&subtree_ids, entity_map, bevy_parents);
 
+    // Snapshot del set "attached" ANTES del cleanup. Usado abajo para skip
+    // node_ids que no estaban realmente attached (stale → causaría panic en
+    // delete_entity al pegar contra un slot virginal de specs).
+    let attached: HashSet<u32> = dom_data.nodes.keys().copied().collect();
+
     for &node_id in &subtree_ids {
         clear_async_node_state(
             node_id,
@@ -600,9 +605,54 @@ fn remove_dom_subtree(
         commands.entity(bevy_root).despawn_recursive();
     }
 
+    // Dedup defensivo + check contra dom_data.nodes (snapshot pre-cleanup).
+    // `world.entities().entity(stale_id)` para un slot virginal devuelve un
+    // Entity gen=1 que PASA is_alive (false-positive), y luego delete_entity
+    // llama die() en un slot None → debug_assert panic en specs.
+    let mut seen_ids: HashSet<u32> = HashSet::new();
+    let mut deleted = 0usize;
+    let mut skipped_dead = 0usize;
+    let mut skipped_dup = 0usize;
+    let mut skipped_orphan = 0usize;
     for &node_id in &subtree_ids {
+        if !seen_ids.insert(node_id) {
+            skipped_dup += 1;
+            continue;
+        }
+        // Antes de borrar, nos cercioramos de que el node_id estaba realmente
+        // attached al DOM activo. Si no, era stale (slot virginal o nodo de
+        // otro subtree ya removido).
+        // dom_data.nodes ya se limpió arriba (línea 588) — usamos snapshot
+        // pre-cleanup capturado al inicio.
+        if !attached.contains(&node_id) {
+            skipped_orphan += 1;
+            continue;
+        }
         let ent = world.entities().entity(node_id);
-        let _ = world.delete_entity(ent);
+        if !world.entities().is_alive(ent) {
+            skipped_dead += 1;
+            continue;
+        }
+        match world.delete_entity(ent) {
+            Ok(()) => deleted += 1,
+            Err(e) => {
+                eprintln!(
+                    "[dom][remove_subtree] delete_entity failed node_id={node_id}: {e:?}"
+                );
+            }
+        }
+    }
+
+    if skipped_dup > 0 || skipped_dead > 0 || skipped_orphan > 0 {
+        eprintln!(
+            "[dom][remove_subtree] root={} subtree_len={} deleted={} skipped_dup={} skipped_dead={} skipped_orphan={}",
+            root.id(),
+            subtree_ids.len(),
+            deleted,
+            skipped_dup,
+            skipped_dead,
+            skipped_orphan,
+        );
     }
 
     subtree_ids.len()
