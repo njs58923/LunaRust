@@ -2064,10 +2064,6 @@ pub fn js_tick_system(world: &mut World) {
     //   puede mandar a cualquier tab.
     // Mensaje al destino lleva el tab_id del origen como "fromTabId".
     if !shell_message_batches.is_empty() {
-        // Lookup tab_id del space sender + space del shell.
-        // `find_tab_id_for_space` sube por ancestors hasta encontrar la attr
-        // — necesario porque la app vive en el inner space cargado por include
-        // (sin la attr), mientras la attr la lleva el outer wrapper.
         let (shell_space_id, sender_tab_ids): (Option<u32>, std::collections::HashMap<u32, u64>) = {
             let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
                 return;
@@ -2082,6 +2078,7 @@ pub fn js_tick_system(world: &mut World) {
             }
             (shell_id, sender_map)
         };
+
 
         // Acumular routes: target_space_id → Vec<ShellMessage con fromTabId>.
         let mut routes: std::collections::HashMap<u32, Vec<js_runtime::ShellMessage>> =
@@ -2146,14 +2143,28 @@ pub fn js_tick_system(world: &mut World) {
 
         // Despachar a cada worker target.
         if !routes.is_empty() {
-            let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
-                return;
-            };
-            for (target_space_id, msgs) in routes {
-                if let Some(worker) = manager.contexts.get_mut(&target_space_id) {
-                    let _ = worker
-                        .cmd_tx
-                        .send(JsWorkerCommand::PushShellMessages(msgs));
+            let mut missing_targets: Vec<u32> = Vec::new();
+            {
+                let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
+                    return;
+                };
+                for (target_space_id, msgs) in routes {
+                    if let Some(worker) = manager.contexts.get_mut(&target_space_id) {
+                        let _ = worker
+                            .cmd_tx
+                            .send(JsWorkerCommand::PushShellMessages(msgs));
+                    } else {
+                        missing_targets.push(target_space_id);
+                    }
+                }
+            }
+            if !missing_targets.is_empty() {
+                if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
+                    for sid in missing_targets {
+                        log_panel.push_warn(format!(
+                            "[shell-bus] no worker for target space:{}", sid
+                        ));
+                    }
                 }
             }
         }

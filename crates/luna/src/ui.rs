@@ -575,24 +575,67 @@ fn find_root_space_entity(world: &SpecWorld) -> Option<SpecEntity> {
     None
 }
 
-/// Devuelve el space_id del shell. Busca `system-shell="true"` en cualquier
-/// space del world, no sólo en root_managed. El shell suele vivir como
-/// `<space>` interno cargado por un `<include>` (HSML model), así que no es
-/// root-direct child sino descendiente del outer wrapper managed-by.
+/// Devuelve el space_id del shell ACTIVO (donde corre el script ux_*).
+///
+/// Diseño:
+/// - root_api.js marca el outer wrapper del shell con `system-shell="true"`
+///   al hacer `switchMode`. La attr está en el OUTER, no en el HSML inner.
+/// - Buscamos ese outer, luego bajamos al primer `<space>` descendiente
+///   (el inner cargado por `<include>` — donde vive el worker JS).
+/// - Si hay varios outers con system-shell="true" (zombie de switch previo),
+///   `switchMode` hace sweep antes de montar nuevo. Aquí devolvemos el primero.
 pub fn find_system_shell_space(world: &SpecWorld) -> Option<u32> {
-    use specs::Join;
     let entities = world.entities();
     let attrs = world.read_storage::<Attrs>();
     let tags = world.read_storage::<Tag>();
-    for (ent, attr, tag) in (&entities, &attrs, &tags).join() {
-        if tag.0 != "space" {
-            continue;
-        }
-        if attr.0.get("system-shell").map(|v| v.as_str()) == Some("true") {
-            return Some(ent.id());
+    let hier = world.read_storage::<Hierarchy>();
+
+    // Buscar TODOS los outers con `system-shell="true"` y quedarnos con el
+    // de MAYOR id (= montado más recientemente). Si el sweep JS no llegó a
+    // remover un wrapper zombi del switch anterior, prefiere el activo.
+    // IDs en specs crecen monotónicamente con la creación.
+    let mut outer_opt: Option<specs::Entity> = None;
+    {
+        use specs::Join;
+        for (ent, attr, tag) in (&entities, &attrs, &tags).join() {
+            if tag.0 != "space" {
+                continue;
+            }
+            if attr.0.get("system-shell").map(|v| v.as_str()) == Some("true") {
+                match outer_opt {
+                    None => outer_opt = Some(ent),
+                    Some(prev) if ent.id() > prev.id() => outer_opt = Some(ent),
+                    _ => {}
+                }
+            }
         }
     }
-    None
+    let outer = outer_opt?;
+
+    // BFS bajando — devolver primer descendiente que sea `<space>` (= inner).
+    let mut stack: Vec<specs::Entity> = Vec::new();
+    if let Some(h) = hier.get(outer) {
+        for &c in &h.children {
+            stack.push(c);
+        }
+    }
+    while let Some(ent) = stack.pop() {
+        if !entities.is_alive(ent) {
+            continue;
+        }
+        if let Some(t) = tags.get(ent) {
+            if t.0 == "space" {
+                return Some(ent.id());
+            }
+        }
+        if let Some(h) = hier.get(ent) {
+            for &c in &h.children {
+                stack.push(c);
+            }
+        }
+    }
+    // Sin inner descendiente: devolvemos outer como fallback.
+    Some(outer.id())
 }
 
 /// Sube por la jerarquía buscando el ancestor con `data-luna-tab-id`.

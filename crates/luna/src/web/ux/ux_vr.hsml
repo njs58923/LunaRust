@@ -6,7 +6,7 @@
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space id="ux_vr" system-shell="true" resources="vr_locomotion,read_system_input,manage_tabs,read_hmd_pose">
+  <space id="ux_vr" resources="vr_locomotion,read_system_input,manage_tabs,read_hmd_pose">
     <!-- Shell del UX en VR.
          Tres grupos top-level:
            - ux_vr_panel:      bookmarks grid (centro arriba).
@@ -343,7 +343,7 @@
           applyVisibility();
           return;
         }
-        console.log('[ux_vr] bar Menu tapped — no-op (already in bookmarks)');
+        // bar Menu tap sin focus → no-op (ya estamos en bookmarks).
       }
 
       function onTapBarFocus() {
@@ -438,11 +438,10 @@
           startEnterAnimation();
         } else {
           // Exit anim de los bookmarks; oculta bar inmediatamente
-          // (la bar no tiene anim de exit propia en commit 2).
+          // (la bar no tiene anim de exit propia por ahora).
           if (bottomBar) bottomBar.setAttribute('visible', 'false');
           startExitAnimation();
         }
-        console.log('[ux_vr] shell visible=', want);
       }
 
       // ── Frame del focus (titlebar + border) ────────────────────────────
@@ -612,7 +611,10 @@
       //   - Setea focusApp en ShellState.
       //   - Cuando la app pida 'requestSlot', shell le manda el slot y oculta bookmarks.
       function openEmbeddedApp(bm) {
-        // TODO(commit-A): si ya hay focus existente, cerrarlo antes (regla del doc).
+        // Refresca la pose del shell ANTES de abrir — así el slot del focus
+        // se calcula con la pose actual del user, no con una vieja.
+        repositionShellAtViewer();
+
         if (shellState.focusApp) {
           sendMessageToApp(shellState.focusApp.tabId, 'close');
           if (dimention.tabs) dimention.tabs.close(shellState.focusApp.tabId);
@@ -684,15 +686,12 @@
           // App pide slot — shell responde con la pose del focus actual.
           sendFocusSlotToApp();
         } else if (type === 'ready') {
-          console.log('[ux_vr] app tab=', fromTabId, 'ready');
+          // No-op por ahora — el shell ya captura el tabId del primer mensaje.
         } else if (type === 'closeself') {
-          // App pidió cerrarse a sí misma.
           if (shellState.focusApp && shellState.focusApp.tabId === fromTabId) {
             onTapFocusClose();
           }
           // TODO(commit 4): anchored self-close.
-        } else {
-          console.log('[ux_vr] unknown app message type=', type, 'from=', fromTabId);
         }
       }
 
@@ -713,21 +712,10 @@
         }
       });
 
-      // ── Listener mensajes de apps embedded (commit 3+) ─────────────────
-      // Por ahora sólo log para debug. Cuando exista demo_embedded app,
-      // veremos los requestSlot / closeSelf / ready aparecer acá.
-      if (dimention && dimention.embedded) {
-        // El shell también tiene la API embedded? Sí, porque ux_vr tiene
-        // managed-by=dimension.luna y el shell se pasa todos los grants en
-        // switchMode. Pero NO usamos esa surface para iniciar mensajes:
-        // el shell habla a apps vía ops directas (futuro shell_send_message
-        // al inbox de cada app). Por ahora, prueba.
-      }
-
       // ── Init ───────────────────────────────────────────────────────────
       buildBookmarks();
       applyVisibility();
-      console.log('[ux_vr] Shell loaded — bookmarks=', BOOKMARKS.length, '(commit 2: ShellState + bottom bar skeleton)');
+      console.log('[ux_vr] Shell loaded —', BOOKMARKS.length, 'bookmarks');
     </script>
   </space>
 </hsml>

@@ -218,6 +218,12 @@
       space.setAttribute('visible', options.visible === false ? 'false' : 'true');
       space.setAttribute('managed-by', 'dimension.luna');
       space.setAttribute('data-luna-kind', kind);
+      if (options.systemShell) {
+        // El outer wrapper es el "anchor" del shell — find_system_shell_space
+        // lo encuentra y baja al primer space descendiente (el inner del HSML
+        // del shell, donde corre el script ux_vr / ux_desktop).
+        space.setAttribute('system-shell', 'true');
+      }
 
       if (Array.isArray(grants) && grants.length) {
         space.setAttribute('resources', grants.join(','));
@@ -282,23 +288,37 @@
     },
 
     switchMode(mode) {
-      console.log('[root] switchMode ->', mode);
       if (mode !== 'desktop' && mode !== 'vr') {
         console.error('[root] Invalid mode:', mode);
         return false;
       }
       if (mode === this._currentMode) return true;
 
-      if (this._uxSpaceId != null) {
-        this.unmountSpace(this._uxSpaceId);
-        this._uxSpaceId = null;
+      // Sweep defensivo en el DOM. Las ops mount/unmount son async, así que
+      // un switchMode previo puede dejar wrappers zombi. Busca direct children
+      // del root con `system-shell="true"` y los elimina del DOM + registry.
+      // (`find_system_shell_space` en Rust también prefiere el más reciente
+      // como red de seguridad si este sweep no llegó a tiempo.)
+      discoverDirectSpaces();
+      cleanupRegistry();
+      for (const child of [...root.children]) {
+        if (normalizeTag(child.tagName) !== 'space') continue;
+        if (child.getAttribute('system-shell') === 'true') {
+          for (const [id, entry] of [...registry.entries()]) {
+            if (entry.space.nodeId === child.nodeId) {
+              registry.delete(id);
+            }
+          }
+          try { child.remove(); } catch (_) {}
+        }
       }
+      this._uxSpaceId = null;
 
       const uxUrl = mode === 'vr' ? 'luna://ux_vr' : 'luna://ux_desktop';
       const grants = mode === 'vr'
         ? ['navigate_self', 'vr_locomotion', 'read_system_input', 'manage_tabs', 'read_hmd_pose']
         : ['navigate_self', 'desktop_camera_control', 'read_system_input', 'manage_tabs', 'read_hmd_pose'];
-      this._uxSpaceId = this.mountSpace(uxUrl, { visible: true, grants });
+      this._uxSpaceId = this.mountSpace(uxUrl, { visible: true, grants, systemShell: true });
       this._currentMode = mode;
       console.log('[root] ux mounted id=', this._uxSpaceId, 'url=', uxUrl);
       return true;

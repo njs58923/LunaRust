@@ -14,10 +14,11 @@
 
   // Kinds soportados. La policy real (cerrar otras spatial, etc) se aplica en
   // root_api.js — acá sólo propagamos el string al host.
-  //   "spatial" — al abrir, el shell cierra otras tabs spatial.
-  //   "app"     — aditiva, persiste entre cambios de spatial.
+  //   "spatial"      — al abrir, el shell cierra otras tabs spatial.
+  //   "app"          — aditiva, persiste entre cambios de spatial.
+  //   "app-embedded" — aditiva + recibe cap ux_embed para hablar con shell.
   // Default si no se pasa: "spatial" (equivale a window.open con _blank).
-  const VALID_KINDS = new Set(['spatial', 'app']);
+  const VALID_KINDS = new Set(['spatial', 'app', 'app-embedded']);
 
   const tabsApi = {
     // Abre nueva tab cargando `url`. `opts.kind` define semantics.

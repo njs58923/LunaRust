@@ -26,12 +26,20 @@
       const root = hiperspace.dimention;
       const myGroup = root.getElementById('demo_root');
 
-      if (!dimention || !dimention.embedded) {
-        console.error('[demo_embedded] dimention.embedded missing — app not running embedded');
-      } else {
-        const e = dimention.embedded;
-        console.log('[demo_embedded] context=', JSON.stringify(e.context));
+      // Init async — el auto-script `embedded_api.js` puede correr DESPUÉS
+      // que este inline. Polleamos `dimention.embedded` hasta que aparezca,
+      // máx ~250ms. Sin esto, el `if (!dimention.embedded)` retornaba
+      // missing aunque el script estuviera listo en el próximo tick.
+      function waitForEmbedded(attempts, cb) {
+        if (dimention && dimention.embedded) { cb(dimention.embedded); return; }
+        if (attempts > 50) {
+          console.error('[demo_embedded] dimention.embedded never appeared — cap ux_embed missing?');
+          return;
+        }
+        setTimeout(() => waitForEmbedded(attempts + 1, cb), 5);
+      }
 
+      waitForEmbedded(0, function(e) {
         let contentBox = null;
         let labelText  = null;
 
@@ -61,10 +69,9 @@
         }
 
         e.on('slot', (slot) => {
-          console.log('[demo_embedded] received slot:', JSON.stringify(slot));
           // El shell nos da la pose world donde dibujar. Movemos nuestro
           // space root a esa pose; el contenido queda centrado en (0,0,0)
-          // local — el slot.size define el área dibujable.
+          // local — slot.size define el área dibujable.
           if (slot.position) {
             root.position = {
               x: Number(slot.position.x || 0),
@@ -82,14 +89,30 @@
           renderInSlot(slot.size);
         });
 
-        e.on('focus', () => console.log('[demo_embedded] gained focus'));
-        e.on('blur',  () => console.log('[demo_embedded] lost focus'));
+        // Helpers para ocultar/mostrar el contenido. El engine no respeta
+        // `visible` en <space>/<include> consistentemente, así que cada app
+        // controla su propia visibility — al recibir blur escondemos, focus
+        // restauramos.
+        function setContentVisible(v) {
+          const flag = v ? 'true' : 'false';
+          if (contentBox) contentBox.setAttribute('visible', flag);
+          if (labelText)  labelText.setAttribute('visible',  flag);
+        }
+
+        e.on('focus', () => {
+          console.log('[demo_embedded] gained focus');
+          setContentVisible(true);
+        });
+        e.on('blur',  () => {
+          console.log('[demo_embedded] lost focus');
+          setContentVisible(false);
+        });
         e.on('suspend', () => console.log('[demo_embedded] suspend (TODO: pause loops)'));
         e.on('resume',  () => console.log('[demo_embedded] resume'));
         e.on('close',   () => {
           console.log('[demo_embedded] close — cleanup');
-          if (contentBox) { try { contentBox.remove(); } catch (_) {} }
-          if (labelText)  { try { labelText.remove();  } catch (_) {} }
+          if (contentBox) { try { contentBox.remove(); } catch (_) {} contentBox = null; }
+          if (labelText)  { try { labelText.remove();  } catch (_) {} labelText  = null; }
         });
 
         // Pedir slot al shell con tamaño preferido.
@@ -99,7 +122,7 @@
           preferredSize: { x: 1.0, y: 0.7, z: 0.1 },
         });
         e.notifyReady();
-      }
+      });
     </script>
   </space>
 </hsml>
