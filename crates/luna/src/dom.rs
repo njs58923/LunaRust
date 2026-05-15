@@ -1442,13 +1442,15 @@ pub fn dom_sync_system(
         return;
     }
 
-    // Orden topológico: parents antes que children. Necesario para que cuando
-    // spawneamos un nuevo entity Bevy, su parent ya esté en entity_map y se
-    // pueda hacer set_parent en el spawn (no via Commands diferidos que no
-    // aplican hasta el final del frame — eso causaba que apps embedded
-    // quedaran como entities Bevy root flotantes con Transform world-space en
-    // (0,0,0) la mitad de las veces, dependiendo del orden del HashMap).
-    {
+    // Orden topológico: parents antes que children. Sólo hace falta cuando hay
+    // nodos attached que todavía no tienen entity Bevy en `entity_map`
+    // (spawns/attach recientes). En el hot-path de animación masiva (5k cubos
+    // ya existentes) este sort no aporta nada y sí mete hash+alloc+sort extra
+    // por frame.
+    let needs_topo_sort = dirty_node_ids
+        .iter()
+        .any(|nid| dom_data.nodes.contains_key(nid) && !entity_map.0.contains_key(nid));
+    if needs_topo_sort {
         let attached: HashSet<u32> = dom_data.nodes.keys().copied().collect();
         topo_sort_dirty_by_depth(&world.0, &mut dirty_node_ids, &attached);
     }
