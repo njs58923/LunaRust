@@ -55,6 +55,7 @@ pub struct JsTickData {
     pub fetch_queue: Vec<(i32, String)>,
     pub navigate_queue: Vec<String>,
     pub tab_action_queue: Vec<js_runtime::TabAction>,
+    pub shell_outbox: Vec<js_runtime::ShellMessage>,
     pub ws_connect_queue: Vec<(i32, String)>,
     pub ws_send_queue: Vec<(i32, String)>,
     pub ws_close_queue: Vec<i32>,
@@ -102,6 +103,10 @@ pub enum JsWorkerCommand {
     /// Actualiza snapshot de viewer pose visible vía op_read_viewer_pose.
     /// `None` limpia (worker sin cap READ_HMD_POSE).
     SetViewerPose(Option<js_runtime::ViewerPoseData>),
+    /// Mensajes shell ↔ app. El campo `target_tab_id` en cada msg, al
+    /// llegar al worker, indica "de quién viene" (the host swaps direction
+    /// para el receptor).
+    PushShellMessages(Vec<js_runtime::ShellMessage>),
     RequestDebugState,
     Shutdown,
 }
@@ -260,6 +265,7 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                             fetch_queue: ctx.engine.drain_fetch_queue(),
                             navigate_queue: ctx.engine.drain_navigate_queue(),
                             tab_action_queue: ctx.engine.drain_tab_action_queue(),
+                            shell_outbox: ctx.engine.drain_shell_outbox(),
                             ws_connect_queue: ctx.engine.drain_ws_connect_queue(),
                             ws_send_queue: ctx.engine.drain_ws_send_queue(),
                             ws_close_queue: ctx.engine.drain_ws_close_queue(),
@@ -325,6 +331,9 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                     }
                     JsWorkerCommand::SetViewerPose(data) => {
                         ctx.engine.set_viewer_pose(data);
+                    }
+                    JsWorkerCommand::PushShellMessages(msgs) => {
+                        ctx.engine.push_shell_messages(msgs);
                     }
                     JsWorkerCommand::RequestDebugState => {
                         let _ = event_tx.send(JsWorkerEvent::DebugState {
@@ -1194,6 +1203,7 @@ pub fn js_tick_system(world: &mut World) {
     let mut fetch_batches = Vec::new();
     let mut navigate_batches = Vec::new();
     let mut tab_action_batches: Vec<(u32, Vec<js_runtime::TabAction>)> = Vec::new();
+    let mut shell_message_batches: Vec<(u32, Vec<js_runtime::ShellMessage>)> = Vec::new();
     let mut ws_connect_batches: Vec<(u32, Vec<(i32, String)>)> = Vec::new();
     let mut ws_send_batches: Vec<(u32, Vec<(i32, String)>)> = Vec::new();
     let mut ws_close_batches: Vec<(u32, Vec<i32>)> = Vec::new();
@@ -1222,6 +1232,9 @@ pub fn js_tick_system(world: &mut World) {
         }
         if !data.tab_action_queue.is_empty() {
             tab_action_batches.push((space_id, data.tab_action_queue));
+        }
+        if !data.shell_outbox.is_empty() {
+            shell_message_batches.push((space_id, data.shell_outbox));
         }
         if !data.ws_connect_queue.is_empty() {
             ws_connect_batches.push((space_id, data.ws_connect_queue));
@@ -2040,6 +2053,113 @@ pub fn js_tick_system(world: &mut World) {
                     "[JS] tabs.setVisible buffered ({} requests) — host bridge pending",
                     visibility_requests.len()
                 ));
+            }
+        }
+    }
+
+    // ── Shell ↔ embedded app messages ──────────────────────────────────────
+    // Rute payloads del outbox de cada worker hacia el inbox del target.
+    // - Si el sender tiene UX_EMBED: puede mandar al shell (target_tab_id=0).
+    // - Si el sender es el shell (managed-by=dimension.luna + system-shell):
+    //   puede mandar a cualquier tab.
+    // Mensaje al destino lleva el tab_id del origen como "fromTabId".
+    if !shell_message_batches.is_empty() {
+        // Lookup tab_id del space sender + space del shell.
+        let (shell_space_id, sender_tab_ids): (Option<u32>, std::collections::HashMap<u32, u64>) = {
+            let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
+                return;
+            };
+            let shell_id = crate::ui::find_system_shell_space(&specs_world.0);
+            // Para cada space sender, encontrar su tab_id en el DOM.
+            let attrs = specs_world.0.read_storage::<Attrs>();
+            let mut sender_map: std::collections::HashMap<u32, u64> =
+                std::collections::HashMap::new();
+            for (sid, _) in &shell_message_batches {
+                let ent = specs_world.0.entities().entity(*sid);
+                if !specs_world.0.entities().is_alive(ent) {
+                    continue;
+                }
+                if let Some(a) = attrs.get(ent) {
+                    if let Some(tid_str) = a.0.get("data-luna-tab-id") {
+                        if let Ok(tid) = tid_str.parse::<u64>() {
+                            sender_map.insert(*sid, tid);
+                        }
+                    }
+                }
+            }
+            (shell_id, sender_map)
+        };
+
+        // Acumular routes: target_space_id → Vec<ShellMessage con fromTabId>.
+        let mut routes: std::collections::HashMap<u32, Vec<js_runtime::ShellMessage>> =
+            std::collections::HashMap::new();
+        let mut rejected: Vec<String> = Vec::new();
+
+        for (sender_space_id, msgs) in shell_message_batches {
+            let sender_caps = capabilities_by_space
+                .get(&sender_space_id)
+                .copied()
+                .unwrap_or_default();
+            let is_shell = Some(sender_space_id) == shell_space_id;
+            let has_embed = sender_caps.contains(CapabilityBits::UX_EMBED);
+
+            if !is_shell && !has_embed {
+                rejected.push(format!(
+                    "[JS][space:{sender_space_id}] shell.sendMessage denied (missing UX_EMBED)"
+                ));
+                continue;
+            }
+
+            let sender_tab_id = sender_tab_ids.get(&sender_space_id).copied().unwrap_or(0);
+
+            for msg in msgs {
+                let target_space_id: Option<u32> = if msg.target_tab_id == 0 {
+                    // Apps que mandan a tab_id=0 → shell.
+                    shell_space_id
+                } else {
+                    // Shell o app que manda a otra tab.
+                    let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
+                        return;
+                    };
+                    crate::ui::find_mounted_space_by_tab_id(&specs_world.0, msg.target_tab_id)
+                };
+
+                let Some(target_space_id) = target_space_id else {
+                    rejected.push(format!(
+                        "[JS][space:{sender_space_id}] shell.sendMessage target tab_id={} not found",
+                        msg.target_tab_id
+                    ));
+                    continue;
+                };
+
+                // En el inbox del destino, `target_tab_id` lo usamos como
+                // "fromTabId" — quien lo originó. Convención del bus.
+                routes.entry(target_space_id).or_default().push(js_runtime::ShellMessage {
+                    target_tab_id: sender_tab_id,
+                    payload: msg.payload,
+                });
+            }
+        }
+
+        if !rejected.is_empty() {
+            if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
+                for r in rejected {
+                    log_panel.push_warn(r);
+                }
+            }
+        }
+
+        // Despachar a cada worker target.
+        if !routes.is_empty() {
+            let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
+                return;
+            };
+            for (target_space_id, msgs) in routes {
+                if let Some(worker) = manager.contexts.get_mut(&target_space_id) {
+                    let _ = worker
+                        .cmd_tx
+                        .send(JsWorkerCommand::PushShellMessages(msgs));
+                }
             }
         }
     }

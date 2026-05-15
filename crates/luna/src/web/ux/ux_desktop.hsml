@@ -6,7 +6,7 @@
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space id="ux_desktop" resources="desktop_camera_control">
+  <space id="ux_desktop" system-shell="true" resources="desktop_camera_control">
     <text x="0" y="2.0" z="-3" value="UX Desktop Mounted" size="0.15" color="#00FF00" />
     <script>
       console.log('[ux_desktop] Desktop UX loaded');

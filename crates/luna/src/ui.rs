@@ -575,6 +575,20 @@ fn find_root_space_entity(world: &SpecWorld) -> Option<SpecEntity> {
     None
 }
 
+/// Devuelve el space_id del shell (managed-by="dimension.luna" + attr
+/// `system-shell="true"`). Sólo debería haber uno. Si no se encuentra, None.
+pub fn find_system_shell_space(world: &SpecWorld) -> Option<u32> {
+    let attrs = world.read_storage::<Attrs>();
+    for space_ent in find_root_managed_spaces(world) {
+        if let Some(attr) = attrs.get(space_ent) {
+            if attr.0.get("system-shell").map(|v| v.as_str()) == Some("true") {
+                return Some(space_ent.id());
+            }
+        }
+    }
+    None
+}
+
 fn find_root_managed_spaces(world: &SpecWorld) -> Vec<SpecEntity> {
     let mut result = Vec::new();
     let hier = world.read_storage::<Hierarchy>();
@@ -668,7 +682,7 @@ fn collect_mounted_space_snapshots(world: &SpecWorld) -> HashMap<u64, MountedSpa
     snapshots
 }
 
-fn find_mounted_space_by_tab_id(world: &SpecWorld, tab_id: u64) -> Option<u32> {
+pub fn find_mounted_space_by_tab_id(world: &SpecWorld, tab_id: u64) -> Option<u32> {
     let attrs = world.read_storage::<Attrs>();
     let tab_id = tab_id.to_string();
 

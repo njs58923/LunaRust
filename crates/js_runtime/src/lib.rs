@@ -341,6 +341,37 @@ impl Default for ViewerPoseState {
     }
 }
 
+/// Mensajes shell ↔ embedded app. El JS los serializa como JSON string;
+/// el host los rutea por `target_tab_id` (apuntando al worker dueño del space
+/// con ese tabId). Direction lo decide el caller — host no impone sentido.
+#[derive(Clone, Debug)]
+pub struct ShellMessage {
+    /// Si caller es app: dejar `target_tab_id = 0` → rutea al shell.
+    /// Si caller es shell: target_tab_id = tab id de la app destino.
+    pub target_tab_id: u64,
+    /// Payload arbitrario (JSON string). Convención: `{ "type": "...", ... }`.
+    pub payload: String,
+}
+
+pub struct ShellMessageOutbox {
+    pub queue: Shared<Vec<ShellMessage>>,
+}
+impl Default for ShellMessageOutbox {
+    fn default() -> Self {
+        Self { queue: shared(Vec::new()) }
+    }
+}
+
+pub struct ShellMessageInbox {
+    /// Mensajes que llegan al worker, leídos vía `op_shell_poll_messages`.
+    pub queue: Shared<Vec<ShellMessage>>,
+}
+impl Default for ShellMessageInbox {
+    fn default() -> Self {
+        Self { queue: shared(Vec::new()) }
+    }
+}
+
 /// Queue of ws connect requests from JS: Vec<(conn_id, url)>
 pub struct WsConnectQueue {
     pub requests: Shared<Vec<(i32, String)>>,
@@ -852,6 +883,35 @@ fn op_tab_set_visible(state: &mut OpState, #[bigint] tab_id: u64, visible: bool)
         .push(TabAction::SetVisible { tab_id, visible });
 }
 
+// --- Shell ↔ app message bus (cap UX_EMBED para apps; el shell siempre lo tiene) ---
+
+#[op2(fast)]
+fn op_shell_send_message(state: &mut OpState, #[bigint] target_tab_id: u64, #[string] payload: &str) {
+    let q = state.borrow::<ShellMessageOutbox>();
+    q.queue.borrow_mut().push(ShellMessage {
+        target_tab_id,
+        payload: payload.to_string(),
+    });
+}
+
+#[op2]
+#[serde]
+fn op_shell_poll_messages(state: &mut OpState) -> serde_json::Value {
+    let inbox = state.borrow::<ShellMessageInbox>();
+    let msgs = take_vec(&inbox.queue);
+    if msgs.is_empty() {
+        return serde_json::json!([]);
+    }
+    let arr: Vec<serde_json::Value> = msgs
+        .into_iter()
+        .map(|m| serde_json::json!({
+            "fromTabId": m.target_tab_id,  // host completa al ruteo: "de quién vino"
+            "payload": m.payload,
+        }))
+        .collect();
+    serde_json::Value::Array(arr)
+}
+
 // --- Viewer pose op (read-only, cap READ_HMD_POSE) ---
 
 #[op2]
@@ -1070,6 +1130,10 @@ pub struct Engine {
     // Viewer pose (HMD/desktop camera) — populated solo si worker tiene READ_HMD_POSE.
     viewer_pose: Shared<Option<ViewerPoseData>>,
 
+    // Shell ↔ embedded app message bus.
+    shell_outbox: Shared<Vec<ShellMessage>>,
+    shell_inbox: Shared<Vec<ShellMessage>>,
+
     // WebSocket
     ws_connect_queue: Shared<Vec<(i32, String)>>,
     ws_inbox: Shared<HashMap<i32, Vec<String>>>,
@@ -1108,6 +1172,8 @@ impl Engine {
         let navigate_queue = NavigateQueue::default();
         let tab_action_queue = TabActionQueue::default();
         let viewer_pose_state = ViewerPoseState::default();
+        let shell_outbox = ShellMessageOutbox::default();
+        let shell_inbox = ShellMessageInbox::default();
         let ws_connect_queue = WsConnectQueue::default();
         let ws_inbox = WsInbox::default();
         let ws_send_queue = WsSendQueue::default();
@@ -1182,6 +1248,12 @@ impl Engine {
         let viewer_pose_state_for_state = ViewerPoseState {
             data: viewer_pose_state.data.clone(),
         };
+        let shell_outbox_for_state = ShellMessageOutbox {
+            queue: shell_outbox.queue.clone(),
+        };
+        let shell_inbox_for_state = ShellMessageInbox {
+            queue: shell_inbox.queue.clone(),
+        };
         let ws_connect_queue_for_state = WsConnectQueue {
             requests: ws_connect_queue.requests.clone(),
             next_id: ws_connect_queue.next_id.clone(),
@@ -1241,6 +1313,8 @@ impl Engine {
                 op_tab_close::decl(),
                 op_tab_set_visible::decl(),
                 op_read_viewer_pose::decl(),
+                op_shell_send_message::decl(),
+                op_shell_poll_messages::decl(),
                 op_ws_connect::decl(),
                 op_ws_send::decl(),
                 op_ws_recv::decl(),
@@ -1317,6 +1391,12 @@ impl Engine {
                 state.put::<ViewerPoseState>(ViewerPoseState {
                     data: viewer_pose_state_for_state.data.clone(),
                 });
+                state.put::<ShellMessageOutbox>(ShellMessageOutbox {
+                    queue: shell_outbox_for_state.queue.clone(),
+                });
+                state.put::<ShellMessageInbox>(ShellMessageInbox {
+                    queue: shell_inbox_for_state.queue.clone(),
+                });
                 state.put::<WsConnectQueue>(WsConnectQueue {
                     requests: ws_connect_queue_for_state.requests.clone(),
                     next_id: ws_connect_queue_for_state.next_id.clone(),
@@ -1385,6 +1465,8 @@ impl Engine {
             navigate_queue: navigate_queue.queue,
             tab_action_queue: tab_action_queue.queue,
             viewer_pose: viewer_pose_state.data,
+            shell_outbox: shell_outbox.queue,
+            shell_inbox: shell_inbox.queue,
             ws_connect_queue: ws_connect_queue.requests,
             ws_inbox: ws_inbox.messages,
             ws_send_queue: ws_send_queue.queue,
@@ -1479,6 +1561,21 @@ impl Engine {
     /// valor inmediatamente (referencia compartida).
     pub fn set_viewer_pose(&self, data: Option<ViewerPoseData>) {
         *self.viewer_pose.borrow_mut() = data;
+    }
+
+    /// Drena los mensajes que la app JS quiso enviar al shell (o viceversa,
+    /// depende quién opere el worker). El host rutea según target_tab_id.
+    pub fn drain_shell_outbox(&self) -> Vec<ShellMessage> {
+        take_vec(&self.shell_outbox)
+    }
+
+    /// Empuja mensajes entrantes al inbox del worker. El JS los lee con
+    /// `op_shell_poll_messages()` en su tick.
+    pub fn push_shell_messages(&self, msgs: Vec<ShellMessage>) {
+        if msgs.is_empty() {
+            return;
+        }
+        self.shell_inbox.borrow_mut().extend(msgs);
     }
 
     // --- Update snapshot methods ---

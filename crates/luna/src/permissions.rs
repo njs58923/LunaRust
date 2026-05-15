@@ -28,6 +28,7 @@ bitflags! {
         const DEVTOOLS_WRITE       = 1 << 14;
         const SKYBOX               = 1 << 15;
         const READ_SYSTEM_INPUT    = 1 << 16;
+        const UX_EMBED             = 1 << 17;
     }
 }
 
@@ -39,7 +40,8 @@ pub const ELEVATED_CAPABILITIES: CapabilityBits = CapabilityBits::READ_SYSTEM_IN
     .union(CapabilityBits::MOUNT_ROOT_SPACE)
     .union(CapabilityBits::UNMOUNT_ROOT_SPACE)
     .union(CapabilityBits::UPDATE_ROOT_SPACE)
-    .union(CapabilityBits::LIST_ROOT_SPACES);
+    .union(CapabilityBits::LIST_ROOT_SPACES)
+    .union(CapabilityBits::UX_EMBED);
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -175,6 +177,18 @@ lazy_static! {
             },
         );
 
+        // Embedded app API — el shell concede esta cap a tabs montadas con
+        // `kind: 'app-embedded'`. Otorga `dimention.embedded.*` (request slot,
+        // close self, eventos del shell). ELEVATED — solo managed-by trusted.
+        m.insert(
+            "ux_embed",
+            ResourceBundleDef {
+                capabilities: CapabilityBits::UX_EMBED,
+                native_services: NativeServiceBits::empty(),
+                auto_scripts: &["luna://internal/embedded_api.js"],
+            },
+        );
+
         // API chrome.tabs-like — sólo para spaces UX shell (managed-by=dimension.luna).
         // Bundle agrupa las 4 caps de mount/unmount/update/list root spaces +
         // auto-inject del script que expone dimention.tabs.* en el isolate.
@@ -265,6 +279,7 @@ pub fn capability_labels(bits: CapabilityBits) -> Vec<&'static str> {
         ("DEVTOOLS_WRITE", CapabilityBits::DEVTOOLS_WRITE),
         ("SKYBOX", CapabilityBits::SKYBOX),
         ("READ_SYSTEM_INPUT", CapabilityBits::READ_SYSTEM_INPUT),
+        ("UX_EMBED", CapabilityBits::UX_EMBED),
     ]
     .iter()
     .filter(|(_, flag)| bits.contains(*flag))

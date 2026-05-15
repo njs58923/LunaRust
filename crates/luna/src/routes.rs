@@ -53,6 +53,10 @@ impl VirtualRoutes {
             "internal/viewer_pose_api.js".to_string(),
             RouteHandler::Static(SCRIPT_VIEWER_POSE_API),
         );
+        routes.insert(
+            "internal/embedded_api.js".to_string(),
+            RouteHandler::Static(SCRIPT_EMBEDDED_API),
+        );
 
         // UX routes
         routes.insert("ux_desktop".to_string(), RouteHandler::Static(LUNA_UX_DESKTOP));
@@ -813,6 +817,7 @@ const SCRIPT_HOME_NAV: &str = include_str!("web/internal/home_navigation.js");
 const SCRIPT_ROOT_API: &str = include_str!("web/internal/root_api.js");
 const SCRIPT_TABS_API: &str = include_str!("web/internal/tabs_api.js");
 const SCRIPT_VIEWER_POSE_API: &str = include_str!("web/internal/viewer_pose_api.js");
+const SCRIPT_EMBEDDED_API: &str = include_str!("web/internal/embedded_api.js");
 
 // ============================================================================
 // GENERADORES DE CONTENIDO DINÁMICO

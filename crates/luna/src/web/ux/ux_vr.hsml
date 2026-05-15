@@ -6,7 +6,7 @@
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space id="ux_vr" resources="vr_locomotion,read_system_input,manage_tabs,read_hmd_pose">
+  <space id="ux_vr" system-shell="true" resources="vr_locomotion,read_system_input,manage_tabs,read_hmd_pose">
     <!-- Panel oculto por defecto. Se muestra al recibir systeminput action=shell
          (botón menu Touch izq en VR, ESC desktop). El estado lo maneja este
          script — el dispatcher Bevy sólo emite el press. -->
