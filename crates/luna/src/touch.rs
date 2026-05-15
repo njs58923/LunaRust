@@ -190,7 +190,11 @@ pub fn desktop_toque_raycast_system(
     mouse_button: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
-    toqueable_query: Query<(&GlobalTransform, &Toqueable, Option<&HitShape>)>,
+    // InheritedVisibility refleja la cadena Visibility::Inherited/Hidden/Visible
+    // propagada por Bevy en PostUpdate. Si un ancestro está Hidden, todos los
+    // descendientes (incluso con Visible explícito) leen `iv.get() == false`.
+    // Filtramos acá para que un panel oculto no reciba clicks de sus hijos.
+    toqueable_query: Query<(&GlobalTransform, &Toqueable, &InheritedVisibility, Option<&HitShape>)>,
     mut toque_hits: ResMut<HostToqueHits>,
     mut log_panel: ResMut<LogPanel>,
     shooter: Option<Res<crate::desktop_locomotion::DesktopShooterActive>>,
@@ -221,7 +225,10 @@ pub fn desktop_toque_raycast_system(
 
     let mut closest: Option<(f32, u32, Vec3)> = None;
 
-    for (global_transform, toqueable, hit_shape) in toqueable_query.iter() {
+    for (global_transform, toqueable, inherited_vis, hit_shape) in toqueable_query.iter() {
+        if !inherited_vis.get() {
+            continue;
+        }
         let (scale, rotation, entity_pos) = global_transform.to_scale_rotation_translation();
         let shape = hit_shape.copied().unwrap_or(HitShape::Sphere);
 
@@ -258,7 +265,8 @@ pub fn vr_toque_raycast_system(
     actions: Res<crate::vr_locomotion::LunaLocomotionActions>,
     session: Res<bevy_mod_openxr::session::OxrSession>,
     controller_query: Query<&GlobalTransform, With<bevy_xr_utils::tracking_utils::XrTrackedRightGrip>>,
-    toqueable_query: Query<(&GlobalTransform, &Toqueable, Option<&HitShape>)>,
+    // Ver doc en desktop_toque_raycast_system para el filtro de InheritedVisibility.
+    toqueable_query: Query<(&GlobalTransform, &Toqueable, &InheritedVisibility, Option<&HitShape>)>,
     mut toque_hits: ResMut<HostToqueHits>,
     mut log_panel: ResMut<LogPanel>,
     mut last_trigger: Local<bool>,
@@ -289,7 +297,10 @@ pub fn vr_toque_raycast_system(
 
     let mut closest: Option<(f32, u32, Vec3)> = None;
 
-    for (global_transform, toqueable, hit_shape) in toqueable_query.iter() {
+    for (global_transform, toqueable, inherited_vis, hit_shape) in toqueable_query.iter() {
+        if !inherited_vis.get() {
+            continue;
+        }
         let (scale, rotation, entity_pos) = global_transform.to_scale_rotation_translation();
         let shape = hit_shape.copied().unwrap_or(HitShape::Sphere);
 
@@ -321,7 +332,7 @@ fn push_pose_events_for_hand(
     controller_tf: &GlobalTransform,
     trigger: f32,
     grip: f32,
-    posezone_query: &Query<(&GlobalTransform, &PoseZone, Option<&HitShape>)>,
+    posezone_query: &Query<(&GlobalTransform, &PoseZone, &InheritedVisibility, Option<&HitShape>)>,
     pose_events: &mut HostPoseMoveEvents,
 ) {
     let point = controller_tf.translation();
@@ -331,7 +342,10 @@ fn push_pose_events_for_hand(
     }
     let (_, controller_rot, _) = controller_tf.to_scale_rotation_translation();
 
-    for (global_transform, posezone, hit_shape) in posezone_query.iter() {
+    for (global_transform, posezone, inherited_vis, hit_shape) in posezone_query.iter() {
+        if !inherited_vis.get() {
+            continue;
+        }
         let (scale, rotation, entity_pos) = global_transform.to_scale_rotation_translation();
         let shape = hit_shape.copied().unwrap_or(HitShape::Box);
 
@@ -367,7 +381,7 @@ pub fn vr_posemove_system(
         &GlobalTransform,
         With<bevy_xr_utils::tracking_utils::XrTrackedRightGrip>,
     >,
-    posezone_query: Query<(&GlobalTransform, &PoseZone, Option<&HitShape>)>,
+    posezone_query: Query<(&GlobalTransform, &PoseZone, &InheritedVisibility, Option<&HitShape>)>,
     mut pose_events: ResMut<HostPoseMoveEvents>,
 ) {
     if posezone_query.is_empty() {
