@@ -452,19 +452,25 @@ pub fn dispatch_toque_events_to_js(
         let allow_raw =
             space_has_capability(space_id, CapabilityBits::READ_TOQUE_RAW, &space_policies);
 
-        if let Some(worker) = manager.contexts.get(&space_id) {
-            let _ = worker
+        if let Some(worker) = manager.contexts.get_mut(&space_id) {
+            let send_result = worker
                 .cmd_tx
                 .send(JsWorkerCommand::PushDomToqueEvents(vec![(
                     local_id, evt.x, evt.y, evt.z,
                 )]));
+            if send_result.is_ok() {
+                worker.needs_tick = true;
+            }
 
             if allow_raw {
-                let _ = worker
+                let send_result = worker
                     .cmd_tx
                     .send(JsWorkerCommand::PushToqueRawEvents(vec![(
                         local_id, evt.x, evt.y, evt.z,
                     )]));
+                if send_result.is_ok() {
+                    worker.needs_tick = true;
+                }
             }
         }
     }
@@ -531,7 +537,10 @@ pub fn dispatch_posemove_events_to_js(
 
     for (space_id, batch) in per_space {
         if let Some(worker) = manager.contexts.get_mut(&space_id) {
-            let _ = worker.cmd_tx.send(JsWorkerCommand::PushPoseMoveEvents(batch));
+            let send_result = worker.cmd_tx.send(JsWorkerCommand::PushPoseMoveEvents(batch));
+            if send_result.is_ok() {
+                worker.needs_tick = true;
+            }
         }
     }
 }

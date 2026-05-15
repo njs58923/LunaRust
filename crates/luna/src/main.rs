@@ -475,7 +475,7 @@ fn find_root_worker_space_id(
 
 fn process_space_mount_queue(
     mut mount_queue: ResMut<SpaceMountQueue>,
-    manager: NonSendMut<js::ScriptRuntimeManager>,
+    mut manager: NonSendMut<js::ScriptRuntimeManager>,
     specs_world: Res<ElemenetWorld>,
     mut log_panel: ResMut<LogPanel>,
 ) {
@@ -485,7 +485,7 @@ fn process_space_mount_queue(
         }
         return;
     };
-    let Some(worker) = manager.contexts.get(&root_id) else {
+    let Some(worker) = manager.contexts.get_mut(&root_id) else {
         return;
     };
     if !worker.root_api_sent {
@@ -507,16 +507,19 @@ fn process_space_mount_queue(
             "dimension.luna.mountSpace('{}', {{ tabId: {}, kind: '{}' }});",
             escaped_url, request.tab_id, escaped_kind
         );
-        let _ = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
+        let send_result = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
             url: format!("eval://mount/{}", request.url),
             code,
         });
+        if send_result.is_ok() {
+            worker.needs_tick = true;
+        }
     }
 }
 
 fn process_space_unmount_queue(
     mut unmount_queue: ResMut<SpaceUnmountQueue>,
-    manager: NonSendMut<js::ScriptRuntimeManager>,
+    mut manager: NonSendMut<js::ScriptRuntimeManager>,
     specs_world: Res<ElemenetWorld>,
     mut log_panel: ResMut<LogPanel>,
 ) {
@@ -526,7 +529,7 @@ fn process_space_unmount_queue(
         }
         return;
     };
-    let Some(worker) = manager.contexts.get(&root_id) else {
+    let Some(worker) = manager.contexts.get_mut(&root_id) else {
         return;
     };
     let requests: Vec<SpaceUnmountRequest> = unmount_queue.0.drain(..).collect();
@@ -535,10 +538,13 @@ fn process_space_unmount_queue(
             "(() => {{ var list = dimension.luna.listMountedSpaces(); for (var i = 0; i < list.length; i++) {{ if (String(list[i].tabId) === '{}' ) {{ dimension.luna.unmountSpace(list[i].id); break; }} }} }})()",
             request.tab_id
         );
-        let _ = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
+        let send_result = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
             url: format!("eval://unmount/{}", request.url),
             code,
         });
+        if send_result.is_ok() {
+            worker.needs_tick = true;
+        }
     }
 }
 
@@ -572,7 +578,7 @@ fn toggle_render_mode(
 
 fn sync_root_mode_resources(
     render_mode: Res<RenderMode>,
-    manager: NonSendMut<js::ScriptRuntimeManager>,
+    mut manager: NonSendMut<js::ScriptRuntimeManager>,
     specs_world: Res<ElemenetWorld>,
     mut ran_once: Local<bool>,
 ) {
@@ -584,7 +590,7 @@ fn sync_root_mode_resources(
     let Some(root_id) = find_root_worker_space_id(&specs_world.0, &manager) else {
         return;
     };
-    let Some(worker) = manager.contexts.get(&root_id) else {
+    let Some(worker) = manager.contexts.get_mut(&root_id) else {
         return;
     };
     if !worker.root_api_sent {
@@ -595,10 +601,13 @@ fn sync_root_mode_resources(
     let code = format!(
         "dimension.luna.switchMode('{mode}'); dimension.luna.regrantMountedSpaces('{mode}');"
     );
-    let _ = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
+    let send_result = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
         url: format!("eval://mode/{}", mode),
         code,
     });
+    if send_result.is_ok() {
+        worker.needs_tick = true;
+    }
 
     *ran_once = true;
 }

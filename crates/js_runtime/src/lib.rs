@@ -56,12 +56,14 @@ where
 struct Timers {
     ready: Arc<Mutex<Vec<i32>>>,
     cancelled: Arc<Mutex<HashSet<i32>>>,
+    scheduled: Arc<Mutex<HashSet<i32>>>,
 }
 impl Default for Timers {
     fn default() -> Self {
         Self {
             ready: Arc::new(Mutex::new(Vec::new())),
             cancelled: Arc::new(Mutex::new(HashSet::new())),
+            scheduled: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }
@@ -537,6 +539,9 @@ fn op_set_timeout(state: &mut OpState, #[smi] id: i32, #[smi] ms: i32) {
     let timers = state.borrow::<Timers>();
     let ready = timers.ready.clone();
     let cancelled = timers.cancelled.clone();
+    let scheduled = timers.scheduled.clone();
+
+    scheduled.lock().unwrap().insert(id);
 
     if ms <= 0 {
         if !cancelled.lock().unwrap().contains(&id) {
@@ -558,6 +563,7 @@ fn op_set_timeout(state: &mut OpState, #[smi] id: i32, #[smi] ms: i32) {
 fn op_clear_timeout(state: &mut OpState, #[smi] id: i32) {
     let timers = state.borrow::<Timers>();
     timers.cancelled.lock().unwrap().insert(id);
+    timers.scheduled.lock().unwrap().remove(&id);
 }
 
 #[op2]
@@ -566,6 +572,12 @@ fn op_timers_poll(state: &mut OpState) -> serde_json::Value {
     let timers = state.borrow::<Timers>();
     let mut ready = timers.ready.lock().unwrap();
     let ids: Vec<i32> = ready.drain(..).collect();
+    if !ids.is_empty() {
+        let mut scheduled = timers.scheduled.lock().unwrap();
+        for id in &ids {
+            scheduled.remove(id);
+        }
+    }
     serde_json::Value::from(ids)
 }
 
@@ -1102,6 +1114,9 @@ pub fn init_v8_platform() {
 pub struct Engine {
     rt: JsRuntime,
 
+    // Timers
+    timers_scheduled: Arc<Mutex<HashSet<i32>>>,
+
     // RAF
     raf_pending: Shared<Vec<i32>>,
     raf_ready: Shared<Vec<(i32, f64)>>,
@@ -1204,6 +1219,7 @@ impl Engine {
         let timers_for_state = Timers {
             ready: timers.ready.clone(),
             cancelled: timers.cancelled.clone(),
+            scheduled: timers.scheduled.clone(),
         };
         let raf_for_state = RafState {
             pending: raf_state.pending.clone(),
@@ -1348,6 +1364,7 @@ impl Engine {
                 state.put::<Timers>(Timers {
                     ready: timers_for_state.ready.clone(),
                     cancelled: timers_for_state.cancelled.clone(),
+                    scheduled: timers_for_state.scheduled.clone(),
                 });
                 state.put::<RafState>(RafState {
                     pending: raf_for_state.pending.clone(),
@@ -1460,6 +1477,7 @@ impl Engine {
 
         Self {
             rt,
+            timers_scheduled: timers.scheduled,
             raf_pending: raf_state.pending,
             raf_ready: raf_state.ready,
             console_logs: console.logs,
@@ -1524,6 +1542,13 @@ impl Engine {
         {
             eprintln!("[js_runtime] Error calling pump: {:?}", e);
         }
+    }
+
+    pub fn needs_continuous_ticks(&self) -> bool {
+        if !self.raf_pending.borrow().is_empty() || !self.raf_ready.borrow().is_empty() {
+            return true;
+        }
+        !self.timers_scheduled.lock().unwrap().is_empty()
     }
 
     // --- Drain methods ---

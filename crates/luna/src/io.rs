@@ -654,9 +654,12 @@ pub fn poll_io_results_system(
                 let detail = result.as_ref().err().cloned();
                 io_service.finish_request(network_id, status, detail);
                 if let Some(worker) = manager.contexts.get_mut(&space_id) {
-                    let _ = worker.cmd_tx.send(JsWorkerCommand::PushFetchResults(vec![(
+                    let send_result = worker.cmd_tx.send(JsWorkerCommand::PushFetchResults(vec![(
                         request_id, result,
                     )]));
+                    if send_result.is_ok() {
+                        worker.needs_tick = true;
+                    }
                 } else {
                     log_panel.push_warn(format!(
                         "[JS][space:{space_id}] Fetch result dropped: missing JS context"

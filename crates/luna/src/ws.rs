@@ -203,7 +203,10 @@ pub fn poll_ws_results_system(
 
     for (space_id, events) in batched {
         if let Some(worker) = manager.contexts.get_mut(&space_id) {
-            let _ = worker.cmd_tx.send(JsWorkerCommand::PushWsEvents(events));
+            let send_result = worker.cmd_tx.send(JsWorkerCommand::PushWsEvents(events));
+            if send_result.is_ok() {
+                worker.needs_tick = true;
+            }
         }
     }
     for (space_id, conn_id) in to_remove {

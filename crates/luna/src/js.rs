@@ -44,6 +44,7 @@ pub struct SpaceSnapshots {
 }
 
 pub struct JsTickData {
+    pub needs_continuous_ticks: bool,
     pub logs: Vec<(String, String)>,
     pub attr_updates: Vec<(i32, String, String)>,
     pub pos_updates: Vec<(i32, js_runtime::Vec3)>,
@@ -131,6 +132,7 @@ pub struct SpaceScriptWorker {
     pub event_rx: mpsc::Receiver<JsWorkerEvent>,
     pub snapshot_in_flight: bool,
     pub tick_in_flight: bool,
+    pub needs_tick: bool,
     pub join: Option<JoinHandle<()>>,
     pub bootstrap_scripts_enqueued: HashSet<String>,
     pub last_capabilities_bits: u64,
@@ -254,6 +256,7 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                     JsWorkerCommand::Tick { elapsed_ms } => {
                         ctx.engine.fire_raf(elapsed_ms);
                         let tick_data = JsTickData {
+                            needs_continuous_ticks: ctx.engine.needs_continuous_ticks(),
                             logs: ctx.engine.drain_logs(),
                             attr_updates: ctx.engine.drain_attr_updates(),
                             pos_updates: ctx.engine.drain_transform_position_updates(),
@@ -353,6 +356,7 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
         event_rx,
         snapshot_in_flight: false,
         tick_in_flight: false,
+        needs_tick: true,
         join: Some(join),
         bootstrap_scripts_enqueued: HashSet::new(),
         last_capabilities_bits: 0,
@@ -1064,6 +1068,9 @@ pub fn js_eval_pending_scripts(world: &mut World) {
                 if result.is_ok() && url == "luna://internal/root_api.js" {
                     worker.root_api_sent = true;
                 }
+                if result.is_ok() {
+                    worker.needs_tick = true;
+                }
                 result
             } else {
                 Err(format!("missing JS context for space {}", space_id))
@@ -1126,7 +1133,7 @@ pub fn js_tick_system(world: &mut World) {
 
         let mut broken_contexts = Vec::new();
         for (space_id, worker) in manager.contexts.iter_mut() {
-            if worker.tick_in_flight {
+            if worker.tick_in_flight || !worker.needs_tick {
                 continue;
             }
             match worker.cmd_tx.send(JsWorkerCommand::Tick { elapsed_ms }) {
@@ -1145,11 +1152,13 @@ pub fn js_tick_system(world: &mut World) {
                     }) => {
                         worker.snapshot_in_flight = false;
                         worker.tick_in_flight = false;
+                        worker.needs_tick = true;
                         eval_events.push((*space_id, url, already_loaded, error));
                     }
                     Ok(JsWorkerEvent::TickData(data)) => {
                         worker.snapshot_in_flight = false;
                         worker.tick_in_flight = false;
+                        worker.needs_tick = data.needs_continuous_ticks;
                         tick_batches.push((*space_id, data));
                     }
                     Ok(JsWorkerEvent::DebugState {
@@ -1162,12 +1171,14 @@ pub fn js_tick_system(world: &mut World) {
                     Ok(JsWorkerEvent::WorkerError(err)) => {
                         worker.snapshot_in_flight = false;
                         worker.tick_in_flight = false;
+                        worker.needs_tick = false;
                         worker_errors.push(format!("[JS][space:{}] {}", space_id, err));
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
                         worker.snapshot_in_flight = false;
                         worker.tick_in_flight = false;
+                        worker.needs_tick = false;
                         broken_contexts.push(*space_id);
                         break;
                     }
@@ -1502,11 +1513,14 @@ pub fn js_tick_system(world: &mut World) {
         }
         if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() {
             if let Some(worker) = manager.contexts.get_mut(&space_id) {
-                let _ = worker
+                let send_result = worker
                     .cmd_tx
                     .send(JsWorkerCommand::PushElementCreationResults(
                         creation_results,
                     ));
+                if send_result.is_ok() {
+                    worker.needs_tick = true;
+                }
             }
         }
     }
@@ -2108,7 +2122,7 @@ pub fn js_tick_system(world: &mut World) {
             };
             if let Some(root_id) = root_worker_id {
                 if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() {
-                    if let Some(worker) = manager.contexts.get(&root_id) {
+                    if let Some(worker) = manager.contexts.get_mut(&root_id) {
                         if worker.root_api_sent {
                             // Pose primero, después visibility. Garantiza que
                             // un pattern típico `setPose + setVisible(true)` aplique
@@ -2118,10 +2132,13 @@ pub fn js_tick_system(world: &mut World) {
                                     "dimension.luna.setSpacePoseByTabId({}, {{x:{},y:{},z:{}}}, {{x:{},y:{},z:{}}});",
                                     tab_id, p[0], p[1], p[2], p[3], p[4], p[5]
                                 );
-                                let _ = worker.cmd_tx.send(JsWorkerCommand::EvalScript {
+                                let send_result = worker.cmd_tx.send(JsWorkerCommand::EvalScript {
                                     url: format!("eval://setPose/{}", tab_id),
                                     code,
                                 });
+                                if send_result.is_ok() {
+                                    worker.needs_tick = true;
+                                }
                             }
                             for (_sender_space_id, tab_id, visible) in visibility_requests {
                                 let code = format!(
@@ -2129,10 +2146,13 @@ pub fn js_tick_system(world: &mut World) {
                                     tab_id,
                                     if visible { "true" } else { "false" }
                                 );
-                                let _ = worker.cmd_tx.send(JsWorkerCommand::EvalScript {
+                                let send_result = worker.cmd_tx.send(JsWorkerCommand::EvalScript {
                                     url: format!("eval://setVisible/{}/{}", tab_id, visible),
                                     code,
                                 });
+                                if send_result.is_ok() {
+                                    worker.needs_tick = true;
+                                }
                             }
                         }
                     }
@@ -2234,9 +2254,12 @@ pub fn js_tick_system(world: &mut World) {
                 };
                 for (target_space_id, msgs) in routes {
                     if let Some(worker) = manager.contexts.get_mut(&target_space_id) {
-                        let _ = worker
+                        let send_result = worker
                             .cmd_tx
                             .send(JsWorkerCommand::PushShellMessages(msgs));
+                        if send_result.is_ok() {
+                            worker.needs_tick = true;
+                        }
                     } else {
                         missing_targets.push(target_space_id);
                     }
