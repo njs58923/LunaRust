@@ -8,26 +8,30 @@
   </head>
   <space id="ux_vr" resources="vr_locomotion,read_system_input,manage_tabs">
     <!-- Panel oculto por defecto. Se muestra al recibir systeminput action=shell
-         (botón menu Touch izquierdo en VR, ESC en desktop). Estado lo maneja
-         este script — el dispatcher Bevy sólo emite el press, sin toggle implícito. -->
+         (botón menu Touch izq en VR, ESC desktop). El estado lo maneja este
+         script — el dispatcher Bevy sólo emite el press. -->
     <group id="ux_vr_panel" visible="false">
-      <plane x="0" y="1.5" z="-1.8" sx="2.20" sy="1.60" sz="1" color="#0D1B2A" id="ux_vr_panel_bg" />
-
-      <text x="0" y="2.10" z="-1.75" value="Luna Shell" size="0.14" color="#64B5F6" />
-      <text x="0" y="1.92" z="-1.75" value="Bookmarks — press menu to toggle" size="0.06" color="#90A4AE" />
-
-      <!-- Bookmarks se construyen dinámicamente vía script. Sin nodes estáticos. -->
-
-      <text x="0" y="0.85" z="-1.75" value="" size="0.05" id="ux_vr_status" color="#B0BEC5" />
+      <!-- Items se construyen dinámicamente vía script; DOM resultante
+           equivalente al de test/menu/script_menu.js (mismas attrs, mismas
+           coords, mismo tamaño 0.45 cuadrado, z=-3, label y-0.3 debajo). -->
     </group>
 
     <script>
-      const root = hiperspace.dimention;
-      const byId = (id) => root.getElementById(id);
+      // ────────────────────────────────────────────────────────────────────
+      // ux_vr shell — bookmark launcher.
+      //
+      // Genera DOM equivalente al de public/test/menu/script_menu.js:
+      //   <box name="app-NAME" border-radius="0.2" color="..."
+      //        position=(x, y, -3) scale=(0.45, 0.45, 0.05) touchable />
+      //   <text name="app-name-NAME" value=NAME size="0.08"
+      //         position=(x, y-0.3, -3) />
+      // ────────────────────────────────────────────────────────────────────
 
-      // ── Bookmarks (hardcoded por ahora) ────────────────────────────────────
-      // TODO(persistence): mover a storage cuando exista API. Para editar:
-      // sumar/quitar entries acá y rebuildBookmarks().
+      const root = hiperspace.dimention;
+
+      // ── Bookmarks (hardcoded por ahora) ────────────────────────────────
+      // TODO(persistence): mover a storage cuando exista API. Hot-edit acá
+      // + rebuildBookmarks() reaplica layout y animación.
       const BOOKMARKS = [
         { name: 'Home',     url: 'luna://home' },
         { name: 'Demos',    url: 'luna://demos' },
@@ -39,36 +43,64 @@
         { name: 'Range',    url: 'luna://range_demo' },
       ];
 
-      // ── Layout config ──────────────────────────────────────────────────────
+      // Palette del original (cycling por índice).
       const PALETTE = [
         '#3B82F6', '#10B981', '#F59E0B', '#EF4444',
         '#8B5CF6', '#EC4899', '#14B8A6', '#F97316',
         '#22C55E', '#EAB308',
       ];
-      const SIZE_X  = 0.46;
-      const SIZE_Y  = 0.30;
-      const SIZE_Z  = 0.05;
-      const Z       = -1.75;
-      const Z_TEXT  = -1.69;
-      const ROWS_Y  = [1.55, 1.15];
-      const COLS_X  = [-0.75, -0.25, 0.25, 0.75];
 
-      // ── Animación entrada ──────────────────────────────────────────────────
-      const ANIM_MS    = 220;
-      const STAGGER_MS = 32;
-      function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+      // Constantes del original (SIZE_APP=0.45, label offset y-0.3, z=-3, etc).
+      const SIZE_APP    = 0.45;
+      const BOX_DEPTH   = 0.05;
+      const Z           = -3;
+      const LABEL_DY    = -0.3;
+      const LABEL_SIZE  = 0.08;
+      const BORDER_R    = '0.2';
 
-      // ── State ──────────────────────────────────────────────────────────────
-      const panel = byId('ux_vr_panel');
+      // ── buildPositions (ported 1:1 de script_menu.js) ──────────────────
+      // Tabla [count-1] → array de [x_table, y_table]. Convención: pos/2 da
+      // coord scene final (sin offset, sin centrado — igual al original).
+      // Limitado a 1-7 en el script; agrego entry para 8 manteniendo estilo.
+      const SPACEY = 1.5;
+      const POSITIONS_TABLE = [
+        [[4, 1]],                                                                                          // 1
+        [[3, 1], [5, 1]],                                                                                  // 2
+        [[2, 1], [4, 1], [6, 1]],                                                                          // 3
+        [[1, 1], [3, 1], [5, 1], [7, 1]],                                                                  // 4
+        [[0, 1], [2, 1], [4, 1], [6, 1], [8, 1]],                                                          // 5
+        [[2, 1], [4, 1], [6, 1], [3, 1 - SPACEY], [5, 1 + SPACEY], [3, 1 + SPACEY]],                       // 6
+        [[2, 1], [4, 1], [6, 1], [3, 1 - SPACEY], [5, 1 + SPACEY], [3, 1 + SPACEY], [5, 1 - SPACEY]],      // 7
+        // 8: extensión propia conservando estilo cluster (4 fila central + 2 arriba + 2 abajo).
+        [[1, 1], [3, 1], [5, 1], [7, 1], [2, 1 - SPACEY], [6, 1 - SPACEY], [2, 1 + SPACEY], [6, 1 + SPACEY]],
+      ];
+
+      function computePositions(count) {
+        if (count < 1) return [];
+        if (count > POSITIONS_TABLE.length) {
+          console.warn('[ux_vr]', count, 'bookmarks >', POSITIONS_TABLE.length,
+            '— layout truncado');
+          count = POSITIONS_TABLE.length;
+        }
+        // Misma fórmula del script original: (x/2, y/2). Sin offset.
+        return POSITIONS_TABLE[count - 1].map(([x, y]) => [x / 2, y / 2]);
+      }
+
+      // ── Animación entrada ──────────────────────────────────────────────
+      const ANIM_MS    = 240;
+      const STAGGER_MS = 35;
+      function easeOutBack(t) {
+        const c1 = 1.70158;
+        const c3 = c1 + 1;
+        return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+      }
+
+      // ── State ──────────────────────────────────────────────────────────
+      const panel = root.getElementById('ux_vr_panel');
       let visible = false;
-      let itemRefs = []; // { box, idx }
+      let itemRefs = []; // { box, text, idx }
       let animStartTs = 0;
       let animActive = false;
-
-      function setStatus(msg) {
-        const el = byId('ux_vr_status');
-        if (el) el.setAttribute('value', msg || '');
-      }
 
       function clearBookmarks() {
         for (const ref of itemRefs) {
@@ -82,33 +114,32 @@
         clearBookmarks();
         if (!panel) return;
 
-        for (let i = 0; i < BOOKMARKS.length; i++) {
-          const bm  = BOOKMARKS[i];
-          const row = Math.floor(i / COLS_X.length);
-          const col = i % COLS_X.length;
-          if (row >= ROWS_Y.length) {
-            console.warn('[ux_vr] bookmark', bm.name, 'sin slot — soporta hasta',
-              ROWS_Y.length * COLS_X.length, 'items');
-            break;
-          }
-          const x = COLS_X[col];
-          const y = ROWS_Y[row];
+        const positions = computePositions(BOOKMARKS.length);
+        const n = Math.min(BOOKMARKS.length, positions.length);
+
+        for (let i = 0; i < n; i++) {
+          const bm = BOOKMARKS[i];
+          const [px, py] = positions[i];
           const color = PALETTE[i % PALETTE.length];
 
+          // ── Box (equivalente al createElement del script original) ────
           const box = root.createElement('box');
+          box.setAttribute('name', 'app-' + bm.name);
+          box.setAttribute('border-radius', BORDER_R);
           box.setAttribute('color', color);
           box.setAttribute('touchable', 'true');
-          box.position = { x, y, z: Z };
-          // Empieza colapsado para que la anim de entrada se note.
+          box.position = { x: px, y: py, z: Z };
+          // Empieza colapsado para la anim de entrada.
           box.scale = { x: 0.001, y: 0.001, z: 0.001 };
           box.addEventListener('toque', () => openBookmark(bm.url));
           panel.appendChild(box);
 
+          // ── Text label (debajo del box, igual offset que el original) ──
           const text = root.createElement('text');
+          text.setAttribute('name', 'app-name-' + bm.name);
           text.setAttribute('value', bm.name);
-          text.setAttribute('size', String(0.075));
-          text.setAttribute('color', '#FFFFFF');
-          text.position = { x, y, z: Z_TEXT };
+          text.setAttribute('size', String(LABEL_SIZE));
+          text.position = { x: px, y: py + LABEL_DY, z: Z };
           panel.appendChild(text);
 
           itemRefs.push({ box, text, idx: i });
@@ -116,7 +147,6 @@
       }
 
       function startEntryAnimation() {
-        // Reset todos los items a escala mínima.
         for (const ref of itemRefs) {
           if (ref.box) ref.box.scale = { x: 0.001, y: 0.001, z: 0.001 };
         }
@@ -127,7 +157,6 @@
 
       function tickAnim(ts) {
         if (!animActive) return;
-        // Si se ocultó mientras animaba, abortar.
         if (!visible) { animActive = false; return; }
 
         const elapsed = ts - animStartTs;
@@ -137,17 +166,20 @@
           if (!ref.box) continue;
           const itemElapsed = elapsed - ref.idx * STAGGER_MS;
           if (itemElapsed < 0) {
-            // todavía no empezó este item
             stillRunning = true;
             continue;
           }
           if (itemElapsed >= ANIM_MS) {
-            ref.box.scale = { x: SIZE_X, y: SIZE_Y, z: SIZE_Z };
+            ref.box.scale = { x: SIZE_APP, y: SIZE_APP, z: BOX_DEPTH };
             continue;
           }
           const t = itemElapsed / ANIM_MS;
-          const e = easeOutCubic(t);
-          ref.box.scale = { x: SIZE_X * e, y: SIZE_Y * e, z: SIZE_Z * e };
+          const e = easeOutBack(t);
+          ref.box.scale = {
+            x: SIZE_APP * e,
+            y: SIZE_APP * e,
+            z: BOX_DEPTH * Math.max(0.001, e),
+          };
           stillRunning = true;
         }
 
@@ -161,28 +193,23 @@
       function setVisibleAndAnimate(v) {
         visible = !!v;
         if (panel) panel.setAttribute('visible', visible ? 'true' : 'false');
-        if (visible) {
-          startEntryAnimation();
-        }
+        if (visible) startEntryAnimation();
         console.log('[ux_vr] panel visible=', visible);
       }
 
       function openBookmark(url) {
         if (dimention && dimention.tabs && typeof dimention.tabs.open === 'function') {
-          setStatus('Opening tab ' + url);
           dimention.tabs.open(url);
-          // Auto-cerrar shell tras abrir bookmark (estilo Quest home).
           setVisibleAndAnimate(false);
         } else {
+          // Fallback si manage_tabs no concedido.
           console.warn('[ux_vr] dimention.tabs unavailable — fallback location.href');
-          setStatus('Opening ' + url + ' (no tabs API)');
           location.href = url;
         }
       }
 
-      // ── Listener system input ──────────────────────────────────────────────
-      // action='shell' → toggle visibilidad. Origen: vr_menu (Touch izq) o
-      // kb_escape (desktop ESC sin shooter mode activo).
+      // ── Listener system input ──────────────────────────────────────────
+      // action='shell' → toggle. Fuente: vr_menu | kb_escape.
       root.addEventListener('systeminput', (evt) => {
         console.log('[ux_vr] systeminput action=', evt.action, 'source=', evt.source);
         if (evt.action === 'shell') {
@@ -190,10 +217,7 @@
         }
       });
 
-      // Build inicial. Los items se crean colapsados; sólo se expanden cuando
-      // el usuario invoca el shell (startEntryAnimation tras setVisible(true)).
       buildBookmarks();
-
       console.log('[ux_vr] Shell loaded —', BOOKMARKS.length, 'bookmarks. Press menu to toggle.');
     </script>
   </space>
