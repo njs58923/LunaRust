@@ -61,6 +61,9 @@ impl VirtualRoutes {
         // UX routes
         routes.insert("ux_desktop".to_string(), RouteHandler::Static(LUNA_UX_DESKTOP));
         routes.insert("ux_vr".to_string(), RouteHandler::Static(LUNA_UX_VR));
+
+        // Apps embedded
+        routes.insert("demo_embedded".to_string(), RouteHandler::Static(LUNA_APP_DEMO_EMBEDDED));
         Self { routes }
     }
 
@@ -861,6 +864,7 @@ fn generate_cache_stats(_path: &str) -> String {
 
 const LUNA_UX_DESKTOP: &str = include_str!("web/ux/ux_desktop.hsml");
 const LUNA_UX_VR: &str = include_str!("web/ux/ux_vr.hsml");
+const LUNA_APP_DEMO_EMBEDDED: &str = include_str!("web/apps/demo_embedded.hsml");
 
 const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 <hsml>

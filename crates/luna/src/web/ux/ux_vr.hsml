@@ -22,7 +22,11 @@
            Construidos dinámicamente — ver buildBottomBar(). -->
     </group>
 
-    <!-- ux_vr_focus_zone: vendrá en commit 3 cuando se implemente el focus. -->
+    <group id="ux_vr_focus_zone" visible="false">
+      <!-- Frame visual de la app focused: borde, titlebar, botones close/min/anchor.
+           El contenido lo dibuja la app embedded en su propio space root,
+           posicionado por el shell vía slot message. -->
+    </group>
 
     <script>
       // ────────────────────────────────────────────────────────────────────
@@ -36,14 +40,14 @@
       // TODO(persistence): mover a storage cuando exista API.
       // kind:  'spatial' (default) | 'app' | 'app-embedded' (futuro)
       const BOOKMARKS = [
-        { name: 'Home',     url: 'luna://home',        kind: 'spatial' },
-        { name: 'Demos',    url: 'luna://demos',       kind: 'spatial' },
-        { name: 'Settings', url: 'luna://settings',    kind: 'app' },
-        { name: 'About',    url: 'luna://about',       kind: 'app' },
-        { name: 'Scale',    url: 'luna://scale_demo',  kind: 'spatial' },
-        { name: 'Fire',     url: 'luna://fire_demo',   kind: 'spatial' },
-        { name: 'Target',   url: 'luna://target_demo', kind: 'spatial' },
-        { name: 'Range',    url: 'luna://range_demo',  kind: 'spatial' },
+        { name: 'Home',     url: 'luna://home',           kind: 'spatial' },
+        { name: 'Demos',    url: 'luna://demos',          kind: 'spatial' },
+        { name: 'Demo App', url: 'luna://demo_embedded',  kind: 'app-embedded' },
+        { name: 'About',    url: 'luna://about',          kind: 'app' },
+        { name: 'Scale',    url: 'luna://scale_demo',     kind: 'spatial' },
+        { name: 'Fire',     url: 'luna://fire_demo',      kind: 'spatial' },
+        { name: 'Target',   url: 'luna://target_demo',    kind: 'spatial' },
+        { name: 'Range',    url: 'luna://range_demo',     kind: 'spatial' },
       ];
 
       const PALETTE = [
@@ -62,14 +66,27 @@
       const BORDER_R    = '0.2';
 
       // ── Bottom bar (taskbar) ───────────────────────────────────────────
-      const BAR_Y           = -0.55;   // debajo del panel principal
-      const BAR_Z           = 0;       // mismo plano
+      const BAR_Y           = -0.55;
+      const BAR_Z           = 0;
       const BAR_SLOT_SIZE_X = 0.16;
       const BAR_SLOT_SIZE_Y = 0.10;
       const BAR_SLOT_DEPTH  = 0.020;
       const BAR_SLOT_GAP    = 0.04;
       const BAR_SLOT_BORDER = '0.15';
       const BAR_LABEL_SIZE  = 0.035;
+
+      // ── Focus zone (frame del focus app) ───────────────────────────────
+      // Dimensiones del slot: el shell decide el tamaño, las apps reciben
+      // un slot.size. Por ahora fijo.
+      const FOCUS_SLOT_W  = 1.0;
+      const FOCUS_SLOT_H  = 0.7;
+      const FOCUS_SLOT_D  = 0.1;
+      const FOCUS_FRAME_THICK = 0.015;
+      const FOCUS_TITLEBAR_H  = 0.08;
+      const FOCUS_BTN_SIZE   = 0.06;
+      const FOCUS_BTN_GAP    = 0.012;
+
+      const SHELL_SPAWN_DISTANCE = 1.5;
 
       // ── buildPositions (layout cluster) ────────────────────────────────
       const POS_DIV = 4;
@@ -139,6 +156,7 @@
       // ── DOM refs ───────────────────────────────────────────────────────
       const panel = root.getElementById('ux_vr_panel');
       const bottomBar = root.getElementById('ux_vr_bottom_bar');
+      const focusZone = root.getElementById('ux_vr_focus_zone');
 
       // ── Bookmark items refs (para anim cascada) ────────────────────────
       let itemRefs = []; // { box, text, idx }
@@ -316,22 +334,27 @@
 
       // ── Bar handlers ───────────────────────────────────────────────────
       function onTapBarMenu() {
-        // Si hay focus visible → minimizar focus, mostrar bookmarks.
         if (shellState.focusApp && !shellState.focusApp.minimized) {
           shellState.focusApp.minimized = true;
-          // TODO(commit 3): notificar a la app vía shell message 'blur'.
+          if (shellState.focusApp.tabId > 0) {
+            sendMessageToApp(shellState.focusApp.tabId, 'blur');
+          }
+          shellState.bookmarksVisible = true;
           applyVisibility();
           return;
         }
-        // Sino: no-op (ya estamos en bookmarks).
         console.log('[ux_vr] bar Menu tapped — no-op (already in bookmarks)');
       }
 
       function onTapBarFocus() {
-        // Restaura focus.
         if (!shellState.focusApp) return;
         shellState.focusApp.minimized = false;
-        // TODO(commit 3): notificar 'focus' a la app.
+        shellState.bookmarksVisible = false;
+        if (shellState.focusApp.tabId > 0) {
+          sendMessageToApp(shellState.focusApp.tabId, 'focus');
+          // Re-mandar slot: el shell pudo haber sido reposicionado.
+          sendFocusSlotToApp();
+        }
         applyVisibility();
       }
 
@@ -348,12 +371,13 @@
         if (panel)     panel.setAttribute('visible', shouldShowBookmarks() ? 'true' : 'false');
         if (bottomBar) bottomBar.setAttribute('visible', shouldShowBottomBar() ? 'true' : 'false');
         rebuildBottomBar();
-        // TODO(commit 3): aplicar visibilidad de focus_app + anchored layers.
+
+        // Focus zone (frame): visible si hay focus no-minimizado.
+        const showFocus = shellState.focusApp && !shellState.focusApp.minimized;
+        if (focusZone) focusZone.setAttribute('visible', showFocus ? 'true' : 'false');
       }
 
       // ── Posicionar shell al frente del usuario ─────────────────────────
-      const SHELL_SPAWN_DISTANCE = 1.5;
-
       function repositionShellAtViewer() {
         if (typeof dimention.readViewerPose !== 'function') return;
         const pose = dimention.readViewerPose();
@@ -375,9 +399,16 @@
           panel.rotation = { x: 0, y: ry, z: 0 };
         }
         if (bottomBar) {
-          // Mismo origen — los items dentro usan BAR_Y para offsetear abajo.
           bottomBar.position = { x: px, y: py, z: pz };
           bottomBar.rotation = { x: 0, y: ry, z: 0 };
+        }
+        if (focusZone) {
+          focusZone.position = { x: px, y: py, z: pz };
+          focusZone.rotation = { x: 0, y: ry, z: 0 };
+        }
+        // Si hay focus visible, re-enviar slot a la app (la pose cambió).
+        if (shellState.focusApp && !shellState.focusApp.minimized && shellState.focusApp.tabId > 0) {
+          sendFocusSlotToApp();
         }
       }
 
@@ -387,6 +418,9 @@
         // Igual semántica que click en Menu de la bar.
         if (shellState.focusApp && !shellState.focusApp.minimized) {
           shellState.focusApp.minimized = true;
+          if (shellState.focusApp.tabId > 0) {
+            sendMessageToApp(shellState.focusApp.tabId, 'blur');
+          }
           shellState.bookmarksVisible = true;
           repositionShellAtViewer();
           applyVisibility();
@@ -411,6 +445,203 @@
         console.log('[ux_vr] shell visible=', want);
       }
 
+      // ── Frame del focus (titlebar + border) ────────────────────────────
+      let focusFrameRefs = []; // { box, text }
+
+      function clearFocusFrame() {
+        for (const r of focusFrameRefs) {
+          try { if (r.box)  r.box.remove();  } catch (_) {}
+          try { if (r.text) r.text.remove(); } catch (_) {}
+        }
+        focusFrameRefs = [];
+      }
+
+      function addFrameBox(opts) {
+        const box = root.createElement('box');
+        box.setAttribute('color', opts.color || '#1a1a2e');
+        if (opts.borderRadius) box.setAttribute('border-radius', String(opts.borderRadius));
+        if (opts.touchable) box.setAttribute('touchable', 'true');
+        box.position = { x: opts.x, y: opts.y, z: opts.z };
+        box.scale = { x: opts.sx, y: opts.sy, z: opts.sz };
+        if (typeof opts.onTap === 'function') {
+          box.addEventListener('toque', opts.onTap);
+        }
+        focusZone.appendChild(box);
+        focusFrameRefs.push({ box });
+        return box;
+      }
+
+      function addFrameText(opts) {
+        const text = root.createElement('text');
+        text.setAttribute('value', String(opts.value || ''));
+        text.setAttribute('size', String(opts.size || 0.04));
+        text.setAttribute('color', opts.color || '#FFFFFF');
+        text.position = { x: opts.x, y: opts.y, z: opts.z };
+        focusZone.appendChild(text);
+        focusFrameRefs.push({ text });
+        return text;
+      }
+
+      function buildFocusFrame(title) {
+        clearFocusFrame();
+        if (!focusZone) return;
+
+        const W = FOCUS_SLOT_W;
+        const H = FOCUS_SLOT_H;
+        const T = FOCUS_TITLEBAR_H;
+        const TH = FOCUS_FRAME_THICK;
+
+        // Borde de fondo (un solo plane atrás).
+        addFrameBox({ x: 0, y: 0, z: -0.005,
+                      sx: W + TH * 2, sy: H + T + TH * 2, sz: 0.005,
+                      color: '#0D1B2A', borderRadius: 0.04 });
+
+        // Titlebar arriba.
+        const titleY = H / 2 + T / 2;
+        addFrameBox({ x: 0, y: titleY, z: 0,
+                      sx: W, sy: T, sz: 0.012,
+                      color: '#1a2030', borderRadius: 0.02 });
+        addFrameText({ x: -W/2 + 0.06, y: titleY, z: 0.008,
+                       value: title || 'App', size: 0.035, color: '#B0BEC5' });
+
+        // Botones titlebar (de derecha a izq): close, min, anchor.
+        const btnY = titleY;
+        let bx = W / 2 - FOCUS_BTN_SIZE / 2 - 0.02;
+        // Close (rojo)
+        addFrameBox({ x: bx, y: btnY, z: 0.012,
+                      sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
+                      color: '#EF4444', borderRadius: 0.02, touchable: true,
+                      onTap: onTapFocusClose });
+        addFrameText({ x: bx, y: btnY, z: 0.020, value: 'X', size: 0.035 });
+        // Minimize (gris)
+        bx -= FOCUS_BTN_SIZE + FOCUS_BTN_GAP;
+        addFrameBox({ x: bx, y: btnY, z: 0.012,
+                      sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
+                      color: '#90A4AE', borderRadius: 0.02, touchable: true,
+                      onTap: onTapFocusMinimize });
+        addFrameText({ x: bx, y: btnY, z: 0.020, value: '_', size: 0.045 });
+        // Anchor (azul)
+        bx -= FOCUS_BTN_SIZE + FOCUS_BTN_GAP;
+        addFrameBox({ x: bx, y: btnY, z: 0.012,
+                      sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
+                      color: '#3B82F6', borderRadius: 0.02, touchable: true,
+                      onTap: onTapFocusAnchor });
+        addFrameText({ x: bx, y: btnY, z: 0.020, value: '#', size: 0.04 });
+
+        // Viewport silhouette (un cuadro fino para indicar el slot — la app
+        // dibuja por encima en world coords).
+        addFrameBox({ x: 0, y: 0, z: -0.001,
+                      sx: W, sy: H, sz: 0.002,
+                      color: '#16213E', borderRadius: 0.02 });
+      }
+
+      // ── Slot pose computation ──────────────────────────────────────────
+      // Posición world del focus slot = pose del shell + offset al frente.
+      // El frame visual (focusZone) está local al space ux_vr, así que el
+      // shell mueve focusZone en local coords (mismo origen del panel).
+      function computeFocusSlotPose() {
+        if (typeof dimention.readViewerPose !== 'function') {
+          return { position: { x: 0, y: 1.5, z: -1.5 }, rotation: { x: 0, y: 0, z: 0 }, size: { x: FOCUS_SLOT_W, y: FOCUS_SLOT_H, z: FOCUS_SLOT_D } };
+        }
+        const pose = dimention.readViewerPose();
+        if (!pose) {
+          return { position: { x: 0, y: 1.5, z: -1.5 }, rotation: { x: 0, y: 0, z: 0 }, size: { x: FOCUS_SLOT_W, y: FOCUS_SLOT_H, z: FOCUS_SLOT_D } };
+        }
+        const fwdX = -Math.sin(pose.yaw);
+        const fwdZ = -Math.cos(pose.yaw);
+        return {
+          position: {
+            x: pose.px + fwdX * SHELL_SPAWN_DISTANCE,
+            y: pose.py,
+            z: pose.pz + fwdZ * SHELL_SPAWN_DISTANCE,
+          },
+          rotation: { x: 0, y: pose.yaw, z: 0 },
+          size: { x: FOCUS_SLOT_W, y: FOCUS_SLOT_H, z: FOCUS_SLOT_D },
+        };
+      }
+
+      // Envía el slot pose actual a la app focused.
+      function sendFocusSlotToApp() {
+        if (!shellState.focusApp) return;
+        const slot = computeFocusSlotPose();
+        const payload = JSON.stringify({ type: 'slot',
+          position: slot.position,
+          rotation: slot.rotation,
+          size: slot.size,
+        });
+        Deno.core.ops.op_shell_send_message(BigInt(shellState.focusApp.tabId), payload);
+      }
+
+      function sendMessageToApp(tabId, type, extra) {
+        const payload = JSON.stringify(Object.assign({ type }, extra || {}));
+        Deno.core.ops.op_shell_send_message(BigInt(tabId), payload);
+      }
+
+      // ── Handlers titlebar focus ────────────────────────────────────────
+      function onTapFocusClose() {
+        if (!shellState.focusApp) return;
+        const tabId = shellState.focusApp.tabId;
+        // Notificar a la app antes de unmount (oportunidad de cleanup).
+        sendMessageToApp(tabId, 'close');
+        // Unmount inmediato; la app pierde su isolate (worker shutdown).
+        // TODO(commit watchdog): esperar ack o timeout 500ms.
+        if (dimention && dimention.tabs && typeof dimention.tabs.close === 'function') {
+          dimention.tabs.close(tabId);
+        }
+        shellState.focusApp = null;
+        shellState.bookmarksVisible = true;
+        applyVisibility();
+      }
+
+      function onTapFocusMinimize() {
+        if (!shellState.focusApp) return;
+        shellState.focusApp.minimized = true;
+        shellState.bookmarksVisible = true;
+        sendMessageToApp(shellState.focusApp.tabId, 'blur');
+        applyVisibility();
+      }
+
+      function onTapFocusAnchor() {
+        // TODO(commit 4): pasar focus → anchored.
+        console.log('[ux_vr] anchor: not implemented (commit 4)');
+      }
+
+      // ── Open embedded app ──────────────────────────────────────────────
+      // Diferencia de openBookmark (apps spatial/app normales):
+      //   - No cierra bookmarks de inmediato.
+      //   - Setea focusApp en ShellState.
+      //   - Cuando la app pida 'requestSlot', shell le manda el slot y oculta bookmarks.
+      function openEmbeddedApp(bm) {
+        // TODO(commit-A): si ya hay focus existente, cerrarlo antes (regla del doc).
+        if (shellState.focusApp) {
+          sendMessageToApp(shellState.focusApp.tabId, 'close');
+          if (dimention.tabs) dimention.tabs.close(shellState.focusApp.tabId);
+          shellState.focusApp = null;
+        }
+
+        // El tab_id real lo asigna el host. NO podemos saberlo desde acá sin
+        // un callback. Heurística: justo después del mount, el host le da el
+        // siguiente tabId secuencial. Mejor: cuando la app mande 'ready', leemos
+        // su tabId del fromTabId del mensaje y completamos focusApp.
+        // Por ahora marcamos focusApp con tabId=0 (pending) — cuando llegue
+        // ready, lo completamos.
+        shellState.focusApp = {
+          tabId: 0,        // pending — completado en 'ready'
+          minimized: false,
+          title: bm.name,
+          pendingUrl: bm.url,
+        };
+        dimention.tabs.open(bm.url, { kind: 'app-embedded' });
+
+        // No tocar bookmarksVisible — esperamos 'ready' o 'requestSlot' para
+        // transicionar. Pero como visualmente el bookmark fue clickeado, podemos
+        // hacer la transición optimista.
+        shellState.bookmarksVisible = false;
+        if (bottomBar) bottomBar.setAttribute('visible', 'false');
+        // El focus zone aparecerá cuando llegue requestSlot/ready (focusApp se completa).
+        applyVisibility();
+      }
+
       // ── Bookmark click ─────────────────────────────────────────────────
       function openBookmark(bm) {
         if (!dimention || !dimention.tabs || typeof dimention.tabs.open !== 'function') {
@@ -418,16 +649,62 @@
           location.href = bm.url;
           return;
         }
-        // kind ∈ {'spatial', 'app', futuro 'app-embedded'}.
-        dimention.tabs.open(bm.url, { kind: bm.kind || 'spatial' });
 
-        // Cerrar shell al abrir (estilo Quest home). Commit 3 manejará el caso
-        // app-embedded distinto (no cerrar bookmarks completamente, transicionar
-        // a estado focused).
+        if (bm.kind === 'app-embedded') {
+          openEmbeddedApp(bm);
+          return;
+        }
+
+        // Spatial / app normal — comportamiento previo.
+        dimention.tabs.open(bm.url, { kind: bm.kind || 'spatial' });
         shellState.bookmarksVisible = false;
         if (bottomBar) bottomBar.setAttribute('visible', 'false');
         startExitAnimation();
       }
+
+      // ── Mensaje recibido de una app embedded ───────────────────────────
+      function handleAppMessage(msg) {
+        const fromTabId = Number(msg.fromTabId || 0);
+        let parsed = null;
+        try { parsed = JSON.parse(msg.payload); } catch (_) {}
+        if (!parsed || typeof parsed !== 'object') return;
+        const type = String(parsed.type || '').toLowerCase();
+
+        // Si focusApp.tabId estaba pending (0) y la app manda algo, capturamos
+        // el tabId del primer mensaje que llegue de la app correcta.
+        if (shellState.focusApp && shellState.focusApp.tabId === 0 && fromTabId > 0) {
+          shellState.focusApp.tabId = fromTabId;
+          buildFocusFrame(shellState.focusApp.title || 'App');
+          applyVisibility();
+          // Mandar slot ahora que sabemos quién es.
+          sendFocusSlotToApp();
+        }
+
+        if (type === 'requestslot') {
+          // App pide slot — shell responde con la pose del focus actual.
+          sendFocusSlotToApp();
+        } else if (type === 'ready') {
+          console.log('[ux_vr] app tab=', fromTabId, 'ready');
+        } else if (type === 'closeself') {
+          // App pidió cerrarse a sí misma.
+          if (shellState.focusApp && shellState.focusApp.tabId === fromTabId) {
+            onTapFocusClose();
+          }
+          // TODO(commit 4): anchored self-close.
+        } else {
+          console.log('[ux_vr] unknown app message type=', type, 'from=', fromTabId);
+        }
+      }
+
+      // Poll loop: drena inbox del shell cada 16ms.
+      function pollShellInbox() {
+        const msgs = Deno.core.ops.op_shell_poll_messages();
+        if (Array.isArray(msgs) && msgs.length) {
+          for (const m of msgs) handleAppMessage(m);
+        }
+        setTimeout(pollShellInbox, 16);
+      }
+      pollShellInbox();
 
       // ── Listener system input ──────────────────────────────────────────
       root.addEventListener('systeminput', (evt) => {

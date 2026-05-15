@@ -171,12 +171,14 @@
       cleanupRegistry();
 
       // ── Kind & policy ──────────────────────────────────────────────────
-      // "spatial" (default): cierra todas las OTRAS tabs spatial antes de
-      //                       montar. El UX shell (managed-by=dimension.luna)
-      //                       y las apps NO se cierran.
-      // "app":               sólo se monta, no toca nada.
+      // "spatial" (default): cierra otras spatial antes de montar.
+      // "app":               aditiva, no cierra nada.
+      // "app-embedded":      aditiva, recibe cap ux_embed para hablar con shell.
       // ───────────────────────────────────────────────────────────────────
-      const kind = (options.kind === 'app') ? 'app' : 'spatial';
+      let kind = 'spatial';
+      if (options.kind === 'app' || options.kind === 'app-embedded') {
+        kind = options.kind;
+      }
 
       if (kind === 'spatial') {
         // Cerrar todas las spatial existentes ANTES de crear la nueva, para
@@ -196,6 +198,18 @@
         }
       }
 
+      // Default grants por kind si el caller no especificó.
+      let grants = options.grants;
+      if (!Array.isArray(grants) || !grants.length) {
+        if (kind === 'spatial') {
+          grants = ['navigate_self', 'read_pose_stream', 'skybox'];
+        } else if (kind === 'app') {
+          grants = ['navigate_self'];
+        } else if (kind === 'app-embedded') {
+          grants = ['navigate_self', 'ux_embed'];
+        }
+      }
+
       const space = root.createElement('space');
       const publicId = registerSpace(space, kind);
       const entry = registry.get(publicId);
@@ -205,16 +219,16 @@
       space.setAttribute('managed-by', 'dimension.luna');
       space.setAttribute('data-luna-kind', kind);
 
-      if (Array.isArray(options.grants) && options.grants.length) {
-        space.setAttribute('resources', options.grants.join(','));
+      if (Array.isArray(grants) && grants.length) {
+        space.setAttribute('resources', grants.join(','));
       }
 
       root.appendChild(space);
       console.log('[root] mountSpace url=', url, 'kind=', kind,
-        'grants=', Array.isArray(options.grants) ? options.grants.join(',') : '(none)');
+        'grants=', Array.isArray(grants) ? grants.join(',') : '(none)');
       const include = ensureInclude(entry);
-      if (Array.isArray(options.grants)) {
-        include.setAttribute('resources', options.grants.join(','));
+      if (Array.isArray(grants) && grants.length) {
+        include.setAttribute('resources', grants.join(','));
       }
       applySpaceOptions(entry, { ...options, url });
       return publicId;

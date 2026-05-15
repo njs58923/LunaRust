@@ -494,16 +494,17 @@ fn process_space_mount_queue(
         return;
     }
     let requests: Vec<SpaceMountRequest> = mount_queue.0.drain(..).collect();
-    let grants = "['navigate_self','read_pose_stream','skybox']";
     for request in requests {
         let escaped_url = request.url.replace('\\', "\\\\").replace('\'', "\\'");
-        // kind default "spatial" si vacío. El kind es un hint opaco para
-        // dimension.luna.mountSpace que aplica policy (cerrar otras spatial, etc).
         let kind_raw = if request.kind.is_empty() { "spatial" } else { request.kind.as_str() };
         let escaped_kind = kind_raw.replace('\\', "\\\\").replace('\'', "\\'");
+        // Grants los decide `dimension.luna.mountSpace` en JS según `kind`:
+        //   spatial → navigate_self, read_pose_stream, skybox
+        //   app     → navigate_self
+        //   app-embedded → navigate_self, ux_embed
         let code = format!(
-            "dimension.luna.mountSpace('{}', {{ grants: {}, tabId: {}, kind: '{}' }});",
-            escaped_url, grants, request.tab_id, escaped_kind
+            "dimension.luna.mountSpace('{}', {{ tabId: {}, kind: '{}' }});",
+            escaped_url, request.tab_id, escaped_kind
         );
         let _ = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
             url: format!("eval://mount/{}", request.url),

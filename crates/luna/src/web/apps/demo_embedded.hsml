@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head>
+    <name>Demo Embedded</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
+  </head>
+  <space role="application-embedded">
+    <!-- Contenido construido dinámicamente cuando el shell asigna slot. -->
+    <group id="demo_root">
+    </group>
+
+    <script>
+      // ────────────────────────────────────────────────────────────────────
+      // Demo embedded app — valida el bus shell ↔ app.
+      // - Pide slot al shell vía dimention.embedded.requestSlot.
+      // - Cuando el shell responde con 'slot', dibuja un box rojo centrado.
+      // - Maneja 'focus', 'blur', 'suspend', 'resume', 'close' del shell.
+      // ────────────────────────────────────────────────────────────────────
+
+      const root = hiperspace.dimention;
+      const myGroup = root.getElementById('demo_root');
+
+      if (!dimention || !dimention.embedded) {
+        console.error('[demo_embedded] dimention.embedded missing — app not running embedded');
+      } else {
+        const e = dimention.embedded;
+        console.log('[demo_embedded] context=', JSON.stringify(e.context));
+
+        let contentBox = null;
+        let labelText  = null;
+
+        function renderInSlot(size) {
+          // Limpiar anterior.
+          if (contentBox) { try { contentBox.remove(); } catch (_) {} contentBox = null; }
+          if (labelText)  { try { labelText.remove();  } catch (_) {} labelText  = null; }
+
+          // Box rojo centrado, llenando ~80% del slot.
+          contentBox = root.createElement('box');
+          contentBox.setAttribute('color', '#EF4444');
+          contentBox.setAttribute('border-radius', '0.05');
+          contentBox.position = { x: 0, y: 0, z: 0 };
+          contentBox.scale = {
+            x: (size && size.x ? size.x : 1.0) * 0.8,
+            y: (size && size.y ? size.y : 0.7) * 0.8,
+            z: 0.03,
+          };
+          myGroup.appendChild(contentBox);
+
+          labelText = root.createElement('text');
+          labelText.setAttribute('value', 'Demo Embedded');
+          labelText.setAttribute('size', '0.06');
+          labelText.setAttribute('color', '#FFFFFF');
+          labelText.position = { x: 0, y: 0, z: 0.02 };
+          myGroup.appendChild(labelText);
+        }
+
+        e.on('slot', (slot) => {
+          console.log('[demo_embedded] received slot:', JSON.stringify(slot));
+          // El shell nos da la pose world donde dibujar. Movemos nuestro
+          // space root a esa pose; el contenido queda centrado en (0,0,0)
+          // local — el slot.size define el área dibujable.
+          if (slot.position) {
+            root.position = {
+              x: Number(slot.position.x || 0),
+              y: Number(slot.position.y || 0),
+              z: Number(slot.position.z || 0),
+            };
+          }
+          if (slot.rotation) {
+            root.rotation = {
+              x: Number(slot.rotation.x || 0),
+              y: Number(slot.rotation.y || 0),
+              z: Number(slot.rotation.z || 0),
+            };
+          }
+          renderInSlot(slot.size);
+        });
+
+        e.on('focus', () => console.log('[demo_embedded] gained focus'));
+        e.on('blur',  () => console.log('[demo_embedded] lost focus'));
+        e.on('suspend', () => console.log('[demo_embedded] suspend (TODO: pause loops)'));
+        e.on('resume',  () => console.log('[demo_embedded] resume'));
+        e.on('close',   () => {
+          console.log('[demo_embedded] close — cleanup');
+          if (contentBox) { try { contentBox.remove(); } catch (_) {} }
+          if (labelText)  { try { labelText.remove();  } catch (_) {} }
+        });
+
+        // Pedir slot al shell con tamaño preferido.
+        e.requestSlot({
+          title: 'Demo Embedded',
+          minSize:       { x: 0.8, y: 0.6, z: 0.1 },
+          preferredSize: { x: 1.0, y: 0.7, z: 0.1 },
+        });
+        e.notifyReady();
+      }
+    </script>
+  </space>
+</hsml>
