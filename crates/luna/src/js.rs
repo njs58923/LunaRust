@@ -1592,14 +1592,18 @@ pub fn js_tick_system(world: &mut World) {
     // de todos los batches del frame.
     let mut frame_deleted_global: std::collections::HashSet<u32> =
         std::collections::HashSet::new();
-    // Log resumen: qué workers piden removes este frame.
-    if !remove_batches.is_empty() {
-        let summary: Vec<String> = remove_batches
-            .iter()
-            .map(|(sid, q)| format!("space:{sid}=[{}]", q.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")))
-            .collect();
-        eprintln!("[JS][tick] remove_batches: {}", summary.join(" | "));
-    }
+    // Snapshot ONE-TIME del set "attached" para todo el frame. Si hay 5 workers
+    // que piden removes, el snapshot vale para los 5 (dom_data.nodes no se
+    // modifica dentro de este sistema — el cleanup definitivo lo hace
+    // dom_sync_system después, en otro pase).
+    let attached_nodes: std::collections::HashSet<u32> = if remove_batches.is_empty() {
+        std::collections::HashSet::new()
+    } else {
+        world
+            .get_resource::<crate::VirtualDomData>()
+            .map(|d| d.nodes.keys().copied().collect())
+            .unwrap_or_default()
+    };
     for (space_id, remove_queue) in remove_batches {
         let (allowed_remove_ids, rejected_logs) = {
             let Some(space_handle_tables) = world.get_resource::<SpaceHandleTables>() else {
@@ -1635,16 +1639,6 @@ pub fn js_tick_system(world: &mut World) {
             }
         }
 
-        // Fuente de verdad: qué node_ids están realmente attached al DOM.
-        // `world.entities().entity(id)` para slots virginales devuelve un
-        // Entity con gen=1 que PASA `is_alive` (false-positive), y luego
-        // `delete_entity` llama `die()` sobre un slot None → debug_assert
-        // panic en specs. Por eso filtramos primero contra dom_data.nodes.
-        let attached_nodes: std::collections::HashSet<u32> = world
-            .get_resource::<crate::VirtualDomData>()
-            .map(|d| d.nodes.keys().copied().collect())
-            .unwrap_or_default();
-
         let (log_messages, all_removed_ids) = {
             let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else {
                 return;
@@ -1653,9 +1647,8 @@ pub fn js_tick_system(world: &mut World) {
             let mut all_removed_ids: Vec<u32> = Vec::new();
             for &node_id in &allowed_remove_ids {
                 if !attached_nodes.contains(&node_id) {
-                    eprintln!(
-                        "[JS][space:{space_id}] remove: skip orphan node_id={node_id} (not in dom_data.nodes)"
-                    );
+                    // Stale id de cola JS — el delete causaría panic por
+                    // false-positive de is_alive sobre slot virginal.
                     continue;
                 }
                 let subtree = {
@@ -1709,22 +1702,21 @@ pub fn js_tick_system(world: &mut World) {
                     }
                     match specs_world.0.delete_entity(ent) {
                         Ok(()) => deleted += 1,
-                        Err(e) => {
-                            eprintln!(
-                                "[JS][space:{space_id}] delete_entity Err node_id={nid}: {e:?}"
-                            );
-                            skipped += 1;
-                        }
+                        Err(_) => skipped += 1,
                     }
                 }
-                log_messages.push(format!(
-                    "[JS][space:{}] remove: node_id={} (subtree={} deleted={} skipped={})",
-                    space_id,
-                    node_id,
-                    subtree.len(),
-                    deleted,
-                    skipped,
-                ));
+                // Loguear sólo si hay anomalías (skipped > 0). Estado normal
+                // = quieto. Si querés trace siempre, comentá la guarda.
+                if skipped > 0 {
+                    log_messages.push(format!(
+                        "[JS][space:{}] remove node_id={} subtree={} deleted={} skipped={}",
+                        space_id,
+                        node_id,
+                        subtree.len(),
+                        deleted,
+                        skipped,
+                    ));
+                }
             }
             (log_messages, all_removed_ids)
         };
