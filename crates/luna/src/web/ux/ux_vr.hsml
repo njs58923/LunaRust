@@ -28,6 +28,13 @@
            posicionado por el shell vía slot message. -->
     </group>
 
+    <group id="ux_vr_anchored_zone" visible="true">
+      <!-- Container para frames de apps anchored. Cada anchored entry crea
+           un sub-group con su propia pose world. La visibilidad por entry se
+           controla via setAttribute en el sub-group. Este group raíz queda
+           siempre visible — son los hijos quienes deciden. -->
+    </group>
+
     <script>
       // ────────────────────────────────────────────────────────────────────
       // ux_vr shell — orquesta bookmarks + bottom bar + (futuro) focus/anchored.
@@ -87,6 +94,19 @@
       const FOCUS_BTN_GAP    = 0.012;
 
       const SHELL_SPAWN_DISTANCE = 1.5;
+
+      // ── Anchored ───────────────────────────────────────────────────────
+      // Offsets laterales para apartar anchored del frente del shell. Stack
+      // a la derecha primero, después izquierda; pares para diferenciar idx.
+      // local-X (right) en frame del shell — se rota por yaw al world.
+      const ANCHORED_BASE_X = 1.15;
+      const ANCHORED_STACK_DX = 0.10;
+      // Frame anchored = mismo tamaño que focus (la app se renderiza adentro).
+      // Si lo achicamos, hay que enviar size distinto en el slot, y la app
+      // no escala el contenido auto — fuera del scope de este commit.
+      const ANCHORED_SLOT_W = FOCUS_SLOT_W;
+      const ANCHORED_SLOT_H = FOCUS_SLOT_H;
+      const ANCHORED_SLOT_D = FOCUS_SLOT_D;
 
       // ── buildPositions (layout cluster) ────────────────────────────────
       const POS_DIV = 4;
@@ -267,9 +287,13 @@
       // Las entries se reusan entre `applyVisibility()` calls — solo cambian
       // attrs (color, label, onTap) y position cuando hace falta. Sin esto,
       // cada applyVisibility destruía/recreaba todos los boxes → parpadeo.
-      let barEntries = []; // { box, text, key, onTap, label, color, x }
+      let barEntries = []; // { box, text, key, onTap, closeOnTap, closeBox, closeText, label, color, x }
 
-      function buildBarSlot(x, label, color, onTap, key) {
+      const BAR_CLOSE_SIZE = 0.035;
+      const BAR_CLOSE_DX   = BAR_SLOT_SIZE_X / 2 - BAR_CLOSE_SIZE / 2 - 0.008;
+      const BAR_CLOSE_DY   = BAR_SLOT_SIZE_Y / 2 - BAR_CLOSE_SIZE / 2 - 0.008;
+
+      function buildBarSlot(x, label, color, onTap, key, closeOnTap) {
         const box = root.createElement('box');
         box.setAttribute('border-radius', BAR_SLOT_BORDER);
         box.setAttribute('color', color);
@@ -290,10 +314,51 @@
         text.position = { x, y: BAR_Y, z: BAR_Z + 0.002 };
         bottomBar.appendChild(text);
 
-        return { box, text, key, onTap, label, color, x };
+        const entry = { box, text, key, onTap, closeOnTap,
+                        closeBox: null, closeText: null,
+                        label, color, x };
+
+        if (typeof closeOnTap === 'function') {
+          attachBarSlotCloseBtn(entry, x);
+        }
+
+        return entry;
       }
 
-      function updateBarSlot(entry, x, label, color, onTap) {
+      function attachBarSlotCloseBtn(entry, x) {
+        const closeBox = root.createElement('box');
+        closeBox.setAttribute('border-radius', '0.3');
+        closeBox.setAttribute('color', '#E53935');
+        closeBox.setAttribute('touchable', 'true');
+        closeBox.position = { x: x + BAR_CLOSE_DX, y: BAR_Y + BAR_CLOSE_DY, z: BAR_Z + 0.004 };
+        closeBox.scale = { x: BAR_CLOSE_SIZE, y: BAR_CLOSE_SIZE, z: BAR_SLOT_DEPTH };
+        const wrapper = () => {
+          // Re-lookup por si entries fueron reorganizados.
+          const e = barEntries.find(e => e.closeBox === closeBox);
+          if (e && typeof e.closeOnTap === 'function') e.closeOnTap();
+        };
+        closeBox.addEventListener('toque', wrapper);
+        bottomBar.appendChild(closeBox);
+
+        const closeText = root.createElement('text');
+        closeText.setAttribute('value', 'x');
+        closeText.setAttribute('size', '0.025');
+        closeText.setAttribute('color', '#FFFFFF');
+        closeText.position = { x: x + BAR_CLOSE_DX, y: BAR_Y + BAR_CLOSE_DY, z: BAR_Z + 0.006 };
+        bottomBar.appendChild(closeText);
+
+        entry.closeBox = closeBox;
+        entry.closeText = closeText;
+      }
+
+      function detachBarSlotCloseBtn(entry) {
+        try { if (entry.closeBox)  entry.closeBox.remove();  } catch (_) {}
+        try { if (entry.closeText) entry.closeText.remove(); } catch (_) {}
+        entry.closeBox = null;
+        entry.closeText = null;
+      }
+
+      function updateBarSlot(entry, x, label, color, onTap, closeOnTap) {
         if (entry.color !== color) {
           entry.box.setAttribute('color', color);
           entry.color = color;
@@ -302,19 +367,32 @@
           entry.text.setAttribute('value', label);
           entry.label = label;
         }
-        if (Math.abs(entry.x - x) > 0.0001) {
+        const moved = Math.abs(entry.x - x) > 0.0001;
+        if (moved) {
           entry.box.position = { x, y: BAR_Y, z: BAR_Z };
           entry.text.position = { x, y: BAR_Y, z: BAR_Z + 0.002 };
           entry.x = x;
         }
-        // onTap puede cambiar (indices anchored). Actualizar solo la ref;
-        // el wrapper interno lee de barEntries.
+        // onTap/closeOnTap pueden cambiar (indices anchored). El wrapper
+        // interno lee del entry actualizado.
         entry.onTap = onTap;
+        entry.closeOnTap = closeOnTap;
+
+        const wantsClose = typeof closeOnTap === 'function';
+        if (wantsClose && !entry.closeBox) {
+          attachBarSlotCloseBtn(entry, x);
+        } else if (!wantsClose && entry.closeBox) {
+          detachBarSlotCloseBtn(entry);
+        } else if (wantsClose && moved && entry.closeBox) {
+          entry.closeBox.position = { x: x + BAR_CLOSE_DX, y: BAR_Y + BAR_CLOSE_DY, z: BAR_Z + 0.004 };
+          entry.closeText.position = { x: x + BAR_CLOSE_DX, y: BAR_Y + BAR_CLOSE_DY, z: BAR_Z + 0.006 };
+        }
       }
 
       function removeBarSlot(entry) {
         try { if (entry.box)  entry.box.remove();  } catch (e) {}
         try { if (entry.text) entry.text.remove(); } catch (e) {}
+        detachBarSlotCloseBtn(entry);
       }
 
       function rebuildBottomBar() {
@@ -334,11 +412,13 @@
         for (let i = 0; i < shellState.anchored.length; i++) {
           const a = shellState.anchored[i];
           const idx = i;
+          const labelText = (a.title || 'App').slice(0, 6);
           slots.push({
             key: 'anc:' + idx,
-            label: 'Anc' + (i + 1),
+            label: labelText,
             color: a.minimized ? '#607D8B' : '#7E57C2',
             onTap: () => onTapBarAnchored(idx),
+            closeOnTap: () => onTapBarAnchoredClose(idx),
           });
         }
 
@@ -364,9 +444,9 @@
         for (const s of slots) {
           const existing = barEntries.find(e => e.key === s.key);
           if (existing) {
-            updateBarSlot(existing, s.x, s.label, s.color, s.onTap);
+            updateBarSlot(existing, s.x, s.label, s.color, s.onTap, s.closeOnTap);
           } else {
-            barEntries.push(buildBarSlot(s.x, s.label, s.color, s.onTap, s.key));
+            barEntries.push(buildBarSlot(s.x, s.label, s.color, s.onTap, s.key, s.closeOnTap));
           }
         }
       }
@@ -405,8 +485,16 @@
         const a = shellState.anchored[idx];
         if (!a) return;
         a.minimized = !a.minimized;
-        // TODO(commit 4): notificar 'suspend'/'resume' a la app.
+        // Suspend/resume al app — esperan el render de visibilidad para
+        // que la app pueda pausar loops antes de que el frame desaparezca.
+        sendMessageToApp(a.tabId, a.minimized ? 'suspend' : 'resume');
         applyVisibility();
+      }
+
+      function onTapBarAnchoredClose(idx) {
+        const a = shellState.anchored[idx];
+        if (!a) return;
+        unmountAnchored(idx);
       }
 
       // ── applyVisibility — derive UI from ShellState ────────────────────
@@ -423,6 +511,38 @@
           && !shellState.focusApp.minimized
           && shellState.focusApp.tabId > 0;
         if (focusZone) focusZone.setAttribute('visible', showFocus ? 'true' : 'false');
+
+        applyAnchoredVisibility();
+      }
+
+      // Regla del doc:
+      //   anchored_i.visible = !minimized && (alwaysOn || bookmarks_visible)
+      // Frame sub-group + tab setVisible siguen la misma regla. Mantenemos
+      // cache `lastVisible` por entry para emitir suspend/resume sólo en
+      // transiciones, no en cada applyVisibility.
+      function applyAnchoredVisibility() {
+        for (let i = 0; i < shellState.anchored.length; i++) {
+          const a = shellState.anchored[i];
+          // Build frame on demand (sólo la primera vez tras anchor).
+          ensureAnchoredFrame(a, i);
+          updateAnchoredFramePose(a);
+
+          const visible = !a.minimized && (a.alwaysOn || shellState.bookmarksVisible);
+          if (a.frame && a.frame.group) {
+            a.frame.group.setAttribute('visible', visible ? 'true' : 'false');
+          }
+          if (a.tabId > 0 && dimention && dimention.tabs) {
+            dimention.tabs.setVisible(a.tabId, visible);
+          }
+          if (a._lastVisible !== visible) {
+            // Suspend/resume sólo en transición; sin esto, cada applyVisibility
+            // bombardearía al worker con el mismo mensaje.
+            if (a.tabId > 0) {
+              sendMessageToApp(a.tabId, visible ? 'resume' : 'suspend');
+            }
+            a._lastVisible = visible;
+          }
+        }
       }
 
       // ── Posicionar shell al frente del usuario ─────────────────────────
@@ -457,6 +577,21 @@
         // Si hay focus visible, re-enviar slot a la app (la pose cambió).
         if (shellState.focusApp && !shellState.focusApp.minimized && shellState.focusApp.tabId > 0) {
           sendFocusSlotToApp();
+        }
+
+        // Anchored !alwaysOn arrastran con el shell — recalc world pose desde
+        // offset local y re-send slot. alwaysOn quedan fijos en world.
+        for (let i = 0; i < shellState.anchored.length; i++) {
+          const a = shellState.anchored[i];
+          if (a.alwaysOn) continue;
+          const wp = computeAnchoredWorldPose(a.offset);
+          a.position = wp.position;
+          a.rotation = wp.rotation;
+          if (a.frame && a.frame.group) {
+            a.frame.group.position = a.position;
+            a.frame.group.rotation = a.rotation;
+          }
+          if (a.tabId > 0) sendAnchoredSlotToApp(i);
         }
       }
 
@@ -663,8 +798,253 @@
       }
 
       function onTapFocusAnchor() {
-        // TODO(commit 4): pasar focus → anchored.
-        console.log('[ux_vr] anchor: not implemented (commit 4)');
+        if (!shellState.focusApp) return;
+        const tabId = shellState.focusApp.tabId;
+        if (tabId <= 0) return; // app aún sin tabId — esperar 'ready'.
+
+        // Offset lateral derecho con stack para que dos anchors consecutivos
+        // no se monten uno sobre otro. Coords locales al frame del shell;
+        // se rotan por yaw para world. El doc no especifica layout, esto es
+        // pragmático para commit 4 — drag (commit 5) le dará pose final.
+        const idx = shellState.anchored.length;
+        const offsetLocal = {
+          x: ANCHORED_BASE_X + idx * ANCHORED_STACK_DX,
+          y: 0,
+          z: 0,
+        };
+        const worldPose = computeAnchoredWorldPose(offsetLocal);
+
+        const entry = {
+          tabId,
+          title: shellState.focusApp.title || 'App',
+          offset: offsetLocal,  // local → recalculado cuando shell se mueve.
+          position: worldPose.position,
+          rotation: worldPose.rotation,
+          minimized: false,
+          alwaysOn: false,
+          frame: null,          // refs DOM, populadas por ensureAnchoredFrame.
+        };
+        shellState.anchored.push(entry);
+
+        // App perdió focus (pasa a anchored). El doc enumera 'blur' cuando
+        // pasa a anchored o minimized. Acá es el caso anchored.
+        sendMessageToApp(tabId, 'blur');
+
+        // Limpiar focus state ANTES de re-enviar slot — sendAnchoredSlot lee
+        // del entry recién pusheado, no del focus.
+        shellState.focusApp = null;
+        clearFocusFrame();
+
+        // Nueva pose para la app — ya no está en el slot focus.
+        sendAnchoredSlotToApp(shellState.anchored.length - 1);
+
+        applyVisibility();
+      }
+
+      // ── Anchored frame + pose ──────────────────────────────────────────
+      // Cada anchored vive en su propio sub-group dentro de ux_vr_anchored_zone.
+      // El sub-group lleva la pose (position/rotation world); sus hijos
+      // (borde, titlebar, botones) son locales al sub-group.
+      const anchoredZone = root.getElementById('ux_vr_anchored_zone');
+
+      function computeAnchoredWorldPose(offsetLocal) {
+        // Rota offset por yaw del shell y suma a la pose del shell (panel).
+        const fallback = {
+          position: { x: 0, y: 1.5, z: -1.5 },
+          rotation: { x: 0, y: 0, z: 0 },
+        };
+        if (!panel) return fallback;
+        let p, r;
+        try { p = panel.position; } catch (_) { return fallback; }
+        try { r = panel.rotation; } catch (_) { return fallback; }
+        const yaw = Number(r.y || 0);
+        const cos = Math.cos(yaw);
+        const sin = Math.sin(yaw);
+        const lx = Number(offsetLocal.x || 0);
+        const ly = Number(offsetLocal.y || 0);
+        const lz = Number(offsetLocal.z || 0);
+        return {
+          position: {
+            x: Number(p.x || 0) + lx * cos + lz * sin,
+            y: Number(p.y || 0) + ly,
+            z: Number(p.z || 0) - lx * sin + lz * cos,
+          },
+          rotation: { x: 0, y: yaw, z: 0 },
+        };
+      }
+
+      function ensureAnchoredFrame(anc, idx) {
+        if (anc.frame) return anc.frame;
+        if (!anchoredZone) return null;
+
+        const group = root.createElement('group');
+        group.position = anc.position;
+        group.rotation = anc.rotation;
+        anchoredZone.appendChild(group);
+
+        const refs = [];
+        const addBox = (opts) => {
+          const b = root.createElement('box');
+          b.setAttribute('color', opts.color || '#1a1a2e');
+          if (opts.borderRadius) b.setAttribute('border-radius', String(opts.borderRadius));
+          if (opts.touchable) b.setAttribute('touchable', 'true');
+          b.position = { x: opts.x, y: opts.y, z: opts.z };
+          b.scale = { x: opts.sx, y: opts.sy, z: opts.sz };
+          if (typeof opts.onTap === 'function') b.addEventListener('toque', opts.onTap);
+          group.appendChild(b);
+          refs.push({ box: b });
+          return b;
+        };
+        const addText = (opts) => {
+          const t = root.createElement('text');
+          t.setAttribute('value', String(opts.value || ''));
+          t.setAttribute('size', String(opts.size || 0.035));
+          t.setAttribute('color', opts.color || '#FFFFFF');
+          t.position = { x: opts.x, y: opts.y, z: opts.z };
+          group.appendChild(t);
+          refs.push({ text: t });
+          return t;
+        };
+
+        const W = ANCHORED_SLOT_W;
+        const H = ANCHORED_SLOT_H;
+        const T = FOCUS_TITLEBAR_H;
+        const TH = FOCUS_FRAME_THICK;
+
+        addBox({ x: 0, y: 0, z: -0.005,
+                 sx: W + TH * 2, sy: H + T + TH * 2, sz: 0.005,
+                 color: '#0D1B2A', borderRadius: 0.04 });
+
+        const titleY = H / 2 + T / 2;
+        addBox({ x: 0, y: titleY, z: 0,
+                 sx: W, sy: T, sz: 0.012,
+                 color: '#1a2030', borderRadius: 0.02 });
+        const titleText = addText({ x: -W/2 + 0.06, y: titleY, z: 0.008,
+                                    value: anc.title || 'App', size: 0.035, color: '#B0BEC5' });
+
+        // Botones titlebar anchored (de derecha a izq): close, min, always_on.
+        const btnY = titleY;
+        let bx = W / 2 - FOCUS_BTN_SIZE / 2 - 0.02;
+        // Close (rojo)
+        addBox({ x: bx, y: btnY, z: 0.012,
+                 sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
+                 color: '#EF4444', borderRadius: 0.02, touchable: true,
+                 onTap: () => onTapAnchoredClose(idx) });
+        addText({ x: bx, y: btnY, z: 0.020, value: 'X', size: 0.035 });
+        // Minimize (gris)
+        bx -= FOCUS_BTN_SIZE + FOCUS_BTN_GAP;
+        addBox({ x: bx, y: btnY, z: 0.012,
+                 sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
+                 color: '#90A4AE', borderRadius: 0.02, touchable: true,
+                 onTap: () => onTapAnchoredMinimize(idx) });
+        addText({ x: bx, y: btnY, z: 0.020, value: '_', size: 0.045 });
+        // Always_on (verde si on, gris si off) — color refrescado en updateAnchoredFrame.
+        bx -= FOCUS_BTN_SIZE + FOCUS_BTN_GAP;
+        const aoBox = addBox({ x: bx, y: btnY, z: 0.012,
+                 sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
+                 color: anc.alwaysOn ? '#10B981' : '#455A64',
+                 borderRadius: 0.02, touchable: true,
+                 onTap: () => onTapAnchoredAlwaysOn(idx) });
+        addText({ x: bx, y: btnY, z: 0.020, value: '!', size: 0.035 });
+
+        // Viewport silhouette.
+        addBox({ x: 0, y: 0, z: -0.001,
+                 sx: W, sy: H, sz: 0.002,
+                 color: '#16213E', borderRadius: 0.02 });
+
+        anc.frame = { group, refs, titleText, aoBox };
+        return anc.frame;
+      }
+
+      function clearAnchoredFrame(anc) {
+        if (!anc || !anc.frame) return;
+        // Quitar el group entero arrastra a los hijos.
+        try { if (anc.frame.group) anc.frame.group.remove(); } catch (_) {}
+        anc.frame = null;
+      }
+
+      function updateAnchoredFramePose(anc) {
+        if (!anc || !anc.frame || !anc.frame.group) return;
+        anc.frame.group.position = anc.position;
+        anc.frame.group.rotation = anc.rotation;
+      }
+
+      function updateAnchoredFrameAOColor(anc) {
+        if (!anc || !anc.frame || !anc.frame.aoBox) return;
+        anc.frame.aoBox.setAttribute('color', anc.alwaysOn ? '#10B981' : '#455A64');
+      }
+
+      function sendAnchoredSlotToApp(idx) {
+        const a = shellState.anchored[idx];
+        if (!a || a.tabId <= 0) return;
+        const payload = JSON.stringify({
+          type: 'slot',
+          position: a.position,
+          rotation: a.rotation,
+          size: { x: ANCHORED_SLOT_W, y: ANCHORED_SLOT_H, z: ANCHORED_SLOT_D },
+        });
+        Deno.core.ops.op_shell_send_message(BigInt(a.tabId), payload);
+      }
+
+      // ── Anchored titlebar handlers ────────────────────────────────────
+      function onTapAnchoredClose(idx) {
+        unmountAnchored(idx);
+      }
+
+      function onTapAnchoredMinimize(idx) {
+        const a = shellState.anchored[idx];
+        if (!a) return;
+        a.minimized = true;
+        sendMessageToApp(a.tabId, 'suspend');
+        applyVisibility();
+      }
+
+      function onTapAnchoredAlwaysOn(idx) {
+        const a = shellState.anchored[idx];
+        if (!a) return;
+        a.alwaysOn = !a.alwaysOn;
+        // alwaysOn=true: la pose queda FIJA en world. Las recomputaciones
+        // por shell move dejan de tocarla.
+        // alwaysOn=false: vuelve a seguir al shell — recalcular offset
+        // relativo a la pose CURRENT del shell para que no salte.
+        if (!a.alwaysOn) {
+          const localOff = worldOffsetFromShell(a.position);
+          if (localOff) a.offset = localOff;
+        }
+        updateAnchoredFrameAOColor(a);
+        applyVisibility();
+      }
+
+      function worldOffsetFromShell(worldPos) {
+        if (!panel) return null;
+        let p, r;
+        try { p = panel.position; } catch (_) { return null; }
+        try { r = panel.rotation; } catch (_) { return null; }
+        const yaw = Number(r.y || 0);
+        const cos = Math.cos(yaw);
+        const sin = Math.sin(yaw);
+        const dx = Number(worldPos.x) - Number(p.x || 0);
+        const dy = Number(worldPos.y) - Number(p.y || 0);
+        const dz = Number(worldPos.z) - Number(p.z || 0);
+        // Inversa de la rotación (yaw -> -yaw).
+        return {
+          x:  dx * cos - dz * sin,
+          y:  dy,
+          z:  dx * sin + dz * cos,
+        };
+      }
+
+      function unmountAnchored(idx) {
+        const a = shellState.anchored[idx];
+        if (!a) return;
+        const tabId = a.tabId;
+        sendMessageToApp(tabId, 'close');
+        if (dimention && dimention.tabs && typeof dimention.tabs.close === 'function') {
+          dimention.tabs.close(tabId);
+        }
+        clearAnchoredFrame(a);
+        shellState.anchored.splice(idx, 1);
+        applyVisibility();
       }
 
       // ── Open embedded app ──────────────────────────────────────────────
@@ -764,8 +1144,10 @@
         } else if (type === 'closeself') {
           if (shellState.focusApp && shellState.focusApp.tabId === fromTabId) {
             onTapFocusClose();
+          } else {
+            const idx = shellState.anchored.findIndex(a => a.tabId === fromTabId);
+            if (idx >= 0) unmountAnchored(idx);
           }
-          // TODO(commit 4): anchored self-close.
         }
       }
 
