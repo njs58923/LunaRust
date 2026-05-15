@@ -9,7 +9,12 @@ use super::{
 
 #[derive(Component, Debug, Default)]
 pub struct Hierarchy {
-    pub parent: Option<u32>,
+    /// Padre del nodo. Se almacena como `Entity` completo (id + generation)
+    /// para evitar bugs por reciclaje de slots: si guardáramos sólo el `u32`
+    /// de id, después de un despawn + spawn el id podría apuntar a otro nodo
+    /// totalmente distinto (mismo slot, gen distinta). El `Entity` retiene
+    /// la gen y `is_alive(ent)` detecta el reciclaje.
+    pub parent: Option<Entity>,
     pub children: Vec<Entity>,
 }
 
@@ -22,12 +27,11 @@ impl Hierarchy {
     }
     pub fn add_child(world: &mut World, parent: Entity, child: Entity) {
         // Si el child ya tenía padre, primero lo quitamos de ese padre anterior.
-        let old_parent_id = {
+        let old_parent = {
             let hierarchies = world.read_storage::<Hierarchy>();
             hierarchies.get(child).and_then(|h| h.parent)
         };
 
-        let old_parent = old_parent_id.map(|id| world.entities().entity(id));
         let mut hierarchies = world.write_storage::<Hierarchy>();
 
         if let Some(old_parent) = old_parent {
@@ -47,7 +51,7 @@ impl Hierarchy {
 
         // Actualizar padre del hijo
         if let Some(child_h) = hierarchies.get_mut(child) {
-            child_h.parent = Some(parent.id());
+            child_h.parent = Some(parent);
         }
     }
 

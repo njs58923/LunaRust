@@ -118,10 +118,7 @@ pub(crate) fn find_node_base_url(
         current = hierarchies
             .get(ent)
             .and_then(|h| h.parent)
-            .and_then(|parent_id| {
-                let parent = entities.entity(parent_id);
-                entities.is_alive(parent).then_some(parent)
-            });
+            .and_then(|parent| entities.is_alive(parent).then_some(parent));
     }
 
     fallback_base_url.to_string()
@@ -147,8 +144,7 @@ pub(crate) fn find_nearest_ancestor_include(
 
     let mut current = Some(node);
     while let Some(ent) = current {
-        let parent_id = hierarchies.get(ent).and_then(|h| h.parent)?;
-        let parent = entities.entity(parent_id);
+        let parent = hierarchies.get(ent).and_then(|h| h.parent)?;
         if !entities.is_alive(parent) {
             return None;
         }
@@ -173,12 +169,9 @@ fn include_ancestor_chain_contains(
 
     let mut current = Some(node);
     while let Some(ent) = current {
-        let parent_id = hierarchies.get(ent).and_then(|h| h.parent);
-        let Some(parent_id) = parent_id else {
+        let Some(parent) = hierarchies.get(ent).and_then(|h| h.parent) else {
             break;
         };
-
-        let parent = entities.entity(parent_id);
         if !entities.is_alive(parent) {
             break;
         }
@@ -567,8 +560,7 @@ fn remove_dom_subtree(
         let hierarchies = world.read_storage::<Hierarchy>();
         hierarchies.get(root).and_then(|h| h.parent)
     };
-    if let Some(parent_id) = parent_id {
-        let parent = world.entities().entity(parent_id);
+    if let Some(parent) = parent_id {
         let mut hierarchies = world.write_storage::<Hierarchy>();
         if let Some(parent_hierarchy) = hierarchies.get_mut(parent) {
             parent_hierarchy.children.retain(|child| *child != root);
@@ -836,13 +828,9 @@ pub fn apply_transform_updates(
             tr.position.x = pos.x;
             tr.position.y = pos.y;
             tr.position.z = pos.z;
-            // Log pose no-trivial — solo writes significativos.
-            if pos.x.abs() > 0.01 || pos.y.abs() > 0.01 || pos.z.abs() > 0.01 {
-                let attached = dom_data.nodes.contains_key(&node_id);
-                bevy::log::info!(
-                    "[apply_pos] node_id={} gen={} pos=({:.2},{:.2},{:.2}) attached={}",
-                    node_id, ent.gen().id(), pos.x, pos.y, pos.z, attached);
-            }
+            // Marcar dirty siempre — `dom_sync_system` filtra internamente
+            // por `dom_data.nodes`. Si el node está ya attached, se sincroniza
+            // al Transform Bevy en el frame siguiente; si no, queda no-op.
             dirty_nodes.0.push(node_id);
             transform_only_dirty.0.insert(node_id);
         }
@@ -1407,9 +1395,42 @@ pub fn dom_sync_system(
     mut skybox: crate::SkyboxParams,
 ) {
     let start_time = Instant::now();
-    let dirty_node_ids = dirty_nodes.take_unique();
+    let mut dirty_node_ids = dirty_nodes.take_unique();
     if dirty_node_ids.is_empty() {
         return;
+    }
+
+    // Orden topológico: parents antes que children. Necesario para que cuando
+    // spawneamos un nuevo entity Bevy, su parent ya esté en entity_map y se
+    // pueda hacer set_parent en el spawn (no via Commands diferidos que no
+    // aplican hasta el final del frame — eso causaba que apps embedded
+    // quedaran como entities Bevy root flotantes con Transform world-space en
+    // (0,0,0) la mitad de las veces, dependiendo del orden del HashMap).
+    {
+        let hier = world.0.read_storage::<Hierarchy>();
+        let entities_specs = world.0.entities();
+        let attached: HashSet<u32> = dom_data.nodes.keys().copied().collect();
+        // Calcular profundidad de cada nodo en la jerarquía specs.
+        let mut depths: HashMap<u32, u32> = HashMap::new();
+        for &nid in &dirty_node_ids {
+            let mut d = 0u32;
+            let mut current = entities_specs.entity(nid);
+            let mut steps = 0;
+            while let Some(parent) = hier.get(current).and_then(|h| h.parent) {
+                if !attached.contains(&parent.id()) {
+                    break;
+                }
+                if !entities_specs.is_alive(parent) {
+                    break;
+                }
+                d += 1;
+                current = parent;
+                steps += 1;
+                if steps > 128 { break; } // safety
+            }
+            depths.insert(nid, d);
+        }
+        dirty_node_ids.sort_by_key(|nid| *depths.get(nid).unwrap_or(&0));
     }
 
     // Despawns from in-place replacement (model/text/skybox) are deferred to
@@ -1468,37 +1489,15 @@ pub fn dom_sync_system(
 
         let tag = tags.get(*node).map(|t| t.0.clone()).unwrap_or_default();
         let hierarchy = hierarchies.get(*node);
-        let parent_id = hierarchy.and_then(|h| h.parent);
+        // `Hierarchy.parent` ahora es `Option<Entity>` (con gen) — evita el
+        // bug histórico de reciclaje de slots specs.
+        let parent_entity = hierarchy.and_then(|h| h.parent);
+        let parent_id = parent_entity.map(|e| e.id());
         let transform_only = transform_only_dirty.0.contains(&node_id);
 
         let mut transform_b = Transform::default();
-        let tr2_found = transforms.get(*node).is_some();
         if let Some(tr2) = transforms.get(*node) {
             apply_transform(tr2, &mut transform_b);
-        }
-        if tag == "space" {
-            let p = transform_b.translation;
-            bevy::log::info!(
-                "[dom_sync space loop] node_id={} ent_gen={} tr2_found={} pos=({:.2},{:.2},{:.2}) in_dom_data={} in_entity_map={}",
-                node_id, node.gen().id(), tr2_found, p.x, p.y, p.z,
-                dom_data.nodes.contains_key(&node_id),
-                entity_map.0.contains_key(&node_id));
-        }
-
-        // Validar entry de entity_map: el specs slot puede haberse reciclado.
-        // Si el bevy_ent guardado fue despawn-eado (entry stale), limpiamos
-        // y caemos a "Create new entity". Sin esto, "Update existing" llama
-        // `query.get_mut(stale_ent)` que retorna Err silenciosamente — el
-        // Transform Bevy nunca se actualiza y la entity nueva renderiza con
-        // su Transform inicial (0,0,0).
-        let stale_entry = entity_map.0.get(&node_id)
-            .map(|&be| query.get(be).is_err())
-            .unwrap_or(false);
-        if stale_entry {
-            entity_map.0.remove(&node_id);
-            bevy::log::warn!(
-                "[dom_sync] node_id={} entity_map STALE bevy_ent — recreating",
-                node_id);
         }
 
         if let Some(&bevy_ent) = entity_map.0.get(&node_id) {
@@ -1595,9 +1594,6 @@ pub fn dom_sync_system(
             }
 
             if transform_only {
-                let pos = transform_b.translation;
-                let log_significant = tag == "space"
-                    && (pos.x.abs() > 0.01 || pos.y.abs() > 0.01 || pos.z.abs() > 0.01);
                 if tag == "text" {
                     let empty_map = HashMap::new();
                     let attrs_map = attrs_storage.get(*node).map(|a| &a.0).unwrap_or(&empty_map);
@@ -1606,23 +1602,8 @@ pub fn dom_sync_system(
                     if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
                         *t = text_transform;
                     }
-                } else {
-                    let parent_bevy = match query.get(bevy_ent) {
-                        Ok((_, _, _, p)) => p.map(|p| p.get()),
-                        Err(_) => None,
-                    };
-                    let q_result = query.get_mut(bevy_ent);
-                    let q_ok = q_result.is_ok();
-                    if let Ok((_, mut t, _, _)) = q_result {
-                        *t = transform_b;
-                    }
-                    if log_significant {
-                        let expected_parent = parent_id.and_then(|pid| entity_map.0.get(&pid).copied());
-                        bevy::log::info!(
-                            "[dom_sync FAST] node_id={} parent_specs={:?} pos=({:.2},{:.2},{:.2}) bevy_ent={:?} bevy_parent={:?} expected_bevy_parent={:?} q_ok={}",
-                            node_id, parent_id, pos.x, pos.y, pos.z, bevy_ent,
-                            parent_bevy, expected_parent, q_ok);
-                    }
+                } else if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
+                    *t = transform_b;
                 }
 
                 transform_only_dirty.0.remove(&node_id);
@@ -1706,22 +1687,8 @@ pub fn dom_sync_system(
 
 
             if tag == "space" || tag == "include" || is_structural_tag(&tag) {
-                let pos = transform_b.translation;
-                let log_significant = tag == "space"
-                    && (pos.x.abs() > 0.01 || pos.y.abs() > 0.01 || pos.z.abs() > 0.01);
-                let q_result = query.get_mut(bevy_ent);
-                let q_ok = q_result.is_ok();
-                if let Ok((_, mut t, _, _)) = q_result {
+                if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
-                    if log_significant {
-                        bevy::log::info!(
-                            "[dom_sync UPDATE] node_id={} tag={} pos=({:.2},{:.2},{:.2}) bevy_ent={:?} transform_b_applied",
-                            node_id, tag, pos.x, pos.y, pos.z, bevy_ent);
-                    }
-                } else if log_significant {
-                    bevy::log::warn!(
-                        "[dom_sync UPDATE] node_id={} tag={} pos=({:.2},{:.2},{:.2}) bevy_ent={:?} q_FAILED — pose lost!",
-                        node_id, tag, pos.x, pos.y, pos.z, bevy_ent);
                 }
                 if let Ok(mut visibility) = visibility_query.get_mut(bevy_ent) {
                     *visibility = node_visibility(&attrs_storage, *node);
@@ -1893,16 +1860,6 @@ pub fn dom_sync_system(
                             &mut log_panel,
                             &world.0,
                         );
-                    }
-                    let pos = transform_b.translation;
-                    if tag == "space" && (pos.x.abs() > 0.01 || pos.y.abs() > 0.01 || pos.z.abs() > 0.01) {
-                        bevy::log::info!(
-                            "[dom_sync spawn space] node_id={} pos=({:.2},{:.2},{:.2})",
-                            node_id, pos.x, pos.y, pos.z);
-                    } else if tag == "space" {
-                        bevy::log::info!(
-                            "[dom_sync spawn space] node_id={} pos=DEFAULT (no pre-write)",
-                            node_id);
                     }
                     commands
                         .spawn((

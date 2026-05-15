@@ -658,10 +658,7 @@ pub fn find_tab_id_for_space(world: &SpecWorld, space_id: u32) -> Option<u64> {
                 }
             }
         }
-        current_opt = hier
-            .get(current)
-            .and_then(|h| h.parent)
-            .map(|p_id| entities.entity(p_id));
+        current_opt = hier.get(current).and_then(|h| h.parent);
     }
     None
 }

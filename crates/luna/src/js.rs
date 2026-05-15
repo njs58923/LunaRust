@@ -598,8 +598,8 @@ pub fn find_owner_space_id(world: &specs::World, mut node: specs::Entity) -> Opt
                 return Some(node.id());
             }
         }
-        let parent_id = hier.get(node).and_then(|h| h.parent)?;
-        node = entities.entity(parent_id);
+        let parent = hier.get(node).and_then(|h| h.parent)?;
+        node = parent;
     }
 }
 
@@ -834,7 +834,7 @@ pub fn js_update_snapshots_system(world: &mut World) {
             if !attached_node_ids.contains(&ent.id()) {
                 continue;
             }
-            parents.insert(ent.id() as i32, hier.parent.map(|p| p as i32).unwrap_or(-1));
+            parents.insert(ent.id() as i32, hier.parent.map(|p| p.id() as i32).unwrap_or(-1));
             children_map.insert(
                 ent.id() as i32,
                 hier.children
@@ -1338,18 +1338,10 @@ pub fn js_tick_system(world: &mut World) {
             for (local_id, pos) in updates {
                 if let Some(global_id) = resolve_global_id(&space_handle_tables, space_id, local_id)
                 {
-                    // Log temporal sólo para writes al root del isolate (local 0).
-                    if local_id == 0 {
-                        ownership_logs.push(format!(
-                            "[JS][space:{space_id}] pos local=0 → global={global_id} ({:.2},{:.2},{:.2})",
-                            pos.x, pos.y, pos.z
-                        ));
-                    }
                     validated_positions.push((global_id, pos));
                 } else {
                     ownership_logs.push(format!(
-                        "[JS][space:{space_id}] Blocked invalid local position write: local_id={local_id} pos=({:.2},{:.2},{:.2})",
-                        pos.x, pos.y, pos.z
+                        "[JS][space:{space_id}] Blocked invalid local position write: local_id={local_id}"
                     ));
                 }
             }
