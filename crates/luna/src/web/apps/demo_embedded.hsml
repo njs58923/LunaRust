@@ -42,7 +42,6 @@
       waitForEmbedded(0, function(e) {
         let contentBox = null;
         let labelText  = null;
-        let lastSlotSize = { x: 1.0, y: 0.7, z: 0.1 };
         let hidden = false;
 
         function renderInSlot(size) {
@@ -50,18 +49,15 @@
           if (contentBox) { try { contentBox.remove(); } catch (_) {} contentBox = null; }
           if (labelText)  { try { labelText.remove();  } catch (_) {} labelText  = null; }
 
-          lastSlotSize = {
-            x: (size && size.x) ? Number(size.x) : 1.0,
-            y: (size && size.y) ? Number(size.y) : 0.7,
-            z: (size && size.z) ? Number(size.z) : 0.1,
-          };
+          const sx = (size && size.x) ? Number(size.x) : 1.0;
+          const sy = (size && size.y) ? Number(size.y) : 0.7;
 
           // Box rojo centrado, llenando ~80% del slot.
           contentBox = root.createElement('box');
           contentBox.setAttribute('color', '#EF4444');
           contentBox.setAttribute('border-radius', '0.05');
           contentBox.position = { x: 0, y: 0, z: 0 };
-          applyContentScale();
+          contentBox.scale = { x: sx * 0.8, y: sy * 0.8, z: 0.03 };
           myGroup.appendChild(contentBox);
 
           labelText = root.createElement('text');
@@ -70,24 +66,9 @@
           labelText.setAttribute('color', '#FFFFFF');
           labelText.position = { x: 0, y: 0, z: 0.02 };
           myGroup.appendChild(labelText);
-        }
 
-        function applyContentScale() {
-          if (contentBox) {
-            if (hidden) {
-              contentBox.scale = { x: 0.001, y: 0.001, z: 0.001 };
-            } else {
-              contentBox.scale = {
-                x: lastSlotSize.x * 0.8,
-                y: lastSlotSize.y * 0.8,
-                z: 0.03,
-              };
-            }
-          }
-          if (labelText) {
-            // El text no se escala bien; usar `size` attr.
-            labelText.setAttribute('size', hidden ? '0.001' : '0.06');
-          }
+          // Si la app estaba hidden (recibió blur antes de slot), aplicar.
+          if (hidden) setContentVisible(false);
         }
 
         e.on('slot', (slot) => {
@@ -111,13 +92,11 @@
           renderInSlot(slot.size);
         });
 
-        // Helpers para ocultar/mostrar el contenido. El engine no respeta
-        // `visible` en boxes/text consistentemente, así que cada app controla
-        // su propia visibility colapsando escala a 0.001 — al recibir blur
-        // escondemos, focus restauramos.
         function setContentVisible(v) {
           hidden = !v;
-          applyContentScale();
+          const flag = v ? 'true' : 'false';
+          if (contentBox) contentBox.setAttribute('visible', flag);
+          if (labelText)  labelText.setAttribute('visible',  flag);
         }
 
         e.on('focus', () => {

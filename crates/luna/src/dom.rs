@@ -1698,6 +1698,15 @@ pub fn dom_sync_system(
                     commands.entity(bevy_ent).remove::<crate::touch::Toqueable>();
                     commands.entity(bevy_ent).remove::<crate::touch::HitShape>();
                 }
+                // Aplicar attr `visible` también a primitivos. Sin esto,
+                // setear visible=false en un box no lo oculta.
+                if let Ok(mut visibility) = visibility_query.get_mut(bevy_ent) {
+                    *visibility = if node_visible(&attrs_storage, *node) {
+                        Visibility::Visible
+                    } else {
+                        Visibility::Hidden
+                    };
+                }
                 let color = primitive_color(&attrs_storage, *node);
                 let double_sided = tag == "plane";
                 let material = get_or_create_primitive_material(
@@ -1739,6 +1748,14 @@ pub fn dom_sync_system(
             // Default: nodo en `dirty_nodes.0` ⇒ transform desactualizado, escribir.
             if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
                 *t = transform_b;
+            }
+            // También sincronizar `visible` para text y demás tags genéricos.
+            if let Ok(mut visibility) = visibility_query.get_mut(bevy_ent) {
+                *visibility = if node_visible(&attrs_storage, *node) {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                };
             }
         } else {
             // --- Create new entity ---
