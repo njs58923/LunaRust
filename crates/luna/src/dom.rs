@@ -211,6 +211,44 @@ fn primitive_color(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> Colo
         .unwrap_or(Color::srgb(0.5, 0.5, 0.5))
 }
 
+fn get_or_create_rounded_mesh(
+    rounded_mesh_cache: Option<&mut crate::RoundedMeshCache>,
+    meshes: &mut Assets<Mesh>,
+    kind: crate::RoundedMeshKind,
+    radius: f32,
+    segments: u32,
+) -> Handle<Mesh> {
+    if let Some(cache) = rounded_mesh_cache {
+        let key = crate::RoundedMeshKey {
+            kind,
+            radius_bits: radius.to_bits(),
+            segments,
+        };
+        if let Some(handle) = cache.meshes.get(&key) {
+            return handle.clone();
+        }
+        let handle = match kind {
+            crate::RoundedMeshKind::Cube => {
+                meshes.add(crate::utils::shapes::create_rounded_cube(radius, segments))
+            }
+            crate::RoundedMeshKind::Plane => {
+                meshes.add(crate::utils::shapes::create_rounded_plane(radius, segments))
+            }
+        };
+        cache.meshes.insert(key, handle.clone());
+        handle
+    } else {
+        match kind {
+            crate::RoundedMeshKind::Cube => {
+                meshes.add(crate::utils::shapes::create_rounded_cube(radius, segments))
+            }
+            crate::RoundedMeshKind::Plane => {
+                meshes.add(crate::utils::shapes::create_rounded_plane(radius, segments))
+            }
+        }
+    }
+}
+
 /// Decide el `Visibility` del nodo según el attr `visible`:
 ///   - sin attr           → `Inherited` (hereda del padre — comportamiento natural).
 ///   - "false"/"0"/etc    → `Hidden` (forzado oculto, propaga a hijos Inherited).
@@ -1436,6 +1474,7 @@ pub fn dom_sync_system(
     mut async_dom: AsyncDomParams,
     mut text_render: TextRenderParams,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut rounded_mesh_cache: Option<ResMut<crate::RoundedMeshCache>>,
     mut skybox: crate::SkyboxParams,
 ) {
     let start_time = Instant::now();
@@ -1769,13 +1808,21 @@ pub fn dom_sync_system(
                     .and_then(|a| a.0.get("border-radius"))
                     .and_then(|v| v.parse().ok());
                 let new_mesh = match (tag.as_str(), border_radius) {
-                    ("box", Some(r)) => {
-                        Some(meshes.add(crate::utils::shapes::create_rounded_cube(r, 6)))
-                    }
+                    ("box", Some(r)) => Some(get_or_create_rounded_mesh(
+                        rounded_mesh_cache.as_deref_mut(),
+                        &mut meshes,
+                        crate::RoundedMeshKind::Cube,
+                        r,
+                        6,
+                    )),
                     ("box", None) => Some(shared_resources.cube_mesh.clone()),
-                    ("plane", Some(r)) => {
-                        Some(meshes.add(crate::utils::shapes::create_rounded_plane(r, 6)))
-                    }
+                    ("plane", Some(r)) => Some(get_or_create_rounded_mesh(
+                        rounded_mesh_cache.as_deref_mut(),
+                        &mut meshes,
+                        crate::RoundedMeshKind::Plane,
+                        r,
+                        6,
+                    )),
                     ("plane", None) => Some(shared_resources.plane_mesh.clone()),
                     _ => None,
                 };
@@ -1977,7 +2024,13 @@ pub fn dom_sync_system(
                         .and_then(|v| v.parse().ok());
 
                     let mesh = if let Some(radius) = border_radius {
-                        meshes.add(crate::utils::shapes::create_rounded_cube(radius, 6))
+                        get_or_create_rounded_mesh(
+                            rounded_mesh_cache.as_deref_mut(),
+                            &mut meshes,
+                            crate::RoundedMeshKind::Cube,
+                            radius,
+                            6,
+                        )
                     } else {
                         shared_resources.cube_mesh.clone()
                     };
@@ -2014,7 +2067,13 @@ pub fn dom_sync_system(
                         .and_then(|a| a.0.get("border-radius"))
                         .and_then(|v| v.parse().ok());
                     let mesh = if let Some(radius) = border_radius {
-                        meshes.add(crate::utils::shapes::create_rounded_plane(radius, 6))
+                        get_or_create_rounded_mesh(
+                            rounded_mesh_cache.as_deref_mut(),
+                            &mut meshes,
+                            crate::RoundedMeshKind::Plane,
+                            radius,
+                            6,
+                        )
                     } else {
                         shared_resources.plane_mesh.clone()
                     };

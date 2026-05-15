@@ -370,6 +370,24 @@ pub struct PrimitiveMaterialCache {
     pub materials: HashMap<PrimitiveMaterialKey, Handle<StandardMaterial>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RoundedMeshKind {
+    Cube,
+    Plane,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RoundedMeshKey {
+    pub kind: RoundedMeshKind,
+    pub radius_bits: u32,
+    pub segments: u32,
+}
+
+#[derive(Resource, Default)]
+pub struct RoundedMeshCache {
+    pub meshes: HashMap<RoundedMeshKey, Handle<Mesh>>,
+}
+
 #[derive(Resource, Default)]
 pub struct TextMaterialCache {
     pub materials: HashMap<TextMaterialKey, Handle<StandardMaterial>>,

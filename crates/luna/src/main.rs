@@ -103,6 +103,7 @@ fn main() {
     app.insert_resource(crate::SkyboxEntity::default());
     app.insert_resource(TextMaterialCache::default());
     app.insert_resource(PrimitiveMaterialCache::default());
+    app.insert_resource(RoundedMeshCache::default());
     app.insert_resource(PerformanceStats::default());
     app.insert_resource(JsSnapshotState::default());
     app.insert_resource(DevtoolState::default());
