@@ -12,26 +12,21 @@
          script — el dispatcher Bevy sólo emite el press. -->
     <group id="ux_vr_panel" visible="false">
       <!-- Items se construyen dinámicamente vía script; DOM resultante
-           equivalente al de test/menu/script_menu.js (mismas attrs, mismas
-           coords, mismo tamaño 0.45 cuadrado, z=-3, label y-0.3 debajo). -->
+           equivalente al de test/menu/script_menu.js (mismas attrs, mismo
+           label y-offset). Tamaños escalados ~2x menor estilo Quest 2 home. -->
     </group>
 
     <script>
       // ────────────────────────────────────────────────────────────────────
       // ux_vr shell — bookmark launcher.
-      //
-      // Genera DOM equivalente al de public/test/menu/script_menu.js:
-      //   <box name="app-NAME" border-radius="0.2" color="..."
-      //        position=(x, y, -3) scale=(0.45, 0.45, 0.05) touchable />
-      //   <text name="app-name-NAME" value=NAME size="0.08"
-      //         position=(x, y-0.3, -3) />
+      // DOM-equivalente a public/test/menu/script_menu.js, con tamaños
+      // reducidos ~2x (estilo Quest 2 home) y animación enter/exit.
       // ────────────────────────────────────────────────────────────────────
 
       const root = hiperspace.dimention;
 
-      // ── Bookmarks (hardcoded por ahora) ────────────────────────────────
-      // TODO(persistence): mover a storage cuando exista API. Hot-edit acá
-      // + rebuildBookmarks() reaplica layout y animación.
+      // ── Bookmarks ──────────────────────────────────────────────────────
+      // TODO(persistence): mover a storage cuando exista API.
       const BOOKMARKS = [
         { name: 'Home',     url: 'luna://home' },
         { name: 'Demos',    url: 'luna://demos' },
@@ -43,25 +38,24 @@
         { name: 'Range',    url: 'luna://range_demo' },
       ];
 
-      // Palette del original (cycling por índice).
       const PALETTE = [
         '#3B82F6', '#10B981', '#F59E0B', '#EF4444',
         '#8B5CF6', '#EC4899', '#14B8A6', '#F97316',
         '#22C55E', '#EAB308',
       ];
 
-      // Constantes del original (SIZE_APP=0.45, label offset y-0.3, z=-3, etc).
-      const SIZE_APP    = 0.45;
-      const BOX_DEPTH   = 0.05;
-      const Z           = -3;
-      const LABEL_DY    = -0.3;
-      const LABEL_SIZE  = 0.08;
+      // ── Tamaños (Quest 2 home style: ~2x más chico que el original) ────
+      const SIZE_APP    = 0.22;   // era 0.45
+      const BOX_DEPTH   = 0.025;  // era 0.05
+      const Z           = -2;     // era -3 (más cerca, ~2m)
+      const LABEL_DY    = -0.15;  // era -0.30 (proporcional)
+      const LABEL_SIZE  = 0.040;  // era 0.08
       const BORDER_R    = '0.2';
 
-      // ── buildPositions (ported 1:1 de script_menu.js) ──────────────────
-      // Tabla [count-1] → array de [x_table, y_table]. Convención: pos/2 da
-      // coord scene final (sin offset, sin centrado — igual al original).
-      // Limitado a 1-7 en el script; agrego entry para 8 manteniendo estilo.
+      // ── buildPositions (ported de script_menu.js) ──────────────────────
+      // Tabla [count-1] → array [x_table, y_table]. Convert: pos/POS_DIV.
+      // POS_DIV pasó de 2 (original) a 4 (mitad de spacing, mismo ratio).
+      const POS_DIV = 4;
       const SPACEY = 1.5;
       const POSITIONS_TABLE = [
         [[4, 1]],                                                                                          // 1
@@ -71,7 +65,7 @@
         [[0, 1], [2, 1], [4, 1], [6, 1], [8, 1]],                                                          // 5
         [[2, 1], [4, 1], [6, 1], [3, 1 - SPACEY], [5, 1 + SPACEY], [3, 1 + SPACEY]],                       // 6
         [[2, 1], [4, 1], [6, 1], [3, 1 - SPACEY], [5, 1 + SPACEY], [3, 1 + SPACEY], [5, 1 - SPACEY]],      // 7
-        // 8: extensión propia conservando estilo cluster (4 fila central + 2 arriba + 2 abajo).
+        // 8: extensión propia conservando estilo cluster.
         [[1, 1], [3, 1], [5, 1], [7, 1], [2, 1 - SPACEY], [6, 1 - SPACEY], [2, 1 + SPACEY], [6, 1 + SPACEY]],
       ];
 
@@ -82,17 +76,24 @@
             '— layout truncado');
           count = POSITIONS_TABLE.length;
         }
-        // Misma fórmula del script original: (x/2, y/2). Sin offset.
-        return POSITIONS_TABLE[count - 1].map(([x, y]) => [x / 2, y / 2]);
+        return POSITIONS_TABLE[count - 1].map(([x, y]) => [x / POS_DIV, y / POS_DIV]);
       }
 
-      // ── Animación entrada ──────────────────────────────────────────────
+      // ── Animación enter/exit ───────────────────────────────────────────
       const ANIM_MS    = 240;
-      const STAGGER_MS = 35;
+      const STAGGER_MS = 30;
+
+      // Back-out: overshoot al final del enter → se siente "asentándose".
       function easeOutBack(t) {
         const c1 = 1.70158;
         const c3 = c1 + 1;
         return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+      }
+      // Back-in: anticipación al inicio del exit → "se hunde" antes de irse.
+      function easeInBack(t) {
+        const c1 = 1.70158;
+        const c3 = c1 + 1;
+        return c3 * t * t * t - c1 * t * t;
       }
 
       // ── State ──────────────────────────────────────────────────────────
@@ -101,6 +102,7 @@
       let itemRefs = []; // { box, text, idx }
       let animStartTs = 0;
       let animActive = false;
+      let animMode = null; // 'enter' | 'exit'
 
       function clearBookmarks() {
         for (const ref of itemRefs) {
@@ -122,19 +124,17 @@
           const [px, py] = positions[i];
           const color = PALETTE[i % PALETTE.length];
 
-          // ── Box (equivalente al createElement del script original) ────
           const box = root.createElement('box');
           box.setAttribute('name', 'app-' + bm.name);
           box.setAttribute('border-radius', BORDER_R);
           box.setAttribute('color', color);
           box.setAttribute('touchable', 'true');
           box.position = { x: px, y: py, z: Z };
-          // Empieza colapsado para la anim de entrada.
+          // Empieza colapsado para que la anim de entrada se note.
           box.scale = { x: 0.001, y: 0.001, z: 0.001 };
           box.addEventListener('toque', () => openBookmark(bm.url));
           panel.appendChild(box);
 
-          // ── Text label (debajo del box, igual offset que el original) ──
           const text = root.createElement('text');
           text.setAttribute('name', 'app-name-' + bm.name);
           text.setAttribute('value', bm.name);
@@ -146,40 +146,64 @@
         }
       }
 
-      function startEntryAnimation() {
-        for (const ref of itemRefs) {
-          if (ref.box) ref.box.scale = { x: 0.001, y: 0.001, z: 0.001 };
-        }
+      // ── Helpers de scale por item ──────────────────────────────────────
+      function applyScale(ref, factor) {
+        if (!ref.box) return;
+        const f = Math.max(0.001, factor);
+        ref.box.scale = { x: SIZE_APP * f, y: SIZE_APP * f, z: BOX_DEPTH * f };
+      }
+
+      function startEnterAnimation() {
+        // Reset todos a 0 (cascada renacerá).
+        for (const ref of itemRefs) applyScale(ref, 0);
         animStartTs = performance.now();
+        animMode = 'enter';
+        animActive = true;
+        requestAnimationFrame(tickAnim);
+      }
+
+      function startExitAnimation() {
+        // Asume items en estado final (scale 1). Si vienen colapsados (anim
+        // interrumpida), arrancan desde donde estén — visualmente OK.
+        animStartTs = performance.now();
+        animMode = 'exit';
         animActive = true;
         requestAnimationFrame(tickAnim);
       }
 
       function tickAnim(ts) {
         if (!animActive) return;
-        if (!visible) { animActive = false; return; }
-
         const elapsed = ts - animStartTs;
+        const n = itemRefs.length;
         let stillRunning = false;
 
         for (const ref of itemRefs) {
           if (!ref.box) continue;
-          const itemElapsed = elapsed - ref.idx * STAGGER_MS;
+          // Exit invierte el orden: último item desaparece primero (mirror).
+          const orderIdx = (animMode === 'exit') ? (n - 1 - ref.idx) : ref.idx;
+          const itemElapsed = elapsed - orderIdx * STAGGER_MS;
+
           if (itemElapsed < 0) {
+            // Aún no le toca a este item. Mantener estado inicial:
+            //   enter → quedar colapsado.
+            //   exit  → quedar en full size.
+            applyScale(ref, animMode === 'enter' ? 0 : 1);
             stillRunning = true;
             continue;
           }
           if (itemElapsed >= ANIM_MS) {
-            ref.box.scale = { x: SIZE_APP, y: SIZE_APP, z: BOX_DEPTH };
+            applyScale(ref, animMode === 'enter' ? 1 : 0);
             continue;
           }
+
           const t = itemElapsed / ANIM_MS;
-          const e = easeOutBack(t);
-          ref.box.scale = {
-            x: SIZE_APP * e,
-            y: SIZE_APP * e,
-            z: BOX_DEPTH * Math.max(0.001, e),
-          };
+          let progress;
+          if (animMode === 'enter') {
+            progress = easeOutBack(t);          // 0 → 1 con overshoot al final
+          } else {
+            progress = 1 - easeInBack(t);       // 1 → 0 con anticipación
+          }
+          applyScale(ref, progress);
           stillRunning = true;
         }
 
@@ -187,14 +211,27 @@
           requestAnimationFrame(tickAnim);
         } else {
           animActive = false;
+          // Exit completo → ahora sí ocultar el panel entero (mantenía
+          // visible mientras animaba para que los items se vieran irse).
+          if (animMode === 'exit' && panel) {
+            panel.setAttribute('visible', 'false');
+          }
+          animMode = null;
         }
       }
 
       function setVisibleAndAnimate(v) {
-        visible = !!v;
-        if (panel) panel.setAttribute('visible', visible ? 'true' : 'false');
-        if (visible) startEntryAnimation();
-        console.log('[ux_vr] panel visible=', visible);
+        const want = !!v;
+        if (want === visible && !animActive) return;
+        visible = want;
+
+        if (want) {
+          if (panel) panel.setAttribute('visible', 'true');
+          startEnterAnimation();
+        } else {
+          // No ocultamos el panel todavía — tickAnim lo hará tras el exit.
+          startExitAnimation();
+        }
       }
 
       function openBookmark(url) {
@@ -202,7 +239,6 @@
           dimention.tabs.open(url);
           setVisibleAndAnimate(false);
         } else {
-          // Fallback si manage_tabs no concedido.
           console.warn('[ux_vr] dimention.tabs unavailable — fallback location.href');
           location.href = url;
         }
