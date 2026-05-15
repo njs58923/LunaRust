@@ -419,6 +419,24 @@ fn ensure_local_id(table: &mut SpaceHandleTable, global_id: u32) -> i32 {
     local_id
 }
 
+/// Encuentra el space_id del worker root (id="luna_root"). Duplicado del helper
+/// en main.rs para evitar dependencia inversa.
+fn find_root_worker_space_id_local(
+    specs_world: &specs::World,
+    manager: &ScriptRuntimeManager,
+) -> Option<u32> {
+    let attrs = specs_world.read_storage::<Attrs>();
+    for &space_id in manager.contexts.keys() {
+        let ent = specs_world.entities().entity(space_id);
+        if let Some(a) = attrs.get(ent) {
+            if a.0.get("id").map(|v| v.as_str()) == Some("luna_root") {
+                return Some(space_id);
+            }
+        }
+    }
+    None
+}
+
 fn resolve_global_id(
     space_handle_tables: &SpaceHandleTables,
     space_id: u32,
@@ -2044,15 +2062,39 @@ pub fn js_tick_system(world: &mut World) {
             }
         }
 
-        // TODO(tabs-setVisible): visibility_requests no tienen aún un host queue
-        // dedicado. Reenviar como EvalScript al root worker llamando
-        // dimension.luna.setSpaceVisible(tabId, visible) cuando se necesite.
+        // tabs.setVisible — reenvía al root worker que aplica visible al
+        // outer wrapper del tab via dimension.luna.setSpaceVisibleByTabId.
+        // Con Visibility::Inherited en los hijos, el cambio propaga a todo
+        // el subárbol del tab (incluido el inner space cargado por include).
         if !visibility_requests.is_empty() {
-            if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
-                log_panel.push_info(format!(
-                    "[JS] tabs.setVisible buffered ({} requests) — host bridge pending",
-                    visibility_requests.len()
-                ));
+            // Buscar root worker.
+            let root_worker_id: Option<u32> = {
+                let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
+                    return;
+                };
+                let Some(manager) = world.get_non_send_resource::<ScriptRuntimeManager>() else {
+                    return;
+                };
+                find_root_worker_space_id_local(&specs_world.0, manager)
+            };
+            if let Some(root_id) = root_worker_id {
+                if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() {
+                    if let Some(worker) = manager.contexts.get(&root_id) {
+                        if worker.root_api_sent {
+                            for (_sender_space_id, tab_id, visible) in visibility_requests {
+                                let code = format!(
+                                    "dimension.luna.setSpaceVisibleByTabId({}, {});",
+                                    tab_id,
+                                    if visible { "true" } else { "false" }
+                                );
+                                let _ = worker.cmd_tx.send(JsWorkerCommand::EvalScript {
+                                    url: format!("eval://setVisible/{}/{}", tab_id, visible),
+                                    code,
+                                });
+                            }
+                        }
+                    }
+                }
             }
         }
     }

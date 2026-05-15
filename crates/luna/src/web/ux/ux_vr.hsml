@@ -343,6 +343,7 @@
         if (shellState.focusApp && !shellState.focusApp.minimized) {
           shellState.focusApp.minimized = true;
           if (shellState.focusApp.tabId > 0) {
+            if (dimention.tabs) dimention.tabs.setVisible(shellState.focusApp.tabId, false);
             sendMessageToApp(shellState.focusApp.tabId, 'blur');
           }
           shellState.bookmarksVisible = true;
@@ -357,8 +358,8 @@
         shellState.focusApp.minimized = false;
         shellState.bookmarksVisible = false;
         if (shellState.focusApp.tabId > 0) {
+          if (dimention.tabs) dimention.tabs.setVisible(shellState.focusApp.tabId, true);
           sendMessageToApp(shellState.focusApp.tabId, 'focus');
-          // Re-mandar slot: el shell pudo haber sido reposicionado.
           sendFocusSlotToApp();
         }
         applyVisibility();
@@ -425,6 +426,7 @@
         if (shellState.focusApp && !shellState.focusApp.minimized) {
           shellState.focusApp.minimized = true;
           if (shellState.focusApp.tabId > 0) {
+            if (dimention.tabs) dimention.tabs.setVisible(shellState.focusApp.tabId, false);
             sendMessageToApp(shellState.focusApp.tabId, 'blur');
           }
           shellState.bookmarksVisible = true;
@@ -602,6 +604,10 @@
         if (!shellState.focusApp) return;
         shellState.focusApp.minimized = true;
         shellState.bookmarksVisible = true;
+        // Ocultar el tab outer wrapper — los hijos (Inherited) heredan.
+        if (shellState.focusApp.tabId > 0 && dimention.tabs) {
+          dimention.tabs.setVisible(shellState.focusApp.tabId, false);
+        }
         sendMessageToApp(shellState.focusApp.tabId, 'blur');
         applyVisibility();
       }

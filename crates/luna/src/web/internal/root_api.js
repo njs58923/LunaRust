@@ -251,6 +251,23 @@
       return this.updateSpace(id, { visible });
     },
 
+    /// Análogo a `setSpaceVisible` pero usa el `tab_id` (data-luna-tab-id) en
+    /// lugar del publicId interno. Lo usa el host bridge cuando llega un
+    /// `tabs.setVisible(tabId, ...)` desde el shell.
+    setSpaceVisibleByTabId(tabId, visible) {
+      discoverDirectSpaces();
+      cleanupRegistry();
+      const tidStr = String(tabId);
+      for (const [pid, entry] of registry) {
+        if (entry.space.getAttribute('data-luna-tab-id') === tidStr) {
+          entry.space.setAttribute('visible', visible ? 'true' : 'false');
+          return true;
+        }
+      }
+      console.warn('[root] setSpaceVisibleByTabId: tab_id=' + tabId + ' not found');
+      return false;
+    },
+
     unmountSpace(id) {
       const entry = getMountedEntry(id);
       if (!entry) return false;

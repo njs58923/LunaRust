@@ -42,7 +42,6 @@
       waitForEmbedded(0, function(e) {
         let contentBox = null;
         let labelText  = null;
-        let hidden = false;
 
         function renderInSlot(size) {
           // Limpiar anterior.
@@ -66,9 +65,6 @@
           labelText.setAttribute('color', '#FFFFFF');
           labelText.position = { x: 0, y: 0, z: 0.02 };
           myGroup.appendChild(labelText);
-
-          // Si la app estaba hidden (recibió blur antes de slot), aplicar.
-          if (hidden) setContentVisible(false);
         }
 
         e.on('slot', (slot) => {
@@ -92,21 +88,12 @@
           renderInSlot(slot.size);
         });
 
-        function setContentVisible(v) {
-          hidden = !v;
-          const flag = v ? 'true' : 'false';
-          if (contentBox) contentBox.setAttribute('visible', flag);
-          if (labelText)  labelText.setAttribute('visible',  flag);
-        }
-
-        e.on('focus', () => {
-          console.log('[demo_embedded] gained focus');
-          setContentVisible(true);
-        });
-        e.on('blur',  () => {
-          console.log('[demo_embedded] lost focus');
-          setContentVisible(false);
-        });
+        // El shell controla la visibilidad del tab outer wrapper via
+        // dimention.tabs.setVisible. Con Visibility::Inherited en los hijos,
+        // se propaga a este space y a su contenido. Los eventos focus/blur
+        // son informativos — no requieren acción de visibility de la app.
+        e.on('focus', () => console.log('[demo_embedded] gained focus'));
+        e.on('blur',  () => console.log('[demo_embedded] lost focus'));
         e.on('suspend', () => console.log('[demo_embedded] suspend (TODO: pause loops)'));
         e.on('resume',  () => console.log('[demo_embedded] resume'));
         e.on('close',   () => {

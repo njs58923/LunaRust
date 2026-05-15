@@ -218,17 +218,29 @@ fn primitive_color(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> Colo
         .unwrap_or(Color::srgb(0.5, 0.5, 0.5))
 }
 
-fn node_visible(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> bool {
+/// Decide el `Visibility` del nodo según el attr `visible`:
+///   - sin attr           → `Inherited` (hereda del padre — comportamiento natural).
+///   - "false"/"0"/etc    → `Hidden` (forzado oculto, propaga a hijos Inherited).
+///   - cualquier otro     → `Visible` (forzado visible, override del padre).
+///
+/// Usar `Inherited` por default es clave: sin esto, los hijos se renderizan
+/// como `Visible` literal y NO siguen el `Hidden` del padre, rompiendo la
+/// jerarquía de visibilidad de Bevy.
+fn node_visibility(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> Visibility {
     let Some(attrs) = attrs_storage.get(node) else {
-        return true;
+        return Visibility::Inherited;
     };
     let Some(value) = attrs.0.get("visible") else {
-        return true;
+        return Visibility::Inherited;
     };
-    !matches!(
+    if matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "false" | "0" | "no" | "off" | "hidden"
-    )
+    ) {
+        Visibility::Hidden
+    } else {
+        Visibility::Visible
+    }
 }
 fn node_touchable(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> bool {
     let Some(attrs) = attrs_storage.get(node) else {
@@ -1645,11 +1657,7 @@ pub fn dom_sync_system(
                     *t = transform_b;
                 }
                 if let Ok(mut visibility) = visibility_query.get_mut(bevy_ent) {
-                    *visibility = if node_visible(&attrs_storage, *node) {
-                        Visibility::Visible
-                    } else {
-                        Visibility::Hidden
-                    };
+                    *visibility = node_visibility(&attrs_storage, *node);
                 }
                 continue;
             }
@@ -1660,11 +1668,7 @@ pub fn dom_sync_system(
                     *t = transform_b;
                 }
                 if let Ok(mut visibility) = visibility_query.get_mut(bevy_ent) {
-                    *visibility = if node_visible(&attrs_storage, *node) {
-                        Visibility::Visible
-                    } else {
-                        Visibility::Hidden
-                    };
+                    *visibility = node_visibility(&attrs_storage, *node);
                 }
                 // Trigger include load if src changed or not yet loaded
                 if tag == "include" {
@@ -1701,11 +1705,7 @@ pub fn dom_sync_system(
                 // Aplicar attr `visible` también a primitivos. Sin esto,
                 // setear visible=false en un box no lo oculta.
                 if let Ok(mut visibility) = visibility_query.get_mut(bevy_ent) {
-                    *visibility = if node_visible(&attrs_storage, *node) {
-                        Visibility::Visible
-                    } else {
-                        Visibility::Hidden
-                    };
+                    *visibility = node_visibility(&attrs_storage, *node);
                 }
                 let color = primitive_color(&attrs_storage, *node);
                 let double_sided = tag == "plane";
@@ -1751,11 +1751,7 @@ pub fn dom_sync_system(
             }
             // También sincronizar `visible` para text y demás tags genéricos.
             if let Ok(mut visibility) = visibility_query.get_mut(bevy_ent) {
-                *visibility = if node_visible(&attrs_storage, *node) {
-                    Visibility::Visible
-                } else {
-                    Visibility::Hidden
-                };
+                *visibility = node_visibility(&attrs_storage, *node);
             }
         } else {
             // --- Create new entity ---
@@ -1846,11 +1842,7 @@ pub fn dom_sync_system(
                         .spawn((
                             SpatialBundle {
                                 transform: transform_b,
-                                visibility: if node_visible(&attrs_storage, *node) {
-                                    Visibility::Visible
-                                } else {
-                                    Visibility::Hidden
-                                },
+                                visibility: node_visibility(&attrs_storage, *node),
                                 ..Default::default()
                             },
                             Dirty,
@@ -1861,11 +1853,7 @@ pub fn dom_sync_system(
                     .spawn((
                         SpatialBundle {
                             transform: transform_b,
-                            visibility: if node_visible(&attrs_storage, *node) {
-                                Visibility::Visible
-                            } else {
-                                Visibility::Hidden
-                            },
+                            visibility: node_visibility(&attrs_storage, *node),
                             ..Default::default()
                         },
                         Dirty,
@@ -1877,11 +1865,7 @@ pub fn dom_sync_system(
                     .spawn((
                         SpatialBundle {
                             transform: transform_b,
-                            visibility: if node_visible(&attrs_storage, *node) {
-                                Visibility::Visible
-                            } else {
-                                Visibility::Hidden
-                            },
+                            visibility: node_visibility(&attrs_storage, *node),
                             ..Default::default()
                         },
                         Dirty,
