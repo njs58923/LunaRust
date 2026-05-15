@@ -1048,10 +1048,7 @@ mod tests {
 
         assert_eq!(
             mount_queue,
-            vec![SpaceMountRequest {
-                tab_id: 7,
-                url: "luna://home".to_string(),
-            }]
+            vec![SpaceMountRequest::new(7, "luna://home".to_string())]
         );
         assert!(unmount_queue.is_empty());
         assert!(deferred_mounts.is_empty());
@@ -1086,10 +1083,7 @@ mod tests {
         assert_eq!(deferred_mounts[0].wait_gone_tab_id, 7);
         assert_eq!(
             deferred_mounts[0].mount,
-            SpaceMountRequest {
-                tab_id: 7,
-                url: "luna://about".to_string(),
-            }
+            SpaceMountRequest::new(7, "luna://about".to_string())
         );
         assert_eq!(mounted[0].url, "luna://about");
     }
@@ -1121,10 +1115,7 @@ mod tests {
         assert_eq!(deferred_mounts[0].wait_gone_tab_id, 9);
         assert_eq!(
             deferred_mounts[0].mount,
-            SpaceMountRequest {
-                tab_id: 9,
-                url: "luna://same".to_string(),
-            }
+            SpaceMountRequest::new(9, "luna://same".to_string())
         );
     }
 
@@ -1148,10 +1139,7 @@ mod tests {
         app.insert_resource(crate::ElemenetWorld(world_with_duplicate_urls()));
         app.insert_resource(DeferredSpaceMounts(vec![DeferredSpaceMount {
             wait_gone_tab_id: 33,
-            mount: SpaceMountRequest {
-                tab_id: 33,
-                url: "luna://next".to_string(),
-            },
+            mount: SpaceMountRequest::new(33, "luna://next".to_string()),
         }]));
         app.insert_resource(crate::SpaceMountQueue::default());
         app.add_systems(Update, flush_deferred_space_mounts_system);
@@ -1161,10 +1149,7 @@ mod tests {
         assert!(app.world().resource::<DeferredSpaceMounts>().0.is_empty());
         assert_eq!(
             app.world().resource::<crate::SpaceMountQueue>().0,
-            vec![SpaceMountRequest {
-                tab_id: 33,
-                url: "luna://next".to_string(),
-            }]
+            vec![SpaceMountRequest::new(33, "luna://next".to_string())]
         );
     }
 

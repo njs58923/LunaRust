@@ -2142,7 +2142,8 @@ mod tests {
     fn fire_demo_posemove_trigger_spawns_bullet() {
         let mut eng = fire_demo_engine();
 
-        eng.push_posemove_event(6, "right", 1.0, 1.5, -0.5, 0.0, 0.0, -1.0, 1.0, 0.0);
+        // Args: node_id, hand, px, py, pz, dx, dy, dz, trigger, grip, qx, qy, qz, qw.
+        eng.push_posemove_event(6, "right", 1.0, 1.5, -0.5, 0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
         eng.fire_raf(16.0);
 
         let created = eng.drain_element_creation_queue();

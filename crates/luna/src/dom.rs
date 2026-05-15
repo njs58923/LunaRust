@@ -1372,6 +1372,48 @@ fn queue_model_prepare_if_needed(
     }
 }
 
+/// Reordena `dirty_node_ids` in-place por profundidad ascendente (root primero,
+/// hojas al final). Sólo cuenta como padre los ancestros que ya están attached
+/// (presentes en `attached`) y vivos en el world specs.
+///
+/// Sin esto, `dom_sync_system` podía procesar un child antes que su parent
+/// recién-spawneado: el child intentaba `set_parent` con el `Entity` Bevy del
+/// padre que aún no existía en `entity_map`, y terminaba como root flotante
+/// con Transform world-space en (0,0,0). El bug aparecía intermitente porque
+/// `dirty_node_ids` venía de iterar un `HashSet`/`HashMap` — orden no
+/// determinístico. Repro determinístico: ver test
+/// `topo_sort_orders_parents_before_children`.
+pub(crate) fn topo_sort_dirty_by_depth(
+    specs_world: &specs::World,
+    dirty_node_ids: &mut Vec<u32>,
+    attached: &HashSet<u32>,
+) {
+    let hier = specs_world.read_storage::<Hierarchy>();
+    let entities_specs = specs_world.entities();
+    let mut depths: HashMap<u32, u32> = HashMap::new();
+    for &nid in dirty_node_ids.iter() {
+        let mut d = 0u32;
+        let mut current = entities_specs.entity(nid);
+        let mut steps = 0;
+        while let Some(parent) = hier.get(current).and_then(|h| h.parent) {
+            if !attached.contains(&parent.id()) {
+                break;
+            }
+            if !entities_specs.is_alive(parent) {
+                break;
+            }
+            d += 1;
+            current = parent;
+            steps += 1;
+            if steps > 128 {
+                break;
+            }
+        }
+        depths.insert(nid, d);
+    }
+    dirty_node_ids.sort_by_key(|nid| *depths.get(nid).unwrap_or(&0));
+}
+
 pub fn dom_sync_system(
     world: Res<ElemenetWorld>,
     mut commands: Commands,
@@ -1407,30 +1449,8 @@ pub fn dom_sync_system(
     // quedaran como entities Bevy root flotantes con Transform world-space en
     // (0,0,0) la mitad de las veces, dependiendo del orden del HashMap).
     {
-        let hier = world.0.read_storage::<Hierarchy>();
-        let entities_specs = world.0.entities();
         let attached: HashSet<u32> = dom_data.nodes.keys().copied().collect();
-        // Calcular profundidad de cada nodo en la jerarquía specs.
-        let mut depths: HashMap<u32, u32> = HashMap::new();
-        for &nid in &dirty_node_ids {
-            let mut d = 0u32;
-            let mut current = entities_specs.entity(nid);
-            let mut steps = 0;
-            while let Some(parent) = hier.get(current).and_then(|h| h.parent) {
-                if !attached.contains(&parent.id()) {
-                    break;
-                }
-                if !entities_specs.is_alive(parent) {
-                    break;
-                }
-                d += 1;
-                current = parent;
-                steps += 1;
-                if steps > 128 { break; } // safety
-            }
-            depths.insert(nid, d);
-        }
-        dirty_node_ids.sort_by_key(|nid| *depths.get(nid).unwrap_or(&0));
+        topo_sort_dirty_by_depth(&world.0, &mut dirty_node_ids, &attached);
     }
 
     // Despawns from in-place replacement (model/text/skybox) are deferred to
@@ -3724,6 +3744,124 @@ mod tests {
         assert!(
             app.world().resource::<PendingJsAttachNodes>().0.is_empty(),
             "PendingJsAttachNodes con stale ids tras commit — corromperán el próximo frame"
+        );
+    }
+
+    // ─── Regression: topological sort de dirty_node_ids ───────────────────────
+    //
+    // Root cause del bug "app embedded en (0,0,0)": `dirty_node_ids` venía de
+    // iterar un `HashSet` — orden no determinístico. Cuando un child se
+    // procesaba antes que su parent recién-spawneado, el child no encontraba
+    // su Bevy parent en `entity_map` y quedaba como root flotante con
+    // Transform world-space en origen.
+    //
+    // El fix: `topo_sort_dirty_by_depth` reordena por profundidad ascendente
+    // (root primero, hojas al final). Este test repro la condición construyendo
+    // un árbol specs root → child → grandchild y pasando dirty_ids en orden
+    // INVERSO. Después del sort, el orden DEBE ser parents → children.
+    #[test]
+    fn topo_sort_orders_parents_before_children() {
+        use specs::Builder;
+        use virtual_dom::dom::element::{build_world, Hierarchy};
+
+        let mut world = build_world();
+
+        // Árbol:        root
+        //                │
+        //              child
+        //                │
+        //           grandchild
+        //                │
+        //         great_grandchild
+        let root = world.create_entity().with(Hierarchy::default()).build();
+        let child = world.create_entity().with(Hierarchy::default()).build();
+        let grandchild = world.create_entity().with(Hierarchy::default()).build();
+        let great_grandchild = world.create_entity().with(Hierarchy::default()).build();
+
+        // Sibling de root, también dirty — debe quedar al mismo nivel (depth 0).
+        let sibling = world.create_entity().with(Hierarchy::default()).build();
+
+        Hierarchy::add_child(&mut world, root, child);
+        Hierarchy::add_child(&mut world, child, grandchild);
+        Hierarchy::add_child(&mut world, grandchild, great_grandchild);
+
+        world.maintain();
+
+        let attached: HashSet<u32> = [root, child, grandchild, great_grandchild, sibling]
+            .iter()
+            .map(|e| e.id())
+            .collect();
+
+        // Caso patológico que disparaba el bug: hojas primero, padres después.
+        let mut dirty: Vec<u32> = vec![
+            great_grandchild.id(),
+            grandchild.id(),
+            child.id(),
+            sibling.id(),
+            root.id(),
+        ];
+
+        topo_sort_dirty_by_depth(&world, &mut dirty, &attached);
+
+        // Computar la profundidad de cada id según orden final, debe ser monotónica.
+        let depth_of = |id: u32| -> u32 {
+            if id == root.id() || id == sibling.id() { 0 }
+            else if id == child.id() { 1 }
+            else if id == grandchild.id() { 2 }
+            else if id == great_grandchild.id() { 3 }
+            else { u32::MAX }
+        };
+
+        let depths: Vec<u32> = dirty.iter().map(|&id| depth_of(id)).collect();
+        for w in depths.windows(2) {
+            assert!(
+                w[0] <= w[1],
+                "topo sort produjo orden no-monotónico: {:?} (depths {:?})",
+                dirty,
+                depths,
+            );
+        }
+
+        // Spot check específico: child DEBE preceder grandchild, grandchild DEBE
+        // preceder great_grandchild. Sin esa garantía el bug reaparece.
+        let pos = |id: u32| dirty.iter().position(|&x| x == id).unwrap();
+        assert!(pos(root.id()) < pos(child.id()), "root debe preceder child");
+        assert!(pos(child.id()) < pos(grandchild.id()), "child debe preceder grandchild");
+        assert!(
+            pos(grandchild.id()) < pos(great_grandchild.id()),
+            "grandchild debe preceder great_grandchild"
+        );
+    }
+
+    // Companion test: si un parente NO está attached, debe tratarse como
+    // depth=0 (el hijo se vuelve "root virtual" para esta pasada). Sin esto, un
+    // include parcialmente mounted produciría depths corruptos y volvería a
+    // desordenar.
+    #[test]
+    fn topo_sort_treats_detached_ancestors_as_root() {
+        use specs::Builder;
+        use virtual_dom::dom::element::{build_world, Hierarchy};
+
+        let mut world = build_world();
+        let detached_root = world.create_entity().with(Hierarchy::default()).build();
+        let attached_mid = world.create_entity().with(Hierarchy::default()).build();
+        let leaf = world.create_entity().with(Hierarchy::default()).build();
+
+        Hierarchy::add_child(&mut world, detached_root, attached_mid);
+        Hierarchy::add_child(&mut world, attached_mid, leaf);
+        world.maintain();
+
+        // attached SOLO incluye mid y leaf — el root real está "fuera" del dom_data.
+        let attached: HashSet<u32> = [attached_mid.id(), leaf.id()].iter().copied().collect();
+
+        let mut dirty = vec![leaf.id(), attached_mid.id()];
+        topo_sort_dirty_by_depth(&world, &mut dirty, &attached);
+
+        // mid (depth=0 porque su parent no está attached) precede leaf (depth=1).
+        assert_eq!(
+            dirty,
+            vec![attached_mid.id(), leaf.id()],
+            "mid debe quedar antes que leaf cuando el root real está detached"
         );
     }
 }
