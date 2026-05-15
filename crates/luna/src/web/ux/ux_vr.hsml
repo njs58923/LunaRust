@@ -7,33 +7,34 @@
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
   <space id="ux_vr" system-shell="true" resources="vr_locomotion,read_system_input,manage_tabs,read_hmd_pose">
-    <!-- Panel oculto por defecto. Se muestra al recibir systeminput action=shell
-         (botón menu Touch izq en VR, ESC desktop). El estado lo maneja este
-         script — el dispatcher Bevy sólo emite el press. -->
+    <!-- Shell del UX en VR.
+         Tres grupos top-level:
+           - ux_vr_panel:      bookmarks grid (centro arriba).
+           - ux_vr_bottom_bar: taskbar inferior (Menu + Focus + Anchored).
+           - ux_vr_focus_zone: silueta del slot focused (commit 3+).
+         Toda visibilidad deriva de ShellState (ver script). -->
     <group id="ux_vr_panel" visible="false">
-      <!-- Items se construyen dinámicamente vía script; DOM resultante
-           equivalente al de test/menu/script_menu.js (mismas attrs, mismo
-           label y-offset). Tamaños escalados ~2x menor estilo Quest 2 home. -->
+      <!-- Bookmarks construidos dinámicamente vía script. -->
     </group>
+
+    <group id="ux_vr_bottom_bar" visible="false">
+      <!-- Slot 1: Menu (siempre si bar visible). Slots 2..N: focus + anchored.
+           Construidos dinámicamente — ver buildBottomBar(). -->
+    </group>
+
+    <!-- ux_vr_focus_zone: vendrá en commit 3 cuando se implemente el focus. -->
 
     <script>
       // ────────────────────────────────────────────────────────────────────
-      // ux_vr shell — bookmark launcher.
-      // DOM-equivalente a public/test/menu/script_menu.js, con tamaños
-      // reducidos ~2x (estilo Quest 2 home) y animación enter/exit.
+      // ux_vr shell — orquesta bookmarks + bottom bar + (futuro) focus/anchored.
+      // Implementación del state machine definido en docs/embedded_apps.md.
       // ────────────────────────────────────────────────────────────────────
 
       const root = hiperspace.dimention;
 
       // ── Bookmarks ──────────────────────────────────────────────────────
       // TODO(persistence): mover a storage cuando exista API.
-      //
-      // kind:
-      //   'spatial' (default): al abrir cierra otras spatial — "moverse a otro lugar"
-      //   'app':              aditiva, persiste entre cambios de spatial
-      //
-      // En el futuro este kind lo sugerirá el doc destino (<space role=...>)
-      // o lo declarará el usuario al guardar marcador. Hoy lo hardcodeamos.
+      // kind:  'spatial' (default) | 'app' | 'app-embedded' (futuro)
       const BOOKMARKS = [
         { name: 'Home',     url: 'luna://home',        kind: 'spatial' },
         { name: 'Demos',    url: 'luna://demos',       kind: 'spatial' },
@@ -51,43 +52,46 @@
         '#22C55E', '#EAB308',
       ];
 
-      // ── Tamaños (Quest 2 home style: ~2x más chico que el original) ────
+      // ── Tamaños (Quest 2 home style) ───────────────────────────────────
       const SIZE_APP    = 0.22;
       const BOX_DEPTH   = 0.025;
-      // Items son LOCAL al panel; Z=0 los pone en el plano del panel. El
-      // panel se mueve al frente del user en repositionPanelAtViewer().
-      const Z           = 0;
-      const Z_TEXT      = 0.001;  // levemente al frente para no z-fight con boxes
+      const Z           = 0;       // local al panel
+      const Z_TEXT      = 0.001;
       const LABEL_DY    = -0.15;
       const LABEL_SIZE  = 0.040;
       const BORDER_R    = '0.2';
 
-      // ── buildPositions (ported de script_menu.js) ──────────────────────
-      // Tabla [count-1] → array [x_table, y_table]. Convert: pos/POS_DIV.
-      // POS_DIV pasó de 2 (original) a 4 (mitad de spacing, mismo ratio).
+      // ── Bottom bar (taskbar) ───────────────────────────────────────────
+      const BAR_Y           = -0.55;   // debajo del panel principal
+      const BAR_Z           = 0;       // mismo plano
+      const BAR_SLOT_SIZE_X = 0.16;
+      const BAR_SLOT_SIZE_Y = 0.10;
+      const BAR_SLOT_DEPTH  = 0.020;
+      const BAR_SLOT_GAP    = 0.04;
+      const BAR_SLOT_BORDER = '0.15';
+      const BAR_LABEL_SIZE  = 0.035;
+
+      // ── buildPositions (layout cluster) ────────────────────────────────
       const POS_DIV = 4;
       const SPACEY = 1.5;
       const POSITIONS_TABLE = [
-        [[4, 1]],                                                                                          // 1
-        [[3, 1], [5, 1]],                                                                                  // 2
-        [[2, 1], [4, 1], [6, 1]],                                                                          // 3
-        [[1, 1], [3, 1], [5, 1], [7, 1]],                                                                  // 4
-        [[0, 1], [2, 1], [4, 1], [6, 1], [8, 1]],                                                          // 5
-        [[2, 1], [4, 1], [6, 1], [3, 1 - SPACEY], [5, 1 + SPACEY], [3, 1 + SPACEY]],                       // 6
-        [[2, 1], [4, 1], [6, 1], [3, 1 - SPACEY], [5, 1 + SPACEY], [3, 1 + SPACEY], [5, 1 - SPACEY]],      // 7
-        // 8: extensión propia conservando estilo cluster.
+        [[4, 1]],
+        [[3, 1], [5, 1]],
+        [[2, 1], [4, 1], [6, 1]],
+        [[1, 1], [3, 1], [5, 1], [7, 1]],
+        [[0, 1], [2, 1], [4, 1], [6, 1], [8, 1]],
+        [[2, 1], [4, 1], [6, 1], [3, 1 - SPACEY], [5, 1 + SPACEY], [3, 1 + SPACEY]],
+        [[2, 1], [4, 1], [6, 1], [3, 1 - SPACEY], [5, 1 + SPACEY], [3, 1 + SPACEY], [5, 1 - SPACEY]],
         [[1, 1], [3, 1], [5, 1], [7, 1], [2, 1 - SPACEY], [6, 1 - SPACEY], [2, 1 + SPACEY], [6, 1 + SPACEY]],
       ];
 
       function computePositions(count) {
         if (count < 1) return [];
         if (count > POSITIONS_TABLE.length) {
-          console.warn('[ux_vr]', count, 'bookmarks >', POSITIONS_TABLE.length,
-            '— layout truncado');
+          console.warn('[ux_vr]', count, 'bookmarks >', POSITIONS_TABLE.length, '— layout truncado');
           count = POSITIONS_TABLE.length;
         }
         const raw = POSITIONS_TABLE[count - 1].map(([x, y]) => [x / POS_DIV, y / POS_DIV]);
-        // Centrar en (0, 0) restando el centroide — local space del panel.
         let cx = 0, cy = 0;
         for (const [x, y] of raw) { cx += x; cy += y; }
         cx /= raw.length;
@@ -98,27 +102,49 @@
       // ── Animación enter/exit ───────────────────────────────────────────
       const ANIM_MS    = 240;
       const STAGGER_MS = 30;
-
-      // Back-out: overshoot al final del enter → se siente "asentándose".
       function easeOutBack(t) {
-        const c1 = 1.70158;
-        const c3 = c1 + 1;
+        const c1 = 1.70158, c3 = c1 + 1;
         return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
       }
-      // Back-in: anticipación al inicio del exit → "se hunde" antes de irse.
       function easeInBack(t) {
-        const c1 = 1.70158;
-        const c3 = c1 + 1;
+        const c1 = 1.70158, c3 = c1 + 1;
         return c3 * t * t * t - c1 * t * t;
       }
 
-      // ── State ──────────────────────────────────────────────────────────
+      // ── ShellState ─────────────────────────────────────────────────────
+      // State machine global del shell. Cualquier cambio acá DEBE ir seguido
+      // de applyVisibility() para refrescar UI.
+      const shellState = {
+        bookmarksVisible: false,
+        // Commits siguientes:
+        focusApp: null,    // { tabId, minimized, slot:{position,rotation,size} }
+        anchored: [],      // [{ tabId, position, rotation, minimized, alwaysOn }]
+      };
+
+      function shouldShowBookmarks() {
+        // Bookmarks visibles si shell visible y no hay focus tomando la pantalla.
+        if (!shellState.bookmarksVisible) return false;
+        if (shellState.focusApp && !shellState.focusApp.minimized) return false;
+        return true;
+      }
+
+      function shouldShowBottomBar() {
+        // Bar sólo aparece si hay algo (focus o anchored) y el shell está visible.
+        if (!shellState.bookmarksVisible) return false;
+        const hasFocus = shellState.focusApp !== null;
+        const hasAnchored = shellState.anchored.length > 0;
+        return hasFocus || hasAnchored;
+      }
+
+      // ── DOM refs ───────────────────────────────────────────────────────
       const panel = root.getElementById('ux_vr_panel');
-      let visible = false;
+      const bottomBar = root.getElementById('ux_vr_bottom_bar');
+
+      // ── Bookmark items refs (para anim cascada) ────────────────────────
       let itemRefs = []; // { box, text, idx }
       let animStartTs = 0;
       let animActive = false;
-      let animMode = null; // 'enter' | 'exit'
+      let animMode = null;
 
       function clearBookmarks() {
         for (const ref of itemRefs) {
@@ -131,10 +157,8 @@
       function buildBookmarks() {
         clearBookmarks();
         if (!panel) return;
-
         const positions = computePositions(BOOKMARKS.length);
         const n = Math.min(BOOKMARKS.length, positions.length);
-
         for (let i = 0; i < n; i++) {
           const bm = BOOKMARKS[i];
           const [px, py] = positions[i];
@@ -146,7 +170,6 @@
           box.setAttribute('color', color);
           box.setAttribute('touchable', 'true');
           box.position = { x: px, y: py, z: Z };
-          // Empieza colapsado para que la anim de entrada se note.
           box.scale = { x: 0.001, y: 0.001, z: 0.001 };
           box.addEventListener('toque', () => openBookmark(bm));
           panel.appendChild(box);
@@ -162,7 +185,6 @@
         }
       }
 
-      // ── Helpers de scale por item ──────────────────────────────────────
       function applyScale(ref, factor) {
         if (!ref.box) return;
         const f = Math.max(0.001, factor);
@@ -170,21 +192,13 @@
       }
 
       function startEnterAnimation() {
-        // Reset todos a 0 (cascada renacerá).
         for (const ref of itemRefs) applyScale(ref, 0);
-        // -1 = sentinel: se setea en la 1ra llamada a tickAnim usando el
-        // timestamp que pasa raf. NO usar performance.now() acá: el ts del
-        // raf viene del clock de Bevy (time.elapsed) y performance.now() del
-        // clock del isolate — timebases distintos, daría elapsed enorme.
         animStartTs = -1;
         animMode = 'enter';
         animActive = true;
         requestAnimationFrame(tickAnim);
       }
-
       function startExitAnimation() {
-        // Asume items en estado final (scale 1). Si vienen colapsados (anim
-        // interrumpida), arrancan desde donde estén — visualmente OK.
         animStartTs = -1;
         animMode = 'exit';
         animActive = true;
@@ -197,17 +211,11 @@
         const elapsed = ts - animStartTs;
         const n = itemRefs.length;
         let stillRunning = false;
-
         for (const ref of itemRefs) {
           if (!ref.box) continue;
-          // Exit invierte el orden: último item desaparece primero (mirror).
           const orderIdx = (animMode === 'exit') ? (n - 1 - ref.idx) : ref.idx;
           const itemElapsed = elapsed - orderIdx * STAGGER_MS;
-
           if (itemElapsed < 0) {
-            // Aún no le toca a este item. Mantener estado inicial:
-            //   enter → quedar colapsado.
-            //   exit  → quedar en full size.
             applyScale(ref, animMode === 'enter' ? 0 : 1);
             stillRunning = true;
             continue;
@@ -216,24 +224,15 @@
             applyScale(ref, animMode === 'enter' ? 1 : 0);
             continue;
           }
-
           const t = itemElapsed / ANIM_MS;
-          let progress;
-          if (animMode === 'enter') {
-            progress = easeOutBack(t);          // 0 → 1 con overshoot al final
-          } else {
-            progress = 1 - easeInBack(t);       // 1 → 0 con anticipación
-          }
+          const progress = animMode === 'enter' ? easeOutBack(t) : (1 - easeInBack(t));
           applyScale(ref, progress);
           stillRunning = true;
         }
-
         if (stillRunning) {
           requestAnimationFrame(tickAnim);
         } else {
           animActive = false;
-          // Exit completo → ahora sí ocultar el panel entero (mantenía
-          // visible mientras animaba para que los items se vieran irse).
           if (animMode === 'exit' && panel) {
             panel.setAttribute('visible', 'false');
           }
@@ -241,83 +240,217 @@
         }
       }
 
-      // Distancia panel ↔ viewer al spawnearlo enfrente.
+      // ── Bottom bar build (esqueleto) ───────────────────────────────────
+      // En este commit construimos sólo el slot Menu. Commits siguientes
+      // agregan Focus indicator + Anchored entries.
+      let barRefs = []; // { box, text }
+
+      function clearBottomBar() {
+        for (const r of barRefs) {
+          try { if (r.box)  r.box.remove();  } catch (e) {}
+          try { if (r.text) r.text.remove(); } catch (e) {}
+        }
+        barRefs = [];
+      }
+
+      function addBarSlot(x, label, color, onTap) {
+        const box = root.createElement('box');
+        box.setAttribute('border-radius', BAR_SLOT_BORDER);
+        box.setAttribute('color', color);
+        box.setAttribute('touchable', 'true');
+        box.position = { x, y: BAR_Y, z: BAR_Z };
+        box.scale = { x: BAR_SLOT_SIZE_X, y: BAR_SLOT_SIZE_Y, z: BAR_SLOT_DEPTH };
+        if (typeof onTap === 'function') {
+          box.addEventListener('toque', onTap);
+        }
+        bottomBar.appendChild(box);
+
+        const text = root.createElement('text');
+        text.setAttribute('value', label);
+        text.setAttribute('size', String(BAR_LABEL_SIZE));
+        text.setAttribute('color', '#FFFFFF');
+        text.position = { x, y: BAR_Y, z: BAR_Z + 0.002 };
+        bottomBar.appendChild(text);
+
+        barRefs.push({ box, text });
+      }
+
+      function rebuildBottomBar() {
+        clearBottomBar();
+        if (!bottomBar) return;
+
+        const slots = [];
+
+        // Slot 1: Menu — siempre primero.
+        slots.push({ label: 'Menu', color: '#4CAF50', onTap: onTapBarMenu });
+
+        // Slot 2: Focus indicator (si existe focus).
+        if (shellState.focusApp) {
+          slots.push({
+            label: 'Focus',
+            color: shellState.focusApp.minimized ? '#90A4AE' : '#FFC107',
+            onTap: onTapBarFocus,
+          });
+        }
+
+        // Slot 3..N: anchored apps.
+        for (let i = 0; i < shellState.anchored.length; i++) {
+          const a = shellState.anchored[i];
+          slots.push({
+            label: 'Anc' + (i + 1),
+            color: a.minimized ? '#607D8B' : '#7E57C2',
+            onTap: () => onTapBarAnchored(i),
+          });
+          // TODO(commit 4): botón ✕ pequeño al lado de cada anchored.
+        }
+
+        // Layout horizontal centrado.
+        const total = slots.length;
+        const span = total * BAR_SLOT_SIZE_X + (total - 1) * BAR_SLOT_GAP;
+        let cursor = -span / 2 + BAR_SLOT_SIZE_X / 2;
+        for (const s of slots) {
+          addBarSlot(cursor, s.label, s.color, s.onTap);
+          cursor += BAR_SLOT_SIZE_X + BAR_SLOT_GAP;
+        }
+      }
+
+      // ── Bar handlers ───────────────────────────────────────────────────
+      function onTapBarMenu() {
+        // Si hay focus visible → minimizar focus, mostrar bookmarks.
+        if (shellState.focusApp && !shellState.focusApp.minimized) {
+          shellState.focusApp.minimized = true;
+          // TODO(commit 3): notificar a la app vía shell message 'blur'.
+          applyVisibility();
+          return;
+        }
+        // Sino: no-op (ya estamos en bookmarks).
+        console.log('[ux_vr] bar Menu tapped — no-op (already in bookmarks)');
+      }
+
+      function onTapBarFocus() {
+        // Restaura focus.
+        if (!shellState.focusApp) return;
+        shellState.focusApp.minimized = false;
+        // TODO(commit 3): notificar 'focus' a la app.
+        applyVisibility();
+      }
+
+      function onTapBarAnchored(idx) {
+        const a = shellState.anchored[idx];
+        if (!a) return;
+        a.minimized = !a.minimized;
+        // TODO(commit 4): notificar 'suspend'/'resume' a la app.
+        applyVisibility();
+      }
+
+      // ── applyVisibility — derive UI from ShellState ────────────────────
+      function applyVisibility() {
+        if (panel)     panel.setAttribute('visible', shouldShowBookmarks() ? 'true' : 'false');
+        if (bottomBar) bottomBar.setAttribute('visible', shouldShowBottomBar() ? 'true' : 'false');
+        rebuildBottomBar();
+        // TODO(commit 3): aplicar visibilidad de focus_app + anchored layers.
+      }
+
+      // ── Posicionar shell al frente del usuario ─────────────────────────
       const SHELL_SPAWN_DISTANCE = 1.5;
 
-      function repositionPanelAtViewer() {
-        if (!panel) return;
-        if (typeof dimention.readViewerPose !== 'function') {
-          console.warn('[ux_vr] readViewerPose unavailable — panel queda en posición previa');
-          return;
-        }
+      function repositionShellAtViewer() {
+        if (typeof dimention.readViewerPose !== 'function') return;
         const pose = dimention.readViewerPose();
-        if (!pose) {
-          // No hay snapshot todavía (sesión recién iniciando). Dejar default.
-          return;
-        }
+        if (!pose) return;
 
-        // Sólo usamos yaw (no pitch ni roll) para que el panel quede vertical
-        // como un cuadro colgado, no se incline si el user mira arriba/abajo.
-        // Forward XZ-plano normalizado a partir de yaw:
-        //   yaw=0 mira -Z, yaw=PI/2 mira -X, etc.
         const fwdX = -Math.sin(pose.yaw);
         const fwdZ = -Math.cos(pose.yaw);
 
-        panel.position = {
-          x: pose.px + fwdX * SHELL_SPAWN_DISTANCE,
-          y: pose.py,                          // altura ojos del user
-          z: pose.pz + fwdZ * SHELL_SPAWN_DISTANCE,
-        };
-        // Rotar panel para que mire al user (yaw del viewer).
-        panel.rotation = { x: 0, y: pose.yaw, z: 0 };
+        // Mover ambos grupos juntos. Como son hijos del mismo space, podríamos
+        // mover el space entero, pero por ahora movemos cada group para que el
+        // commit siguiente pueda darle a focus/anchored una pose distinta.
+        const px = pose.px + fwdX * SHELL_SPAWN_DISTANCE;
+        const py = pose.py;
+        const pz = pose.pz + fwdZ * SHELL_SPAWN_DISTANCE;
+        const ry = pose.yaw;
 
-        // Extras según modo — UX puede especializarse acá.
-        if (pose.mode === 'vr') {
-          // VR: podríamos usar pose.qx..qw para una rotación más fina si
-          // quisiéramos incluir pitch. Por ahora yaw-only feel más estable.
-        } else if (pose.mode === 'desktop') {
-          // Desktop: pose.fovY/aspect disponibles si necesitamos un panel
-          // tipo HUD en screen space. No usado por ahora.
+        if (panel) {
+          panel.position = { x: px, y: py, z: pz };
+          panel.rotation = { x: 0, y: ry, z: 0 };
+        }
+        if (bottomBar) {
+          // Mismo origen — los items dentro usan BAR_Y para offsetear abajo.
+          bottomBar.position = { x: px, y: py, z: pz };
+          bottomBar.rotation = { x: 0, y: ry, z: 0 };
         }
       }
 
-      function setVisibleAndAnimate(v) {
-        const want = !!v;
-        if (want === visible && !animActive) return;
-        visible = want;
+      // ── Toggle shell (menu press del controller) ───────────────────────
+      function toggleShell() {
+        // Si hay focus visible (no minimizado): el shell aparece + focus minimizado.
+        // Igual semántica que click en Menu de la bar.
+        if (shellState.focusApp && !shellState.focusApp.minimized) {
+          shellState.focusApp.minimized = true;
+          shellState.bookmarksVisible = true;
+          repositionShellAtViewer();
+          applyVisibility();
+          startEnterAnimation();
+          return;
+        }
+
+        // Toggle simple del shell.
+        const want = !shellState.bookmarksVisible;
+        shellState.bookmarksVisible = want;
 
         if (want) {
-          repositionPanelAtViewer();
-          if (panel) panel.setAttribute('visible', 'true');
+          repositionShellAtViewer();
+          applyVisibility();
           startEnterAnimation();
         } else {
-          // No ocultamos el panel todavía — tickAnim lo hará tras el exit.
+          // Exit anim de los bookmarks; oculta bar inmediatamente
+          // (la bar no tiene anim de exit propia en commit 2).
+          if (bottomBar) bottomBar.setAttribute('visible', 'false');
           startExitAnimation();
         }
+        console.log('[ux_vr] shell visible=', want);
       }
 
+      // ── Bookmark click ─────────────────────────────────────────────────
       function openBookmark(bm) {
-        if (dimention && dimention.tabs && typeof dimention.tabs.open === 'function') {
-          // kind ∈ {'spatial', 'app'}; default 'spatial' si bookmark no lo declara.
-          dimention.tabs.open(bm.url, { kind: bm.kind || 'spatial' });
-          setVisibleAndAnimate(false);
-        } else {
+        if (!dimention || !dimention.tabs || typeof dimention.tabs.open !== 'function') {
           console.warn('[ux_vr] dimention.tabs unavailable — fallback location.href');
           location.href = bm.url;
+          return;
         }
+        // kind ∈ {'spatial', 'app', futuro 'app-embedded'}.
+        dimention.tabs.open(bm.url, { kind: bm.kind || 'spatial' });
+
+        // Cerrar shell al abrir (estilo Quest home). Commit 3 manejará el caso
+        // app-embedded distinto (no cerrar bookmarks completamente, transicionar
+        // a estado focused).
+        shellState.bookmarksVisible = false;
+        if (bottomBar) bottomBar.setAttribute('visible', 'false');
+        startExitAnimation();
       }
 
       // ── Listener system input ──────────────────────────────────────────
-      // action='shell' → toggle. Fuente: vr_menu | kb_escape.
       root.addEventListener('systeminput', (evt) => {
-        console.log('[ux_vr] systeminput action=', evt.action, 'source=', evt.source);
         if (evt.action === 'shell') {
-          setVisibleAndAnimate(!visible);
+          toggleShell();
         }
       });
 
+      // ── Listener mensajes de apps embedded (commit 3+) ─────────────────
+      // Por ahora sólo log para debug. Cuando exista demo_embedded app,
+      // veremos los requestSlot / closeSelf / ready aparecer acá.
+      if (dimention && dimention.embedded) {
+        // El shell también tiene la API embedded? Sí, porque ux_vr tiene
+        // managed-by=dimension.luna y el shell se pasa todos los grants en
+        // switchMode. Pero NO usamos esa surface para iniciar mensajes:
+        // el shell habla a apps vía ops directas (futuro shell_send_message
+        // al inbox de cada app). Por ahora, prueba.
+      }
+
+      // ── Init ───────────────────────────────────────────────────────────
       buildBookmarks();
-      console.log('[ux_vr] Shell loaded —', BOOKMARKS.length, 'bookmarks. Press menu to toggle.');
+      applyVisibility();
+      console.log('[ux_vr] Shell loaded — bookmarks=', BOOKMARKS.length, '(commit 2: ShellState + bottom bar skeleton)');
     </script>
   </space>
 </hsml>
