@@ -360,7 +360,9 @@
         if (shellState.focusApp.tabId > 0) {
           if (dimention.tabs) dimention.tabs.setVisible(shellState.focusApp.tabId, true);
           sendMessageToApp(shellState.focusApp.tabId, 'focus');
-          sendFocusSlotToApp();
+          // No re-enviamos slot — la app queda en la pose previa, alineada
+          // con el frame del shell. La pose sólo cambia cuando el shell se
+          // mueve (repositionShellAtViewer).
         }
         applyVisibility();
       }
@@ -688,7 +690,6 @@
           shellState.focusApp.tabId = fromTabId;
           buildFocusFrame(shellState.focusApp.title || 'App');
           applyVisibility();
-          // Mandar slot ahora que sabemos quién es.
           sendFocusSlotToApp();
         }
 

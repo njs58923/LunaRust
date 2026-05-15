@@ -68,15 +68,19 @@
         }
 
         e.on('slot', (slot) => {
-          // El shell nos da la pose world donde dibujar. Movemos nuestro
-          // space root a esa pose; el contenido queda centrado en (0,0,0)
-          // local — slot.size define el área dibujable.
+          console.log('[demo_embedded] slot received pos=',
+            slot.position && (slot.position.x + ',' + slot.position.y + ',' + slot.position.z));
           if (slot.position) {
             root.position = {
               x: Number(slot.position.x || 0),
               y: Number(slot.position.y || 0),
               z: Number(slot.position.z || 0),
             };
+            try {
+              const p = root.position;
+              console.log('[demo_embedded] root.position after set =',
+                p && (p.x + ',' + p.y + ',' + p.z));
+            } catch (_) {}
           }
           if (slot.rotation) {
             root.rotation = {

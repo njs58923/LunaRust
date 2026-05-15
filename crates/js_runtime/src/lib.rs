@@ -281,10 +281,6 @@ impl Default for NavigateQueue {
 
 /// chrome.tabs-like requests desde JS. El host valida cap y traduce a
 /// SpaceMountQueue / SpaceUnmountQueue / etc.
-///
-/// El `kind` en `Open` es un string opaco para el engine — la semántica
-/// (cerrar otras spatial, persistir app, etc.) vive en JS (`root_api.js`).
-/// Convenciones: `"spatial"` (default si vacío) | `"app"` | futuro: `"app-embedded"`.
 #[derive(Clone, Debug)]
 pub enum TabAction {
     /// Abre nueva tab cargando url. `kind` opaco — JS shell aplica policy.
@@ -293,6 +289,14 @@ pub enum TabAction {
     Close { tab_id: u64 },
     /// Cambia visibilidad de una tab existente.
     SetVisible { tab_id: u64, visible: bool },
+    /// Setea pose (position + rotation Euler) del outer wrapper de una tab.
+    /// Usado por el shell para posicionar apps embedded directamente,
+    /// sin depender de que la app aplique pose en su isolate (evita race).
+    SetPose {
+        tab_id: u64,
+        px: f32, py: f32, pz: f32,
+        rx: f32, ry: f32, rz: f32,
+    },
 }
 
 pub struct TabActionQueue {
@@ -883,6 +887,21 @@ fn op_tab_set_visible(state: &mut OpState, #[bigint] tab_id: u64, visible: bool)
         .push(TabAction::SetVisible { tab_id, visible });
 }
 
+#[op2(fast)]
+#[allow(clippy::too_many_arguments)]
+fn op_tab_set_pose(
+    state: &mut OpState,
+    #[bigint] tab_id: u64,
+    px: f32, py: f32, pz: f32,
+    rx: f32, ry: f32, rz: f32,
+) {
+    let queue = state.borrow::<TabActionQueue>();
+    queue
+        .queue
+        .borrow_mut()
+        .push(TabAction::SetPose { tab_id, px, py, pz, rx, ry, rz });
+}
+
 // --- Shell ↔ app message bus (cap UX_EMBED para apps; el shell siempre lo tiene) ---
 
 #[op2(fast)]
@@ -1312,6 +1331,7 @@ impl Engine {
                 op_tab_open::decl(),
                 op_tab_close::decl(),
                 op_tab_set_visible::decl(),
+                op_tab_set_pose::decl(),
                 op_read_viewer_pose::decl(),
                 op_shell_send_message::decl(),
                 op_shell_poll_messages::decl(),

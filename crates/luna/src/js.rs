@@ -482,10 +482,16 @@ fn sync_space_handle_table(table: &mut SpaceHandleTable, space_id: u32, allowed:
     table.detached_globals.remove(&space_id);
 
     let allowed_globals: HashSet<u32> = allowed.iter().map(|node_id| *node_id as u32).collect();
-    let retained_globals: HashSet<u32> = allowed_globals
+    let mut retained_globals: HashSet<u32> = allowed_globals
         .union(&table.detached_globals)
         .copied()
         .collect();
+    // El space root del isolate (`local 0 → global space_id`) SIEMPRE debe
+    // sobrevivir. Si el space global aún no está en `dom_data.nodes` (porque
+    // se acaba de crear async), el retain lo borraría — rompiendo el primer
+    // `op_hsml_set_position` del worker. Esto se manifestaba como apps
+    // embedded apareciendo en (0,0,0) la primera vez.
+    retained_globals.insert(space_id);
 
     table
         .global_to_local
@@ -1332,10 +1338,18 @@ pub fn js_tick_system(world: &mut World) {
             for (local_id, pos) in updates {
                 if let Some(global_id) = resolve_global_id(&space_handle_tables, space_id, local_id)
                 {
+                    // Log temporal sólo para writes al root del isolate (local 0).
+                    if local_id == 0 {
+                        ownership_logs.push(format!(
+                            "[JS][space:{space_id}] pos local=0 → global={global_id} ({:.2},{:.2},{:.2})",
+                            pos.x, pos.y, pos.z
+                        ));
+                    }
                     validated_positions.push((global_id, pos));
                 } else {
                     ownership_logs.push(format!(
-                        "[JS][space:{space_id}] Blocked invalid local position write: local_id={local_id}"
+                        "[JS][space:{space_id}] Blocked invalid local position write: local_id={local_id} pos=({:.2},{:.2},{:.2})",
+                        pos.x, pos.y, pos.z
                     ));
                 }
             }
@@ -1966,6 +1980,7 @@ pub fn js_tick_system(world: &mut World) {
         let mut open_requests: Vec<(u32, String, String)> = Vec::new(); // (space_id, url, kind)
         let mut close_requests: Vec<(u32, u64)> = Vec::new();
         let mut visibility_requests: Vec<(u32, u64, bool)> = Vec::new();
+        let mut pose_requests: Vec<(u32, u64, [f32; 6])> = Vec::new(); // (space, tab, [px,py,pz,rx,ry,rz])
 
         for (space_id, actions) in tab_action_batches {
             for action in actions {
@@ -2018,6 +2033,22 @@ pub fn js_tick_system(world: &mut World) {
                             ));
                         }
                     }
+                    js_runtime::TabAction::SetPose { tab_id, px, py, pz, rx, ry, rz } => {
+                        let caps = capabilities_by_space
+                            .get(&space_id)
+                            .copied()
+                            .unwrap_or_default();
+                        if caps.contains(CapabilityBits::UPDATE_ROOT_SPACE) {
+                            pose_requests.push((space_id, tab_id, [px, py, pz, rx, ry, rz]));
+                        } else if let Some(mut log_panel) =
+                            world.get_resource_mut::<LogPanel>()
+                        {
+                            log_panel.push_warn(format!(
+                                "[JS][space:{}] tabs.setPose denied (missing UPDATE_ROOT_SPACE)",
+                                space_id
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -2062,12 +2093,10 @@ pub fn js_tick_system(world: &mut World) {
             }
         }
 
-        // tabs.setVisible — reenvía al root worker que aplica visible al
-        // outer wrapper del tab via dimension.luna.setSpaceVisibleByTabId.
-        // Con Visibility::Inherited en los hijos, el cambio propaga a todo
-        // el subárbol del tab (incluido el inner space cargado por include).
-        if !visibility_requests.is_empty() {
-            // Buscar root worker.
+        // tabs.setVisible / tabs.setPose — reenvía al root worker que aplica
+        // el cambio al outer wrapper del tab via root_api. Con Visibility::Inherited
+        // en los hijos, el cambio propaga a todo el subárbol del tab.
+        if !visibility_requests.is_empty() || !pose_requests.is_empty() {
             let root_worker_id: Option<u32> = {
                 let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
                     return;
@@ -2081,6 +2110,19 @@ pub fn js_tick_system(world: &mut World) {
                 if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() {
                     if let Some(worker) = manager.contexts.get(&root_id) {
                         if worker.root_api_sent {
+                            // Pose primero, después visibility. Garantiza que
+                            // un pattern típico `setPose + setVisible(true)` aplique
+                            // pose antes de mostrar — sin frame visible en (0,0,0).
+                            for (_sender_space_id, tab_id, p) in pose_requests {
+                                let code = format!(
+                                    "dimension.luna.setSpacePoseByTabId({}, {{x:{},y:{},z:{}}}, {{x:{},y:{},z:{}}});",
+                                    tab_id, p[0], p[1], p[2], p[3], p[4], p[5]
+                                );
+                                let _ = worker.cmd_tx.send(JsWorkerCommand::EvalScript {
+                                    url: format!("eval://setPose/{}", tab_id),
+                                    code,
+                                });
+                            }
                             for (_sender_space_id, tab_id, visible) in visibility_requests {
                                 let code = format!(
                                     "dimension.luna.setSpaceVisibleByTabId({}, {});",

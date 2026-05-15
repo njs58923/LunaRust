@@ -41,6 +41,17 @@
     setVisible(tabId, visible) {
       ops.op_tab_set_visible(BigInt(tabId), !!visible);
     },
+    // Setea position + rotation (Euler) del outer wrapper de una tab.
+    // Sólo el shell debería usarlo (gates en host por UPDATE_ROOT_SPACE).
+    setPose(tabId, position, rotation) {
+      const p = position || {};
+      const r = rotation || {};
+      ops.op_tab_set_pose(
+        BigInt(tabId),
+        Number(p.x || 0), Number(p.y || 0), Number(p.z || 0),
+        Number(r.x || 0), Number(r.y || 0), Number(r.z || 0),
+      );
+    },
     // TODO(tabs-list): expone una snapshot consultable. Hoy no implementado.
     list() {
       console.warn('[tabs] list() not yet implemented');

@@ -210,12 +210,14 @@
         }
       }
 
+      const initialVisible = options.visible !== false;
+
       const space = root.createElement('space');
       const publicId = registerSpace(space, kind);
       const entry = registry.get(publicId);
       if (!entry) return -1;
 
-      space.setAttribute('visible', options.visible === false ? 'false' : 'true');
+      space.setAttribute('visible', initialVisible ? 'true' : 'false');
       space.setAttribute('managed-by', 'dimension.luna');
       space.setAttribute('data-luna-kind', kind);
       if (options.systemShell) {
@@ -265,6 +267,23 @@
         }
       }
       console.warn('[root] setSpaceVisibleByTabId: tab_id=' + tabId + ' not found');
+      return false;
+    },
+
+    /// Setea pose del outer wrapper de una tab. Aplicado directamente acá
+    /// (no depende de que la app aplique pose en su isolate — evita race).
+    setSpacePoseByTabId(tabId, position, rotation) {
+      discoverDirectSpaces();
+      cleanupRegistry();
+      const tidStr = String(tabId);
+      for (const [pid, entry] of registry) {
+        if (entry.space.getAttribute('data-luna-tab-id') === tidStr) {
+          if (position) entry.space.position = cloneVec3(position, { x: 0, y: 0, z: 0 });
+          if (rotation) entry.space.rotation = cloneVec3(rotation, { x: 0, y: 0, z: 0 });
+          return true;
+        }
+      }
+      console.warn('[root] setSpacePoseByTabId: tab_id=' + tabId + ' not found');
       return false;
     },
 
