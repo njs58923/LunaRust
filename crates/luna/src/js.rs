@@ -745,9 +745,9 @@ pub fn js_update_snapshots_system(world: &mut World) {
     }
 
     let attached_node_ids: HashSet<u32> = world
-    .get_resource::<VirtualDomData>()
-    .map(|dom| dom.nodes.keys().copied().collect())
-    .unwrap_or_default();
+        .get_resource::<VirtualDomData>()
+        .map(|dom| dom.nodes.keys().copied().collect())
+        .unwrap_or_default();
 
     let (
         attr_snap,
@@ -755,7 +755,6 @@ pub fn js_update_snapshots_system(world: &mut World) {
         positions,
         rotations,
         scales,
-        global_positions,
         parents,
         children_map,
         space_subtrees,
@@ -792,7 +791,6 @@ pub fn js_update_snapshots_system(world: &mut World) {
         let mut positions = HashMap::new();
         let mut rotations = HashMap::new();
         let mut scales = HashMap::new();
-        let mut global_positions = HashMap::new();
         for (ent, tr) in (&entities, &transforms_storage).join() {
             if !attached_node_ids.contains(&ent.id()) {
                 continue;
@@ -820,14 +818,6 @@ pub fn js_update_snapshots_system(world: &mut World) {
                     x: tr.scale.x,
                     y: tr.scale.y,
                     z: tr.scale.z,
-                },
-            );
-            global_positions.insert(
-                ent.id() as i32,
-                Vec3 {
-                    x: tr.position.x,
-                    y: tr.position.y,
-                    z: tr.position.z,
                 },
             );
         }
@@ -875,7 +865,6 @@ pub fn js_update_snapshots_system(world: &mut World) {
             positions,
             rotations,
             scales,
-            global_positions,
             parents,
             children_map,
             space_subtrees,
@@ -952,7 +941,7 @@ pub fn js_update_snapshots_system(world: &mut World) {
                 &positions,
                 &rotations,
                 &scales,
-                &global_positions,
+                &positions,
                 &parents,
                 &children_map,
             );
@@ -967,14 +956,14 @@ pub fn js_update_snapshots_system(world: &mut World) {
             return;
         };
         let mut broken_contexts = Vec::new();
+        // Sin gate `snapshot_in_flight`: workers idle (needs_tick=false) no
+        // mandan TickData, así que el flag se quedaba en `true` para siempre
+        // y ataba `keep_dirty=true`. Channel mpsc unbounded; worker reemplaza
+        // estado al recibir, no necesita ack.
         for (space_id, snap) in snapshot_batches {
             let Some(worker) = manager.contexts.get_mut(&space_id) else {
                 continue;
             };
-            if worker.snapshot_in_flight {
-                all_snapshots_sent = false;
-                continue;
-            }
             if let Err(e) = worker.cmd_tx.send(JsWorkerCommand::UpdateSnapshots(snap)) {
                 errors.push(format!(
                     "failed to send snapshots to space {}: {}",
