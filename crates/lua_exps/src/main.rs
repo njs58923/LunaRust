@@ -1,18 +1,22 @@
 mod scenes;
 
+use bevy::asset::AssetPlugin;
 use bevy::prelude::*;
 use mlua::Lua;
 use scenes::ScenesPlugin;
 
 #[derive(Resource)]
-struct LuaVm(Lua);
+pub struct LuaVm(pub Lua);
 
 #[derive(Resource, Default)]
 struct Frame(u64);
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(AssetPlugin {
+            file_path: "src/resources".into(),
+            ..default()
+        }))
         .add_plugins(ScenesPlugin)
         .insert_resource(LuaVm(Lua::new()))
         .insert_resource(Frame::default())

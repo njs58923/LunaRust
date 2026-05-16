@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 pub mod default_scene;
+pub mod lua_rock;
 pub mod spinning_cube;
 
 #[derive(States, Debug, Clone, Eq, PartialEq, Hash, Default)]
@@ -8,15 +9,21 @@ pub enum SceneId {
     #[default]
     Default,
     SpinningCube,
+    LuaRock,
 }
 
 impl SceneId {
-    pub const ALL: &'static [SceneId] = &[SceneId::Default, SceneId::SpinningCube];
+    pub const ALL: &'static [SceneId] = &[
+        SceneId::Default,
+        SceneId::SpinningCube,
+        SceneId::LuaRock,
+    ];
 
     pub fn label(&self) -> &'static str {
         match self {
             SceneId::Default => "1. Default",
             SceneId::SpinningCube => "2. Spinning Cube",
+            SceneId::LuaRock => "3. Lua Rock",
         }
     }
 }
@@ -29,15 +36,25 @@ pub struct ScenesPlugin;
 impl Plugin for ScenesPlugin {
     fn build(&self, app: &mut App) {
         app.init_state::<SceneId>()
+            .init_resource::<lua_rock::RockState>()
+            .init_resource::<lua_rock::RockCache>()
             .add_systems(Startup, spawn_hud)
             .add_systems(Update, (scene_selector, update_hud))
             .add_systems(OnExit(SceneId::Default), despawn_scene)
             .add_systems(OnExit(SceneId::SpinningCube), despawn_scene)
+            .add_systems(OnExit(SceneId::LuaRock), despawn_scene)
             .add_systems(OnEnter(SceneId::Default), default_scene::setup)
             .add_systems(OnEnter(SceneId::SpinningCube), spinning_cube::setup)
+            .add_systems(OnEnter(SceneId::LuaRock), lua_rock::setup)
             .add_systems(
                 Update,
                 spinning_cube::rotate.run_if(in_state(SceneId::SpinningCube)),
+            )
+            .add_systems(
+                Update,
+                (lua_rock::input, lua_rock::regenerate, lua_rock::update_hud)
+                    .chain()
+                    .run_if(in_state(SceneId::LuaRock)),
             );
     }
 }
@@ -57,6 +74,8 @@ fn scene_selector(
         Some(SceneId::Default)
     } else if keys.just_pressed(KeyCode::Digit2) {
         Some(SceneId::SpinningCube)
+    } else if keys.just_pressed(KeyCode::Digit3) {
+        Some(SceneId::LuaRock)
     } else {
         None
     };
@@ -94,7 +113,7 @@ fn update_hud(state: Res<State<SceneId>>, mut q: Query<&mut Text, With<HudText>>
     let Ok(mut text) = q.get_single_mut() else {
         return;
     };
-    let mut s = String::from("Scenes (press 1-2):\n");
+    let mut s = String::from("Scenes (press 1-3):\n");
     for id in SceneId::ALL {
         let marker = if id == state.get() { "> " } else { "  " };
         s.push_str(&format!("{}{}\n", marker, id.label()));
