@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use std::time::Instant;
 
-use super::lua_rock::{build_mesh_for_seed, cache_key, ROCK_SCRIPT, RockCache};
+use super::lua_rock::{build_mesh_with, cache_key, ROCK_SCRIPT, RockCache};
 use super::SceneRoot;
 use crate::LuaVm;
 
@@ -140,6 +140,10 @@ pub fn regenerate(
     let Some(material) = material else { return };
 
     cache.ensure_loaded(&lua.0);
+    let Some(gen) = cache.gen_fn().cloned() else {
+        state.dirty = false;
+        return;
+    };
 
     for e in &q_old {
         commands.entity(e).despawn_recursive();
@@ -158,7 +162,7 @@ pub fn regenerate(
             cache.hits += 1;
             h
         } else {
-            match build_mesh_for_seed(&lua.0, seed) {
+            match build_mesh_with(&gen, seed) {
                 Ok(mesh) => {
                     let h = meshes.add(mesh);
                     cache.insert(key, h.clone());

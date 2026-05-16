@@ -1,5 +1,7 @@
 -- rock_generator.lua
 -- Genera un mesh de roca deterministico a partir de un seed.
+-- Devuelve arrays planos para evitar overhead FFI: vertices = {x,y,z, x,y,z, ...},
+-- faces = {a,b,c, a,b,c, ...} (1-indexed).
 
 local function make_rng(seed)
   local state = seed % 2147483648
@@ -17,52 +19,7 @@ local function make_rng(seed)
   }
 end
 
-local function sphere_points(rings, slices, radius)
-  local verts = {}
-  for i = 0, rings do
-    local phi = math.pi * i / rings
-    for j = 0, slices - 1 do
-      local theta = 2 * math.pi * j / slices
-      verts[#verts + 1] = {
-        x = radius * math.sin(phi) * math.cos(theta),
-        y = radius * math.cos(phi),
-        z = radius * math.sin(phi) * math.sin(theta),
-      }
-    end
-  end
-  return verts
-end
-
-local function displace_verts(verts, rng, options)
-  local amplitude  = options.amplitude  or 0.3
-  local flatness_y = options.flatness_y or 1.0
-  local scale_xz   = options.scale_xz   or 1.0
-  for _, v in ipairs(verts) do
-    local disp = rng:range(-amplitude, amplitude)
-    local len  = math.sqrt(v.x^2 + v.y^2 + v.z^2)
-    if len > 0 then
-      v.x = (v.x + v.x / len * disp) * scale_xz
-      v.y = (v.y + v.y / len * disp) * flatness_y
-      v.z = (v.z + v.z / len * disp) * scale_xz
-    end
-  end
-  return verts
-end
-
-local function build_faces(rings, slices)
-  local faces = {}
-  for i = 0, rings - 1 do
-    for j = 0, slices - 1 do
-      local a = i * slices + j + 1
-      local b = i * slices + (j + 1) % slices + 1
-      local c = (i + 1) * slices + j + 1
-      local d = (i + 1) * slices + (j + 1) % slices + 1
-      faces[#faces + 1] = { a, b, c }
-      faces[#faces + 1] = { b, d, c }
-    end
-  end
-  return faces
-end
+local sin, cos, sqrt, pi = math.sin, math.cos, math.sqrt, math.pi
 
 local function generate_rock(seed, options)
   options = options or {}
@@ -73,13 +30,50 @@ local function generate_rock(seed, options)
   local amplitude = options.amplitude or rng:range(0.15, 0.4)
   local flatness  = options.flatness  or rng:range(0.5, 1.0)
   local scale_xz  = options.scale_xz  or rng:range(0.8, 1.2)
-  local verts = sphere_points(rings, slices, radius)
-  displace_verts(verts, rng, {
-    amplitude  = amplitude,
-    flatness_y = flatness,
-    scale_xz   = scale_xz,
-  })
-  local faces = build_faces(rings, slices)
+
+  local verts = {}
+  local n = 0
+  for i = 0, rings do
+    local phi = pi * i / rings
+    local sphi = sin(phi)
+    local cphi = cos(phi)
+    for j = 0, slices - 1 do
+      local theta = 2 * pi * j / slices
+      local x = radius * sphi * cos(theta)
+      local y = radius * cphi
+      local z = radius * sphi * sin(theta)
+      local disp = rng:range(-amplitude, amplitude)
+      local len = sqrt(x * x + y * y + z * z)
+      if len > 0 then
+        x = (x + x / len * disp) * scale_xz
+        y = (y + y / len * disp) * flatness
+        z = (z + z / len * disp) * scale_xz
+      end
+      verts[n * 3 + 1] = x
+      verts[n * 3 + 2] = y
+      verts[n * 3 + 3] = z
+      n = n + 1
+    end
+  end
+
+  local faces = {}
+  local f = 0
+  for i = 0, rings - 1 do
+    for j = 0, slices - 1 do
+      local a = i * slices + j + 1
+      local b = i * slices + (j + 1) % slices + 1
+      local c = (i + 1) * slices + j + 1
+      local d = (i + 1) * slices + (j + 1) % slices + 1
+      faces[f + 1] = a
+      faces[f + 2] = b
+      faces[f + 3] = c
+      faces[f + 4] = b
+      faces[f + 5] = d
+      faces[f + 6] = c
+      f = f + 6
+    end
+  end
+
   return {
     vertices = verts,
     faces = faces,

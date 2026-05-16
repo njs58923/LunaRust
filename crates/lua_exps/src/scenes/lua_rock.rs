@@ -26,6 +26,7 @@ impl Default for RockState {
 pub struct RockCache {
     meshes: HashMap<u64, Handle<Mesh>>,
     script_loaded: bool,
+    generate_fn: Option<Function>,
     pub hits: u32,
     pub misses: u32,
 }
@@ -39,7 +40,18 @@ impl RockCache {
             error!("rock script load failed: {e}");
             return;
         }
+        match lua.globals().get::<Function>("generate_rock") {
+            Ok(f) => self.generate_fn = Some(f),
+            Err(e) => {
+                error!("generate_rock not found after load: {e}");
+                return;
+            }
+        }
         self.script_loaded = true;
+    }
+
+    pub fn gen_fn(&self) -> Option<&Function> {
+        self.generate_fn.as_ref()
     }
 
     pub fn get(&self, key: &u64) -> Option<Handle<Mesh>> {
@@ -173,6 +185,10 @@ pub fn regenerate(
     let Some(material) = material else { return };
 
     cache.ensure_loaded(&lua.0);
+    let Some(gen) = cache.gen_fn().cloned() else {
+        state.dirty = false;
+        return;
+    };
 
     for e in &q_old {
         commands.entity(e).despawn_recursive();
@@ -184,7 +200,7 @@ pub fn regenerate(
         info!("rock cache HIT seed={} (cache={})", state.seed, cache.len());
         h
     } else {
-        match build_mesh_for_seed(&lua.0, state.seed) {
+        match build_mesh_with(&gen, state.seed) {
             Ok(mesh) => {
                 let h = meshes.add(mesh);
                 cache.insert(key, h.clone());
@@ -234,29 +250,17 @@ pub fn update_hud(
     );
 }
 
-pub fn build_mesh_for_seed(lua: &mlua::Lua, seed: i64) -> mlua::Result<Mesh> {
-    let gen: Function = lua.globals().get("generate_rock")?;
+pub fn build_mesh_with(gen: &Function, seed: i64) -> mlua::Result<Mesh> {
     let rock: Table = gen.call((seed, mlua::Value::Nil))?;
-    let verts_tbl: Table = rock.get("vertices")?;
-    let faces_tbl: Table = rock.get("faces")?;
+    let verts_flat: Vec<f32> = rock.get("vertices")?;
+    let faces_flat: Vec<u32> = rock.get("faces")?;
 
-    let mut positions: Vec<[f32; 3]> = Vec::new();
-    for v in verts_tbl.sequence_values::<Table>() {
-        let v = v?;
-        let x: f32 = v.get("x")?;
-        let y: f32 = v.get("y")?;
-        let z: f32 = v.get("z")?;
-        positions.push([x, y, z]);
-    }
+    let positions: Vec<[f32; 3]> = verts_flat
+        .chunks_exact(3)
+        .map(|c| [c[0], c[1], c[2]])
+        .collect();
 
-    let mut indices: Vec<u32> = Vec::new();
-    for f in faces_tbl.sequence_values::<Table>() {
-        let f = f?;
-        let a: u32 = f.get(1)?;
-        let b: u32 = f.get(2)?;
-        let c: u32 = f.get(3)?;
-        indices.extend_from_slice(&[a - 1, b - 1, c - 1]);
-    }
+    let indices: Vec<u32> = faces_flat.iter().map(|&i| i - 1).collect();
 
     let mut normals: Vec<[f32; 3]> = vec![[0.0; 3]; positions.len()];
     for tri in indices.chunks_exact(3) {
