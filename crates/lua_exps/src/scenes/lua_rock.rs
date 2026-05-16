@@ -8,7 +8,7 @@ use std::hash::{Hash, Hasher};
 use super::SceneRoot;
 use crate::LuaVm;
 
-const ROCK_SCRIPT: &str = include_str!("../lua/rock_generator.lua");
+pub const ROCK_SCRIPT: &str = include_str!("../lua/rock_generator.lua");
 
 #[derive(Resource)]
 pub struct RockState {
@@ -26,8 +26,39 @@ impl Default for RockState {
 pub struct RockCache {
     meshes: HashMap<u64, Handle<Mesh>>,
     script_loaded: bool,
-    last_hits: u32,
-    last_misses: u32,
+    pub hits: u32,
+    pub misses: u32,
+}
+
+impl RockCache {
+    pub fn ensure_loaded(&mut self, lua: &mlua::Lua) {
+        if self.script_loaded {
+            return;
+        }
+        if let Err(e) = lua.load(ROCK_SCRIPT).exec() {
+            error!("rock script load failed: {e}");
+            return;
+        }
+        self.script_loaded = true;
+    }
+
+    pub fn get(&self, key: &u64) -> Option<Handle<Mesh>> {
+        self.meshes.get(key).cloned()
+    }
+
+    pub fn insert(&mut self, key: u64, h: Handle<Mesh>) {
+        self.meshes.insert(key, h);
+    }
+
+    pub fn len(&self) -> usize {
+        self.meshes.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.meshes.clear();
+        self.hits = 0;
+        self.misses = 0;
+    }
 }
 
 #[derive(Resource)]
@@ -39,7 +70,7 @@ pub struct RockEntity;
 #[derive(Component)]
 pub struct RockHud;
 
-fn cache_key(seed: i64, script: &str) -> u64 {
+pub fn cache_key(seed: i64, script: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     seed.hash(&mut h);
     script.hash(&mut h);
@@ -141,38 +172,24 @@ pub fn regenerate(
     }
     let Some(material) = material else { return };
 
-    if !cache.script_loaded {
-        if let Err(e) = lua.0.load(ROCK_SCRIPT).exec() {
-            error!("rock script load failed: {e}");
-            return;
-        }
-        cache.script_loaded = true;
-    }
+    cache.ensure_loaded(&lua.0);
 
     for e in &q_old {
         commands.entity(e).despawn_recursive();
     }
 
     let key = cache_key(state.seed, ROCK_SCRIPT);
-    let mesh_handle = if let Some(h) = cache.meshes.get(&key).cloned() {
-        cache.last_hits += 1;
-        info!(
-            "rock cache HIT seed={} (cache size={})",
-            state.seed,
-            cache.meshes.len()
-        );
+    let mesh_handle = if let Some(h) = cache.get(&key) {
+        cache.hits += 1;
+        info!("rock cache HIT seed={} (cache={})", state.seed, cache.len());
         h
     } else {
-        match build_mesh(&lua.0, state.seed) {
+        match build_mesh_for_seed(&lua.0, state.seed) {
             Ok(mesh) => {
                 let h = meshes.add(mesh);
-                cache.meshes.insert(key, h.clone());
-                cache.last_misses += 1;
-                info!(
-                    "rock cache MISS seed={} (cache size={})",
-                    state.seed,
-                    cache.meshes.len()
-                );
+                cache.insert(key, h.clone());
+                cache.misses += 1;
+                info!("rock cache MISS seed={} (cache={})", state.seed, cache.len());
                 h
             }
             Err(e) => {
@@ -211,13 +228,13 @@ pub fn update_hud(
     text.sections[0].value = format!(
         "Lua Rock\n  seed={}  cache={}  hits={}  misses={}\n  [ / ] -+1 seed   R random",
         state.seed,
-        cache.meshes.len(),
-        cache.last_hits,
-        cache.last_misses,
+        cache.len(),
+        cache.hits,
+        cache.misses,
     );
 }
 
-fn build_mesh(lua: &mlua::Lua, seed: i64) -> mlua::Result<Mesh> {
+pub fn build_mesh_for_seed(lua: &mlua::Lua, seed: i64) -> mlua::Result<Mesh> {
     let gen: Function = lua.globals().get("generate_rock")?;
     let rock: Table = gen.call((seed, mlua::Value::Nil))?;
     let verts_tbl: Table = rock.get("vertices")?;
@@ -279,4 +296,3 @@ fn build_mesh(lua: &mlua::Lua, seed: i64) -> mlua::Result<Mesh> {
     mesh.insert_indices(Indices::U32(indices));
     Ok(mesh)
 }
-
