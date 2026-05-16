@@ -1,0 +1,18 @@
+[package]
+name = "lua_exps"
+version.workspace = true
+edition.workspace = true
+description = "Bevy + Lua experiments"
+
+[[bin]]
+name = "lua_exps"
+path = "src/main.rs"
+
+[dependencies]
+bevy = { workspace = true, default-features = true }
+mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
+anyhow = "1.0"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"

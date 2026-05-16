@@ -13,6 +13,7 @@ members = [
 	"crates/bevy_xr",
 	"crates/bevy_xr_utils",
 	"crates/js_runtime",
+	"crates/lua_exps",
 	"crates/luna",
 	"crates/rust_exps",
 	"crates/virtual_dom",
