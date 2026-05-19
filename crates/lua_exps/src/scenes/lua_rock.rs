@@ -27,7 +27,6 @@ pub struct RockCache {
     meshes: HashMap<u64, Handle<Mesh>>,
     script_loaded: bool,
     generate_fn: Option<Function>,
-    generate_batch_fn: Option<Function>,
     pub hits: u32,
     pub misses: u32,
 }
@@ -41,18 +40,10 @@ impl RockCache {
             error!("rock script load failed: {e}");
             return;
         }
-        let globals = lua.globals();
-        match globals.get::<Function>("generate") {
+        match lua.globals().get::<Function>("generate") {
             Ok(f) => self.generate_fn = Some(f),
             Err(e) => {
                 error!("`generate` not found after load: {e}");
-                return;
-            }
-        }
-        match globals.get::<Function>("generate_batch") {
-            Ok(f) => self.generate_batch_fn = Some(f),
-            Err(e) => {
-                error!("`generate_batch` not found after load: {e}");
                 return;
             }
         }
@@ -61,10 +52,6 @@ impl RockCache {
 
     pub fn gen_fn(&self) -> Option<&Function> {
         self.generate_fn.as_ref()
-    }
-
-    pub fn gen_batch_fn(&self) -> Option<&Function> {
-        self.generate_batch_fn.as_ref()
     }
 
     pub fn get(&self, key: &u64) -> Option<Handle<Mesh>> {
@@ -280,29 +267,12 @@ pub fn build_mesh_with(gen: &Function, seed: i64) -> mlua::Result<Mesh> {
     Ok(build_mesh_from_slices(&verts_flat, &faces_flat))
 }
 
-pub fn build_meshes_batch(
-    gen_batch: &Function,
-    seeds: &[i64],
-) -> mlua::Result<Vec<Mesh>> {
-    let result: Table = gen_batch.call((seeds.to_vec(), mlua::Value::Nil))?;
-    let vertices: Vec<f32> = result.get("vertices")?;
-    let faces: Vec<u32> = result.get("faces")?;
-    let v_counts: Vec<u32> = result.get("vertex_counts")?;
-    let f_counts: Vec<u32> = result.get("face_counts")?;
-
-    let mut meshes = Vec::with_capacity(seeds.len());
-    let mut v_off: usize = 0;
-    let mut f_off: usize = 0;
-    for i in 0..seeds.len() {
-        let vc = v_counts[i] as usize;
-        let fc = f_counts[i] as usize;
-        let v_slice = &vertices[v_off * 3..(v_off + vc) * 3];
-        let f_slice = &faces[f_off * 3..(f_off + fc) * 3];
-        meshes.push(build_mesh_from_slices(v_slice, f_slice));
-        v_off += vc;
-        f_off += fc;
-    }
-    Ok(meshes)
+/// Re-ejecuta el script y vuelve a obtener `generate` de globals antes de
+/// construir el mesh. Simula el caso de cargar un script distinto cada vez.
+pub fn build_mesh_fresh(lua: &mlua::Lua, seed: i64) -> mlua::Result<Mesh> {
+    lua.load(ROCK_SCRIPT).exec()?;
+    let gen: Function = lua.globals().get("generate")?;
+    build_mesh_with(&gen, seed)
 }
 
 pub fn build_mesh_from_slices(verts_flat: &[f32], faces_flat: &[u32]) -> Mesh {
