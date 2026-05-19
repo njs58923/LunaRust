@@ -28,12 +28,44 @@ fn find_cargo_root() -> Option<PathBuf> {
     None
 }
 
+/// Resolves the canonical assets directory as an absolute path.
+///
+/// CWD-relative `assets` breaks when launching the binary directly from
+/// `target/{debug,release}/luna.exe` — CWD becomes `target/release/` and
+/// Bevy reads/writes a fresh empty `target/release/assets/`, missing the
+/// `fonts/` and pre-populated `cache/` that live in `crates/luna/assets/`.
+///
+/// Candidates (first hit wins):
+/// 1. `<exe_dir>/assets` if it contains `fonts/` (shipping layout)
+/// 2. `<cargo_root>/crates/luna/assets` if it contains `fonts/` (dev layout)
+/// 3. `<cwd>/assets` (final fallback, created on demand)
+pub fn resolve_assets_dir() -> PathBuf {
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("assets");
+            if candidate.join("fonts").is_dir() {
+                return candidate;
+            }
+        }
+    }
+
+    if let Some(root) = find_cargo_root() {
+        let candidate = root.join("crates").join("luna").join("assets");
+        if candidate.join("fonts").is_dir() {
+            return candidate;
+        }
+    }
+
+    env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("assets")
+}
+
 /// Returns:
-/// - `assets_dir`: Bevy asset root (CWD-relative, matches `AssetPlugin.file_path = "assets"`)
+/// - `assets_dir`: Bevy asset root (absolute, matches `AssetPlugin.file_path`)
 /// - `cache_dir`:  `assets/cache` for downloaded files
 pub fn resolve_assets_and_cache_dirs() -> (PathBuf, PathBuf) {
-    let base = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let assets_dir = base.join("assets");
+    let assets_dir = resolve_assets_dir();
     let cache_dir = assets_dir.join("cache");
     (assets_dir, cache_dir)
 }

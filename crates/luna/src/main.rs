@@ -44,9 +44,12 @@ fn main() {
         root_config.preferred_render_mode == PreferredRenderMode::Vr
     };
 
+    let assets_dir = luna::utils::folder::resolve_assets_dir();
+    println!("Assets dir: {}", assets_dir.display());
+
     let default_plugins = DefaultPlugins
         .set(AssetPlugin {
-            file_path: "assets".into(),
+            file_path: assets_dir.to_string_lossy().into_owned(),
             watch_for_changes_override: Some(false),
             ..Default::default()
         })
