@@ -27,6 +27,7 @@ pub struct RockCache {
     meshes: HashMap<u64, Handle<Mesh>>,
     script_loaded: bool,
     generate_fn: Option<Function>,
+    generate_batch_fn: Option<Function>,
     pub hits: u32,
     pub misses: u32,
 }
@@ -40,10 +41,18 @@ impl RockCache {
             error!("rock script load failed: {e}");
             return;
         }
-        match lua.globals().get::<Function>("generate_rock") {
+        let globals = lua.globals();
+        match globals.get::<Function>("generate") {
             Ok(f) => self.generate_fn = Some(f),
             Err(e) => {
-                error!("generate_rock not found after load: {e}");
+                error!("`generate` not found after load: {e}");
+                return;
+            }
+        }
+        match globals.get::<Function>("generate_batch") {
+            Ok(f) => self.generate_batch_fn = Some(f),
+            Err(e) => {
+                error!("`generate_batch` not found after load: {e}");
                 return;
             }
         }
@@ -52,6 +61,10 @@ impl RockCache {
 
     pub fn gen_fn(&self) -> Option<&Function> {
         self.generate_fn.as_ref()
+    }
+
+    pub fn gen_batch_fn(&self) -> Option<&Function> {
+        self.generate_batch_fn.as_ref()
     }
 
     pub fn get(&self, key: &u64) -> Option<Handle<Mesh>> {
@@ -125,24 +138,34 @@ pub fn setup(
             });
         });
 
-    commands.spawn((
-        TextBundle::from_section(
-            "",
-            TextStyle {
-                font_size: 18.0,
-                color: Color::srgb(0.9, 0.9, 0.5),
+    commands
+        .spawn((
+            NodeBundle {
+                style: Style {
+                    position_type: PositionType::Absolute,
+                    bottom: Val::Px(8.0),
+                    left: Val::Px(8.0),
+                    padding: UiRect::all(Val::Px(8.0)),
+                    ..default()
+                },
+                background_color: Color::srgba(0.0, 0.0, 0.0, 0.65).into(),
                 ..default()
             },
-        )
-        .with_style(Style {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(8.0),
-            left: Val::Px(8.0),
-            ..default()
-        }),
-        RockHud,
-        SceneRoot,
-    ));
+            SceneRoot,
+        ))
+        .with_children(|p| {
+            p.spawn((
+                TextBundle::from_section(
+                    "",
+                    TextStyle {
+                        font_size: 20.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ),
+                RockHud,
+            ));
+        });
 }
 
 pub fn input(keys: Res<ButtonInput<KeyCode>>, mut state: ResMut<RockState>) {
@@ -254,7 +277,35 @@ pub fn build_mesh_with(gen: &Function, seed: i64) -> mlua::Result<Mesh> {
     let rock: Table = gen.call((seed, mlua::Value::Nil))?;
     let verts_flat: Vec<f32> = rock.get("vertices")?;
     let faces_flat: Vec<u32> = rock.get("faces")?;
+    Ok(build_mesh_from_slices(&verts_flat, &faces_flat))
+}
 
+pub fn build_meshes_batch(
+    gen_batch: &Function,
+    seeds: &[i64],
+) -> mlua::Result<Vec<Mesh>> {
+    let result: Table = gen_batch.call((seeds.to_vec(), mlua::Value::Nil))?;
+    let vertices: Vec<f32> = result.get("vertices")?;
+    let faces: Vec<u32> = result.get("faces")?;
+    let v_counts: Vec<u32> = result.get("vertex_counts")?;
+    let f_counts: Vec<u32> = result.get("face_counts")?;
+
+    let mut meshes = Vec::with_capacity(seeds.len());
+    let mut v_off: usize = 0;
+    let mut f_off: usize = 0;
+    for i in 0..seeds.len() {
+        let vc = v_counts[i] as usize;
+        let fc = f_counts[i] as usize;
+        let v_slice = &vertices[v_off * 3..(v_off + vc) * 3];
+        let f_slice = &faces[f_off * 3..(f_off + fc) * 3];
+        meshes.push(build_mesh_from_slices(v_slice, f_slice));
+        v_off += vc;
+        f_off += fc;
+    }
+    Ok(meshes)
+}
+
+pub fn build_mesh_from_slices(verts_flat: &[f32], faces_flat: &[u32]) -> Mesh {
     let positions: Vec<[f32; 3]> = verts_flat
         .chunks_exact(3)
         .map(|c| [c[0], c[1], c[2]])
@@ -298,5 +349,5 @@ pub fn build_mesh_with(gen: &Function, seed: i64) -> mlua::Result<Mesh> {
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_indices(Indices::U32(indices));
-    Ok(mesh)
+    mesh
 }

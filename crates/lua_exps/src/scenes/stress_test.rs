@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use std::time::Instant;
 
-use super::lua_rock::{build_mesh_with, cache_key, ROCK_SCRIPT, RockCache};
+use super::lua_rock::{build_mesh_with, build_meshes_batch, cache_key, ROCK_SCRIPT, RockCache};
 use super::SceneRoot;
 use crate::LuaVm;
 
@@ -11,6 +11,7 @@ pub const MAX_LEVEL: u32 = 4;
 pub struct StressState {
     pub level: u32,
     pub dirty: bool,
+    pub batch_mode: bool,
     pub last_count: usize,
     pub last_gen_ms: f32,
     pub last_spawn_ms: f32,
@@ -23,6 +24,7 @@ impl Default for StressState {
         Self {
             level: 0,
             dirty: true,
+            batch_mode: false,
             last_count: 0,
             last_gen_ms: 0.0,
             last_spawn_ms: 0.0,
@@ -83,24 +85,34 @@ pub fn setup(
             ));
         });
 
-    commands.spawn((
-        TextBundle::from_section(
-            "",
-            TextStyle {
-                font_size: 18.0,
-                color: Color::srgb(0.6, 1.0, 0.6),
+    commands
+        .spawn((
+            NodeBundle {
+                style: Style {
+                    position_type: PositionType::Absolute,
+                    bottom: Val::Px(8.0),
+                    left: Val::Px(8.0),
+                    padding: UiRect::all(Val::Px(8.0)),
+                    ..default()
+                },
+                background_color: Color::srgba(0.0, 0.0, 0.0, 0.65).into(),
                 ..default()
             },
-        )
-        .with_style(Style {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(8.0),
-            left: Val::Px(8.0),
-            ..default()
-        }),
-        StressHud,
-        SceneRoot,
-    ));
+            SceneRoot,
+        ))
+        .with_children(|p| {
+            p.spawn((
+                TextBundle::from_section(
+                    "",
+                    TextStyle {
+                        font_size: 20.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ),
+                StressHud,
+            ));
+        });
 }
 
 pub fn input(
@@ -120,6 +132,11 @@ pub fn input(
         cache.clear();
         state.dirty = true;
         info!("rock cache cleared");
+    }
+    if keys.just_pressed(KeyCode::KeyB) {
+        state.batch_mode = !state.batch_mode;
+        state.dirty = true;
+        info!("batch_mode = {}", state.batch_mode);
     }
 }
 
@@ -144,6 +161,7 @@ pub fn regenerate(
         state.dirty = false;
         return;
     };
+    let gen_batch = cache.gen_batch_fn().cloned();
 
     for e in &q_old {
         commands.entity(e).despawn_recursive();
@@ -154,29 +172,69 @@ pub fn regenerate(
     let misses_before = cache.misses;
 
     let gen_start = Instant::now();
-    let mut handles: Vec<Handle<Mesh>> = Vec::with_capacity(count);
+    let mut handles: Vec<Option<Handle<Mesh>>> = vec![None; count];
+    let mut miss_idxs: Vec<usize> = Vec::new();
+    let mut miss_seeds: Vec<i64> = Vec::new();
+    let mut miss_keys: Vec<u64> = Vec::new();
     for i in 0..count {
         let seed = (state.level as i64) * 1_000_000 + i as i64;
         let key = cache_key(seed, ROCK_SCRIPT);
-        let h = if let Some(h) = cache.get(&key) {
+        if let Some(h) = cache.get(&key) {
             cache.hits += 1;
-            h
+            handles[i] = Some(h);
         } else {
-            match build_mesh_with(&gen, seed) {
-                Ok(mesh) => {
-                    let h = meshes.add(mesh);
-                    cache.insert(key, h.clone());
-                    cache.misses += 1;
-                    h
+            miss_idxs.push(i);
+            miss_seeds.push(seed);
+            miss_keys.push(key);
+        }
+    }
+
+    if !miss_seeds.is_empty() {
+        if state.batch_mode {
+            let Some(gen_batch) = gen_batch else {
+                state.dirty = false;
+                return;
+            };
+            match build_meshes_batch(&gen_batch, &miss_seeds) {
+                Ok(built) => {
+                    for ((idx, key), mesh) in miss_idxs
+                        .iter()
+                        .zip(miss_keys.iter())
+                        .zip(built.into_iter())
+                    {
+                        let h = meshes.add(mesh);
+                        cache.insert(*key, h.clone());
+                        cache.misses += 1;
+                        handles[*idx] = Some(h);
+                    }
                 }
                 Err(e) => {
-                    error!("rock build failed seed={seed}: {e}");
+                    error!("batch build failed: {e}");
                     state.dirty = false;
                     return;
                 }
             }
-        };
-        handles.push(h);
+        } else {
+            for ((idx, key), seed) in miss_idxs
+                .iter()
+                .zip(miss_keys.iter())
+                .zip(miss_seeds.iter())
+            {
+                match build_mesh_with(&gen, *seed) {
+                    Ok(mesh) => {
+                        let h = meshes.add(mesh);
+                        cache.insert(*key, h.clone());
+                        cache.misses += 1;
+                        handles[*idx] = Some(h);
+                    }
+                    Err(e) => {
+                        error!("rock build failed seed={seed}: {e}");
+                        state.dirty = false;
+                        return;
+                    }
+                }
+            }
+        }
     }
     let gen_ms = gen_start.elapsed().as_secs_f64() as f32 * 1000.0;
 
@@ -190,6 +248,7 @@ pub fn regenerate(
     let spawn_start = Instant::now();
     commands.entity(root).with_children(|p| {
         for (i, h) in handles.into_iter().enumerate() {
+            let Some(h) = h else { continue };
             let x = (i % side) as f32 * spacing - half;
             let z = (i / side) as f32 * spacing - half;
             p.spawn((
@@ -220,9 +279,10 @@ pub fn regenerate(
     state.dirty = false;
 
     info!(
-        "stress level={} count={} gen={:.2}ms spawn={:.2}ms hits={} misses={} cache={}",
+        "stress level={} count={} batch={} gen={:.2}ms spawn={:.2}ms hits={} misses={} cache={}",
         state.level,
         count,
+        state.batch_mode,
         gen_ms,
         spawn_ms,
         state.last_hits,
@@ -240,10 +300,11 @@ pub fn update_hud(
         return;
     };
     text.sections[0].value = format!(
-        "Stress Test\n  level={}/{}  count={}\n  gen={:.2}ms  spawn={:.2}ms  total={:.2}ms\n  hits(last)={}  misses(last)={}  cache_total={}\n  Up/Down = level   C = clear cache",
+        "Stress Test\n  level={}/{}  count={}  batch={}\n  gen={:.2}ms  spawn={:.2}ms  total={:.2}ms\n  hits(last)={}  misses(last)={}  cache_total={}\n  Up/Down = level   C = clear cache   B = toggle batch",
         state.level,
         MAX_LEVEL,
         state.last_count,
+        state.batch_mode,
         state.last_gen_ms,
         state.last_spawn_ms,
         state.last_gen_ms + state.last_spawn_ms,

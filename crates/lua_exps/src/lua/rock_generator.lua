@@ -1,7 +1,11 @@
 -- rock_generator.lua
--- Genera un mesh de roca deterministico a partir de un seed.
--- Devuelve arrays planos para evitar overhead FFI: vertices = {x,y,z, x,y,z, ...},
--- faces = {a,b,c, a,b,c, ...} (1-indexed).
+-- Genera meshes de roca deterministicos a partir de un seed.
+-- Expone:
+--   generate(seed, options)       -> { vertices=flat, faces=flat, meta }
+--   generate_batch(seeds, options) -> { vertices=flat, faces=flat,
+--                                       vertex_counts, face_counts }
+-- vertices: {x,y,z, x,y,z, ...}
+-- faces:    {a,b,c, a,b,c, ...} (1-indexed, local a cada roca en batch).
 
 local function make_rng(seed)
   local state = seed % 2147483648
@@ -20,8 +24,9 @@ local function make_rng(seed)
 end
 
 local sin, cos, sqrt, pi = math.sin, math.cos, math.sqrt, math.pi
+local move = table.move
 
-local function generate_rock(seed, options)
+local function generate(seed, options)
   options = options or {}
   local rng = make_rng(seed)
   local rings     = options.rings     or rng:int(5, 10)
@@ -81,5 +86,29 @@ local function generate_rock(seed, options)
   }
 end
 
-_G.generate_rock = generate_rock
-return generate_rock
+local function generate_batch(seeds, options)
+  local out_v, out_f = {}, {}
+  local v_counts, f_counts = {}, {}
+  local v_off, f_off = 0, 0
+  for i = 1, #seeds do
+    local r = generate(seeds[i], options)
+    local rv, rf = r.vertices, r.faces
+    local nv, nf = #rv, #rf
+    move(rv, 1, nv, v_off + 1, out_v)
+    move(rf, 1, nf, f_off + 1, out_f)
+    v_counts[i] = nv / 3
+    f_counts[i] = nf / 3
+    v_off = v_off + nv
+    f_off = f_off + nf
+  end
+  return {
+    vertices = out_v,
+    faces = out_f,
+    vertex_counts = v_counts,
+    face_counts = f_counts,
+  }
+end
+
+_G.generate = generate
+_G.generate_batch = generate_batch
+return generate
