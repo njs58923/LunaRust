@@ -325,7 +325,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <text x="0" y="-1.20" z="-2.96" value="Objects scale 1:10 of distance — spawns appear around you" size="0.063" id="demo_hint" color="#546E7A" />
 
     <!-- Bottom navigation row -->
-    <box x="0.00" y="-1.42" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#7E57C2" id="btn_demos" />
+    <box x="0.00" y="-1.42" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
     <text x="0.00" y="-1.42" z="-2.94" value="DEMOS" size="0.085" color="#FFFFFF" />
 
     <script>
@@ -692,10 +692,10 @@ const LUNA_SETTINGS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <text x="3" y="1.8" z="-5" value="- Proxy: None" size="0.1" />
   <text x="3" y="1.5" z="-5" value="- Timeout: 30s" size="0.1" />
 
-  <box x="-1.5" y="0" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#9C27B0" id="btn_cache" />
+  <box x="-1.5" y="0" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#9C27B0" id="btn_cache" touchable="true"/>
   <text x="-1.5" y="0" z="-3.95" value="Cache Stats" size="0.1" />
 
-  <box x="1.5" y="0" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" />
+  <box x="1.5" y="0" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
   <text x="1.5" y="0" z="-3.95" value="Back to Home" size="0.1" />
 
   <text x="0" y="-0.8" z="-5" value="Note: Settings UI is read-only" size="0.09" color="#999999" />
@@ -736,7 +736,7 @@ const LUNA_ABOUT: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
   <text x="0" y="-0.7" z="-5" value="Project: Luna Browser by Sam" size="0.11" color="#2196F3" />
 
-  <box x="0" y="-1.5" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" />
+  <box x="0" y="-1.5" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
   <text x="0" y="-1.5" z="-3.95" value="Back to Home" size="0.1" />
 
   <script>
@@ -771,10 +771,10 @@ const LUNA_404: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <text x="0" y="-0.20" z="-5" value="- luna://target_demo" size="0.11" />
   <text x="0" y="-0.45" z="-5" value="- luna://range_demo" size="0.11" />
 
-  <box x="-0.7" y="-1.7" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" />
+  <box x="-0.7" y="-1.7" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
   <text x="-0.7" y="-1.7" z="-3.95" value="Go Home" size="0.1" />
 
-  <box x="0.7" y="-1.7" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#7E57C2" id="btn_demos" />
+  <box x="0.7" y="-1.7" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
   <text x="0.7" y="-1.7" z="-3.95" value="Go to Demos" size="0.1" />
 
   <script>
@@ -822,7 +822,7 @@ fn generate_cache_stats(_path: &str) -> String {
   <text x="0" y="1" z="-5" value="Note: Dynamic stats require runtime integration" size="0.11" color="#FFC107" />
   <text x="0" y="0.7" z="-5" value="Future: Pass cache resource to generate_cache_stats()" size="0.09" />
 
-  <box x="0" y="-0.5" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_back" />
+  <box x="0" y="-0.5" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_back" touchable="true"/>
   <text x="0" y="-0.5" z="-3.95" value="Back to Settings" size="0.1" />
 
   <script>
