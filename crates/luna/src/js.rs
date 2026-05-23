@@ -45,6 +45,7 @@ pub struct SpaceSnapshots {
 
 #[derive(Clone, Default)]
 pub struct SpaceSnapshotPatch {
+    pub removed_locals: Vec<i32>,
     pub attr_updates: HashMap<i32, HashMap<String, String>>,
     pub tag_updates: HashMap<i32, String>,
     pub positions: HashMap<i32, js_runtime::Vec3>,
@@ -77,12 +78,14 @@ pub struct DomMirror {
 pub struct DomMirrorDirty {
     pub force_rebuild: bool,
     pub touched_nodes: HashSet<u32>,
+    pub removed_nodes: HashSet<u32>,
 }
 
 impl DomMirrorDirty {
     pub fn force_rebuild(&mut self) {
         self.force_rebuild = true;
         self.touched_nodes.clear();
+        self.removed_nodes.clear();
     }
 
     pub fn touch(&mut self, node_id: u32) {
@@ -91,10 +94,21 @@ impl DomMirrorDirty {
         }
     }
 
-    fn take(&mut self) -> (bool, HashSet<u32>) {
+    pub fn remove(&mut self, node_id: u32) {
+        if !self.force_rebuild {
+            self.touched_nodes.remove(&node_id);
+            self.removed_nodes.insert(node_id);
+        }
+    }
+
+    fn take(&mut self) -> (bool, HashSet<u32>, HashSet<u32>) {
         let force_rebuild = self.force_rebuild;
         self.force_rebuild = false;
-        (force_rebuild, std::mem::take(&mut self.touched_nodes))
+        (
+            force_rebuild,
+            std::mem::take(&mut self.touched_nodes),
+            std::mem::take(&mut self.removed_nodes),
+        )
     }
 }
 
@@ -286,6 +300,7 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                         let _ = event_tx.send(JsWorkerEvent::SnapshotApplied);
                     }
                     JsWorkerCommand::PatchSnapshots(patch) => {
+                        ctx.engine.remove_snapshot_nodes(patch.removed_locals);
                         ctx.engine.patch_attr_snapshot(patch.attr_updates);
                         ctx.engine.patch_tag_snapshot(patch.tag_updates);
                         ctx.engine.patch_transform_snapshot(
@@ -787,17 +802,32 @@ fn refresh_dom_mirror(
     previous_mirror: &DomMirror,
     force_rebuild: bool,
     touched_nodes: HashSet<u32>,
+    removed_nodes: HashSet<u32>,
 ) -> DomMirror {
     if force_rebuild || previous_mirror.nodes.is_empty() {
-        return build_dom_mirror_from_specs(specs_world, attached_node_ids, previous_mirror.version);
+        return build_dom_mirror_from_specs(
+            specs_world,
+            attached_node_ids,
+            previous_mirror.version,
+        );
     }
 
-    if touched_nodes.is_empty() {
+    if touched_nodes.is_empty() && removed_nodes.is_empty() {
         return previous_mirror.clone();
     }
 
     let mut mirror = previous_mirror.clone();
     let mut changed = false;
+    for node_id in removed_nodes {
+        let node_id_i32 = node_id as i32;
+        changed |= mirror.nodes.remove(&node_id_i32).is_some();
+        for node in mirror.nodes.values_mut() {
+            let before = node.children.len();
+            node.children.retain(|child| *child != node_id_i32);
+            changed |= node.children.len() != before;
+        }
+    }
+
     for node_id in touched_nodes {
         let node_id_i32 = node_id as i32;
         if !attached_node_ids.contains(&node_id) {
@@ -891,6 +921,9 @@ fn build_local_space_patch_from_mirror(
     mirror: &DomMirror,
 ) -> Option<SpaceSnapshotPatch> {
     let mut patch = SpaceSnapshotPatch::default();
+    patch
+        .removed_locals
+        .extend(table.pending_removed_locals.iter().copied());
 
     for &global_node_id in touched_globals {
         let global_node_id_i32 = global_node_id as i32;
@@ -1087,10 +1120,10 @@ pub fn js_update_snapshots_system(world: &mut World) {
         .map(|dom| dom.nodes.keys().copied().collect())
         .unwrap_or_default();
 
-    let (force_mirror_rebuild, touched_mirror_nodes) = world
+    let (force_mirror_rebuild, touched_mirror_nodes, removed_mirror_nodes) = world
         .get_resource_mut::<DomMirrorDirty>()
         .map(|mut dirty| dirty.take())
-        .unwrap_or((true, HashSet::new()));
+        .unwrap_or((true, HashSet::new(), HashSet::new()));
     let snapshot_forces_mirror_rebuild = world
         .get_resource_mut::<JsSnapshotState>()
         .map(|mut state| {
@@ -1099,29 +1132,35 @@ pub fn js_update_snapshots_system(world: &mut World) {
             force
         })
         .unwrap_or(true);
-    let requires_full_snapshot = force_mirror_rebuild
-        || snapshot_forces_mirror_rebuild
-        || world
-            .get_resource::<DomMirror>()
-            .map(|previous_mirror| attached_node_ids.len() != previous_mirror.nodes.len())
-            .unwrap_or(true);
-
     let mirror = {
         let previous_mirror = world
             .get_resource::<DomMirror>()
             .cloned()
             .unwrap_or_default();
+        let node_count_changed = attached_node_ids.len() != previous_mirror.nodes.len();
+        let count_change_is_incremental_remove = !removed_mirror_nodes.is_empty()
+            && previous_mirror
+                .nodes
+                .len()
+                .saturating_sub(removed_mirror_nodes.len())
+                == attached_node_ids.len();
+        let requires_full_snapshot = force_mirror_rebuild
+            || snapshot_forces_mirror_rebuild
+            || (node_count_changed && !count_change_is_incremental_remove);
         let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
             return;
         };
-        refresh_dom_mirror(
+        let mirror = refresh_dom_mirror(
             &specs_world.0,
             &attached_node_ids,
             &previous_mirror,
             requires_full_snapshot,
             touched_mirror_nodes.clone(),
-        )
+            removed_mirror_nodes.clone(),
+        );
+        (mirror, requires_full_snapshot)
     };
+    let (mirror, requires_full_snapshot) = mirror;
     world.insert_resource(mirror.clone());
 
     let active_space_ids: HashSet<u32> = mirror.space_subtrees.keys().copied().collect();
@@ -1198,7 +1237,9 @@ pub fn js_update_snapshots_system(world: &mut World) {
         if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
             snapshot_state.dirty = keep_dirty;
             if spaces_waiting_on_ack > 0
-                && (requires_full_snapshot || !touched_mirror_nodes.is_empty())
+                && (requires_full_snapshot
+                    || !touched_mirror_nodes.is_empty()
+                    || !removed_mirror_nodes.is_empty())
             {
                 snapshot_state.mirror_force_rebuild = true;
             }
@@ -1261,6 +1302,7 @@ pub fn js_update_snapshots_system(world: &mut World) {
     };
 
     let mut snapshots_sent_this_run = 0usize;
+    let mut sent_snapshot_space_ids = Vec::new();
     {
         let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
             return;
@@ -1275,8 +1317,12 @@ pub fn js_update_snapshots_system(world: &mut World) {
                 continue;
             }
             let send_result = match batch {
-                SnapshotBatch::Full(snap) => worker.cmd_tx.send(JsWorkerCommand::UpdateSnapshots(snap)),
-                SnapshotBatch::Patch(patch) => worker.cmd_tx.send(JsWorkerCommand::PatchSnapshots(patch)),
+                SnapshotBatch::Full(snap) => {
+                    worker.cmd_tx.send(JsWorkerCommand::UpdateSnapshots(snap))
+                }
+                SnapshotBatch::Patch(patch) => {
+                    worker.cmd_tx.send(JsWorkerCommand::PatchSnapshots(patch))
+                }
             };
             if let Err(e) = send_result {
                 errors.push(format!(
@@ -1288,6 +1334,7 @@ pub fn js_update_snapshots_system(world: &mut World) {
             } else {
                 worker.snapshot_in_flight = true;
                 snapshots_sent_this_run += 1;
+                sent_snapshot_space_ids.push(space_id);
             }
         }
 
@@ -1295,6 +1342,16 @@ pub fn js_update_snapshots_system(world: &mut World) {
             if let Some(mut worker) = manager.contexts.remove(&space_id) {
                 stop_space_worker(&mut worker);
                 removed_contexts.push(space_id);
+            }
+        }
+    }
+
+    if !sent_snapshot_space_ids.is_empty() {
+        if let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() {
+            for space_id in sent_snapshot_space_ids {
+                if let Some(table) = space_handle_tables.by_space.get_mut(&space_id) {
+                    table.pending_removed_locals.clear();
+                }
             }
         }
     }
@@ -1315,7 +1372,10 @@ pub fn js_update_snapshots_system(world: &mut World) {
         || !errors.is_empty();
     if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
         snapshot_state.dirty = keep_dirty;
-        if spaces_waiting_on_ack > 0 && (requires_full_snapshot || !touched_mirror_nodes.is_empty())
+        if spaces_waiting_on_ack > 0
+            && (requires_full_snapshot
+                || !touched_mirror_nodes.is_empty()
+                || !removed_mirror_nodes.is_empty())
         {
             snapshot_state.mirror_force_rebuild = true;
         }
@@ -1642,8 +1702,8 @@ pub fn js_tick_system(world: &mut World) {
         }
     }
 
-    let dom_structure_changed =
-        !creation_batches.is_empty() || !hierarchy_batches.is_empty() || !remove_batches.is_empty();
+    let dom_structure_changed = !creation_batches.is_empty() || !hierarchy_batches.is_empty();
+    let dom_removals_changed = !remove_batches.is_empty();
 
     {
         let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
@@ -2182,14 +2242,19 @@ pub fn js_tick_system(world: &mut World) {
         }
         // Clean up handle table entries for ALL subtree nodes
         if let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() {
-            let Some(table) = space_handle_tables.by_space.get_mut(&space_id) else {
-                return;
-            };
-            for &nid in &all_removed_ids {
-                if let Some(local_id) = table.global_to_local.remove(&nid) {
-                    table.local_to_global.remove(&local_id);
+            for table in space_handle_tables.by_space.values_mut() {
+                for &nid in &all_removed_ids {
+                    if let Some(local_id) = table.global_to_local.remove(&nid) {
+                        table.local_to_global.remove(&local_id);
+                        table.pending_removed_locals.insert(local_id);
+                    }
+                    table.detached_globals.remove(&nid);
                 }
-                table.detached_globals.remove(&nid);
+            }
+        }
+        if let Some(mut mirror_dirty) = world.get_resource_mut::<DomMirrorDirty>() {
+            for &nid in &all_removed_ids {
+                mirror_dirty.remove(nid);
             }
         }
         if !all_removed_ids.is_empty() {
@@ -2645,10 +2710,13 @@ pub fn js_tick_system(world: &mut World) {
         }
     }
 
-    if dom_structure_changed {
+    if dom_structure_changed || dom_removals_changed {
         if let Some(mut policies) = world.get_resource_mut::<SpacePolicies>() {
             policies.dirty = true;
         }
+    }
+
+    if dom_structure_changed {
         if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
             snapshot_state.mirror_force_rebuild = true;
         }
@@ -2737,6 +2805,104 @@ mod tests {
     fn snapshot_test_app() -> (App, u32) {
         let (app, space_ids) = snapshot_test_app_with_spaces(1);
         (app, space_ids[0])
+    }
+
+    fn snapshot_test_app_with_child() -> (App, u32, u32, specs::Entity, specs::Entity) {
+        let mut app = App::new();
+        app.insert_resource(JsSnapshotState::default());
+        app.insert_resource(VirtualDomData::default());
+        app.insert_resource(SpaceHandleTables::default());
+        app.insert_resource(LogPanel::default());
+        app.insert_resource(Time::<()>::default());
+        app.insert_resource(AttributeUpdates::default());
+        app.insert_resource(TransformUpdates::default());
+        app.insert_resource(DirtyNodes::default());
+        app.insert_resource(PendingJsAttachNodes::default());
+        app.insert_resource(DomMirror::default());
+        app.insert_resource(DomMirrorDirty::default());
+        app.insert_non_send_resource(ScriptRuntimeManager::default());
+
+        let specs_world = build_world();
+        let space_ent = specs_world.entities().create();
+        let child_ent = specs_world.entities().create();
+        {
+            let mut tags = specs_world.write_storage::<Tag>();
+            let mut attrs = specs_world.write_storage::<Attrs>();
+            let mut transforms = specs_world.write_storage::<Transform2>();
+            let mut hier = specs_world.write_storage::<Hierarchy>();
+
+            tags.insert(space_ent, Tag("space".into())).ok();
+            tags.insert(child_ent, Tag("box".into())).ok();
+            attrs.insert(space_ent, Attrs(HashMap::new())).ok();
+            attrs.insert(child_ent, Attrs(HashMap::new())).ok();
+            transforms
+                .insert(
+                    space_ent,
+                    Transform2 {
+                        position: DomVec3 {
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                        rotation: DomVec3 {
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                        scale: DomVec3 {
+                            x: 1.0,
+                            y: 1.0,
+                            z: 1.0,
+                        },
+                    },
+                )
+                .ok();
+            transforms
+                .insert(
+                    child_ent,
+                    Transform2 {
+                        position: DomVec3 {
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                        rotation: DomVec3 {
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                        scale: DomVec3 {
+                            x: 1.0,
+                            y: 1.0,
+                            z: 1.0,
+                        },
+                    },
+                )
+                .ok();
+            hier.insert(
+                space_ent,
+                Hierarchy {
+                    parent: None,
+                    children: vec![child_ent],
+                },
+            )
+            .ok();
+            hier.insert(
+                child_ent,
+                Hierarchy {
+                    parent: Some(space_ent),
+                    children: vec![],
+                },
+            )
+            .ok();
+        }
+
+        app.world_mut()
+            .resource_mut::<VirtualDomData>()
+            .nodes
+            .extend([(space_ent.id(), space_ent), (child_ent.id(), child_ent)]);
+        app.insert_resource(ElemenetWorld(specs_world));
+        (app, space_ent.id(), child_ent.id(), space_ent, child_ent)
     }
 
     #[test]
@@ -3137,7 +3303,9 @@ mod tests {
             let mut transforms = specs_world.write_storage::<Transform2>();
             transforms.get_mut(child_ent).unwrap().position.x = 42.0;
         }
-        app.world_mut().resource_mut::<DomMirrorDirty>().touch(child_ent.id());
+        app.world_mut()
+            .resource_mut::<DomMirrorDirty>()
+            .touch(child_ent.id());
         app.world_mut().resource_mut::<JsSnapshotState>().dirty = true;
 
         js_update_snapshots_system(app.world_mut());
@@ -3156,6 +3324,70 @@ mod tests {
     }
 
     #[test]
+    fn removed_dom_node_sends_tombstone_patch_after_initial_full_snapshot() {
+        let (mut app, space_id, child_id, _space_ent, _child_ent) = snapshot_test_app_with_child();
+        let (worker, cmd_rx, event_tx) = fake_worker(false);
+        app.world_mut()
+            .non_send_resource_mut::<ScriptRuntimeManager>()
+            .contexts
+            .insert(space_id, worker);
+
+        js_update_snapshots_system(app.world_mut());
+        assert!(
+            matches!(cmd_rx.recv(), Ok(JsWorkerCommand::UpdateSnapshots(_))),
+            "initial sync must be a full snapshot"
+        );
+        event_tx
+            .send(JsWorkerEvent::SnapshotApplied)
+            .expect("test should be able to inject snapshot ack");
+        js_tick_system(app.world_mut());
+
+        let child_local_id = {
+            let mut tables = app.world_mut().resource_mut::<SpaceHandleTables>();
+            let table = tables
+                .by_space
+                .get_mut(&space_id)
+                .expect("initial full snapshot should create a table");
+            let local_id = table
+                .global_to_local
+                .remove(&child_id)
+                .expect("initial full snapshot should map the child");
+            table.local_to_global.remove(&local_id);
+            table.pending_removed_locals.insert(local_id);
+            local_id
+        };
+        app.world_mut()
+            .resource_mut::<VirtualDomData>()
+            .nodes
+            .remove(&child_id);
+        app.world_mut()
+            .resource_mut::<DomMirrorDirty>()
+            .remove(child_id);
+        app.world_mut().resource_mut::<JsSnapshotState>().dirty = true;
+
+        js_update_snapshots_system(app.world_mut());
+
+        let cmd = cmd_rx.recv().expect("patch command should be queued");
+        match cmd {
+            JsWorkerCommand::PatchSnapshots(patch) => {
+                assert_eq!(patch.removed_locals, vec![child_local_id]);
+                assert!(patch.attr_updates.is_empty());
+                assert!(patch.positions.is_empty());
+            }
+            _ => panic!("removed node should send a tombstone patch, not full snapshot"),
+        }
+        assert!(
+            app.world()
+                .resource::<SpaceHandleTables>()
+                .by_space
+                .get(&space_id)
+                .map(|table| table.pending_removed_locals.is_empty())
+                .unwrap_or(false),
+            "sent tombstones should be cleared after enqueueing the snapshot command"
+        );
+    }
+
+    #[test]
     fn ack_does_not_clear_dirty_when_snapshot_update_waited_on_inflight_worker() {
         let (mut app, space_id) = snapshot_test_app();
         let (mut worker, _cmd_rx, event_tx) = fake_worker(false);
@@ -3168,12 +3400,16 @@ mod tests {
         app.world_mut()
             .resource_mut::<JsSnapshotState>()
             .mirror_force_rebuild = false;
-        app.world_mut().resource_mut::<DomMirrorDirty>().touch(space_id);
+        app.world_mut()
+            .resource_mut::<DomMirrorDirty>()
+            .touch(space_id);
 
         js_update_snapshots_system(app.world_mut());
 
         assert!(
-            app.world().resource::<JsSnapshotState>().mirror_force_rebuild,
+            app.world()
+                .resource::<JsSnapshotState>()
+                .mirror_force_rebuild,
             "dirty update blocked by an in-flight worker must be retained as a full rebuild"
         );
 

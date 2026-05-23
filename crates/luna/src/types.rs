@@ -323,6 +323,7 @@ pub struct SpaceHandleTable {
     pub local_to_global: HashMap<i32, u32>,
     pub global_to_local: HashMap<u32, i32>,
     pub detached_globals: std::collections::HashSet<u32>,
+    pub pending_removed_locals: std::collections::HashSet<i32>,
 }
 
 #[derive(Resource, Default)]

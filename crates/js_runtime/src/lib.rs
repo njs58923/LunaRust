@@ -59,6 +59,20 @@ where
     cell.borrow_mut().extend(incoming);
 }
 
+#[inline]
+fn remove_map_keys<K, V>(cell: &Shared<HashMap<K, V>>, keys: &HashSet<K>)
+where
+    K: Eq + std::hash::Hash,
+{
+    if keys.is_empty() {
+        return;
+    }
+    let mut dst = cell.borrow_mut();
+    for key in keys {
+        dst.remove(key);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // State structs for OpState
 // ---------------------------------------------------------------------------
@@ -1642,6 +1656,25 @@ impl Engine {
 
     pub fn patch_attr_snapshot(&self, updates: HashMap<i32, HashMap<String, String>>) {
         patch_map(&self.attr_snapshot, updates);
+    }
+
+    pub fn remove_snapshot_nodes(&self, node_ids: Vec<i32>) {
+        if node_ids.is_empty() {
+            return;
+        }
+        let node_ids: HashSet<i32> = node_ids.into_iter().collect();
+        remove_map_keys(&self.attr_snapshot, &node_ids);
+        remove_map_keys(&self.tag_snapshot, &node_ids);
+        remove_map_keys(&self.transform_snapshot_positions, &node_ids);
+        remove_map_keys(&self.transform_snapshot_rotations, &node_ids);
+        remove_map_keys(&self.transform_snapshot_scales, &node_ids);
+        remove_map_keys(&self.transform_snapshot_global_positions, &node_ids);
+        remove_map_keys(&self.hierarchy_snapshot_parents, &node_ids);
+        remove_map_keys(&self.hierarchy_snapshot_children, &node_ids);
+
+        for children in self.hierarchy_snapshot_children.borrow_mut().values_mut() {
+            children.retain(|child_id| !node_ids.contains(child_id));
+        }
     }
 
     pub fn push_element_creation_result(&self, request_id: i32, node_id: i32) {
