@@ -48,6 +48,17 @@ where
     dst.extend(incoming);
 }
 
+#[inline]
+fn patch_map<K, V>(cell: &Shared<HashMap<K, V>>, incoming: HashMap<K, V>)
+where
+    K: Eq + std::hash::Hash,
+{
+    if incoming.is_empty() {
+        return;
+    }
+    cell.borrow_mut().extend(incoming);
+}
+
 // ---------------------------------------------------------------------------
 // State structs for OpState
 // ---------------------------------------------------------------------------
@@ -1629,6 +1640,10 @@ impl Engine {
         replace_map(&self.attr_snapshot, snapshot);
     }
 
+    pub fn patch_attr_snapshot(&self, updates: HashMap<i32, HashMap<String, String>>) {
+        patch_map(&self.attr_snapshot, updates);
+    }
+
     pub fn push_element_creation_result(&self, request_id: i32, node_id: i32) {
         self.element_creation_results
             .borrow_mut()
@@ -1644,8 +1659,21 @@ impl Engine {
         replace_map(&self.hierarchy_snapshot_children, children);
     }
 
+    pub fn patch_hierarchy_snapshot(
+        &self,
+        parents: HashMap<i32, i32>,
+        children: HashMap<i32, Vec<i32>>,
+    ) {
+        patch_map(&self.hierarchy_snapshot_parents, parents);
+        patch_map(&self.hierarchy_snapshot_children, children);
+    }
+
     pub fn update_tag_snapshot(&self, tags: HashMap<i32, String>) {
         replace_map(&self.tag_snapshot, tags);
+    }
+
+    pub fn patch_tag_snapshot(&self, tags: HashMap<i32, String>) {
+        patch_map(&self.tag_snapshot, tags);
     }
 
     pub fn update_transform_snapshot(
@@ -1659,6 +1687,19 @@ impl Engine {
         replace_map(&self.transform_snapshot_rotations, rotations);
         replace_map(&self.transform_snapshot_scales, scales);
         replace_map(&self.transform_snapshot_global_positions, global_positions);
+    }
+
+    pub fn patch_transform_snapshot(
+        &self,
+        positions: HashMap<i32, Vec3>,
+        rotations: HashMap<i32, Vec3>,
+        scales: HashMap<i32, Vec3>,
+        global_positions: HashMap<i32, Vec3>,
+    ) {
+        patch_map(&self.transform_snapshot_positions, positions);
+        patch_map(&self.transform_snapshot_rotations, rotations);
+        patch_map(&self.transform_snapshot_scales, scales);
+        patch_map(&self.transform_snapshot_global_positions, global_positions);
     }
 
     pub fn push_fetch_result(
