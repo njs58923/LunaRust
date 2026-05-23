@@ -98,6 +98,7 @@ fn main() {
     app.insert_resource(TransformOnlyDirtyNodes::default());
     app.insert_resource(SpaceHandleTables::default());
     app.insert_resource(js::DomMirror::default());
+    app.insert_resource(js::DomMirrorDirty::default());
     app.insert_resource(DevtoolVisible(false));
     app.insert_resource(LogPanel::default());
     app.insert_resource(TokioRuntime(

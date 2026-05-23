@@ -43,6 +43,7 @@ pub fn commit_pending_js_attaches_system(
     mut dom_data: ResMut<VirtualDomData>,
     mut pending_first_render: ResMut<PendingJsFirstRenderNodes>,
     mut space_handle_tables: ResMut<crate::SpaceHandleTables>,
+    mut mirror_dirty: ResMut<crate::js::DomMirrorDirty>,
 ) {
     if pending_js_attaches.0.is_empty() {
         return;
@@ -58,6 +59,7 @@ pub fn commit_pending_js_attaches_system(
         }
         dom_data.nodes.insert(*node_id, ent);
         pending_first_render.0.push((*node_id, 1));
+        mirror_dirty.force_rebuild();
     }
 
     // Ahora que dom_data tiene los nodos, podemos sacarlos de
@@ -393,6 +395,7 @@ pub fn commit_pending_document_load_system(
     mut manager: NonSendMut<crate::js::ScriptRuntimeManager>,
     mut commit: crate::DocumentCommitParams,
     mut space_policies: ResMut<crate::permissions::SpacePolicies>,
+    mut mirror_dirty: ResMut<crate::js::DomMirrorDirty>,
 ) {
     let pending = pending_document_loads.0.drain(..).collect::<Vec<_>>();
     if pending.is_empty() {
@@ -456,6 +459,8 @@ pub fn commit_pending_document_load_system(
                         dirty_nodes.0 = new_dirty;
                         document_load_state.0 = None;
                         commit.js_snapshot_state.dirty = true;
+                        commit.js_snapshot_state.mirror_force_rebuild = true;
+                        mirror_dirty.force_rebuild();
                         space_policies.dirty = true;
                         log_panel
                             .push_info(format!("Document commit complete (epoch {epoch}): {url}"));
@@ -875,10 +880,11 @@ where
 
 pub fn apply_transform_updates(
     mut transform_updates: ResMut<crate::TransformUpdates>,
-    mut world: ResMut<ElemenetWorld>,
+    world: ResMut<ElemenetWorld>,
     dom_data: Res<VirtualDomData>,
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut transform_only_dirty: ResMut<crate::TransformOnlyDirtyNodes>,
+    mut mirror_dirty: ResMut<crate::js::DomMirrorDirty>,
 ) {
     if transform_updates.is_empty() {
         return;
@@ -910,8 +916,11 @@ pub fn apply_transform_updates(
             tr.position.z = pos.z;
             // Para nodos ya attached: un único dirty por frame alcanza aunque
             // lleguen position+rotation+scale por separado.
-            if dom_data.nodes.contains_key(&node_id) && transform_only_dirty.0.insert(node_id) {
-                dirty_nodes.0.push(node_id);
+            if dom_data.nodes.contains_key(&node_id) {
+                mirror_dirty.touch(node_id);
+                if transform_only_dirty.0.insert(node_id) {
+                    dirty_nodes.0.push(node_id);
+                }
             }
         }
     }
@@ -925,8 +934,11 @@ pub fn apply_transform_updates(
             tr.rotation.x = rot.x;
             tr.rotation.y = rot.y;
             tr.rotation.z = rot.z;
-            if dom_data.nodes.contains_key(&node_id) && transform_only_dirty.0.insert(node_id) {
-                dirty_nodes.0.push(node_id);
+            if dom_data.nodes.contains_key(&node_id) {
+                mirror_dirty.touch(node_id);
+                if transform_only_dirty.0.insert(node_id) {
+                    dirty_nodes.0.push(node_id);
+                }
             }
         }
     }
@@ -940,8 +952,11 @@ pub fn apply_transform_updates(
             tr.scale.x = scale.x;
             tr.scale.y = scale.y;
             tr.scale.z = scale.z;
-            if dom_data.nodes.contains_key(&node_id) && transform_only_dirty.0.insert(node_id) {
-                dirty_nodes.0.push(node_id);
+            if dom_data.nodes.contains_key(&node_id) {
+                mirror_dirty.touch(node_id);
+                if transform_only_dirty.0.insert(node_id) {
+                    dirty_nodes.0.push(node_id);
+                }
             }
         }
     }
@@ -956,6 +971,7 @@ pub fn apply_attribute_updates(
     mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
     mut space_policies: ResMut<crate::permissions::SpacePolicies>,
     mut transform_only_dirty: ResMut<crate::TransformOnlyDirtyNodes>,
+    mut mirror_dirty: ResMut<crate::js::DomMirrorDirty>,
 ) {
     if attribute_updates.0.is_empty() {
         return;
@@ -1090,6 +1106,7 @@ pub fn apply_attribute_updates(
 
         if is_attached {
             dirty_nodes.0.push(ent_id);
+            mirror_dirty.touch(ent_id);
         }
 
         if is_attached && matches!(key.as_str(), "resources" | "system-space") {
@@ -1115,6 +1132,7 @@ pub fn process_delete_requests(
     mut include_load_states: ResMut<crate::IncludeLoadStates>,
     mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
     mut space_policies: ResMut<crate::permissions::SpacePolicies>,
+    mut mirror_dirty: ResMut<crate::js::DomMirrorDirty>,
 ) {
     for ent_id in delete_requests.0.drain(..) {
         let sp_ent = world.0.entities().entity(ent_id);
@@ -1145,6 +1163,8 @@ pub fn process_delete_requests(
             ent_id, deleted
         ));
         js_snapshot_state.dirty = true;
+        js_snapshot_state.mirror_force_rebuild = true;
+        mirror_dirty.force_rebuild();
         space_policies.dirty = true;
     }
 }
@@ -1325,6 +1345,7 @@ pub fn commit_pending_includes_system(
                 }
                 dirty_nodes.0.extend(new_dirty);
                 js_snapshot_state.dirty = true;
+                js_snapshot_state.mirror_force_rebuild = true;
                 space_policies.dirty = true;
 
                 include_load_states.0.insert(
@@ -2987,6 +3008,7 @@ mod tests {
         app.insert_resource(DirtyNodes::default());
         app.insert_resource(TransformUpdates::default());
         app.insert_resource(TransformOnlyDirtyNodes::default());
+        app.insert_resource(crate::js::DomMirrorDirty::default());
         app.add_systems(Update, apply_transform_updates);
 
         // Push posición + rotación por nodo (pattern de setTransformBatch).
@@ -3062,6 +3084,7 @@ mod tests {
         app.insert_resource(DirtyNodes::default());
         app.insert_resource(TransformUpdates::default());
         app.insert_resource(TransformOnlyDirtyNodes::default());
+        app.insert_resource(crate::js::DomMirrorDirty::default());
         app.add_systems(Update, apply_transform_updates);
 
         {
@@ -3171,6 +3194,7 @@ mod tests {
         app.insert_resource(DirtyNodes::default());
         app.insert_resource(TransformUpdates::default());
         app.insert_resource(TransformOnlyDirtyNodes::default());
+        app.insert_resource(crate::js::DomMirrorDirty::default());
         app.insert_resource(crate::AttributeUpdates::default());
         app.insert_resource(crate::JsSnapshotState::default());
         app.insert_resource(crate::permissions::SpacePolicies::default());
@@ -3304,6 +3328,7 @@ mod tests {
         app.insert_resource(DirtyNodes::default());
         app.insert_resource(TransformUpdates::default());
         app.insert_resource(TransformOnlyDirtyNodes::default());
+        app.insert_resource(crate::js::DomMirrorDirty::default());
         app.insert_resource(crate::AttributeUpdates::default());
         app.insert_resource(crate::JsSnapshotState::default());
         app.insert_resource(crate::permissions::SpacePolicies::default());
@@ -3457,6 +3482,7 @@ mod tests {
         pending.0.push(nid);
         app.insert_resource(pending);
         app.insert_resource(tables);
+        app.insert_resource(crate::js::DomMirrorDirty::default());
         app.add_systems(Update, commit_pending_js_attaches_system);
         app.update();
 
@@ -3532,6 +3558,7 @@ mod tests {
         app.insert_resource(DirtyNodes::default());
         app.insert_resource(TransformUpdates::default());
         app.insert_resource(TransformOnlyDirtyNodes::default());
+        app.insert_resource(crate::js::DomMirrorDirty::default());
         app.insert_resource(AttributeUpdates::default());
         app.insert_resource(JsSnapshotState::default());
         app.insert_resource(crate::permissions::SpacePolicies::default());

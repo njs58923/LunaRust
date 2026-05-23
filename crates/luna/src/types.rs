@@ -403,11 +403,15 @@ pub struct PerformanceStats {
 #[derive(Resource)]
 pub struct JsSnapshotState {
     pub dirty: bool,
+    pub mirror_force_rebuild: bool,
 }
 
 impl Default for JsSnapshotState {
     fn default() -> Self {
-        Self { dirty: true }
+        Self {
+            dirty: true,
+            mirror_force_rebuild: true,
+        }
     }
 }
 

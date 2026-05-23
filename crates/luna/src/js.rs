@@ -61,6 +61,31 @@ pub struct DomMirror {
     pub space_subtrees: HashMap<u32, HashSet<i32>>,
 }
 
+#[derive(Resource, Default)]
+pub struct DomMirrorDirty {
+    pub force_rebuild: bool,
+    pub touched_nodes: HashSet<u32>,
+}
+
+impl DomMirrorDirty {
+    pub fn force_rebuild(&mut self) {
+        self.force_rebuild = true;
+        self.touched_nodes.clear();
+    }
+
+    pub fn touch(&mut self, node_id: u32) {
+        if !self.force_rebuild {
+            self.touched_nodes.insert(node_id);
+        }
+    }
+
+    fn take(&mut self) -> (bool, HashSet<u32>) {
+        let force_rebuild = self.force_rebuild;
+        self.force_rebuild = false;
+        (force_rebuild, std::mem::take(&mut self.touched_nodes))
+    }
+}
+
 pub struct JsTickData {
     pub needs_continuous_ticks: bool,
     pub logs: Vec<(String, String)>,
@@ -631,6 +656,146 @@ fn build_dom_mirror_from_specs(
     }
 }
 
+fn mirror_node_from_specs(specs_world: &specs::World, node_id: u32) -> Option<DomMirrorNode> {
+    let entities = specs_world.entities();
+    let ent = entities.entity(node_id);
+    if !entities.is_alive(ent) {
+        return None;
+    }
+
+    let attrs_storage = specs_world.read_storage::<Attrs>();
+    let tags_storage = specs_world.read_storage::<Tag>();
+    let transforms_storage = specs_world.read_storage::<Transform2>();
+    let hierarchies_storage = specs_world.read_storage::<Hierarchy>();
+
+    let tag = tags_storage.get(ent)?.0.clone();
+    let attrs = attrs_storage
+        .get(ent)
+        .map(|attrs| attrs.0.clone())
+        .unwrap_or_default();
+    let transform = transforms_storage.get(ent);
+    let position = transform
+        .map(|tr| js_runtime::Vec3 {
+            x: tr.position.x,
+            y: tr.position.y,
+            z: tr.position.z,
+        })
+        .unwrap_or(js_runtime::Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        });
+    let rotation = transform
+        .map(|tr| js_runtime::Vec3 {
+            x: tr.rotation.x,
+            y: tr.rotation.y,
+            z: tr.rotation.z,
+        })
+        .unwrap_or(js_runtime::Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        });
+    let scale = transform
+        .map(|tr| js_runtime::Vec3 {
+            x: tr.scale.x,
+            y: tr.scale.y,
+            z: tr.scale.z,
+        })
+        .unwrap_or(js_runtime::Vec3 {
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+        });
+    let (parent, children) = hierarchies_storage
+        .get(ent)
+        .map(|hier| {
+            (
+                hier.parent.map(|p| p.id() as i32).unwrap_or(-1),
+                hier.children
+                    .iter()
+                    .map(|child| child.id() as i32)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or((-1, Vec::new()));
+
+    Some(DomMirrorNode {
+        attrs,
+        tag,
+        position,
+        rotation,
+        scale,
+        parent,
+        children,
+    })
+}
+
+fn rebuild_dom_mirror_space_subtrees(mirror: &mut DomMirror) {
+    mirror.space_subtrees.clear();
+    for (&node_id, node) in &mirror.nodes {
+        if node.tag != "space" {
+            continue;
+        }
+        let mut set = HashSet::new();
+        let mut stack = vec![node_id];
+        while let Some(curr) = stack.pop() {
+            if !set.insert(curr) {
+                continue;
+            }
+            if let Some(curr_node) = mirror.nodes.get(&curr) {
+                for child in &curr_node.children {
+                    if mirror.nodes.contains_key(child) {
+                        stack.push(*child);
+                    }
+                }
+            }
+        }
+        mirror.space_subtrees.insert(node_id as u32, set);
+    }
+}
+
+fn refresh_dom_mirror(
+    specs_world: &specs::World,
+    attached_node_ids: &HashSet<u32>,
+    previous_mirror: &DomMirror,
+    force_rebuild: bool,
+    touched_nodes: HashSet<u32>,
+) -> DomMirror {
+    if force_rebuild || previous_mirror.nodes.is_empty() {
+        return build_dom_mirror_from_specs(specs_world, attached_node_ids, previous_mirror.version);
+    }
+
+    if touched_nodes.is_empty() {
+        return previous_mirror.clone();
+    }
+
+    let mut mirror = previous_mirror.clone();
+    let mut changed = false;
+    for node_id in touched_nodes {
+        let node_id_i32 = node_id as i32;
+        if !attached_node_ids.contains(&node_id) {
+            changed |= mirror.nodes.remove(&node_id_i32).is_some();
+            continue;
+        }
+
+        if let Some(mut node) = mirror_node_from_specs(specs_world, node_id) {
+            node.children
+                .retain(|child| attached_node_ids.contains(&(*child as u32)));
+            mirror.nodes.insert(node_id_i32, node);
+            changed = true;
+        } else {
+            changed |= mirror.nodes.remove(&node_id_i32).is_some();
+        }
+    }
+
+    if changed {
+        mirror.version = mirror.version.saturating_add(1);
+        rebuild_dom_mirror_space_subtrees(&mut mirror);
+    }
+    mirror
+}
+
 fn build_local_space_snapshot_from_mirror(
     space_id: u32,
     allowed: &HashSet<i32>,
@@ -849,15 +1014,36 @@ pub fn js_update_snapshots_system(world: &mut World) {
         .map(|dom| dom.nodes.keys().copied().collect())
         .unwrap_or_default();
 
+    let (force_mirror_rebuild, touched_mirror_nodes) = world
+        .get_resource_mut::<DomMirrorDirty>()
+        .map(|mut dirty| dirty.take())
+        .unwrap_or((true, HashSet::new()));
+    let snapshot_forces_mirror_rebuild = world
+        .get_resource_mut::<JsSnapshotState>()
+        .map(|mut state| {
+            let force = state.mirror_force_rebuild;
+            state.mirror_force_rebuild = false;
+            force
+        })
+        .unwrap_or(true);
+
     let mirror = {
-        let previous_version = world
+        let previous_mirror = world
             .get_resource::<DomMirror>()
-            .map(|mirror| mirror.version)
+            .cloned()
             .unwrap_or_default();
         let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
             return;
         };
-        build_dom_mirror_from_specs(&specs_world.0, &attached_node_ids, previous_version)
+        refresh_dom_mirror(
+            &specs_world.0,
+            &attached_node_ids,
+            &previous_mirror,
+            force_mirror_rebuild
+                || snapshot_forces_mirror_rebuild
+                || attached_node_ids.len() != previous_mirror.nodes.len(),
+            touched_mirror_nodes,
+        )
     };
     world.insert_resource(mirror.clone());
 
@@ -2350,6 +2536,12 @@ pub fn js_tick_system(world: &mut World) {
         if let Some(mut policies) = world.get_resource_mut::<SpacePolicies>() {
             policies.dirty = true;
         }
+        if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
+            snapshot_state.mirror_force_rebuild = true;
+        }
+        if let Some(mut mirror_dirty) = world.get_resource_mut::<DomMirrorDirty>() {
+            mirror_dirty.force_rebuild();
+        }
     }
 }
 
@@ -2371,6 +2563,8 @@ mod tests {
         app.insert_resource(TransformUpdates::default());
         app.insert_resource(DirtyNodes::default());
         app.insert_resource(PendingJsAttachNodes::default());
+        app.insert_resource(DomMirror::default());
+        app.insert_resource(DomMirrorDirty::default());
         app.insert_non_send_resource(ScriptRuntimeManager::default());
 
         let specs_world = build_world();
@@ -2684,6 +2878,31 @@ mod tests {
         assert!(
             app.world().resource::<JsSnapshotState>().dirty,
             "dirty should stay true while the ack is still pending"
+        );
+    }
+
+    #[test]
+    fn dom_mirror_does_not_rebuild_while_only_snapshot_ack_is_pending() {
+        let (mut app, space_id) = snapshot_test_app();
+        let (worker, cmd_rx, _event_tx) = fake_worker(false);
+        app.world_mut()
+            .non_send_resource_mut::<ScriptRuntimeManager>()
+            .contexts
+            .insert(space_id, worker);
+
+        js_update_snapshots_system(app.world_mut());
+        assert!(
+            matches!(cmd_rx.recv(), Ok(JsWorkerCommand::UpdateSnapshots(_))),
+            "first dirty frame must dispatch one snapshot"
+        );
+        let version_after_first_send = app.world().resource::<DomMirror>().version;
+
+        js_update_snapshots_system(app.world_mut());
+
+        assert_eq!(
+            app.world().resource::<DomMirror>().version,
+            version_after_first_send,
+            "pending snapshot ACK alone must not rebuild the mirror from Specs each frame"
         );
     }
 
