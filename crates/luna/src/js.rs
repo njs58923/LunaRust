@@ -8,9 +8,9 @@ use std::{
 use bevy::prelude::*;
 use specs::{Join, WorldExt};
 
-use js_runtime::Engine as JsEngine;
 use crate::dom::{collect_subtree_ids, find_nearest_ancestor_include, resolve_node_relative_url};
 use crate::permissions::{CapabilityBits, SpacePolicies};
+use js_runtime::Engine as JsEngine;
 use virtual_dom::dom::{
     element::{Attrs, Hierarchy, Tag, Transform2},
     hsml::{Include, Model, Script},
@@ -18,9 +18,9 @@ use virtual_dom::dom::{
 
 use crate::{
     request_fetch_text, AttributeUpdates, DirtyNodes, ElemenetWorld, IoService, JsSnapshotState,
-    LogLevel, LogPanel, ModelLoadStates, PendingModelLoads, PendingScripts, ReloadTrigger,
-    ScriptLoadStates, SpaceHandleTable, SpaceHandleTables, TransformUpdates, VirtualDomData,
-    PendingJsAttachNodes,
+    LogLevel, LogPanel, ModelLoadStates, PendingJsAttachNodes, PendingModelLoads, PendingScripts,
+    ReloadTrigger, ScriptLoadStates, SpaceHandleTable, SpaceHandleTables, TransformUpdates,
+    VirtualDomData,
 };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -41,6 +41,24 @@ pub struct SpaceSnapshots {
     pub global_positions: HashMap<i32, js_runtime::Vec3>,
     pub parents: HashMap<i32, i32>,
     pub children: HashMap<i32, Vec<i32>>,
+}
+
+#[derive(Clone)]
+pub struct DomMirrorNode {
+    pub attrs: HashMap<String, String>,
+    pub tag: String,
+    pub position: js_runtime::Vec3,
+    pub rotation: js_runtime::Vec3,
+    pub scale: js_runtime::Vec3,
+    pub parent: i32,
+    pub children: Vec<i32>,
+}
+
+#[derive(Resource, Default, Clone)]
+pub struct DomMirror {
+    pub version: u64,
+    pub nodes: HashMap<i32, DomMirrorNode>,
+    pub space_subtrees: HashMap<u32, HashSet<i32>>,
 }
 
 pub struct JsTickData {
@@ -91,8 +109,13 @@ pub struct PoseMoveEventData {
 pub enum JsWorkerCommand {
     SetCapabilities(u64),
     UpdateSnapshots(SpaceSnapshots),
-    EvalScript { url: String, code: String },
-    Tick { elapsed_ms: f64 },
+    EvalScript {
+        url: String,
+        code: String,
+    },
+    Tick {
+        elapsed_ms: f64,
+    },
     PushElementCreationResults(Vec<(i32, i32)>),
     PushFetchResults(Vec<(i32, std::result::Result<String, String>)>),
     PushWsEvents(Vec<WsWorkerEvent>),
@@ -373,17 +396,6 @@ pub fn stop_space_worker(worker: &mut SpaceScriptWorker) {
     }
 }
 
-fn filter_snapshot_map<T: Clone>(
-    source: &HashMap<i32, T>,
-    allowed: &HashSet<i32>,
-) -> HashMap<i32, T> {
-    source
-        .iter()
-        .filter(|(node_id, _)| allowed.contains(node_id))
-        .map(|(node_id, value)| (*node_id, value.clone()))
-        .collect()
-}
-
 fn next_runtime_id(space_handle_tables: &mut SpaceHandleTables) -> u64 {
     space_handle_tables.next_runtime_id += 1;
     space_handle_tables.next_runtime_id
@@ -454,11 +466,7 @@ fn resolve_global_id(
         .and_then(|table| table.local_to_global.get(&local_id).copied())
 }
 
-fn insert_tag_specific_components(
-    world: &mut specs::World,
-    entity: specs::Entity,
-    tag_name: &str,
-) {
+fn insert_tag_specific_components(world: &mut specs::World, entity: specs::Entity, tag_name: &str) {
     match tag_name {
         "model" => {
             let mut storage = world.write_storage::<Model>();
@@ -512,18 +520,122 @@ fn sync_space_handle_table(table: &mut SpaceHandleTable, space_id: u32, allowed:
     }
 }
 
-fn build_local_space_snapshot(
+fn build_dom_mirror_from_specs(
+    specs_world: &specs::World,
+    attached_node_ids: &HashSet<u32>,
+    previous_version: u64,
+) -> DomMirror {
+    let entities = specs_world.entities();
+    let attrs_storage = specs_world.read_storage::<Attrs>();
+    let tags_storage = specs_world.read_storage::<Tag>();
+    let transforms_storage = specs_world.read_storage::<Transform2>();
+    let hierarchies_storage = specs_world.read_storage::<Hierarchy>();
+
+    let mut nodes = HashMap::new();
+
+    for (ent, tag) in (&entities, &tags_storage).join() {
+        if !attached_node_ids.contains(&ent.id()) {
+            continue;
+        }
+
+        let attrs = attrs_storage
+            .get(ent)
+            .map(|attrs| attrs.0.clone())
+            .unwrap_or_default();
+        let transform = transforms_storage.get(ent);
+        let position = transform
+            .map(|tr| js_runtime::Vec3 {
+                x: tr.position.x,
+                y: tr.position.y,
+                z: tr.position.z,
+            })
+            .unwrap_or(js_runtime::Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            });
+        let rotation = transform
+            .map(|tr| js_runtime::Vec3 {
+                x: tr.rotation.x,
+                y: tr.rotation.y,
+                z: tr.rotation.z,
+            })
+            .unwrap_or(js_runtime::Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            });
+        let scale = transform
+            .map(|tr| js_runtime::Vec3 {
+                x: tr.scale.x,
+                y: tr.scale.y,
+                z: tr.scale.z,
+            })
+            .unwrap_or(js_runtime::Vec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            });
+        let (parent, children) = hierarchies_storage
+            .get(ent)
+            .map(|hier| {
+                (
+                    hier.parent.map(|p| p.id() as i32).unwrap_or(-1),
+                    hier.children
+                        .iter()
+                        .filter(|child| attached_node_ids.contains(&child.id()))
+                        .map(|child| child.id() as i32)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or((-1, Vec::new()));
+
+        nodes.insert(
+            ent.id() as i32,
+            DomMirrorNode {
+                attrs,
+                tag: tag.0.clone(),
+                position,
+                rotation,
+                scale,
+                parent,
+                children,
+            },
+        );
+    }
+
+    let mut space_subtrees = HashMap::new();
+    for (&node_id, node) in &nodes {
+        if node.tag != "space" {
+            continue;
+        }
+        let mut set = HashSet::new();
+        let mut stack = vec![node_id];
+        while let Some(curr) = stack.pop() {
+            if !set.insert(curr) {
+                continue;
+            }
+            if let Some(curr_node) = nodes.get(&curr) {
+                for child in &curr_node.children {
+                    stack.push(*child);
+                }
+            }
+        }
+        space_subtrees.insert(node_id as u32, set);
+    }
+
+    DomMirror {
+        version: previous_version.saturating_add(1),
+        nodes,
+        space_subtrees,
+    }
+}
+
+fn build_local_space_snapshot_from_mirror(
     space_id: u32,
     allowed: &HashSet<i32>,
     table: &mut SpaceHandleTable,
-    attr_snap: &HashMap<i32, HashMap<String, String>>,
-    tag_snap: &HashMap<i32, String>,
-    positions: &HashMap<i32, js_runtime::Vec3>,
-    rotations: &HashMap<i32, js_runtime::Vec3>,
-    scales: &HashMap<i32, js_runtime::Vec3>,
-    global_positions: &HashMap<i32, js_runtime::Vec3>,
-    parents: &HashMap<i32, i32>,
-    children_map: &HashMap<i32, Vec<i32>>,
+    mirror: &DomMirror,
 ) -> SpaceSnapshots {
     sync_space_handle_table(table, space_id, allowed);
 
@@ -539,45 +651,32 @@ fn build_local_space_snapshot(
     for &global_node_id_i32 in allowed {
         let global_node_id = global_node_id_i32 as u32;
         let local_id = ensure_local_id(table, global_node_id);
+        let Some(node) = mirror.nodes.get(&global_node_id_i32) else {
+            continue;
+        };
 
-        if let Some(attrs) = attr_snap.get(&global_node_id_i32) {
-            local_attr_snap.insert(local_id, attrs.clone());
-        }
-        if let Some(tag) = tag_snap.get(&global_node_id_i32) {
-            local_tag_snap.insert(local_id, tag.clone());
-        }
-        if let Some(pos) = positions.get(&global_node_id_i32) {
-            local_positions.insert(local_id, pos.clone());
-        }
-        if let Some(rot) = rotations.get(&global_node_id_i32) {
-            local_rotations.insert(local_id, rot.clone());
-        }
-        if let Some(scale) = scales.get(&global_node_id_i32) {
-            local_scales.insert(local_id, scale.clone());
-        }
-        if let Some(global_pos) = global_positions.get(&global_node_id_i32) {
-            local_global_positions.insert(local_id, global_pos.clone());
-        }
+        local_attr_snap.insert(local_id, node.attrs.clone());
+        local_tag_snap.insert(local_id, node.tag.clone());
+        local_positions.insert(local_id, node.position.clone());
+        local_rotations.insert(local_id, node.rotation.clone());
+        local_scales.insert(local_id, node.scale.clone());
+        local_global_positions.insert(local_id, node.position.clone());
 
-        let parent_local = parents
-            .get(&global_node_id_i32)
-            .copied()
-            .and_then(|parent_id| {
-                if parent_id < 0 {
-                    Some(-1)
-                } else {
-                    table.global_to_local.get(&(parent_id as u32)).copied()
-                }
-            })
-            .unwrap_or(-1);
+        let parent_local = if node.parent < 0 {
+            -1
+        } else {
+            table
+                .global_to_local
+                .get(&(node.parent as u32))
+                .copied()
+                .unwrap_or(-1)
+        };
         local_parents.insert(local_id, parent_local);
 
-        let children = children_map
-            .get(&global_node_id_i32)
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|child_id| table.global_to_local.get(&(child_id as u32)).copied())
+        let children = node
+            .children
+            .iter()
+            .filter_map(|child_id| table.global_to_local.get(&(*child_id as u32)).copied())
             .collect::<Vec<_>>();
         local_children.insert(local_id, children);
     }
@@ -595,7 +694,6 @@ fn build_local_space_snapshot(
 }
 
 pub fn find_owner_space_id(world: &specs::World, mut node: specs::Entity) -> Option<u32> {
-    let entities = world.entities();
     let hier = world.read_storage::<Hierarchy>();
     let tags = world.read_storage::<Tag>();
     loop {
@@ -751,53 +849,19 @@ pub fn js_update_snapshots_system(world: &mut World) {
         .map(|dom| dom.nodes.keys().copied().collect())
         .unwrap_or_default();
 
-    let space_subtrees = {
+    let mirror = {
+        let previous_version = world
+            .get_resource::<DomMirror>()
+            .map(|mirror| mirror.version)
+            .unwrap_or_default();
         let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
             return;
         };
-        let entities = specs_world.0.entities();
-        let tags_storage = specs_world.0.read_storage::<Tag>();
-        let hierarchies_storage = specs_world.0.read_storage::<Hierarchy>();
-
-        let mut children_map = HashMap::new();
-        for (ent, hier) in (&entities, &hierarchies_storage).join() {
-            if !attached_node_ids.contains(&ent.id()) {
-                continue;
-            }
-            children_map.insert(
-                ent.id() as i32,
-                hier.children
-                    .iter()
-                    .filter(|child| attached_node_ids.contains(&child.id()))
-                    .map(|c| c.id() as i32)
-                    .collect::<Vec<_>>(),
-            );
-        }
-
-        let mut space_subtrees: HashMap<u32, HashSet<i32>> = HashMap::new();
-        for (ent, tag) in (&entities, &tags_storage).join() {
-            if !attached_node_ids.contains(&ent.id()) || tag.0 != "space" {
-                continue;
-            }
-            let mut set = HashSet::new();
-            let mut stack = vec![ent.id() as i32];
-            while let Some(curr) = stack.pop() {
-                if !set.insert(curr) {
-                    continue;
-                }
-                if let Some(children) = children_map.get(&curr) {
-                    for child in children {
-                        stack.push(*child);
-                    }
-                }
-            }
-            space_subtrees.insert(ent.id(), set);
-        }
-
-        space_subtrees
+        build_dom_mirror_from_specs(&specs_world.0, &attached_node_ids, previous_version)
     };
+    world.insert_resource(mirror.clone());
 
-    let active_space_ids: HashSet<u32> = space_subtrees.keys().copied().collect();
+    let active_space_ids: HashSet<u32> = mirror.space_subtrees.keys().copied().collect();
     let mut removed_contexts = Vec::new();
     let mut created_contexts = Vec::new();
     let mut errors = Vec::new();
@@ -889,123 +953,17 @@ pub fn js_update_snapshots_system(world: &mut World) {
         return;
     }
 
-    let requested_node_ids: HashSet<i32> = snapshot_target_space_ids
-        .iter()
-        .filter_map(|space_id| space_subtrees.get(space_id))
-        .flat_map(|allowed| allowed.iter().copied())
-        .collect();
-
-    let (attr_snap, tag_snap, positions, rotations, scales, parents, children_map) = {
-        let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
-            return;
-        };
-        let entities = specs_world.0.entities();
-        let attrs_storage = specs_world.0.read_storage::<Attrs>();
-        let tags_storage = specs_world.0.read_storage::<Tag>();
-        let transforms_storage = specs_world.0.read_storage::<Transform2>();
-        let hierarchies_storage = specs_world.0.read_storage::<Hierarchy>();
-
-        let mut attr_snap = HashMap::new();
-        for (ent, attrs) in (&entities, &attrs_storage).join() {
-            if !requested_node_ids.contains(&(ent.id() as i32)) {
-                continue;
-            }
-            let mut map = HashMap::new();
-            for (k, v) in &attrs.0 {
-                map.insert(k.clone(), v.clone());
-            }
-            attr_snap.insert(ent.id() as i32, map);
-        }
-
-        let mut tag_snap = HashMap::new();
-        for (ent, tag) in (&entities, &tags_storage).join() {
-            if !requested_node_ids.contains(&(ent.id() as i32)) {
-                continue;
-            }
-            tag_snap.insert(ent.id() as i32, tag.0.clone());
-        }
-
-        let mut positions = HashMap::new();
-        let mut rotations = HashMap::new();
-        let mut scales = HashMap::new();
-        for (ent, tr) in (&entities, &transforms_storage).join() {
-            if !requested_node_ids.contains(&(ent.id() as i32)) {
-                continue;
-            }
-            use js_runtime::Vec3;
-            positions.insert(
-                ent.id() as i32,
-                Vec3 {
-                    x: tr.position.x,
-                    y: tr.position.y,
-                    z: tr.position.z,
-                },
-            );
-            rotations.insert(
-                ent.id() as i32,
-                Vec3 {
-                    x: tr.rotation.x,
-                    y: tr.rotation.y,
-                    z: tr.rotation.z,
-                },
-            );
-            scales.insert(
-                ent.id() as i32,
-                Vec3 {
-                    x: tr.scale.x,
-                    y: tr.scale.y,
-                    z: tr.scale.z,
-                },
-            );
-        }
-
-        let mut parents = HashMap::new();
-        let mut children_map = HashMap::new();
-        for (ent, hier) in (&entities, &hierarchies_storage).join() {
-            if !requested_node_ids.contains(&(ent.id() as i32)) {
-                continue;
-            }
-            parents.insert(ent.id() as i32, hier.parent.map(|p| p.id() as i32).unwrap_or(-1));
-            children_map.insert(
-                ent.id() as i32,
-                hier.children.iter().map(|c| c.id() as i32).collect::<Vec<_>>(),
-            );
-        }
-
-        (
-            attr_snap,
-            tag_snap,
-            positions,
-            rotations,
-            scales,
-            parents,
-            children_map,
-        )
-    };
-
     let snapshot_batches = {
         let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() else {
             return;
         };
         let mut snapshot_batches = Vec::new();
         for space_id in &snapshot_target_space_ids {
-            let Some(allowed) = space_subtrees.get(space_id) else {
+            let Some(allowed) = mirror.space_subtrees.get(space_id) else {
                 continue;
             };
             let table = ensure_space_handle_table(&mut space_handle_tables, *space_id);
-            let snap = build_local_space_snapshot(
-                *space_id,
-                allowed,
-                table,
-                &attr_snap,
-                &tag_snap,
-                &positions,
-                &rotations,
-                &scales,
-                &positions,
-                &parents,
-                &children_map,
-            );
+            let snap = build_local_space_snapshot_from_mirror(*space_id, allowed, table, &mirror);
             snapshot_batches.push((*space_id, snap));
         }
         snapshot_batches
@@ -1143,10 +1101,7 @@ pub fn js_eval_pending_scripts(world: &mut World) {
                 if space_still_attached {
                     ScriptEnqueueResult::DeferUntilContext
                 } else {
-                    ScriptEnqueueResult::Error(format!(
-                        "missing JS context for space {}",
-                        space_id
-                    ))
+                    ScriptEnqueueResult::Error(format!("missing JS context for space {}", space_id))
                 }
             }
         };
@@ -1155,9 +1110,9 @@ pub fn js_eval_pending_scripts(world: &mut World) {
             ScriptEnqueueResult::Queued => {
                 queued_this_frame += 1;
                 log_messages.push(crate::LogEntry::new(
-                LogLevel::Info,
-                format!("[JS][space:{}] Script queued: {}", space_id, url),
-            ))
+                    LogLevel::Info,
+                    format!("[JS][space:{}] Script queued: {}", space_id, url),
+                ))
             }
             ScriptEnqueueResult::DeferUntilContext => deferred_scripts.push((space_id, url, code)),
             ScriptEnqueueResult::Error(err) => log_messages.push(crate::LogEntry::new(
@@ -1296,7 +1251,10 @@ pub fn js_tick_system(world: &mut World) {
             if already_loaded {
                 log_panel.push_for_space(
                     LogLevel::Info,
-                    format!("[JS][space:{}] Script already loaded, skipping: {}", space_id, url),
+                    format!(
+                        "[JS][space:{}] Script already loaded, skipping: {}",
+                        space_id, url
+                    ),
                     space_id,
                 );
             } else if let Some(err) = error {
@@ -1497,13 +1455,17 @@ pub fn js_tick_system(world: &mut World) {
         };
         attribute_updates.0.extend(validated_attribute_updates);
     }
-    
+
     {
         let Some(mut transform_updates) = world.get_resource_mut::<TransformUpdates>() else {
             return;
         };
-        transform_updates.positions.extend(validated_position_updates);
-        transform_updates.rotations.extend(validated_rotation_updates);
+        transform_updates
+            .positions
+            .extend(validated_position_updates);
+        transform_updates
+            .rotations
+            .extend(validated_rotation_updates);
         transform_updates.scales.extend(validated_scale_updates);
     }
 
@@ -1683,7 +1645,7 @@ pub fn js_tick_system(world: &mut World) {
                                 already_attached_dirty_ids.insert(node_id);
                             }
                         }
-                    }                   
+                    }
 
                     log_messages.push(format!(
                         "[JS][space:{}] appendChild: parent={} child={}",
@@ -1695,7 +1657,9 @@ pub fn js_tick_system(world: &mut World) {
         };
 
         if let Some(mut pending_js_attaches) = world.get_resource_mut::<PendingJsAttachNodes>() {
-            pending_js_attaches.0.extend(newly_attached_ids.iter().copied());
+            pending_js_attaches
+                .0
+                .extend(newly_attached_ids.iter().copied());
         }
 
         let dirty_ids_vec: Vec<u32> = already_attached_dirty_ids.into_iter().collect();
@@ -1740,8 +1704,7 @@ pub fn js_tick_system(world: &mut World) {
     // Si ambos llegan al mismo specs entity, el segundo delete_entity
     // panic-ea en debug_assert de Generation::die(). HashSet vive a lo largo
     // de todos los batches del frame.
-    let mut frame_deleted_global: std::collections::HashSet<u32> =
-        std::collections::HashSet::new();
+    let mut frame_deleted_global: std::collections::HashSet<u32> = std::collections::HashSet::new();
     // Snapshot ONE-TIME del set "attached" para todo el frame. Si hay 5 workers
     // que piden removes, el snapshot vale para los 5 (dom_data.nodes no se
     // modifica dentro de este sistema — el cleanup definitivo lo hace
@@ -1979,9 +1942,7 @@ pub fn js_tick_system(world: &mut World) {
 
     // WebSocket: abre conexiones, encola sends, cierra. El transporte real vive
     // en `ws.rs`; aquí sólo encaminamos las colas drenadas del engine.
-    if !ws_connect_batches.is_empty()
-        || !ws_send_batches.is_empty()
-        || !ws_close_batches.is_empty()
+    if !ws_connect_batches.is_empty() || !ws_send_batches.is_empty() || !ws_close_batches.is_empty()
     {
         let (Some(tokio_rt), Some(ws_service)) = (
             world.get_resource::<crate::TokioRuntime>(),
@@ -2025,7 +1986,13 @@ pub fn js_tick_system(world: &mut World) {
             for requested_url in urls {
                 plans.push((
                     space_id,
-                    plan_navigation_for_space(&specs_world.0, &current_url, space_id, &requested_url, caps),
+                    plan_navigation_for_space(
+                        &specs_world.0,
+                        &current_url,
+                        space_id,
+                        &requested_url,
+                        caps,
+                    ),
                 ));
             }
         }
@@ -2043,7 +2010,8 @@ pub fn js_tick_system(world: &mut World) {
                     ));
                 }
                 NavigationPlan::GlobalNav { url } => {
-                    log_panel.push_warn(format!("[JS][space:{}] global navigate: {}", space_id, url));
+                    log_panel
+                        .push_warn(format!("[JS][space:{}] global navigate: {}", space_id, url));
                 }
                 NavigationPlan::Blocked { url, reason } => {
                     log_panel.push_warn(format!(
@@ -2097,9 +2065,7 @@ pub fn js_tick_system(world: &mut World) {
                             .unwrap_or_default();
                         if caps.contains(CapabilityBits::MOUNT_ROOT_SPACE) {
                             open_requests.push((space_id, url, kind));
-                        } else if let Some(mut log_panel) =
-                            world.get_resource_mut::<LogPanel>()
-                        {
+                        } else if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
                             log_panel.push_warn(format!(
                                 "[JS][space:{}] tabs.open denied (missing MOUNT_ROOT_SPACE): {} ({})",
                                 space_id, url, kind
@@ -2113,9 +2079,7 @@ pub fn js_tick_system(world: &mut World) {
                             .unwrap_or_default();
                         if caps.contains(CapabilityBits::UNMOUNT_ROOT_SPACE) {
                             close_requests.push((space_id, tab_id));
-                        } else if let Some(mut log_panel) =
-                            world.get_resource_mut::<LogPanel>()
-                        {
+                        } else if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
                             log_panel.push_warn(format!(
                                 "[JS][space:{}] tabs.close denied (missing UNMOUNT_ROOT_SPACE): tab_id={}",
                                 space_id, tab_id
@@ -2129,25 +2093,29 @@ pub fn js_tick_system(world: &mut World) {
                             .unwrap_or_default();
                         if caps.contains(CapabilityBits::UPDATE_ROOT_SPACE) {
                             visibility_requests.push((space_id, tab_id, visible));
-                        } else if let Some(mut log_panel) =
-                            world.get_resource_mut::<LogPanel>()
-                        {
+                        } else if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
                             log_panel.push_warn(format!(
                                 "[JS][space:{}] tabs.setVisible denied (missing UPDATE_ROOT_SPACE)",
                                 space_id
                             ));
                         }
                     }
-                    js_runtime::TabAction::SetPose { tab_id, px, py, pz, rx, ry, rz } => {
+                    js_runtime::TabAction::SetPose {
+                        tab_id,
+                        px,
+                        py,
+                        pz,
+                        rx,
+                        ry,
+                        rz,
+                    } => {
                         let caps = capabilities_by_space
                             .get(&space_id)
                             .copied()
                             .unwrap_or_default();
                         if caps.contains(CapabilityBits::UPDATE_ROOT_SPACE) {
                             pose_requests.push((space_id, tab_id, [px, py, pz, rx, ry, rz]));
-                        } else if let Some(mut log_panel) =
-                            world.get_resource_mut::<LogPanel>()
-                        {
+                        } else if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
                             log_panel.push_warn(format!(
                                 "[JS][space:{}] tabs.setPose denied (missing UPDATE_ROOT_SPACE)",
                                 space_id
@@ -2191,9 +2159,7 @@ pub fn js_tick_system(world: &mut World) {
                     url: String::new(),
                 });
             }
-            if let Some(mut unmount_queue) =
-                world.get_resource_mut::<crate::SpaceUnmountQueue>()
-            {
+            if let Some(mut unmount_queue) = world.get_resource_mut::<crate::SpaceUnmountQueue>() {
                 unmount_queue.0.extend(unmount_pushes);
             }
         }
@@ -2212,7 +2178,8 @@ pub fn js_tick_system(world: &mut World) {
                 find_root_worker_space_id_local(&specs_world.0, manager)
             };
             if let Some(root_id) = root_worker_id {
-                if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() {
+                if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>()
+                {
                     if let Some(worker) = manager.contexts.get_mut(&root_id) {
                         if worker.root_api_sent {
                             // Pose primero, después visibility. Garantiza que
@@ -2274,7 +2241,6 @@ pub fn js_tick_system(world: &mut World) {
             (shell_id, sender_map)
         };
 
-
         // Acumular routes: target_space_id → Vec<ShellMessage con fromTabId>.
         let mut routes: std::collections::HashMap<u32, Vec<js_runtime::ShellMessage>> =
             std::collections::HashMap::new();
@@ -2321,10 +2287,13 @@ pub fn js_tick_system(world: &mut World) {
 
                 // En el inbox del destino, `target_tab_id` lo usamos como
                 // "fromTabId" — quien lo originó. Convención del bus.
-                routes.entry(target_space_id).or_default().push(js_runtime::ShellMessage {
-                    target_tab_id: sender_tab_id,
-                    payload: msg.payload,
-                });
+                routes
+                    .entry(target_space_id)
+                    .or_default()
+                    .push(js_runtime::ShellMessage {
+                        target_tab_id: sender_tab_id,
+                        payload: msg.payload,
+                    });
             }
         }
 
@@ -2340,14 +2309,14 @@ pub fn js_tick_system(world: &mut World) {
         if !routes.is_empty() {
             let mut missing_targets: Vec<u32> = Vec::new();
             {
-                let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
+                let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>()
+                else {
                     return;
                 };
                 for (target_space_id, msgs) in routes {
                     if let Some(worker) = manager.contexts.get_mut(&target_space_id) {
-                        let send_result = worker
-                            .cmd_tx
-                            .send(JsWorkerCommand::PushShellMessages(msgs));
+                        let send_result =
+                            worker.cmd_tx.send(JsWorkerCommand::PushShellMessages(msgs));
                         if send_result.is_ok() {
                             worker.needs_tick = true;
                         }
@@ -2359,9 +2328,8 @@ pub fn js_tick_system(world: &mut World) {
             if !missing_targets.is_empty() {
                 if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
                     for sid in missing_targets {
-                        log_panel.push_warn(format!(
-                            "[shell-bus] no worker for target space:{}", sid
-                        ));
+                        log_panel
+                            .push_warn(format!("[shell-bus] no worker for target space:{}", sid));
                     }
                 }
             }
@@ -2421,14 +2389,32 @@ mod tests {
                     .insert(
                         space_ent,
                         Transform2 {
-                            position: DomVec3 { x: 0.0, y: 0.0, z: 0.0 },
-                            rotation: DomVec3 { x: 0.0, y: 0.0, z: 0.0 },
-                            scale: DomVec3 { x: 1.0, y: 1.0, z: 1.0 },
+                            position: DomVec3 {
+                                x: 0.0,
+                                y: 0.0,
+                                z: 0.0,
+                            },
+                            rotation: DomVec3 {
+                                x: 0.0,
+                                y: 0.0,
+                                z: 0.0,
+                            },
+                            scale: DomVec3 {
+                                x: 1.0,
+                                y: 1.0,
+                                z: 1.0,
+                            },
                         },
                     )
                     .ok();
-                hier.insert(space_ent, Hierarchy { parent: None, children: vec![] })
-                    .ok();
+                hier.insert(
+                    space_ent,
+                    Hierarchy {
+                        parent: None,
+                        children: vec![],
+                    },
+                )
+                .ok();
             }
             app.world_mut()
                 .resource_mut::<VirtualDomData>()
@@ -2444,6 +2430,131 @@ mod tests {
     fn snapshot_test_app() -> (App, u32) {
         let (app, space_ids) = snapshot_test_app_with_spaces(1);
         (app, space_ids[0])
+    }
+
+    #[test]
+    fn dom_mirror_builds_full_space_snapshot_equivalent_shape() {
+        let specs_world = build_world();
+        let space_ent = specs_world.entities().create();
+        let child_ent = specs_world.entities().create();
+        {
+            let mut tags = specs_world.write_storage::<Tag>();
+            let mut attrs = specs_world.write_storage::<Attrs>();
+            let mut transforms = specs_world.write_storage::<Transform2>();
+            let mut hier = specs_world.write_storage::<Hierarchy>();
+
+            tags.insert(space_ent, Tag("space".into())).ok();
+            tags.insert(child_ent, Tag("box".into())).ok();
+
+            attrs.insert(space_ent, Attrs(HashMap::new())).ok();
+            attrs
+                .insert(
+                    child_ent,
+                    Attrs(HashMap::from([("color".into(), "#fff".into())])),
+                )
+                .ok();
+
+            transforms
+                .insert(
+                    space_ent,
+                    Transform2 {
+                        position: DomVec3 {
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                        rotation: DomVec3 {
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                        scale: DomVec3 {
+                            x: 1.0,
+                            y: 1.0,
+                            z: 1.0,
+                        },
+                    },
+                )
+                .ok();
+            transforms
+                .insert(
+                    child_ent,
+                    Transform2 {
+                        position: DomVec3 {
+                            x: 1.0,
+                            y: 2.0,
+                            z: 3.0,
+                        },
+                        rotation: DomVec3 {
+                            x: 0.1,
+                            y: 0.2,
+                            z: 0.3,
+                        },
+                        scale: DomVec3 {
+                            x: 4.0,
+                            y: 5.0,
+                            z: 6.0,
+                        },
+                    },
+                )
+                .ok();
+
+            hier.insert(
+                space_ent,
+                Hierarchy {
+                    parent: None,
+                    children: vec![child_ent],
+                },
+            )
+            .ok();
+            hier.insert(
+                child_ent,
+                Hierarchy {
+                    parent: Some(space_ent),
+                    children: vec![],
+                },
+            )
+            .ok();
+        }
+
+        let attached = HashSet::from([space_ent.id(), child_ent.id()]);
+        let mirror = build_dom_mirror_from_specs(&specs_world, &attached, 7);
+        let allowed = mirror
+            .space_subtrees
+            .get(&space_ent.id())
+            .expect("space subtree should exist");
+        let mut table = SpaceHandleTable {
+            next_local_id: 1,
+            ..Default::default()
+        };
+        let snap =
+            build_local_space_snapshot_from_mirror(space_ent.id(), allowed, &mut table, &mirror);
+
+        let child_local = table
+            .global_to_local
+            .get(&child_ent.id())
+            .copied()
+            .expect("child should get a local id");
+
+        assert_eq!(mirror.version, 8);
+        assert_eq!(snap.tag_snap.get(&0).map(String::as_str), Some("space"));
+        assert_eq!(
+            snap.tag_snap.get(&child_local).map(String::as_str),
+            Some("box")
+        );
+        assert_eq!(
+            snap.attr_snap
+                .get(&child_local)
+                .and_then(|attrs| attrs.get("color"))
+                .map(String::as_str),
+            Some("#fff")
+        );
+        assert_eq!(snap.parents.get(&child_local), Some(&0));
+        assert_eq!(snap.children.get(&0), Some(&vec![child_local]));
+        assert_eq!(
+            snap.positions.get(&child_local).map(|p| (p.x, p.y, p.z)),
+            Some((1.0, 2.0, 3.0))
+        );
     }
 
     fn fake_worker(
@@ -2488,7 +2599,10 @@ mod tests {
             .contexts
             .get(&space_id)
             .expect("fake worker should still be registered");
-        assert!(worker.snapshot_in_flight, "snapshot dispatch must set in-flight");
+        assert!(
+            worker.snapshot_in_flight,
+            "snapshot dispatch must set in-flight"
+        );
         assert!(
             app.world().resource::<JsSnapshotState>().dirty,
             "dirty should stay true until the worker acks the snapshot"
@@ -2609,7 +2723,9 @@ mod tests {
         busy_worker.snapshot_in_flight = true;
         let (idle_worker, idle_cmd_rx, _idle_event_tx) = fake_worker(false);
 
-        let mut manager = app.world_mut().non_send_resource_mut::<ScriptRuntimeManager>();
+        let mut manager = app
+            .world_mut()
+            .non_send_resource_mut::<ScriptRuntimeManager>();
         manager.contexts.insert(busy_space_id, busy_worker);
         manager.contexts.insert(idle_space_id, idle_worker);
         drop(manager);
@@ -2621,7 +2737,10 @@ mod tests {
             "idle space should still receive its snapshot even if another worker is in flight"
         );
         assert!(
-            matches!(busy_cmd_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+            matches!(
+                busy_cmd_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
             "busy space must not receive another snapshot while one is already in flight"
         );
     }
@@ -2638,7 +2757,11 @@ mod tests {
         js_eval_pending_scripts(app.world_mut());
 
         let pending = app.world().resource::<PendingScripts>();
-        assert_eq!(pending.0.len(), 1, "script should stay queued until context exists");
+        assert_eq!(
+            pending.0.len(),
+            1,
+            "script should stay queued until context exists"
+        );
         assert_eq!(pending.0[0].0, space_id);
     }
 }
