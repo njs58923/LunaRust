@@ -113,6 +113,7 @@ pub enum JsWorkerCommand {
 }
 
 pub enum JsWorkerEvent {
+    SnapshotApplied,
     EvalResult {
         url: String,
         already_loaded: bool,
@@ -221,6 +222,7 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                         );
                         ctx.engine
                             .update_hierarchy_snapshot(snap.parents, snap.children);
+                        let _ = event_tx.send(JsWorkerEvent::SnapshotApplied);
                     }
                     JsWorkerCommand::EvalScript { url, code } => {
                         let is_ephemeral = url.starts_with("eval://");
@@ -744,6 +746,14 @@ pub fn js_update_snapshots_system(world: &mut World) {
         return;
     }
 
+    let snapshot_in_flight = world
+        .get_non_send_resource::<ScriptRuntimeManager>()
+        .map(|manager| manager.contexts.values().any(|worker| worker.snapshot_in_flight))
+        .unwrap_or(false);
+    if snapshot_in_flight {
+        return;
+    }
+
     let attached_node_ids: HashSet<u32> = world
         .get_resource::<VirtualDomData>()
         .map(|dom| dom.nodes.keys().copied().collect())
@@ -949,6 +959,7 @@ pub fn js_update_snapshots_system(world: &mut World) {
         }
         snapshot_batches
     };
+    let has_snapshot_batches = !snapshot_batches.is_empty();
 
     let mut all_snapshots_sent = true;
     {
@@ -956,14 +967,14 @@ pub fn js_update_snapshots_system(world: &mut World) {
             return;
         };
         let mut broken_contexts = Vec::new();
-        // Sin gate `snapshot_in_flight`: workers idle (needs_tick=false) no
-        // mandan TickData, así que el flag se quedaba en `true` para siempre
-        // y ataba `keep_dirty=true`. Channel mpsc unbounded; worker reemplaza
-        // estado al recibir, no necesita ack.
         for (space_id, snap) in snapshot_batches {
             let Some(worker) = manager.contexts.get_mut(&space_id) else {
                 continue;
             };
+            if worker.snapshot_in_flight {
+                all_snapshots_sent = false;
+                continue;
+            }
             if let Err(e) = worker.cmd_tx.send(JsWorkerCommand::UpdateSnapshots(snap)) {
                 errors.push(format!(
                     "failed to send snapshots to space {}: {}",
@@ -993,7 +1004,7 @@ pub fn js_update_snapshots_system(world: &mut World) {
         }
     }
 
-    let keep_dirty = !all_snapshots_sent || !errors.is_empty();
+    let keep_dirty = has_snapshot_batches || !all_snapshots_sent || !errors.is_empty();
     if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
         snapshot_state.dirty = keep_dirty;
     }
@@ -1114,6 +1125,9 @@ pub fn js_tick_system(world: &mut World) {
     let mut eval_events: Vec<(u32, String, bool, Option<String>)> = Vec::new();
     let mut tick_batches: Vec<(u32, JsTickData)> = Vec::new();
     let mut worker_errors: Vec<String> = Vec::new();
+    let mut snapshot_acks = 0usize;
+    let mut contexts_removed = false;
+    let pending_snapshot_in_flight;
 
     {
         let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
@@ -1134,6 +1148,10 @@ pub fn js_tick_system(world: &mut World) {
         for (space_id, worker) in manager.contexts.iter_mut() {
             loop {
                 match worker.event_rx.try_recv() {
+                    Ok(JsWorkerEvent::SnapshotApplied) => {
+                        worker.snapshot_in_flight = false;
+                        snapshot_acks += 1;
+                    }
                     Ok(JsWorkerEvent::EvalResult {
                         url,
                         already_loaded,
@@ -1182,8 +1200,14 @@ pub fn js_tick_system(world: &mut World) {
             if let Some(mut worker) = manager.contexts.remove(&space_id) {
                 stop_space_worker(&mut worker);
                 worker_errors.push(format!("[JS][space:{}] worker disconnected", space_id));
+                contexts_removed = true;
             }
         }
+
+        pending_snapshot_in_flight = manager
+            .contexts
+            .values()
+            .any(|worker| worker.snapshot_in_flight);
     }
 
     if !eval_events.is_empty() || !worker_errors.is_empty() {
@@ -2266,9 +2290,13 @@ pub fn js_tick_system(world: &mut World) {
         }
     }
 
-    if snapshot_dirty {
+    if snapshot_dirty || contexts_removed || pending_snapshot_in_flight {
         if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
             snapshot_state.dirty = true;
+        }
+    } else if snapshot_acks > 0 {
+        if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
+            snapshot_state.dirty = false;
         }
     }
 
@@ -2276,5 +2304,155 @@ pub fn js_tick_system(world: &mut World) {
         if let Some(mut policies) = world.get_resource_mut::<SpacePolicies>() {
             policies.dirty = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::prelude::{App, Time};
+    use specs::WorldExt;
+    use virtual_dom::dom::element::{build_world, Vec3 as DomVec3};
+
+    fn snapshot_test_app() -> (App, u32) {
+        let mut app = App::new();
+        app.insert_resource(JsSnapshotState { dirty: true });
+        app.insert_resource(VirtualDomData::default());
+        app.insert_resource(SpaceHandleTables::default());
+        app.insert_resource(LogPanel::default());
+        app.insert_resource(Time::<()>::default());
+        app.insert_resource(AttributeUpdates::default());
+        app.insert_resource(TransformUpdates::default());
+        app.insert_resource(DirtyNodes::default());
+        app.insert_resource(PendingJsAttachNodes::default());
+        app.insert_non_send_resource(ScriptRuntimeManager::default());
+
+        let mut specs_world = build_world();
+        let space_ent = specs_world.entities().create();
+        let space_id = space_ent.id();
+        {
+            let mut tags = specs_world.write_storage::<Tag>();
+            let mut attrs = specs_world.write_storage::<Attrs>();
+            let mut transforms = specs_world.write_storage::<Transform2>();
+            let mut hier = specs_world.write_storage::<Hierarchy>();
+            tags.insert(space_ent, Tag("space".into())).ok();
+            attrs.insert(space_ent, Attrs(HashMap::new())).ok();
+            transforms
+                .insert(
+                    space_ent,
+                    Transform2 {
+                        position: DomVec3 { x: 0.0, y: 0.0, z: 0.0 },
+                        rotation: DomVec3 { x: 0.0, y: 0.0, z: 0.0 },
+                        scale: DomVec3 { x: 1.0, y: 1.0, z: 1.0 },
+                    },
+                )
+                .ok();
+            hier.insert(space_ent, Hierarchy { parent: None, children: vec![] })
+                .ok();
+        }
+
+        app.insert_resource(ElemenetWorld(specs_world));
+        app.world_mut()
+            .resource_mut::<VirtualDomData>()
+            .nodes
+            .insert(space_id, space_ent);
+
+        (app, space_id)
+    }
+
+    fn fake_worker(
+        needs_tick: bool,
+    ) -> (
+        SpaceScriptWorker,
+        std::sync::mpsc::Receiver<JsWorkerCommand>,
+        std::sync::mpsc::Sender<JsWorkerEvent>,
+    ) {
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<JsWorkerCommand>();
+        let (event_tx, event_rx) = std::sync::mpsc::channel::<JsWorkerEvent>();
+        (
+            SpaceScriptWorker {
+                cmd_tx,
+                event_rx,
+                snapshot_in_flight: false,
+                tick_in_flight: false,
+                needs_tick,
+                join: None,
+                bootstrap_scripts_enqueued: HashSet::new(),
+                last_capabilities_bits: 0,
+                root_api_sent: false,
+            },
+            cmd_rx,
+            event_tx,
+        )
+    }
+
+    #[test]
+    fn snapshots_stay_dirty_until_worker_ack_then_clear() {
+        let (mut app, space_id) = snapshot_test_app();
+        let (worker, cmd_rx, event_tx) = fake_worker(false);
+        app.world_mut()
+            .non_send_resource_mut::<ScriptRuntimeManager>()
+            .contexts
+            .insert(space_id, worker);
+
+        js_update_snapshots_system(app.world_mut());
+
+        let manager = app.world().non_send_resource::<ScriptRuntimeManager>();
+        let worker = manager
+            .contexts
+            .get(&space_id)
+            .expect("fake worker should still be registered");
+        assert!(worker.snapshot_in_flight, "snapshot dispatch must set in-flight");
+        assert!(
+            app.world().resource::<JsSnapshotState>().dirty,
+            "dirty should stay true until the worker acks the snapshot"
+        );
+        let cmd = cmd_rx.recv().expect("snapshot command should be queued");
+        assert!(matches!(cmd, JsWorkerCommand::UpdateSnapshots(_)));
+
+        event_tx
+            .send(JsWorkerEvent::SnapshotApplied)
+            .expect("test should be able to inject snapshot ack");
+        js_tick_system(app.world_mut());
+
+        let manager = app.world().non_send_resource::<ScriptRuntimeManager>();
+        let worker = manager
+            .contexts
+            .get(&space_id)
+            .expect("fake worker should still be registered after ack");
+        assert!(
+            !worker.snapshot_in_flight,
+            "snapshot ack must clear in-flight state"
+        );
+        assert!(
+            !app.world().resource::<JsSnapshotState>().dirty,
+            "snapshot ack should clear dirty when nothing else changed"
+        );
+    }
+
+    #[test]
+    fn worker_disconnect_marks_snapshots_dirty() {
+        let (mut app, space_id) = snapshot_test_app();
+        let (worker, cmd_rx, event_tx) = fake_worker(true);
+        app.world_mut()
+            .non_send_resource_mut::<ScriptRuntimeManager>()
+            .contexts
+            .insert(space_id, worker);
+
+        drop(cmd_rx);
+        drop(event_tx);
+        app.world_mut().resource_mut::<JsSnapshotState>().dirty = false;
+
+        js_tick_system(app.world_mut());
+
+        assert!(
+            app.world().resource::<JsSnapshotState>().dirty,
+            "disconnected worker must re-mark snapshots dirty for recovery"
+        );
+        let manager = app.world().non_send_resource::<ScriptRuntimeManager>();
+        assert!(
+            !manager.contexts.contains_key(&space_id),
+            "disconnected worker should be removed from the manager"
+        );
     }
 }
