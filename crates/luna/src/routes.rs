@@ -315,8 +315,8 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <box x="1.70" y="0.45" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#546E7A" id="demo_wave" />
     <text x="1.70" y="0.45" z="-2.94" value="Ring Arrange" size="0.07" />
 
-    <box x="1.70" y="0.16" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#455A64" id="demo_mode" />
-    <text x="1.70" y="0.16" z="-2.94" value="Mode" size="0.07" />
+    <box x="1.70" y="0.16" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#455A64" id="demo_direct_mode" />
+    <text x="1.70" y="0.16" z="-2.94" value="Direct Only" size="0.06" />
 
     <!-- Status bar -->
     <text x="0" y="-0.70" z="-2.96" value="Status: ready" size="0.085" id="demo_status" color="#FFFFFF" />
@@ -330,7 +330,6 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     <script>
     const root = hiperspace.dimention;
-    const transformBatch = [];
     const __tmpRot = { x: 0, y: 0, z: 0 };
     const __tmpPos = { x: 0, y: 0, z: 0 };
 
@@ -341,11 +340,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     let bannerMoved = false;
     let floorVisible = true;
 
-    // Modes:
-    //  - 'batch'    => root.setTransformBatch([...])
-    //  - 'direct'   => el.position + el.rotation
-    //  - 'combined' => el.setLocalTransform(px,py,pz,rx,ry,rz)
-    let transformMode = 'batch';
+    const transformMode = 'direct';
 
     // FPS meter (script-side, approximate)
     let fpsFrames = 0;
@@ -393,36 +388,12 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       return palette[Math.floor(Math.random() * palette.length)];
     }
 
-    function hasCombinedTransformApi(el) {
-      return !!(el && typeof el.setLocalTransform === 'function');
-    }
-
-    function cycleTransformMode() {
-      if (transformMode === 'batch') {
-        transformMode = hasCombinedTransformApi(root) ? 'combined' : 'direct';
-      } else if (transformMode === 'combined') {
-        transformMode = 'direct';
-      } else {
-        transformMode = 'batch';
-      }
-      updateCounters();
-      setStatus('transform mode → ' + transformMode);
-    }
-
     function applyTransformDirect(el, px, py, pz, rx, ry, rz) {
       __tmpRot.x = rx; __tmpRot.y = ry; __tmpRot.z = rz;
       el.rotation = __tmpRot;
 
       __tmpPos.x = px; __tmpPos.y = py; __tmpPos.z = pz;
       el.position = __tmpPos;
-    }
-
-    function applyTransformCombined(el, px, py, pz, rx, ry, rz) {
-      if (hasCombinedTransformApi(el)) {
-        el.setLocalTransform(px, py, pz, rx, ry, rz);
-      } else {
-        applyTransformDirect(el, px, py, pz, rx, ry, rz);
-      }
     }
 
     // ── scale-aware spawn ─────────────────────────────────────────────────────
@@ -473,7 +444,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
         rz = Math.random() * 0.4;
       }
 
-      applyTransformCombined(el, bx, by, bz, rx, ry, rz);
+      applyTransformDirect(el, bx, by, bz, rx, ry, rz);
 
       root.appendChild(el);
       dynamicNodes.push({ el, bx, by, bz, off });
@@ -507,57 +478,18 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       updateFps(ts);
       const t = ts / 1000;
 
-      if (transformMode === 'batch') {
-        transformBatch.length = 0;
-
-        for (let i = 0; i < dynamicNodes.length; i++) {
-          const item = dynamicNodes[i];
-          const el = item.el;
-          const nodeId = el.nodeId;
-          if (nodeId < 0) continue;
-
-          const off = item.off;
-          const rx = Math.sin(t * 0.5 + off) * 0.12;
-          const ry = t * 0.9 + off;
-          const rz = Math.sin(t * 0.7 + off) * 0.12;
-          const px = item.bx;
-          const py = item.by + Math.sin(t * 1.4 + off) * (item.by * 0.25);
-          const pz = item.bz;
-
-          transformBatch.push(nodeId, px, py, pz, rx, ry, rz);
-        }
-
-        if (transformBatch.length) {
-          root.setTransformBatch(transformBatch);
-        }
-      } else if (transformMode === 'combined') {
-        for (let i = 0; i < dynamicNodes.length; i++) {
-          const item = dynamicNodes[i];
-          const off = item.off;
-          applyTransformCombined(
-            item.el,
-            item.bx,
-            item.by + Math.sin(t * 1.4 + off) * (item.by * 0.25),
-            item.bz,
-            Math.sin(t * 0.5 + off) * 0.12,
-            t * 0.9 + off,
-            Math.sin(t * 0.7 + off) * 0.12
-          );
-        }
-      } else {
-        for (let i = 0; i < dynamicNodes.length; i++) {
-          const item = dynamicNodes[i];
-          const off = item.off;
-          applyTransformDirect(
-            item.el,
-            item.bx,
-            item.by + Math.sin(t * 1.4 + off) * (item.by * 0.25),
-            item.bz,
-            Math.sin(t * 0.5 + off) * 0.12,
-            t * 0.9 + off,
-            Math.sin(t * 0.7 + off) * 0.12
-          );
-        }
+      for (let i = 0; i < dynamicNodes.length; i++) {
+        const item = dynamicNodes[i];
+        const off = item.off;
+        applyTransformDirect(
+          item.el,
+          item.bx,
+          item.by + Math.sin(t * 1.4 + off) * (item.by * 0.25),
+          item.bz,
+          Math.sin(t * 0.5 + off) * 0.12,
+          t * 0.9 + off,
+          Math.sin(t * 0.7 + off) * 0.12
+        );
       }
 
       requestAnimationFrame(animateFrame);
@@ -579,9 +511,9 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       bannerMoved = !bannerMoved;
 
       if (bannerMoved) {
-        applyTransformCombined(panel, 0.45, 0.70, -3.15, 0, 0.12, 0);
+        applyTransformDirect(panel, 0.45, 0.70, -3.15, 0, 0.12, 0);
       } else {
-        applyTransformCombined(panel, 0.00, 0.50, -3.15, 0, 0.00, 0);
+        applyTransformDirect(panel, 0.00, 0.50, -3.15, 0, 0.00, 0);
       }
 
       setStatus(bannerMoved ? 'panel nudged' : 'panel reset');
@@ -622,7 +554,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
         item.by = ny;
         item.bz = nz;
 
-        applyTransformCombined(item.el, nx, ny, nz, 0, angle + Math.PI, 0);
+        applyTransformDirect(item.el, nx, ny, nz, 0, angle + Math.PI, 0);
       });
 
       setStatus('arranged ' + n + ' nodes in scale ring');
@@ -644,7 +576,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       demo_query:          queryTest,
       demo_wave:           ringArrange,
       btn_demos:           () => { location.href = 'luna://demos'; },
-      demo_mode: cycleTransformMode,
+      demo_direct_mode:    () => setStatus('direct transform mode only'),
     };
 
     Object.keys(bindings).forEach((id) => {
@@ -655,15 +587,8 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       }
     });
 
-    // Extra toggle by keyboard for easy benchmarking:
-    // T = cycle transform mode
-    globalThis.addEventListener?.('keydown', () => {}); // harmless if unsupported
-
-    // Since this runtime has no real DOM keyboard events, expose a debug function:
-    globalThis.__demo_cycle_transform_mode = cycleTransformMode;
-
     updateCounters();
-    setStatus('ready — mode=' + transformMode + ' — call __demo_cycle_transform_mode() to switch mode');
+    setStatus('ready — mode=' + transformMode);
     </script>
   </space>
 </hsml>"##;
