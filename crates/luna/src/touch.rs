@@ -166,9 +166,12 @@ fn compose_tracking_pose(root_tf: &Transform, local_tf: &Transform) -> (Vec3, Qu
 }
 
 fn controller_aim_direction(rotation: Quat) -> Vec3 {
-    (rotation * Vec3::NEG_Z).normalize_or_zero()
+    controller_ui_ray_direction(rotation)
 }
 
+fn controller_ui_ray_direction(rotation: Quat) -> Vec3 {
+    -(rotation * Vec3::Y).normalize_or_zero()
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum ToqueSource {
@@ -332,7 +335,7 @@ pub fn vr_toque_raycast_system(
     };
 
     let (ray_origin, controller_rot) = compose_tracking_pose(root_tf, controller_tf);
-    let ray_dir = controller_aim_direction(controller_rot);
+    let ray_dir = controller_ui_ray_direction(controller_rot);
     if ray_dir == Vec3::ZERO {
         return;
     }
@@ -718,11 +721,20 @@ mod tests {
     }
 
     #[test]
-    fn controller_aim_direction_uses_controller_negative_z_axis() {
+    fn controller_aim_direction_uses_controller_negative_y_axis() {
         let dir = controller_aim_direction(Quat::IDENTITY);
-        assert!(dir.abs_diff_eq(Vec3::NEG_Z, 0.0001));
+        assert!(dir.abs_diff_eq(Vec3::NEG_Y, 0.0001));
 
-        let rotated = controller_aim_direction(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
-        assert!(rotated.abs_diff_eq(Vec3::NEG_X, 0.0001));
+        let rotated = controller_aim_direction(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2));
+        assert!(rotated.abs_diff_eq(Vec3::X, 0.0001));
+    }
+
+    #[test]
+    fn controller_ui_ray_direction_uses_legacy_negative_y_axis() {
+        let dir = controller_ui_ray_direction(Quat::IDENTITY);
+        assert!(dir.abs_diff_eq(Vec3::NEG_Y, 0.0001));
+
+        let rotated = controller_ui_ray_direction(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2));
+        assert!(rotated.abs_diff_eq(Vec3::X, 0.0001));
     }
 }

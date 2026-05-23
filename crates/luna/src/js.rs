@@ -2394,7 +2394,7 @@ mod tests {
 
     fn snapshot_test_app_with_spaces(space_count: usize) -> (App, Vec<u32>) {
         let mut app = App::new();
-        app.insert_resource(JsSnapshotState { dirty: true });
+        app.insert_resource(JsSnapshotState::default());
         app.insert_resource(VirtualDomData::default());
         app.insert_resource(SpaceHandleTables::default());
         app.insert_resource(LogPanel::default());
