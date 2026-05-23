@@ -379,7 +379,9 @@ pub enum RoundedMeshKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RoundedMeshKey {
     pub kind: RoundedMeshKind,
-    pub radius_bits: u32,
+    pub radius_x_bits: u32,
+    pub radius_y_bits: u32,
+    pub radius_z_bits: u32,
     pub segments: u32,
 }
 

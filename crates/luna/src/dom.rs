@@ -211,17 +211,43 @@ fn primitive_color(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> Colo
         .unwrap_or(Color::srgb(0.5, 0.5, 0.5))
 }
 
+fn parse_border_radius(attrs: Option<&Attrs>) -> Option<f32> {
+    attrs
+        .and_then(|a| a.0.get("border-radius"))
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|radius| *radius > 0.0)
+}
+
+fn rounded_box_radii(radius: f32, scale: Vec3) -> [f32; 3] {
+    let world_radius = radius.max(0.0);
+    if world_radius <= 0.0 {
+        return [0.0, 0.0, 0.0];
+    }
+
+    let sx = scale.x.abs().max(0.0001);
+    let sy = scale.y.abs().max(0.0001);
+    let sz = scale.z.abs().max(0.0001);
+
+    [
+        (world_radius / sx).min(0.499),
+        (world_radius / sy).min(0.499),
+        (world_radius / sz).min(0.499),
+    ]
+}
+
 fn get_or_create_rounded_mesh(
     rounded_mesh_cache: Option<&mut crate::RoundedMeshCache>,
     meshes: &mut Assets<Mesh>,
     kind: crate::RoundedMeshKind,
-    radius: f32,
+    radii: [f32; 3],
     segments: u32,
 ) -> Handle<Mesh> {
     if let Some(cache) = rounded_mesh_cache {
         let key = crate::RoundedMeshKey {
             kind,
-            radius_bits: radius.to_bits(),
+            radius_x_bits: radii[0].to_bits(),
+            radius_y_bits: radii[1].to_bits(),
+            radius_z_bits: radii[2].to_bits(),
             segments,
         };
         if let Some(handle) = cache.meshes.get(&key) {
@@ -229,10 +255,18 @@ fn get_or_create_rounded_mesh(
         }
         let handle = match kind {
             crate::RoundedMeshKind::Cube => {
-                meshes.add(crate::utils::shapes::create_rounded_cube(radius, segments))
+                if radii[0].to_bits() == radii[1].to_bits()
+                    && radii[1].to_bits() == radii[2].to_bits()
+                {
+                    meshes.add(crate::utils::shapes::create_rounded_cube(radii[0], segments))
+                } else {
+                    meshes.add(crate::utils::shapes::create_rounded_cube_aniso(
+                        radii[0], radii[1], radii[2], segments,
+                    ))
+                }
             }
             crate::RoundedMeshKind::Plane => {
-                meshes.add(crate::utils::shapes::create_rounded_plane(radius, segments))
+                meshes.add(crate::utils::shapes::create_rounded_plane(radii[0], segments))
             }
         };
         cache.meshes.insert(key, handle.clone());
@@ -240,10 +274,18 @@ fn get_or_create_rounded_mesh(
     } else {
         match kind {
             crate::RoundedMeshKind::Cube => {
-                meshes.add(crate::utils::shapes::create_rounded_cube(radius, segments))
+                if radii[0].to_bits() == radii[1].to_bits()
+                    && radii[1].to_bits() == radii[2].to_bits()
+                {
+                    meshes.add(crate::utils::shapes::create_rounded_cube(radii[0], segments))
+                } else {
+                    meshes.add(crate::utils::shapes::create_rounded_cube_aniso(
+                        radii[0], radii[1], radii[2], segments,
+                    ))
+                }
             }
             crate::RoundedMeshKind::Plane => {
-                meshes.add(crate::utils::shapes::create_rounded_plane(radius, segments))
+                meshes.add(crate::utils::shapes::create_rounded_plane(radii[0], segments))
             }
         }
     }
@@ -1804,15 +1846,13 @@ pub fn dom_sync_system(
 
                 // Regenerate mesh if border-radius changed (box or plane)
                 let attrs_opt = attrs_storage.get(*node);
-                let border_radius: Option<f32> = attrs_opt
-                    .and_then(|a| a.0.get("border-radius"))
-                    .and_then(|v| v.parse().ok());
+                let border_radius = parse_border_radius(attrs_opt);
                 let new_mesh = match (tag.as_str(), border_radius) {
                     ("box", Some(r)) => Some(get_or_create_rounded_mesh(
                         rounded_mesh_cache.as_deref_mut(),
                         &mut meshes,
                         crate::RoundedMeshKind::Cube,
-                        r,
+                        rounded_box_radii(r, transform_b.scale),
                         6,
                     )),
                     ("box", None) => Some(shared_resources.cube_mesh.clone()),
@@ -1820,7 +1860,7 @@ pub fn dom_sync_system(
                         rounded_mesh_cache.as_deref_mut(),
                         &mut meshes,
                         crate::RoundedMeshKind::Plane,
-                        r,
+                        [r, 0.0, 0.0],
                         6,
                     )),
                     ("plane", None) => Some(shared_resources.plane_mesh.clone()),
@@ -2019,16 +2059,14 @@ pub fn dom_sync_system(
                     let attrs_opt = attrs_storage.get(*node);
                     let color = primitive_color(&attrs_storage, *node);
                     let touchable = node_touchable(&attrs_storage, *node);
-                    let border_radius: Option<f32> = attrs_opt
-                        .and_then(|a| a.0.get("border-radius"))
-                        .and_then(|v| v.parse().ok());
+                    let border_radius = parse_border_radius(attrs_opt);
 
                     let mesh = if let Some(radius) = border_radius {
                         get_or_create_rounded_mesh(
                             rounded_mesh_cache.as_deref_mut(),
                             &mut meshes,
                             crate::RoundedMeshKind::Cube,
-                            radius,
+                            rounded_box_radii(radius, transform_b.scale),
                             6,
                         )
                     } else {
@@ -2063,15 +2101,13 @@ pub fn dom_sync_system(
                 "plane" => {
                     let attrs_opt = attrs_storage.get(*node);
                     let touchable = node_touchable(&attrs_storage, *node);
-                    let border_radius: Option<f32> = attrs_opt
-                        .and_then(|a| a.0.get("border-radius"))
-                        .and_then(|v| v.parse().ok());
+                    let border_radius = parse_border_radius(attrs_opt);
                     let mesh = if let Some(radius) = border_radius {
                         get_or_create_rounded_mesh(
                             rounded_mesh_cache.as_deref_mut(),
                             &mut meshes,
                             crate::RoundedMeshKind::Plane,
-                            radius,
+                            [radius, 0.0, 0.0],
                             6,
                         )
                     } else {
@@ -2369,7 +2405,7 @@ fn load_skybox_face_image(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::prelude::App;
+    use bevy::prelude::{App, Vec3};
     use specs::{Join, WorldExt};
     use virtual_dom::{
         dom::{
@@ -2388,6 +2424,15 @@ mod tests {
         ids.into_iter()
             .map(|id| (id, entities.entity(id)))
             .collect::<HashMap<_, _>>()
+    }
+
+    #[test]
+    fn rounded_box_radii_preserve_world_radius_across_non_uniform_scale() {
+        let radii = rounded_box_radii(1.0, Vec3::new(20.0, 10.0, 4.0));
+
+        assert!((radii[0] * 20.0 - 1.0).abs() < 1e-6);
+        assert!((radii[1] * 10.0 - 1.0).abs() < 1e-6);
+        assert!((radii[2] * 4.0 - 1.0).abs() < 1e-6);
     }
 
     #[test]
