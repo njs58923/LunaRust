@@ -746,99 +746,24 @@ pub fn js_update_snapshots_system(world: &mut World) {
         return;
     }
 
-    let snapshot_in_flight = world
-        .get_non_send_resource::<ScriptRuntimeManager>()
-        .map(|manager| manager.contexts.values().any(|worker| worker.snapshot_in_flight))
-        .unwrap_or(false);
-    if snapshot_in_flight {
-        return;
-    }
-
     let attached_node_ids: HashSet<u32> = world
         .get_resource::<VirtualDomData>()
         .map(|dom| dom.nodes.keys().copied().collect())
         .unwrap_or_default();
 
-    let (
-        attr_snap,
-        tag_snap,
-        positions,
-        rotations,
-        scales,
-        parents,
-        children_map,
-        space_subtrees,
-    ) = {
+    let space_subtrees = {
         let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
             return;
         };
         let entities = specs_world.0.entities();
-        let attrs_storage = specs_world.0.read_storage::<Attrs>();
         let tags_storage = specs_world.0.read_storage::<Tag>();
-        let transforms_storage = specs_world.0.read_storage::<Transform2>();
         let hierarchies_storage = specs_world.0.read_storage::<Hierarchy>();
 
-        let mut attr_snap = HashMap::new();
-        for (ent, attrs) in (&entities, &attrs_storage).join() {
-            if !attached_node_ids.contains(&ent.id()) {
-                continue;
-            }
-            let mut map = HashMap::new();
-            for (k, v) in &attrs.0 {
-                map.insert(k.clone(), v.clone());
-            }
-            attr_snap.insert(ent.id() as i32, map);
-        }
-
-        let mut tag_snap = HashMap::new();
-        for (ent, tag) in (&entities, &tags_storage).join() {
-            if !attached_node_ids.contains(&ent.id()) {
-                continue;
-            }
-            tag_snap.insert(ent.id() as i32, tag.0.clone());
-        }
-
-        let mut positions = HashMap::new();
-        let mut rotations = HashMap::new();
-        let mut scales = HashMap::new();
-        for (ent, tr) in (&entities, &transforms_storage).join() {
-            if !attached_node_ids.contains(&ent.id()) {
-                continue;
-            }
-            use js_runtime::Vec3;
-            positions.insert(
-                ent.id() as i32,
-                Vec3 {
-                    x: tr.position.x,
-                    y: tr.position.y,
-                    z: tr.position.z,
-                },
-            );
-            rotations.insert(
-                ent.id() as i32,
-                Vec3 {
-                    x: tr.rotation.x,
-                    y: tr.rotation.y,
-                    z: tr.rotation.z,
-                },
-            );
-            scales.insert(
-                ent.id() as i32,
-                Vec3 {
-                    x: tr.scale.x,
-                    y: tr.scale.y,
-                    z: tr.scale.z,
-                },
-            );
-        }
-
-        let mut parents = HashMap::new();
         let mut children_map = HashMap::new();
         for (ent, hier) in (&entities, &hierarchies_storage).join() {
             if !attached_node_ids.contains(&ent.id()) {
                 continue;
             }
-            parents.insert(ent.id() as i32, hier.parent.map(|p| p.id() as i32).unwrap_or(-1));
             children_map.insert(
                 ent.id() as i32,
                 hier.children
@@ -850,12 +775,12 @@ pub fn js_update_snapshots_system(world: &mut World) {
         }
 
         let mut space_subtrees: HashMap<u32, HashSet<i32>> = HashMap::new();
-        for (node_id, tag_name) in &tag_snap {
-            if tag_name != "space" {
+        for (ent, tag) in (&entities, &tags_storage).join() {
+            if !attached_node_ids.contains(&ent.id()) || tag.0 != "space" {
                 continue;
             }
             let mut set = HashSet::new();
-            let mut stack = vec![*node_id];
+            let mut stack = vec![ent.id() as i32];
             while let Some(curr) = stack.pop() {
                 if !set.insert(curr) {
                     continue;
@@ -866,19 +791,10 @@ pub fn js_update_snapshots_system(world: &mut World) {
                     }
                 }
             }
-            space_subtrees.insert(*node_id as u32, set);
+            space_subtrees.insert(ent.id(), set);
         }
 
-        (
-            attr_snap,
-            tag_snap,
-            positions,
-            rotations,
-            scales,
-            parents,
-            children_map,
-            space_subtrees,
-        )
+        space_subtrees
     };
 
     let active_space_ids: HashSet<u32> = space_subtrees.keys().copied().collect();
@@ -932,12 +848,147 @@ pub fn js_update_snapshots_system(world: &mut World) {
         }
     }
 
+    let (snapshot_target_space_ids, spaces_waiting_on_ack, missing_contexts) = {
+        let Some(manager) = world.get_non_send_resource::<ScriptRuntimeManager>() else {
+            return;
+        };
+        let mut ready = Vec::new();
+        let mut waiting = 0usize;
+        let mut missing = false;
+        for &space_id in &active_space_ids {
+            match manager.contexts.get(&space_id) {
+                Some(worker) if worker.snapshot_in_flight => waiting += 1,
+                Some(_) => ready.push(space_id),
+                None => missing = true,
+            }
+        }
+        (ready, waiting, missing)
+    };
+
+    let mut all_snapshots_sent = true;
+    if snapshot_target_space_ids.is_empty() {
+        let keep_dirty = spaces_waiting_on_ack > 0 || missing_contexts || !errors.is_empty();
+        if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
+            snapshot_state.dirty = keep_dirty;
+        }
+
+        if !removed_contexts.is_empty() || !created_contexts.is_empty() || !errors.is_empty() {
+            let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
+                return;
+            };
+            for id in removed_contexts {
+                log_panel.push_info(format!("[JS][space:{}] Context destroyed", id));
+            }
+            for id in created_contexts {
+                log_panel.push_info(format!("[JS][space:{}] Context created", id));
+            }
+            for err in errors {
+                log_panel.push_error(format!("[JS] {}", err));
+            }
+        }
+        return;
+    }
+
+    let requested_node_ids: HashSet<i32> = snapshot_target_space_ids
+        .iter()
+        .filter_map(|space_id| space_subtrees.get(space_id))
+        .flat_map(|allowed| allowed.iter().copied())
+        .collect();
+
+    let (attr_snap, tag_snap, positions, rotations, scales, parents, children_map) = {
+        let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
+            return;
+        };
+        let entities = specs_world.0.entities();
+        let attrs_storage = specs_world.0.read_storage::<Attrs>();
+        let tags_storage = specs_world.0.read_storage::<Tag>();
+        let transforms_storage = specs_world.0.read_storage::<Transform2>();
+        let hierarchies_storage = specs_world.0.read_storage::<Hierarchy>();
+
+        let mut attr_snap = HashMap::new();
+        for (ent, attrs) in (&entities, &attrs_storage).join() {
+            if !requested_node_ids.contains(&(ent.id() as i32)) {
+                continue;
+            }
+            let mut map = HashMap::new();
+            for (k, v) in &attrs.0 {
+                map.insert(k.clone(), v.clone());
+            }
+            attr_snap.insert(ent.id() as i32, map);
+        }
+
+        let mut tag_snap = HashMap::new();
+        for (ent, tag) in (&entities, &tags_storage).join() {
+            if !requested_node_ids.contains(&(ent.id() as i32)) {
+                continue;
+            }
+            tag_snap.insert(ent.id() as i32, tag.0.clone());
+        }
+
+        let mut positions = HashMap::new();
+        let mut rotations = HashMap::new();
+        let mut scales = HashMap::new();
+        for (ent, tr) in (&entities, &transforms_storage).join() {
+            if !requested_node_ids.contains(&(ent.id() as i32)) {
+                continue;
+            }
+            use js_runtime::Vec3;
+            positions.insert(
+                ent.id() as i32,
+                Vec3 {
+                    x: tr.position.x,
+                    y: tr.position.y,
+                    z: tr.position.z,
+                },
+            );
+            rotations.insert(
+                ent.id() as i32,
+                Vec3 {
+                    x: tr.rotation.x,
+                    y: tr.rotation.y,
+                    z: tr.rotation.z,
+                },
+            );
+            scales.insert(
+                ent.id() as i32,
+                Vec3 {
+                    x: tr.scale.x,
+                    y: tr.scale.y,
+                    z: tr.scale.z,
+                },
+            );
+        }
+
+        let mut parents = HashMap::new();
+        let mut children_map = HashMap::new();
+        for (ent, hier) in (&entities, &hierarchies_storage).join() {
+            if !requested_node_ids.contains(&(ent.id() as i32)) {
+                continue;
+            }
+            parents.insert(ent.id() as i32, hier.parent.map(|p| p.id() as i32).unwrap_or(-1));
+            children_map.insert(
+                ent.id() as i32,
+                hier.children.iter().map(|c| c.id() as i32).collect::<Vec<_>>(),
+            );
+        }
+
+        (
+            attr_snap,
+            tag_snap,
+            positions,
+            rotations,
+            scales,
+            parents,
+            children_map,
+        )
+    };
+
     let snapshot_batches = {
         let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() else {
             return;
         };
         let mut snapshot_batches = Vec::new();
-        for space_id in &active_space_ids {
+        for space_id in &snapshot_target_space_ids {
             let Some(allowed) = space_subtrees.get(space_id) else {
                 continue;
             };
@@ -959,9 +1010,8 @@ pub fn js_update_snapshots_system(world: &mut World) {
         }
         snapshot_batches
     };
-    let has_snapshot_batches = !snapshot_batches.is_empty();
 
-    let mut all_snapshots_sent = true;
+    let mut snapshots_sent_this_run = 0usize;
     {
         let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
             return;
@@ -984,6 +1034,7 @@ pub fn js_update_snapshots_system(world: &mut World) {
                 all_snapshots_sent = false;
             } else {
                 worker.snapshot_in_flight = true;
+                snapshots_sent_this_run += 1;
             }
         }
 
@@ -1004,7 +1055,11 @@ pub fn js_update_snapshots_system(world: &mut World) {
         }
     }
 
-    let keep_dirty = has_snapshot_batches || !all_snapshots_sent || !errors.is_empty();
+    let keep_dirty = snapshots_sent_this_run > 0
+        || spaces_waiting_on_ack > 0
+        || missing_contexts
+        || !all_snapshots_sent
+        || !errors.is_empty();
     if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
         snapshot_state.dirty = keep_dirty;
     }
@@ -1029,6 +1084,12 @@ pub fn js_eval_pending_scripts(world: &mut World) {
     const MAX_SCRIPTS_PER_FRAME: usize = 2;
     const MAX_ENQUEUE_BUDGET_MS: f32 = 1.5;
 
+    enum ScriptEnqueueResult {
+        Queued,
+        DeferUntilContext,
+        Error(String),
+    }
+
     let pending_scripts = {
         let Some(mut pending) = world.get_resource_mut::<PendingScripts>() else {
             return;
@@ -1050,7 +1111,6 @@ pub fn js_eval_pending_scripts(world: &mut World) {
             deferred_scripts.push((space_id, url, code));
             continue;
         }
-        queued_this_frame += 1;
 
         let enqueue_result = {
             let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>()
@@ -1062,7 +1122,7 @@ pub fn js_eval_pending_scripts(world: &mut World) {
                     .cmd_tx
                     .send(JsWorkerCommand::EvalScript {
                         url: url.clone(),
-                        code,
+                        code: code.clone(),
                     })
                     .map_err(|e| e.to_string());
                 if result.is_ok() && url == "luna://internal/root_api.js" {
@@ -1071,18 +1131,36 @@ pub fn js_eval_pending_scripts(world: &mut World) {
                 if result.is_ok() {
                     worker.needs_tick = true;
                 }
-                result
+                match result {
+                    Ok(_) => ScriptEnqueueResult::Queued,
+                    Err(err) => ScriptEnqueueResult::Error(err),
+                }
             } else {
-                Err(format!("missing JS context for space {}", space_id))
+                let space_still_attached = world
+                    .get_resource::<VirtualDomData>()
+                    .map(|dom| dom.nodes.contains_key(&space_id))
+                    .unwrap_or(false);
+                if space_still_attached {
+                    ScriptEnqueueResult::DeferUntilContext
+                } else {
+                    ScriptEnqueueResult::Error(format!(
+                        "missing JS context for space {}",
+                        space_id
+                    ))
+                }
             }
         };
 
         match enqueue_result {
-            Ok(_) => log_messages.push(crate::LogEntry::new(
+            ScriptEnqueueResult::Queued => {
+                queued_this_frame += 1;
+                log_messages.push(crate::LogEntry::new(
                 LogLevel::Info,
                 format!("[JS][space:{}] Script queued: {}", space_id, url),
-            )),
-            Err(err) => log_messages.push(crate::LogEntry::new(
+            ))
+            }
+            ScriptEnqueueResult::DeferUntilContext => deferred_scripts.push((space_id, url, code)),
+            ScriptEnqueueResult::Error(err) => log_messages.push(crate::LogEntry::new(
                 LogLevel::Error,
                 format!("[JS][space:{}] Error queuing {}: {}", space_id, url, err),
             )),
@@ -2314,7 +2392,7 @@ mod tests {
     use specs::WorldExt;
     use virtual_dom::dom::element::{build_world, Vec3 as DomVec3};
 
-    fn snapshot_test_app() -> (App, u32) {
+    fn snapshot_test_app_with_spaces(space_count: usize) -> (App, Vec<u32>) {
         let mut app = App::new();
         app.insert_resource(JsSnapshotState { dirty: true });
         app.insert_resource(VirtualDomData::default());
@@ -2327,37 +2405,45 @@ mod tests {
         app.insert_resource(PendingJsAttachNodes::default());
         app.insert_non_send_resource(ScriptRuntimeManager::default());
 
-        let mut specs_world = build_world();
-        let space_ent = specs_world.entities().create();
-        let space_id = space_ent.id();
-        {
-            let mut tags = specs_world.write_storage::<Tag>();
-            let mut attrs = specs_world.write_storage::<Attrs>();
-            let mut transforms = specs_world.write_storage::<Transform2>();
-            let mut hier = specs_world.write_storage::<Hierarchy>();
-            tags.insert(space_ent, Tag("space".into())).ok();
-            attrs.insert(space_ent, Attrs(HashMap::new())).ok();
-            transforms
-                .insert(
-                    space_ent,
-                    Transform2 {
-                        position: DomVec3 { x: 0.0, y: 0.0, z: 0.0 },
-                        rotation: DomVec3 { x: 0.0, y: 0.0, z: 0.0 },
-                        scale: DomVec3 { x: 1.0, y: 1.0, z: 1.0 },
-                    },
-                )
-                .ok();
-            hier.insert(space_ent, Hierarchy { parent: None, children: vec![] })
-                .ok();
+        let specs_world = build_world();
+        let mut space_ids = Vec::with_capacity(space_count);
+        for _ in 0..space_count {
+            let space_ent = specs_world.entities().create();
+            let space_id = space_ent.id();
+            {
+                let mut tags = specs_world.write_storage::<Tag>();
+                let mut attrs = specs_world.write_storage::<Attrs>();
+                let mut transforms = specs_world.write_storage::<Transform2>();
+                let mut hier = specs_world.write_storage::<Hierarchy>();
+                tags.insert(space_ent, Tag("space".into())).ok();
+                attrs.insert(space_ent, Attrs(HashMap::new())).ok();
+                transforms
+                    .insert(
+                        space_ent,
+                        Transform2 {
+                            position: DomVec3 { x: 0.0, y: 0.0, z: 0.0 },
+                            rotation: DomVec3 { x: 0.0, y: 0.0, z: 0.0 },
+                            scale: DomVec3 { x: 1.0, y: 1.0, z: 1.0 },
+                        },
+                    )
+                    .ok();
+                hier.insert(space_ent, Hierarchy { parent: None, children: vec![] })
+                    .ok();
+            }
+            app.world_mut()
+                .resource_mut::<VirtualDomData>()
+                .nodes
+                .insert(space_id, space_ent);
+            space_ids.push(space_id);
         }
 
         app.insert_resource(ElemenetWorld(specs_world));
-        app.world_mut()
-            .resource_mut::<VirtualDomData>()
-            .nodes
-            .insert(space_id, space_ent);
+        (app, space_ids)
+    }
 
-        (app, space_id)
+    fn snapshot_test_app() -> (App, u32) {
+        let (app, space_ids) = snapshot_test_app_with_spaces(1);
+        (app, space_ids[0])
     }
 
     fn fake_worker(
@@ -2431,6 +2517,63 @@ mod tests {
     }
 
     #[test]
+    fn snapshots_do_not_redispatch_every_frame_after_ack() {
+        let (mut app, space_id) = snapshot_test_app();
+        let (worker, cmd_rx, event_tx) = fake_worker(false);
+        app.world_mut()
+            .non_send_resource_mut::<ScriptRuntimeManager>()
+            .contexts
+            .insert(space_id, worker);
+
+        js_update_snapshots_system(app.world_mut());
+        assert!(
+            matches!(cmd_rx.recv(), Ok(JsWorkerCommand::UpdateSnapshots(_))),
+            "first dirty frame must dispatch one snapshot"
+        );
+
+        event_tx
+            .send(JsWorkerEvent::SnapshotApplied)
+            .expect("test should be able to inject snapshot ack");
+        js_tick_system(app.world_mut());
+        assert!(
+            !app.world().resource::<JsSnapshotState>().dirty,
+            "ack must clear dirty so idle scenes stop snapshotting"
+        );
+
+        js_update_snapshots_system(app.world_mut());
+        assert!(
+            matches!(cmd_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+            "without new DOM changes the next frame must not redispatch another snapshot"
+        );
+    }
+
+    #[test]
+    fn snapshots_do_not_duplicate_while_ack_is_pending() {
+        let (mut app, space_id) = snapshot_test_app();
+        let (worker, cmd_rx, _event_tx) = fake_worker(false);
+        app.world_mut()
+            .non_send_resource_mut::<ScriptRuntimeManager>()
+            .contexts
+            .insert(space_id, worker);
+
+        js_update_snapshots_system(app.world_mut());
+        assert!(
+            matches!(cmd_rx.recv(), Ok(JsWorkerCommand::UpdateSnapshots(_))),
+            "first dirty frame must dispatch one snapshot"
+        );
+
+        js_update_snapshots_system(app.world_mut());
+        assert!(
+            matches!(cmd_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+            "same worker must not receive duplicate snapshots every frame while the previous one is still in flight"
+        );
+        assert!(
+            app.world().resource::<JsSnapshotState>().dirty,
+            "dirty should stay true while the ack is still pending"
+        );
+    }
+
+    #[test]
     fn worker_disconnect_marks_snapshots_dirty() {
         let (mut app, space_id) = snapshot_test_app();
         let (worker, cmd_rx, event_tx) = fake_worker(true);
@@ -2454,5 +2597,48 @@ mod tests {
             !manager.contexts.contains_key(&space_id),
             "disconnected worker should be removed from the manager"
         );
+    }
+
+    #[test]
+    fn snapshots_continue_for_idle_spaces_while_other_space_is_in_flight() {
+        let (mut app, space_ids) = snapshot_test_app_with_spaces(2);
+        let busy_space_id = space_ids[0];
+        let idle_space_id = space_ids[1];
+
+        let (mut busy_worker, busy_cmd_rx, _busy_event_tx) = fake_worker(false);
+        busy_worker.snapshot_in_flight = true;
+        let (idle_worker, idle_cmd_rx, _idle_event_tx) = fake_worker(false);
+
+        let mut manager = app.world_mut().non_send_resource_mut::<ScriptRuntimeManager>();
+        manager.contexts.insert(busy_space_id, busy_worker);
+        manager.contexts.insert(idle_space_id, idle_worker);
+        drop(manager);
+
+        js_update_snapshots_system(app.world_mut());
+
+        assert!(
+            matches!(idle_cmd_rx.recv(), Ok(JsWorkerCommand::UpdateSnapshots(_))),
+            "idle space should still receive its snapshot even if another worker is in flight"
+        );
+        assert!(
+            matches!(busy_cmd_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+            "busy space must not receive another snapshot while one is already in flight"
+        );
+    }
+
+    #[test]
+    fn pending_scripts_wait_for_context_creation() {
+        let (mut app, space_id) = snapshot_test_app();
+        app.insert_resource(PendingScripts(vec![(
+            space_id,
+            "luna://internal/home_navigation.js".into(),
+            "export {}".into(),
+        )]));
+
+        js_eval_pending_scripts(app.world_mut());
+
+        let pending = app.world().resource::<PendingScripts>();
+        assert_eq!(pending.0.len(), 1, "script should stay queued until context exists");
+        assert_eq!(pending.0[0].0, space_id);
     }
 }

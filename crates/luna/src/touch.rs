@@ -141,6 +141,34 @@ fn contains_point(
     }
 }
 
+fn ancestors_are_visible(
+    entity: Entity,
+    parent_query: &Query<&Parent>,
+    visibility_query: &Query<&Visibility>,
+) -> bool {
+    let mut current = entity;
+    while let Ok(parent) = parent_query.get(current) {
+        let parent_entity = parent.get();
+        if matches!(visibility_query.get(parent_entity), Ok(Visibility::Hidden)) {
+            return false;
+        }
+        current = parent_entity;
+    }
+    true
+}
+
+fn compose_tracking_pose(root_tf: &Transform, local_tf: &Transform) -> (Vec3, Quat) {
+    let scaled_local = root_tf.scale * local_tf.translation;
+    (
+        root_tf.translation + root_tf.rotation * scaled_local,
+        root_tf.rotation * local_tf.rotation,
+    )
+}
+
+fn controller_aim_direction(rotation: Quat) -> Vec3 {
+    (rotation * Vec3::NEG_Z).normalize_or_zero()
+}
+
 
 #[derive(Debug, Clone, Copy)]
 pub enum ToqueSource {
@@ -264,7 +292,14 @@ pub fn desktop_toque_raycast_system(
 pub fn vr_toque_raycast_system(
     actions: Res<crate::vr_locomotion::LunaLocomotionActions>,
     session: Res<bevy_mod_openxr::session::OxrSession>,
-    controller_query: Query<&GlobalTransform, With<bevy_xr_utils::tracking_utils::XrTrackedRightGrip>>,
+    controller_query: Query<&Transform, With<bevy_xr_utils::tracking_utils::XrTrackedRightGrip>>,
+    tracking_root: Query<
+        &Transform,
+        (
+            With<bevy_mod_xr::session::XrTrackingRoot>,
+            Without<bevy_xr_utils::tracking_utils::XrTrackedRightGrip>,
+        ),
+    >,
     // Ver doc en desktop_toque_raycast_system para el filtro de InheritedVisibility.
     toqueable_query: Query<(&GlobalTransform, &Toqueable, &InheritedVisibility, Option<&HitShape>)>,
     mut toque_hits: ResMut<HostToqueHits>,
@@ -291,9 +326,16 @@ pub fn vr_toque_raycast_system(
             return;
         }
     };
+    let Ok(root_tf) = tracking_root.get_single() else {
+        log_panel.push_warn("[vr_toque] tracking root query failed");
+        return;
+    };
 
-    let ray_origin = controller_tf.translation();
-    let ray_dir = -controller_tf.up().as_vec3();
+    let (ray_origin, controller_rot) = compose_tracking_pose(root_tf, controller_tf);
+    let ray_dir = controller_aim_direction(controller_rot);
+    if ray_dir == Vec3::ZERO {
+        return;
+    }
 
     let mut closest: Option<(f32, u32, Vec3)> = None;
 
@@ -329,21 +371,23 @@ pub fn vr_toque_raycast_system(
 }
 fn push_pose_events_for_hand(
     hand: &str,
-    controller_tf: &GlobalTransform,
+    root_tf: &Transform,
+    controller_tf: &Transform,
     trigger: f32,
     grip: f32,
-    posezone_query: &Query<(&GlobalTransform, &PoseZone, &InheritedVisibility, Option<&HitShape>)>,
+    posezone_query: &Query<(Entity, &GlobalTransform, &PoseZone, Option<&HitShape>)>,
+    parent_query: &Query<&Parent>,
+    visibility_query: &Query<&Visibility>,
     pose_events: &mut HostPoseMoveEvents,
 ) {
-    let point = controller_tf.translation();
-    let dir = (-controller_tf.up().as_vec3()).normalize_or_zero();
+    let (point, controller_rot) = compose_tracking_pose(root_tf, controller_tf);
+    let dir = controller_aim_direction(controller_rot);
     if dir == Vec3::ZERO {
         return;
     }
-    let (_, controller_rot, _) = controller_tf.to_scale_rotation_translation();
 
-    for (global_transform, posezone, inherited_vis, hit_shape) in posezone_query.iter() {
-        if !inherited_vis.get() {
+    for (entity, global_transform, posezone, hit_shape) in posezone_query.iter() {
+        if !ancestors_are_visible(entity, parent_query, visibility_query) {
             continue;
         }
         let (scale, rotation, entity_pos) = global_transform.to_scale_rotation_translation();
@@ -374,19 +418,32 @@ pub fn vr_posemove_system(
     actions: Res<crate::vr_locomotion::LunaLocomotionActions>,
     session: Res<bevy_mod_openxr::session::OxrSession>,
     left_controller_query: Query<
-        &GlobalTransform,
+        &Transform,
         With<bevy_xr_utils::tracking_utils::XrTrackedLeftGrip>,
     >,
     right_controller_query: Query<
-        &GlobalTransform,
+        &Transform,
         With<bevy_xr_utils::tracking_utils::XrTrackedRightGrip>,
     >,
-    posezone_query: Query<(&GlobalTransform, &PoseZone, &InheritedVisibility, Option<&HitShape>)>,
+    tracking_root: Query<
+        &Transform,
+        (
+            With<bevy_mod_xr::session::XrTrackingRoot>,
+            Without<bevy_xr_utils::tracking_utils::XrTrackedLeftGrip>,
+            Without<bevy_xr_utils::tracking_utils::XrTrackedRightGrip>,
+        ),
+    >,
+    posezone_query: Query<(Entity, &GlobalTransform, &PoseZone, Option<&HitShape>)>,
+    parent_query: Query<&Parent>,
+    visibility_query: Query<&Visibility>,
     mut pose_events: ResMut<HostPoseMoveEvents>,
 ) {
     if posezone_query.is_empty() {
         return;
     }
+    let Ok(root_tf) = tracking_root.get_single() else {
+        return;
+    };
 
     let left_trigger = actions
         .left_trigger
@@ -410,10 +467,30 @@ pub fn vr_posemove_system(
         .unwrap_or(0.0);
 
     if let Ok(tf) = left_controller_query.get_single() {
-        push_pose_events_for_hand("left", tf, left_trigger, left_grip, &posezone_query, &mut pose_events);
+        push_pose_events_for_hand(
+            "left",
+            root_tf,
+            tf,
+            left_trigger,
+            left_grip,
+            &posezone_query,
+            &parent_query,
+            &visibility_query,
+            &mut pose_events,
+        );
     }
     if let Ok(tf) = right_controller_query.get_single() {
-        push_pose_events_for_hand("right", tf, right_trigger, right_grip, &posezone_query, &mut pose_events);
+        push_pose_events_for_hand(
+            "right",
+            root_tf,
+            tf,
+            right_trigger,
+            right_grip,
+            &posezone_query,
+            &parent_query,
+            &visibility_query,
+            &mut pose_events,
+        );
     }
 }
 
@@ -542,5 +619,110 @@ pub fn dispatch_posemove_events_to_js(
                 worker.needs_tick = true;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Resource)]
+    struct VisibilityTestIds {
+        hidden_self_posezone: Entity,
+        hidden_parent_posezone: Entity,
+    }
+
+    #[derive(Resource, Default)]
+    struct VisibilityTestResult {
+        hidden_self_active: bool,
+        hidden_parent_active: bool,
+    }
+
+    fn check_posezone_visibility_rule(
+        ids: Res<VisibilityTestIds>,
+        parent_query: Query<&Parent>,
+        visibility_query: Query<&Visibility>,
+        mut result: ResMut<VisibilityTestResult>,
+    ) {
+        result.hidden_self_active = ancestors_are_visible(
+            ids.hidden_self_posezone,
+            &parent_query,
+            &visibility_query,
+        );
+        result.hidden_parent_active = ancestors_are_visible(
+            ids.hidden_parent_posezone,
+            &parent_query,
+            &visibility_query,
+        );
+    }
+
+    #[test]
+    fn posezone_input_ignores_own_visibility_but_respects_hidden_parent() {
+        let mut app = App::new();
+
+        let visible_parent = app.world_mut().spawn(Visibility::Visible).id();
+        let hidden_self_posezone = app.world_mut().spawn(Visibility::Hidden).id();
+        app.world_mut()
+            .entity_mut(visible_parent)
+            .push_children(&[hidden_self_posezone]);
+
+        let hidden_parent = app.world_mut().spawn(Visibility::Hidden).id();
+        let hidden_parent_posezone = app.world_mut().spawn(Visibility::Visible).id();
+        app.world_mut()
+            .entity_mut(hidden_parent)
+            .push_children(&[hidden_parent_posezone]);
+
+        app.insert_resource(VisibilityTestIds {
+            hidden_self_posezone,
+            hidden_parent_posezone,
+        });
+        app.insert_resource(VisibilityTestResult::default());
+        app.add_systems(Update, check_posezone_visibility_rule);
+        app.update();
+
+        let result = app.world().resource::<VisibilityTestResult>();
+        assert!(
+            result.hidden_self_active,
+            "posezone visible=false should remain active as an input volume"
+        );
+        assert!(
+            !result.hidden_parent_active,
+            "posezone under a hidden parent should not receive input"
+        );
+    }
+
+    #[test]
+    fn controller_pose_composes_tracking_root_and_local_grip_pose() {
+        let root_tf = Transform {
+            translation: Vec3::new(10.0, 1.0, -4.0),
+            rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            scale: Vec3::ONE,
+        };
+        let local_tf = Transform {
+            translation: Vec3::new(0.0, 2.0, -3.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        };
+
+        let (world_pos, world_rot) = compose_tracking_pose(&root_tf, &local_tf);
+
+        assert!(
+            world_pos.distance(Vec3::new(7.0, 3.0, -4.0)) < 0.0001,
+            "controller world position should be root * local, got {:?}",
+            world_pos
+        );
+        assert!(
+            world_rot.abs_diff_eq(root_tf.rotation, 0.0001),
+            "controller world rotation should include tracking root rotation"
+        );
+    }
+
+    #[test]
+    fn controller_aim_direction_uses_controller_negative_z_axis() {
+        let dir = controller_aim_direction(Quat::IDENTITY);
+        assert!(dir.abs_diff_eq(Vec3::NEG_Z, 0.0001));
+
+        let rotated = controller_aim_direction(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+        assert!(rotated.abs_diff_eq(Vec3::NEG_X, 0.0001));
     }
 }

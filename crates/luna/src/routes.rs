@@ -1897,6 +1897,95 @@ mod tests {
         eng
     }
 
+    fn range_demo_script() -> String {
+        let start = LUNA_RANGE_DEMO.find("<script>").unwrap() + "<script>".len();
+        let end = LUNA_RANGE_DEMO.find("</script>").unwrap();
+        LUNA_RANGE_DEMO[start..end].trim().to_string()
+    }
+
+    fn range_demo_engine() -> Engine {
+        let mut eng = Engine::new();
+
+        let mut attrs = HashMap::new();
+        attrs.insert(0, HashMap::new());
+        attrs.insert(1, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "gun_zone".to_string());
+            m
+        });
+        attrs.insert(2, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "btn_start".to_string());
+            m
+        });
+        attrs.insert(3, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "btn_reset".to_string());
+            m
+        });
+        attrs.insert(4, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "status_text".to_string());
+            m
+        });
+        attrs.insert(5, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "level_text".to_string());
+            m
+        });
+        attrs.insert(6, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "score_text".to_string());
+            m
+        });
+        attrs.insert(7, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "left_text".to_string());
+            m
+        });
+        attrs.insert(8, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "banner_text".to_string());
+            m
+        });
+        attrs.insert(9, {
+            let mut m = HashMap::new();
+            m.insert("id".to_string(), "btn_demos".to_string());
+            m
+        });
+        eng.update_attr_snapshot(attrs);
+
+        let mut tags = HashMap::new();
+        tags.insert(0, "hsml".to_string());
+        tags.insert(1, "posezone".to_string());
+        tags.insert(2, "box".to_string());
+        tags.insert(3, "box".to_string());
+        tags.insert(4, "text".to_string());
+        tags.insert(5, "text".to_string());
+        tags.insert(6, "text".to_string());
+        tags.insert(7, "text".to_string());
+        tags.insert(8, "text".to_string());
+        tags.insert(9, "box".to_string());
+        eng.update_tag_snapshot(tags);
+
+        let mut parents = HashMap::new();
+        parents.insert(0, -1);
+        for node_id in 1..=9 {
+            parents.insert(node_id, 0);
+        }
+        let mut children = HashMap::new();
+        children.insert(0, (1..=9).collect());
+        for node_id in 1..=9 {
+            children.insert(node_id, vec![]);
+        }
+        eng.update_hierarchy_snapshot(parents, children);
+
+        let empty = HashMap::new();
+        eng.update_transform_snapshot(empty.clone(), empty.clone(), empty.clone(), empty);
+        eng.eval(&range_demo_script()).unwrap();
+        eng
+    }
+
     // is_virtual_url
     #[test]
     fn virtual_url_detected() {
@@ -2085,6 +2174,51 @@ mod tests {
         assert!(attr_updates.iter().any(|(node_id, key, value)| {
             *node_id == 5 && key == "value" && value.contains("right controller")
         }));
+    }
+
+    #[test]
+    fn range_demo_start_then_trigger_spawns_bullet() {
+        let mut eng = range_demo_engine();
+
+        eng.push_dom_toque_event(2, 0.0, 0.0, 0.0);
+        eng.fire_raf(16.0);
+
+        eng.push_posemove_event(
+            1,
+            "right",
+            0.0,
+            1.4,
+            -1.0,
+            0.0,
+            0.0,
+            -1.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        );
+        eng.fire_raf(16.0);
+
+        let created = eng.drain_element_creation_queue();
+        let sphere_creates = created
+            .iter()
+            .filter(|(_, tag)| tag == "sphere")
+            .count();
+        assert!(
+            sphere_creates >= 2,
+            "expected at least one target and one bullet sphere after start+trigger, got {:?}",
+            created
+        );
+
+        let attr_updates = eng.drain_attr_updates();
+        assert!(
+            attr_updates.iter().any(|(node_id, key, value)| {
+                *node_id == 4 && key == "value" && value.contains("Running")
+            }),
+            "status_text should switch to Running"
+        );
     }
 
     /// Hammer createElement/remove cycles on root and validate JS-side queue
