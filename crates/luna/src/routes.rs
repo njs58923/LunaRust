@@ -325,26 +325,8 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <text x="0" y="-1.20" z="-2.96" value="Objects scale 1:10 of distance — spawns appear around you" size="0.063" id="demo_hint" color="#546E7A" />
 
     <!-- Bottom navigation row -->
-    <box x="-2.10" y="-1.42" z="-3.0" sx="0.55" sy="0.20" sz="0.05" color="#4CAF50" id="btn_home" />
-    <text x="-2.10" y="-1.42" z="-2.94" value="HOME" size="0.07" color="#FFFFFF" />
-
-    <box x="-1.40" y="-1.42" z="-3.0" sx="0.55" sy="0.20" sz="0.05" color="#FF9800" id="btn_about" />
-    <text x="-1.40" y="-1.42" z="-2.94" value="ABOUT" size="0.07" color="#FFFFFF" />
-
-    <box x="-0.70" y="-1.42" z="-3.0" sx="0.55" sy="0.20" sz="0.05" color="#9C27B0" id="btn_settings" />
-    <text x="-0.70" y="-1.42" z="-2.94" value="SETTINGS" size="0.07" color="#FFFFFF" />
-
-    <box x="0.00" y="-1.42" z="-3.0" sx="0.55" sy="0.20" sz="0.05" color="#7E57C2" id="btn_demos_menu" />
-    <text x="0.00" y="-1.42" z="-2.94" value="DEMOS" size="0.07" color="#FFFFFF" />
-
-    <box x="0.70" y="-1.42" z="-3.0" sx="0.55" sy="0.20" sz="0.05" color="#EF5350" id="btn_fire_demo" />
-    <text x="0.70" y="-1.42" z="-2.94" value="FIRE" size="0.07" color="#FFFFFF" />
-
-    <box x="1.40" y="-1.42" z="-3.0" sx="0.55" sy="0.20" sz="0.05" color="#FF1744" id="btn_target_demo" />
-    <text x="1.40" y="-1.42" z="-2.94" value="TARGET" size="0.07" color="#FFFFFF" />
-
-    <box x="2.10" y="-1.42" z="-3.0" sx="0.55" sy="0.20" sz="0.05" color="#D50000" id="btn_range_demo" />
-    <text x="2.10" y="-1.42" z="-2.94" value="RANGE" size="0.07" color="#FFFFFF" />
+    <box x="0.00" y="-1.42" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#7E57C2" id="btn_demos" />
+    <text x="0.00" y="-1.42" z="-2.94" value="DEMOS" size="0.085" color="#FFFFFF" />
 
     <script>
     const root = hiperspace.dimention;
@@ -661,13 +643,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       demo_clear:          clearDynamic,
       demo_query:          queryTest,
       demo_wave:           ringArrange,
-      btn_home:            () => { location.href = 'luna://home'; },
-      btn_about:           () => { location.href = 'luna://about'; },
-      btn_settings:        () => { location.href = 'luna://settings'; },
-      btn_fire_demo:       () => { location.href = 'luna://fire_demo'; },
-      btn_target_demo:     () => { location.href = 'luna://target_demo'; },
-      btn_range_demo:      () => { location.href = 'luna://range_demo'; },
-      btn_demos_menu:      () => { location.href = 'luna://demos'; },
+      btn_demos:           () => { location.href = 'luna://demos'; },
       demo_mode: cycleTransformMode,
     };
 
@@ -901,20 +877,8 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <text x="-2.5" y="-0.22" z="-3.0" value="Ready to fire!" size="0.08" id="status_text" color="#FFFFFF" />
 
     <!-- Cross-demo nav row -->
-    <box x="-3.20" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
-    <text x="-3.20" y="-0.55" z="-2.94" value="HOME" size="0.07" color="#FFFFFF" />
-
-    <box x="-2.70" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
-    <text x="-2.70" y="-0.55" z="-2.94" value="DEMOS" size="0.07" color="#FFFFFF" />
-
-    <box x="-2.20" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#7E57C2" id="btn_scale_demo" touchable="true"/>
-    <text x="-2.20" y="-0.55" z="-2.94" value="SCALE" size="0.07" color="#FFFFFF" />
-
-    <box x="-1.70" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#FF1744" id="btn_target_demo" touchable="true"/>
-    <text x="-1.70" y="-0.55" z="-2.94" value="TARGET" size="0.07" color="#FFFFFF" />
-
-    <box x="-1.20" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#D50000" id="btn_range_demo" touchable="true"/>
-    <text x="-1.20" y="-0.55" z="-2.94" value="RANGE" size="0.07" color="#FFFFFF" />
+    <box x="-2.5" y="-0.55" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
+    <text x="-2.5" y="-0.55" z="-2.94" value="DEMOS" size="0.085" color="#FFFFFF" />
 
     <script>
     const root = hiperspace.dimention;
@@ -1105,11 +1069,7 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     if (clearBtn) clearBtn.addEventListener('toque', clearBullets);
 
     const navLinks = {
-      btn_home:        'luna://home',
-      btn_demos:       'luna://demos',
-      btn_scale_demo:  'luna://scale_demo',
-      btn_target_demo: 'luna://target_demo',
-      btn_range_demo:  'luna://range_demo',
+      btn_demos: 'luna://demos',
     };
     Object.keys(navLinks).forEach((id) => {
       const el = byId(id);
@@ -1151,20 +1111,8 @@ const LUNA_TARGET_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <text x="-2.5" y="-0.16" z="-3.0" value="Ready" size="0.08" id="status_text" color="#FFFFFF" />
 
     <!-- Cross-demo nav row -->
-    <box x="-3.20" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
-    <text x="-3.20" y="-0.55" z="-2.94" value="HOME" size="0.07" color="#FFFFFF" />
-
-    <box x="-2.70" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
-    <text x="-2.70" y="-0.55" z="-2.94" value="DEMOS" size="0.07" color="#FFFFFF" />
-
-    <box x="-2.20" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#7E57C2" id="btn_scale_demo" touchable="true"/>
-    <text x="-2.20" y="-0.55" z="-2.94" value="SCALE" size="0.07" color="#FFFFFF" />
-
-    <box x="-1.70" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#EF5350" id="btn_fire_demo" touchable="true"/>
-    <text x="-1.70" y="-0.55" z="-2.94" value="FIRE" size="0.07" color="#FFFFFF" />
-
-    <box x="-1.20" y="-0.55" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#D50000" id="btn_range_demo" touchable="true"/>
-    <text x="-1.20" y="-0.55" z="-2.94" value="RANGE" size="0.07" color="#FFFFFF" />
+    <box x="-2.5" y="-0.55" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
+    <text x="-2.5" y="-0.55" z="-2.94" value="DEMOS" size="0.085" color="#FFFFFF" />
 
     <script>
     const root = hiperspace.dimention;
@@ -1402,11 +1350,7 @@ const LUNA_TARGET_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     if (resetBtn) resetBtn.addEventListener('toque', resetGame);
 
     const navLinks = {
-      btn_home:       'luna://home',
-      btn_demos:      'luna://demos',
-      btn_scale_demo: 'luna://scale_demo',
-      btn_fire_demo:  'luna://fire_demo',
-      btn_range_demo: 'luna://range_demo',
+      btn_demos: 'luna://demos',
     };
     Object.keys(navLinks).forEach((id) => {
       const el = byId(id);
@@ -1480,20 +1424,8 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <text x="-3.5" y="-0.40" z="-3.0" value="Idle" size="0.075" id="status_text" color="#FFFFFF" />
 
     <!-- Cross-demo nav row -->
-    <box x="-4.45" y="-0.70" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
-    <text x="-4.45" y="-0.70" z="-2.94" value="HOME" size="0.07" color="#FFFFFF" />
-
-    <box x="-3.95" y="-0.70" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
-    <text x="-3.95" y="-0.70" z="-2.94" value="DEMOS" size="0.07" color="#FFFFFF" />
-
-    <box x="-3.45" y="-0.70" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#7E57C2" id="btn_scale_demo" touchable="true"/>
-    <text x="-3.45" y="-0.70" z="-2.94" value="SCALE" size="0.07" color="#FFFFFF" />
-
-    <box x="-2.95" y="-0.70" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#EF5350" id="btn_fire_demo" touchable="true"/>
-    <text x="-2.95" y="-0.70" z="-2.94" value="FIRE" size="0.07" color="#FFFFFF" />
-
-    <box x="-2.45" y="-0.70" z="-3.0" sx="0.50" sy="0.20" sz="0.05" color="#FF1744" id="btn_target_demo" touchable="true"/>
-    <text x="-2.45" y="-0.70" z="-2.94" value="TARGET" size="0.07" color="#FFFFFF" />
+    <box x="-3.5" y="-0.70" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
+    <text x="-3.5" y="-0.70" z="-2.94" value="DEMOS" size="0.085" color="#FFFFFF" />
 
     <script>
     const root = hiperspace.dimention;
@@ -1848,11 +1780,7 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     if (resetBtn) resetBtn.addEventListener('toque', resetRun);
 
     const navLinks = {
-      btn_home:        'luna://home',
-      btn_demos:       'luna://demos',
-      btn_scale_demo:  'luna://scale_demo',
-      btn_fire_demo:   'luna://fire_demo',
-      btn_target_demo: 'luna://target_demo',
+      btn_demos: 'luna://demos',
     };
     Object.keys(navLinks).forEach((id) => {
       const el = byId(id);
