@@ -51,6 +51,7 @@ pub fn commit_pending_js_attaches_system(
 
     let pending: Vec<u32> = pending_js_attaches.0.drain(..).collect();
     let entities = world.0.entities();
+    let hierarchies = world.0.read_storage::<Hierarchy>();
 
     for node_id in &pending {
         let ent = entities.entity(*node_id);
@@ -59,7 +60,14 @@ pub fn commit_pending_js_attaches_system(
         }
         dom_data.nodes.insert(*node_id, ent);
         pending_first_render.0.push((*node_id, 1));
-        mirror_dirty.force_rebuild();
+        // Antes: `force_rebuild()` → full rebuild O(N) del mirror por cada
+        // attach (agregar 25 cubos sobre 10k = full de 10k). Ahora incremental:
+        // se toca el nodo nuevo y su padre (cuya lista de hijos cambió). El
+        // refresh in-place del mirror sólo reconstruye esos nodos → O(Δ).
+        mirror_dirty.touch(*node_id);
+        if let Some(parent) = hierarchies.get(ent).and_then(|h| h.parent) {
+            mirror_dirty.touch(parent.id());
+        }
     }
 
     // Ahora que dom_data tiene los nodos, podemos sacarlos de

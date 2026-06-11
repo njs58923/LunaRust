@@ -918,9 +918,9 @@ fn build_local_space_snapshot_from_mirror(
 fn build_local_space_patch_from_mirror(
     allowed: &HashSet<i32>,
     touched_globals: &HashSet<u32>,
-    table: &SpaceHandleTable,
+    table: &mut SpaceHandleTable,
     mirror: &DomMirror,
-) -> Option<SpaceSnapshotPatch> {
+) -> SpaceSnapshotPatch {
     let mut patch = SpaceSnapshotPatch::default();
     patch
         .removed_locals
@@ -931,8 +931,16 @@ fn build_local_space_patch_from_mirror(
         if !allowed.contains(&global_node_id_i32) {
             continue;
         }
-        let local_id = table.global_to_local.get(&global_node_id).copied()?;
-        let node = mirror.nodes.get(&global_node_id_i32)?;
+        // Nodo touched aún no presente en el mirror (detached / no construido):
+        // se omite del patch (no se bail-ea el patch entero como antes — ese
+        // bail forzaba un full snapshot por cada add). Se re-tocará al attach.
+        let Some(node) = mirror.nodes.get(&global_node_id_i32) else {
+            continue;
+        };
+        // Asignar local id si es nuevo (nodos creados desde JS ya tienen uno;
+        // includes/HSML pueden no). El worker hace upsert por local id, así que
+        // el nodo nuevo se agrega a su vista vía el patch.
+        let local_id = ensure_local_id(table, global_node_id);
 
         patch.attr_updates.insert(local_id, node.attrs.clone());
         patch.tag_updates.insert(local_id, node.tag.clone());
@@ -962,7 +970,7 @@ fn build_local_space_patch_from_mirror(
         patch.children.insert(local_id, children);
     }
 
-    Some(patch)
+    patch
 }
 
 pub fn find_owner_space_id(world: &specs::World, mut node: specs::Entity) -> Option<u32> {
@@ -1146,16 +1154,12 @@ pub fn js_update_snapshots_system(world: &mut World) {
         // Ownership del mirror SIN clonar (antes: `.cloned()` = clone #1/3 de N
         // nodos). Se muta in-place y se re-inserta abajo.
         let mut mirror = world.remove_resource::<DomMirror>().unwrap_or_default();
-        let node_count_changed = attached_node_ids.len() != mirror.nodes.len();
-        let count_change_is_incremental_remove = !removed_mirror_nodes.is_empty()
-            && mirror
-                .nodes
-                .len()
-                .saturating_sub(removed_mirror_nodes.len())
-                == attached_node_ids.len();
-        let requires_full_snapshot = force_mirror_rebuild
-            || snapshot_forces_mirror_rebuild
-            || (node_count_changed && !count_change_is_incremental_remove);
+        // El mirror se mantiene INCREMENTAL (touched/removed). Sólo se fuerza
+        // full por motivos genuinos: navegación / bootstrap del recurso. Los
+        // adds entran vía touched (nodo+padre en commit_pending_js_attaches) y
+        // los removes vía removed, así que `node_count_changed` ya NO fuerza
+        // full — antes era O(N) por cada add (10k) aunque sólo cambiaran 25.
+        let requires_full_snapshot = force_mirror_rebuild || snapshot_forces_mirror_rebuild;
         let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
             // Restaurar el recurso antes de abortar: removerlo sin re-insertar lo
             // perdería y forzaría un full-rebuild el frame siguiente.
@@ -1170,7 +1174,22 @@ pub fn js_update_snapshots_system(world: &mut World) {
             touched_mirror_nodes.clone(),
             removed_mirror_nodes.clone(),
         );
-        (mirror, requires_full_snapshot)
+        // Red de seguridad anti-desync: si tras el refresh incremental el conteo
+        // no coincide, algún productor dejó touched/removed incompletos. Full
+        // rebuild UNA vez (correctness > velocidad ante bug). Si esto se queda
+        // pegado en true en el panel, hay un productor que no marca dirty.
+        let desynced = mirror.nodes.len() != attached_node_ids.len();
+        if !requires_full_snapshot && desynced {
+            refresh_dom_mirror_in_place(
+                &mut mirror,
+                &specs_world.0,
+                &attached_node_ids,
+                true,
+                HashSet::new(),
+                HashSet::new(),
+            );
+        }
+        (mirror, requires_full_snapshot || desynced)
     };
     world.insert_resource(mirror.clone());
 
@@ -1225,6 +1244,23 @@ pub fn js_update_snapshots_system(world: &mut World) {
         }
     }
 
+    // Acumular los touched de ESTE frame en cada space (∩ su subtree permitido).
+    // Garantiza que un worker `in_flight` reciba los cambios ocurridos durante
+    // el ack al volver a estar ready — sin forzar un full-rebuild O(N). Durante
+    // animación pura este set viene vacío (opción C), así que esto no corre.
+    if !touched_mirror_nodes.is_empty() {
+        if let Some(mut tables) = world.get_resource_mut::<SpaceHandleTables>() {
+            for (space_id, allowed) in &mirror.space_subtrees {
+                let table = ensure_space_handle_table(&mut tables, *space_id);
+                for &g in &touched_mirror_nodes {
+                    if allowed.contains(&(g as i32)) {
+                        table.pending_touched_globals.insert(g);
+                    }
+                }
+            }
+        }
+    }
+
     let (snapshot_target_space_ids, spaces_waiting_on_ack, missing_contexts) = {
         let Some(manager) = world.get_non_send_resource::<ScriptRuntimeManager>() else {
             return;
@@ -1256,14 +1292,9 @@ pub fn js_update_snapshots_system(world: &mut World) {
         }
         let keep_dirty = spaces_waiting_on_ack > 0 || missing_contexts || !errors.is_empty();
         if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
+            // Sin force-rebuild: el delta queda acumulado por space (arriba) y
+            // se manda como patch cuando el worker vuelva a ready.
             snapshot_state.dirty = keep_dirty;
-            if spaces_waiting_on_ack > 0
-                && (requires_full_snapshot
-                    || !touched_mirror_nodes.is_empty()
-                    || !removed_mirror_nodes.is_empty())
-            {
-                snapshot_state.mirror_force_rebuild = true;
-            }
         }
 
         if !removed_contexts.is_empty() || !created_contexts.is_empty() || !errors.is_empty() {
@@ -1283,7 +1314,9 @@ pub fn js_update_snapshots_system(world: &mut World) {
         return;
     }
 
-    let dispatch_full_snapshots = requires_full_snapshot || spaces_waiting_on_ack > 0;
+    // Full SÓLO por force genuino (nav/desync). El estar esperando ack ya NO
+    // fuerza full: los cambios acumulados van como patch.
+    let dispatch_full_snapshots = requires_full_snapshot;
 
     enum SnapshotBatch {
         Full(SpaceSnapshots),
@@ -1300,22 +1333,23 @@ pub fn js_update_snapshots_system(world: &mut World) {
                 continue;
             };
             let table = ensure_space_handle_table(&mut space_handle_tables, *space_id);
-            let batch = if dispatch_full_snapshots || created_contexts.contains(space_id) {
+            // Full si: force genuino, worker recién creado, o el worker aún no
+            // recibió su snapshot full inicial (bootstrap). Si no → patch del
+            // delta acumulado (O(Δ)).
+            let needs_full = dispatch_full_snapshots
+                || created_contexts.contains(space_id)
+                || !table.bootstrapped;
+            let batch = if needs_full {
                 SnapshotBatch::Full(build_local_space_snapshot_from_mirror(
                     *space_id, allowed, table, &mirror,
                 ))
             } else {
-                match build_local_space_patch_from_mirror(
-                    allowed,
-                    &touched_mirror_nodes,
-                    table,
-                    &mirror,
-                ) {
-                    Some(patch) => SnapshotBatch::Patch(patch),
-                    None => SnapshotBatch::Full(build_local_space_snapshot_from_mirror(
-                        *space_id, allowed, table, &mirror,
-                    )),
-                }
+                // Patch desde el set acumulado (este frame + lo retenido durante
+                // el ack). Clonado para poder limpiarlo recién al confirmar envío.
+                let pending: HashSet<u32> = table.pending_touched_globals.clone();
+                SnapshotBatch::Patch(build_local_space_patch_from_mirror(
+                    allowed, &pending, table, &mirror,
+                ))
             };
             snapshot_batches.push((*space_id, batch));
         }
@@ -1372,6 +1406,11 @@ pub fn js_update_snapshots_system(world: &mut World) {
             for space_id in sent_snapshot_space_ids {
                 if let Some(table) = space_handle_tables.by_space.get_mut(&space_id) {
                     table.pending_removed_locals.clear();
+                    // El delta acumulado ya viajó (en el patch o subsumido por el
+                    // full). Limpiar para no re-enviarlo.
+                    table.pending_touched_globals.clear();
+                    // Primer envío = full → worker bootstrapeado. Idempotente.
+                    table.bootstrapped = true;
                 }
             }
         }
@@ -1400,14 +1439,10 @@ pub fn js_update_snapshots_system(world: &mut World) {
         || !all_snapshots_sent
         || !errors.is_empty();
     if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
+        // Ya NO se fuerza full-rebuild al esperar ack: los cambios ocurridos
+        // durante el in_flight quedan acumulados en `pending_touched_globals`
+        // por space y se mandan como patch al volver a ready.
         snapshot_state.dirty = keep_dirty;
-        if spaces_waiting_on_ack > 0
-            && (requires_full_snapshot
-                || !touched_mirror_nodes.is_empty()
-                || !removed_mirror_nodes.is_empty())
-        {
-            snapshot_state.mirror_force_rebuild = true;
-        }
     }
 
     if !removed_contexts.is_empty() || !created_contexts.is_empty() || !errors.is_empty() {
@@ -2072,6 +2107,16 @@ pub fn js_tick_system(world: &mut World) {
         if let Some(mut dirty_nodes) = world.get_resource_mut::<DirtyNodes>() {
             dirty_nodes.0.extend(dirty_ids_vec.iter().copied());
         }
+        // Tocar el mirror para los nodos re-parentados YA attached: no pasan por
+        // commit_pending_js_attaches (que cubre los newly_attached), así que sin
+        // esto su jerarquía quedaría stale al quitar el force-rebuild blanket.
+        if !dirty_ids_vec.is_empty() {
+            if let Some(mut mirror_dirty) = world.get_resource_mut::<DomMirrorDirty>() {
+                for &nid in &dirty_ids_vec {
+                    mirror_dirty.touch(nid);
+                }
+            }
+        }
         if !dirty_ids_vec.is_empty() || !newly_attached_ids.is_empty() {
             snapshot_dirty = true;
         }
@@ -2734,8 +2779,21 @@ pub fn js_tick_system(world: &mut World) {
             snapshot_state.dirty = true;
         }
     } else if snapshot_acks > 0 {
+        // Al ack-ear, mantener dirty si quedó algún delta pendiente por enviar
+        // (touched/removed acumulado mientras el worker estaba in_flight) o un
+        // rebuild forzado. Antes esto dependía sólo de `mirror_force_rebuild`;
+        // con la acumulación per-space (opción A) hay que chequear los deltas.
+        let has_pending_delta = world
+            .get_resource::<SpaceHandleTables>()
+            .map(|t| {
+                t.by_space.values().any(|tbl| {
+                    !tbl.pending_touched_globals.is_empty()
+                        || !tbl.pending_removed_locals.is_empty()
+                })
+            })
+            .unwrap_or(false);
         if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
-            snapshot_state.dirty = snapshot_state.mirror_force_rebuild;
+            snapshot_state.dirty = has_pending_delta || snapshot_state.mirror_force_rebuild;
         }
     }
 
@@ -2745,14 +2803,13 @@ pub fn js_tick_system(world: &mut World) {
         }
     }
 
-    if dom_structure_changed {
-        if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
-            snapshot_state.mirror_force_rebuild = true;
-        }
-        if let Some(mut mirror_dirty) = world.get_resource_mut::<DomMirrorDirty>() {
-            mirror_dirty.force_rebuild();
-        }
-    }
+    // NOTA: antes acá se forzaba `mirror_force_rebuild` + `force_rebuild()` ante
+    // CUALQUIER cambio estructural → full rebuild O(N) del mirror por cada add
+    // (25 cubos sobre 10k = full de 10k). Ahora el mirror se actualiza
+    // incremental: newly_attached vía commit_pending_js_attaches (nodo+padre),
+    // re-parents vía el touch de `dirty_ids_vec` arriba, y removes vía
+    // `mirror_dirty.remove`. La red de seguridad anti-desync en
+    // `js_update_snapshots_system` reconstruye full si algo quedó incompleto.
 }
 
 #[cfg(test)]
@@ -3435,11 +3492,17 @@ mod tests {
 
         js_update_snapshots_system(app.world_mut());
 
+        // Nuevo mecanismo (opción A): el touch ocurrido mientras el worker estaba
+        // in_flight queda ACUMULADO en el delta pendiente del space — en vez de
+        // forzar un full-rebuild O(N). Se mandará como patch al volver a ready.
         assert!(
             app.world()
-                .resource::<JsSnapshotState>()
-                .mirror_force_rebuild,
-            "dirty update blocked by an in-flight worker must be retained as a full rebuild"
+                .resource::<SpaceHandleTables>()
+                .by_space
+                .get(&space_id)
+                .map(|t| t.pending_touched_globals.contains(&space_id))
+                .unwrap_or(false),
+            "dirty update blocked by an in-flight worker must be retained in pending_touched_globals"
         );
 
         event_tx
@@ -3449,7 +3512,7 @@ mod tests {
 
         assert!(
             app.world().resource::<JsSnapshotState>().dirty,
-            "ACK must not clear dirty while a retained rebuild is pending"
+            "ACK must not clear dirty while a retained delta is pending"
         );
     }
 
