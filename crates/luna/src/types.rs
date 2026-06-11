@@ -331,6 +331,14 @@ pub struct SpaceHandleTable {
     pub global_to_local: HashMap<u32, i32>,
     pub detached_globals: std::collections::HashSet<u32>,
     pub pending_removed_locals: std::collections::HashSet<i32>,
+    /// Globals touched (attr/transform/estructura) que este worker AÚN no
+    /// recibió. Se acumulan frame a frame mientras el worker está `in_flight`
+    /// y se mandan como patch al ack — evita el full-rebuild O(N)/frame que
+    /// antes se forzaba para no perder cambios durante el ack.
+    pub pending_touched_globals: std::collections::HashSet<u32>,
+    /// `true` una vez que el worker recibió su snapshot FULL inicial. Hasta
+    /// entonces se le manda full (bootstrap); después, sólo patches.
+    pub bootstrapped: bool,
 }
 
 #[derive(Resource, Default)]

@@ -878,13 +878,20 @@ where
 
 // ─── Attribute updates ───────────────────────────────────────────────────────
 
+// NOTA: este sistema YA NO toca el `DomMirror`. Los transforms autorados por JS
+// (`el.position = …`) no se reflejan de vuelta al worker que los escribió: el
+// runtime JS ya cachea localmente el valor escrito (ver `set position` en
+// runtime.js, `_positionProxy._cache`), así que el round-trip mirror→snapshot
+// era puro costo O(N)/frame durante animaciones (10k cubos → 60ms de snapshot).
+// Las lecturas cross-referencia (getElementById fresco a mitad de animación)
+// devuelven el valor del último sync estructural; se auto-curan ante cualquier
+// cambio de atributo (que sí toca el mirror, vía `apply_attribute_updates`).
 pub fn apply_transform_updates(
     mut transform_updates: ResMut<crate::TransformUpdates>,
     world: ResMut<ElemenetWorld>,
     dom_data: Res<VirtualDomData>,
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut transform_only_dirty: ResMut<crate::TransformOnlyDirtyNodes>,
-    mut mirror_dirty: ResMut<crate::js::DomMirrorDirty>,
 ) {
     if transform_updates.is_empty() {
         return;
@@ -917,7 +924,6 @@ pub fn apply_transform_updates(
             // Para nodos ya attached: un único dirty por frame alcanza aunque
             // lleguen position+rotation+scale por separado.
             if dom_data.nodes.contains_key(&node_id) {
-                mirror_dirty.touch(node_id);
                 if transform_only_dirty.0.insert(node_id) {
                     dirty_nodes.0.push(node_id);
                 }
@@ -935,7 +941,6 @@ pub fn apply_transform_updates(
             tr.rotation.y = rot.y;
             tr.rotation.z = rot.z;
             if dom_data.nodes.contains_key(&node_id) {
-                mirror_dirty.touch(node_id);
                 if transform_only_dirty.0.insert(node_id) {
                     dirty_nodes.0.push(node_id);
                 }
@@ -953,7 +958,6 @@ pub fn apply_transform_updates(
             tr.scale.y = scale.y;
             tr.scale.z = scale.z;
             if dom_data.nodes.contains_key(&node_id) {
-                mirror_dirty.touch(node_id);
                 if transform_only_dirty.0.insert(node_id) {
                     dirty_nodes.0.push(node_id);
                 }
