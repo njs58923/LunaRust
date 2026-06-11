@@ -302,9 +302,15 @@ pub fn ui_system(
                     DevtoolTab::Status => {
                         ui.label(format!("Entities: {}", ui_params.entity_counter.count));
                         ui.label(format!("FPS: {}", ui_params.fps_counter.fps));
+                        let p = &*ui_params.perf_stats;
                         ui.label(format!(
-                            "Last dom_sync: {:.2} ms",
-                            ui_params.perf_stats.dom_sync_ms
+                            "dom_sync: {:.2} ms  (dirty {} · fast {} · requeue {})",
+                            p.dom_sync_ms, p.dom_sync_dirty_in, p.dom_sync_fastlane, p.dom_sync_requeued
+                        ));
+                        ui.label(format!("transform_only set: {}", p.transform_only_len));
+                        ui.label(format!(
+                            "js_snapshot: {:.2} ms  (full_rebuild {} · mirror {} · sent {} · waiting_ack {})",
+                            p.js_snapshot_ms, p.mirror_full_rebuild, p.mirror_nodes, p.snapshots_sent, p.waiting_on_ack
                         ));
                     }
                     DevtoolTab::Hsml => {

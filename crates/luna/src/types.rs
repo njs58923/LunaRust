@@ -406,6 +406,24 @@ pub struct TextMaterialCache {
 #[derive(Resource, Default)]
 pub struct PerformanceStats {
     pub dom_sync_ms: f32,
+    /// Nodos que `dom_sync_system` procesó este frame (tras dedup).
+    pub dom_sync_dirty_in: usize,
+    /// Cuántos de esos se resolvieron por el fast-lane transform-only.
+    pub dom_sync_fastlane: usize,
+    /// Descendientes re-encolados por `next_dirty` (despawn diferido).
+    pub dom_sync_requeued: usize,
+    /// Tamaño de `TransformOnlyDirtyNodes` al final del frame.
+    pub transform_only_len: usize,
+    /// Tiempo en `js_update_snapshots_system` este frame.
+    pub js_snapshot_ms: f32,
+    /// Hubo full-rebuild del DomMirror este frame (O(N)).
+    pub mirror_full_rebuild: bool,
+    /// Nodos en el DomMirror.
+    pub mirror_nodes: usize,
+    /// Snapshots enviados a workers este frame.
+    pub snapshots_sent: usize,
+    /// Spaces cuyo worker está `in_flight` (esperando ack).
+    pub waiting_on_ack: usize,
 }
 
 #[derive(Resource)]

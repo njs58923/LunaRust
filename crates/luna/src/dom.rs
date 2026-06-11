@@ -1619,6 +1619,9 @@ pub fn dom_sync_system(
     //   - `text`: el transform pasa por `build_text_transform`.
     //   - modelos recién Ready: io.rs re-marca dirty SIN transform-only, así que
     //     no entran acá y conservan su remontaje en la rama `model`.
+    let dirty_in = dirty_node_ids.len();
+    let mut fastlane_count = 0usize;
+    let mut requeued = 0usize;
     let mut generic_ids: Vec<u32> = Vec::with_capacity(dirty_node_ids.len());
     for node_id in dirty_node_ids {
         if transform_only_dirty.0.contains(&node_id) {
@@ -1635,6 +1638,7 @@ pub fn dom_sync_system(
                         *t = transform_b;
                     }
                     transform_only_dirty.0.remove(&node_id);
+                    fastlane_count += 1;
                     continue;
                 }
             }
@@ -2320,11 +2324,16 @@ pub fn dom_sync_system(
         }
 
         if !next_dirty.is_empty() {
+            requeued = next_dirty.len();
             dirty_nodes.0.extend(next_dirty);
         }
     }
 
     perf_stats.dom_sync_ms = start_time.elapsed().as_secs_f32() * 1000.0;
+    perf_stats.dom_sync_dirty_in = dirty_in;
+    perf_stats.dom_sync_fastlane = fastlane_count;
+    perf_stats.dom_sync_requeued = requeued;
+    perf_stats.transform_only_len = transform_only_dirty.0.len();
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

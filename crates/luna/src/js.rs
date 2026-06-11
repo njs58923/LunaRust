@@ -1108,11 +1108,20 @@ pub fn js_auto_inject_resource_scripts_system(world: &mut World) {
 // ─── Systems ─────────────────────────────────────────────────────────────────
 
 pub fn js_update_snapshots_system(world: &mut World) {
+    let snapshot_start = Instant::now();
     let should_refresh = world
         .get_resource::<JsSnapshotState>()
         .map(|state| state.dirty)
         .unwrap_or(true);
     if !should_refresh {
+        // Idle: el system salió sin trabajo. Reset de stats para que el panel
+        // no muestre valores stale del último frame con actividad.
+        if let Some(mut perf) = world.get_resource_mut::<crate::PerformanceStats>() {
+            perf.js_snapshot_ms = 0.0;
+            perf.mirror_full_rebuild = false;
+            perf.snapshots_sent = 0;
+            perf.waiting_on_ack = 0;
+        }
         return;
     }
 
@@ -1235,6 +1244,16 @@ pub fn js_update_snapshots_system(world: &mut World) {
 
     let mut all_snapshots_sent = true;
     if snapshot_target_space_ids.is_empty() {
+        // Path "nada que enviar": típicamente todos los workers están in_flight
+        // (esperando ack). Si esto corre cada frame con mirror_full_rebuild=true,
+        // ése es el O(N)/frame atascado.
+        if let Some(mut perf) = world.get_resource_mut::<crate::PerformanceStats>() {
+            perf.js_snapshot_ms = snapshot_start.elapsed().as_secs_f32() * 1000.0;
+            perf.mirror_full_rebuild = requires_full_snapshot;
+            perf.mirror_nodes = mirror.nodes.len();
+            perf.snapshots_sent = 0;
+            perf.waiting_on_ack = spaces_waiting_on_ack;
+        }
         let keep_dirty = spaces_waiting_on_ack > 0 || missing_contexts || !errors.is_empty();
         if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
             snapshot_state.dirty = keep_dirty;
@@ -1365,6 +1384,14 @@ pub fn js_update_snapshots_system(world: &mut World) {
         for &space_id in &removed_contexts {
             space_handle_tables.by_space.remove(&space_id);
         }
+    }
+
+    if let Some(mut perf) = world.get_resource_mut::<crate::PerformanceStats>() {
+        perf.js_snapshot_ms = snapshot_start.elapsed().as_secs_f32() * 1000.0;
+        perf.mirror_full_rebuild = requires_full_snapshot;
+        perf.mirror_nodes = mirror.nodes.len();
+        perf.snapshots_sent = snapshots_sent_this_run;
+        perf.waiting_on_ack = spaces_waiting_on_ack;
     }
 
     let keep_dirty = snapshots_sent_this_run > 0
