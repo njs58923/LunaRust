@@ -1614,7 +1614,9 @@ pub fn dom_sync_system(
             continue;
         };
 
-        let tag = tags.get(*node).map(|t| t.0.clone()).unwrap_or_default();
+        // `&str` prestado del storage (vivo todo el loop): evita clonar el tag
+        // String por nodo/frame — 10k allocs+frees/frame con cubos animados.
+        let tag = tags.get(*node).map(|t| t.0.as_str()).unwrap_or("");
         let hierarchy = hierarchies.get(*node);
         // `Hierarchy.parent` ahora es `Option<Entity>` (con gen) — evita el
         // bug histórico de reciclaje de slots specs.
@@ -1832,7 +1834,7 @@ pub fn dom_sync_system(
             }
 
 
-            if tag == "space" || tag == "include" || is_structural_tag(&tag) {
+            if tag == "space" || tag == "include" || is_structural_tag(tag) {
                 if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
                 }
@@ -1857,7 +1859,7 @@ pub fn dom_sync_system(
             }
 
             if tag == "box" || tag == "sphere" || tag == "plane" || tag == "cylinder" {
-                let hit_shape = match tag.as_str() {
+                let hit_shape = match tag {
                     "box" => crate::touch::HitShape::Box,
                     "plane" => crate::touch::HitShape::Plane,
                     _ => crate::touch::HitShape::Sphere,
@@ -1888,7 +1890,7 @@ pub fn dom_sync_system(
                 // Regenerate mesh if border-radius changed (box or plane)
                 let attrs_opt = attrs_storage.get(*node);
                 let border_radius = parse_border_radius(attrs_opt);
-                let new_mesh = match (tag.as_str(), border_radius) {
+                let new_mesh = match (tag, border_radius) {
                     ("box", Some(r)) => Some(get_or_create_rounded_mesh(
                         rounded_mesh_cache.as_deref_mut(),
                         &mut meshes,
@@ -1934,7 +1936,7 @@ pub fn dom_sync_system(
                 log_panel.push_info("  Creating new entity...");
             }
 
-            let new_ent = match tag.as_str() {
+            let new_ent = match tag {
                 "model" => {
                     let resolved_asset_path = models
                         .get(*node)
@@ -2036,7 +2038,7 @@ pub fn dom_sync_system(
                         crate::touch::HitShape::Box,
                     ))
                     .id(),
-                _other if is_structural_tag(&tag) => commands
+                _other if is_structural_tag(tag) => commands
                     .spawn((
                         SpatialBundle {
                             transform: transform_b,

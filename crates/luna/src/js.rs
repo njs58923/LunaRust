@@ -796,27 +796,29 @@ fn rebuild_dom_mirror_space_subtrees(mirror: &mut DomMirror) {
     }
 }
 
-fn refresh_dom_mirror(
+/// Aplica el delta (touched/removed) sobre `mirror` IN-PLACE.
+///
+/// Antes era funcional-pura y clonaba el mirror entero (`previous_mirror.clone()`)
+/// cada frame con cambios. Con 10k nodos animados eso era un deep-clone de 10k
+/// nodos (String tag + HashMap attrs + Vec children c/u) por frame — el costo
+/// dominante. Mutando in-place el costo pasa a O(touched), no O(total).
+fn refresh_dom_mirror_in_place(
+    mirror: &mut DomMirror,
     specs_world: &specs::World,
     attached_node_ids: &HashSet<u32>,
-    previous_mirror: &DomMirror,
     force_rebuild: bool,
     touched_nodes: HashSet<u32>,
     removed_nodes: HashSet<u32>,
-) -> DomMirror {
-    if force_rebuild || previous_mirror.nodes.is_empty() {
-        return build_dom_mirror_from_specs(
-            specs_world,
-            attached_node_ids,
-            previous_mirror.version,
-        );
+) {
+    if force_rebuild || mirror.nodes.is_empty() {
+        *mirror = build_dom_mirror_from_specs(specs_world, attached_node_ids, mirror.version);
+        return;
     }
 
     if touched_nodes.is_empty() && removed_nodes.is_empty() {
-        return previous_mirror.clone();
+        return;
     }
 
-    let mut mirror = previous_mirror.clone();
     let mut changed = false;
     for node_id in removed_nodes {
         let node_id_i32 = node_id as i32;
@@ -847,9 +849,8 @@ fn refresh_dom_mirror(
 
     if changed {
         mirror.version = mirror.version.saturating_add(1);
-        rebuild_dom_mirror_space_subtrees(&mut mirror);
+        rebuild_dom_mirror_space_subtrees(mirror);
     }
-    mirror
 }
 
 fn build_local_space_snapshot_from_mirror(
@@ -1132,14 +1133,13 @@ pub fn js_update_snapshots_system(world: &mut World) {
             force
         })
         .unwrap_or(true);
-    let mirror = {
-        let previous_mirror = world
-            .get_resource::<DomMirror>()
-            .cloned()
-            .unwrap_or_default();
-        let node_count_changed = attached_node_ids.len() != previous_mirror.nodes.len();
+    let (mirror, requires_full_snapshot) = {
+        // Ownership del mirror SIN clonar (antes: `.cloned()` = clone #1/3 de N
+        // nodos). Se muta in-place y se re-inserta abajo.
+        let mut mirror = world.remove_resource::<DomMirror>().unwrap_or_default();
+        let node_count_changed = attached_node_ids.len() != mirror.nodes.len();
         let count_change_is_incremental_remove = !removed_mirror_nodes.is_empty()
-            && previous_mirror
+            && mirror
                 .nodes
                 .len()
                 .saturating_sub(removed_mirror_nodes.len())
@@ -1148,19 +1148,21 @@ pub fn js_update_snapshots_system(world: &mut World) {
             || snapshot_forces_mirror_rebuild
             || (node_count_changed && !count_change_is_incremental_remove);
         let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
+            // Restaurar el recurso antes de abortar: removerlo sin re-insertar lo
+            // perdería y forzaría un full-rebuild el frame siguiente.
+            world.insert_resource(mirror);
             return;
         };
-        let mirror = refresh_dom_mirror(
+        refresh_dom_mirror_in_place(
+            &mut mirror,
             &specs_world.0,
             &attached_node_ids,
-            &previous_mirror,
             requires_full_snapshot,
             touched_mirror_nodes.clone(),
             removed_mirror_nodes.clone(),
         );
         (mirror, requires_full_snapshot)
     };
-    let (mirror, requires_full_snapshot) = mirror;
     world.insert_resource(mirror.clone());
 
     let active_space_ids: HashSet<u32> = mirror.space_subtrees.keys().copied().collect();
