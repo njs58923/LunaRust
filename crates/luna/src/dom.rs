@@ -1575,6 +1575,7 @@ pub fn dom_sync_system(
     let pending_model_loads = &mut async_dom.pending_model_loads;
     let model_load_states = &mut async_dom.model_load_states;
     let transform_only_dirty = &mut async_dom.transform_only_dirty;
+    let mounted_models = &async_dom.mounted_models;
 
     let tags = world.0.read_storage::<Tag>();
     let transforms = world.0.read_storage::<Transform2>();
@@ -1686,7 +1687,24 @@ pub fn dom_sync_system(
                         }
                     });
 
-                if let Some(asset_path) = resolved_asset_path {
+                // Path actualmente montado en la entidad Bevy. `None` = placeholder
+                // (modelo aún no Ready, sin escena glTF montada).
+                let mounted_path = mounted_models.get(bevy_ent).ok().map(|m| m.0.as_str());
+
+                // Sólo remontar la escena glTF cuando el asset cambia de verdad:
+                //   - placeholder → real (mounted None, resolved Some)
+                //   - src cambió a otro modelo (paths distintos)
+                // Si el path no cambió, un dirty (transform/attr) NO debe respawnear
+                // la escena: bastaba un update barato en-sitio. Respawnear por frame
+                // era la causa raíz de la caída de FPS animando modelos + B0003.
+                let needs_remount = match (resolved_asset_path.as_deref(), mounted_path) {
+                    (Some(new_path), Some(cur)) => new_path != cur,
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                };
+
+                if needs_remount {
+                    let asset_path = resolved_asset_path.expect("needs_remount ⇒ Some");
                     deferred_despawns.push((bevy_ent, node_id));
                     entity_map.0.remove(&node_id);
 
@@ -1700,6 +1718,8 @@ pub fn dom_sync_system(
                     set_parent(&mut commands, new_ent, parent_id, &entity_map);
                     entity_map.0.insert(node_id, new_ent);
                 } else if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
+                    // Update barato: sólo transform en-sitio (cubre también el caso
+                    // transform-only, que antes nunca alcanzaba esta rama).
                     *t = transform_b;
                 }
                 // IMPORTANTE:
@@ -2307,6 +2327,7 @@ fn spawn_model_entity(
                     ..Default::default()
                 },
                 Dirty,
+                crate::MountedModel(asset_path.to_string()),
             ))
             .id();
     }
