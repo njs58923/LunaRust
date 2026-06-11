@@ -1606,7 +1606,43 @@ pub fn dom_sync_system(
         }
     }
 
+    // ── Fast-lane transform-only ──────────────────────────────────────────────
+    // Caso masivo: miles de primitivos cuyo único cambio del frame es el
+    // transform (JS animando posición/rotación/escala) y que YA tienen entidad
+    // Bevy. Se resuelven con un único `query.get_mut` + escritura directa
+    // SPECS→Bevy, sin parent-sync, sin lookup de jerarquía y sin dispatch por
+    // tag. El loop genérico de abajo hacía DOS `get_mut` por nodo (uno para leer
+    // el parent, otro para escribir el transform) + lookups de jerarquía
+    // inútiles (en transform-only el parent nunca cambia).
+    //
+    // Exclusiones (caen al loop genérico):
+    //   - `text`: el transform pasa por `build_text_transform`.
+    //   - modelos recién Ready: io.rs re-marca dirty SIN transform-only, así que
+    //     no entran acá y conservan su remontaje en la rama `model`.
+    let mut generic_ids: Vec<u32> = Vec::with_capacity(dirty_node_ids.len());
     for node_id in dirty_node_ids {
+        if transform_only_dirty.0.contains(&node_id) {
+            if let (Some(&bevy_ent), Some(node)) =
+                (entity_map.0.get(&node_id), dom_data.nodes.get(&node_id))
+            {
+                let is_text = matches!(tags.get(*node), Some(t) if t.0 == "text");
+                if !is_text {
+                    let mut transform_b = Transform::default();
+                    if let Some(tr2) = transforms.get(*node) {
+                        apply_transform(tr2, &mut transform_b);
+                    }
+                    if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
+                        *t = transform_b;
+                    }
+                    transform_only_dirty.0.remove(&node_id);
+                    continue;
+                }
+            }
+        }
+        generic_ids.push(node_id);
+    }
+
+    for node_id in generic_ids {
         let Some(node) = dom_data.nodes.get(&node_id) else {
             if DOM_SYNC_VERBOSE_LOGS {
                 log_panel.push_warn(format!("dom_sync: skipping detached node id={}", node_id));
