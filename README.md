@@ -1,5 +1,10 @@
 # Bevy Mod XR
 
+> **Note:** This is a fork of [`awtterpip/bevy_oxr`](https://github.com/awtterpip/bevy_oxr).
+> All original credit goes to the upstream authors and contributors. This fork
+> contains additional experiments and changes. See the upstream repository for
+> the canonical project and its history.
+
 A crate for adding openxr (and in the future webxr) support to Bevy. 
 
 To see it in action run the example in `crates/bevy_openxr/examples` with `cargo run -p bevy_mod_openxr --example 3d_scene`
