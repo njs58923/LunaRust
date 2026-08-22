@@ -807,8 +807,8 @@ fn refresh_dom_mirror_in_place(
     specs_world: &specs::World,
     attached_node_ids: &HashSet<u32>,
     force_rebuild: bool,
-    touched_nodes: HashSet<u32>,
-    removed_nodes: HashSet<u32>,
+    touched_nodes: &HashSet<u32>,
+    removed_nodes: &HashSet<u32>,
 ) {
     if force_rebuild || mirror.nodes.is_empty() {
         *mirror = build_dom_mirror_from_specs(specs_world, attached_node_ids, mirror.version);
@@ -820,7 +820,7 @@ fn refresh_dom_mirror_in_place(
     }
 
     let mut changed = false;
-    for node_id in removed_nodes {
+    for &node_id in removed_nodes {
         let node_id_i32 = node_id as i32;
         changed |= mirror.nodes.remove(&node_id_i32).is_some();
         for node in mirror.nodes.values_mut() {
@@ -830,7 +830,7 @@ fn refresh_dom_mirror_in_place(
         }
     }
 
-    for node_id in touched_nodes {
+    for &node_id in touched_nodes {
         let node_id_i32 = node_id as i32;
         if !attached_node_ids.contains(&node_id) {
             changed |= mirror.nodes.remove(&node_id_i32).is_some();
@@ -1133,6 +1133,55 @@ pub fn js_update_snapshots_system(world: &mut World) {
         return;
     }
 
+    // Mientras TODOS los workers esperan el ACK y no entró ningún cambio de
+    // mirror, no hay nada que preparar ni enviar. Evitar aquí el hot path O(N):
+    // construir `attached_node_ids` y recorrer/clonar el DomMirror sólo para
+    // descubrir más abajo que ningún worker está disponible.
+    let mirror_has_pending_work = world
+        .get_resource::<DomMirrorDirty>()
+        .map(|dirty| {
+            dirty.force_rebuild
+                || !dirty.touched_nodes.is_empty()
+                || !dirty.removed_nodes.is_empty()
+        })
+        .unwrap_or(true);
+    let mirror_rebuild_requested = world
+        .get_resource::<JsSnapshotState>()
+        .map(|state| state.mirror_force_rebuild)
+        .unwrap_or(true);
+    let (worker_count, workers_waiting_on_ack) = world
+        .get_non_send_resource::<ScriptRuntimeManager>()
+        .map(|manager| {
+            (
+                manager.contexts.len(),
+                manager
+                    .contexts
+                    .values()
+                    .filter(|worker| worker.snapshot_in_flight)
+                    .count(),
+            )
+        })
+        .unwrap_or_default();
+    let (mirror_nodes, active_space_count) = world
+        .get_resource::<DomMirror>()
+        .map(|mirror| (mirror.nodes.len(), mirror.space_subtrees.len()))
+        .unwrap_or_default();
+    if !mirror_has_pending_work
+        && !mirror_rebuild_requested
+        && worker_count > 0
+        && worker_count == active_space_count
+        && workers_waiting_on_ack == worker_count
+    {
+        if let Some(mut perf) = world.get_resource_mut::<crate::PerformanceStats>() {
+            perf.js_snapshot_ms = snapshot_start.elapsed().as_secs_f32() * 1000.0;
+            perf.mirror_full_rebuild = false;
+            perf.mirror_nodes = mirror_nodes;
+            perf.snapshots_sent = 0;
+            perf.waiting_on_ack = workers_waiting_on_ack;
+        }
+        return;
+    }
+
     let attached_node_ids: HashSet<u32> = world
         .get_resource::<VirtualDomData>()
         .map(|dom| dom.nodes.keys().copied().collect())
@@ -1150,48 +1199,61 @@ pub fn js_update_snapshots_system(world: &mut World) {
             force
         })
         .unwrap_or(true);
-    let (mirror, requires_full_snapshot) = {
-        // Ownership del mirror SIN clonar (antes: `.cloned()` = clone #1/3 de N
-        // nodos). Se muta in-place y se re-inserta abajo.
-        let mut mirror = world.remove_resource::<DomMirror>().unwrap_or_default();
-        // El mirror se mantiene INCREMENTAL (touched/removed). Sólo se fuerza
-        // full por motivos genuinos: navegación / bootstrap del recurso. Los
-        // adds entran vía touched (nodo+padre en commit_pending_js_attaches) y
-        // los removes vía removed, así que `node_count_changed` ya NO fuerza
-        // full — antes era O(N) por cada add (10k) aunque sólo cambiaran 25.
-        let requires_full_snapshot = force_mirror_rebuild || snapshot_forces_mirror_rebuild;
-        let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
-            // Restaurar el recurso antes de abortar: removerlo sin re-insertar lo
-            // perdería y forzaría un full-rebuild el frame siguiente.
-            world.insert_resource(mirror);
-            return;
-        };
-        refresh_dom_mirror_in_place(
+    let requires_full_snapshot = force_mirror_rebuild || snapshot_forces_mirror_rebuild;
+    world.resource_scope(|world, mut mirror: Mut<DomMirror>| {
+        sync_snapshots_with_mirror(
+            world,
             &mut mirror,
-            &specs_world.0,
+            snapshot_start,
             &attached_node_ids,
             requires_full_snapshot,
-            touched_mirror_nodes.clone(),
-            removed_mirror_nodes.clone(),
+            &touched_mirror_nodes,
+            &removed_mirror_nodes,
         );
-        // Red de seguridad anti-desync: si tras el refresh incremental el conteo
-        // no coincide, algún productor dejó touched/removed incompletos. Full
-        // rebuild UNA vez (correctness > velocidad ante bug). Si esto se queda
-        // pegado en true en el panel, hay un productor que no marca dirty.
-        let desynced = mirror.nodes.len() != attached_node_ids.len();
-        if !requires_full_snapshot && desynced {
-            refresh_dom_mirror_in_place(
-                &mut mirror,
-                &specs_world.0,
-                &attached_node_ids,
-                true,
-                HashSet::new(),
-                HashSet::new(),
-            );
-        }
-        (mirror, requires_full_snapshot || desynced)
+    });
+}
+
+fn sync_snapshots_with_mirror(
+    world: &mut World,
+    mirror: &mut DomMirror,
+    snapshot_start: Instant,
+    attached_node_ids: &HashSet<u32>,
+    requires_full_snapshot: bool,
+    touched_mirror_nodes: &HashSet<u32>,
+    removed_mirror_nodes: &HashSet<u32>,
+) {
+    // El mirror se mantiene INCREMENTAL (touched/removed). Sólo se fuerza
+    // full por motivos genuinos: navegación / bootstrap del recurso. Los
+    // adds entran vía touched (nodo+padre en commit_pending_js_attaches) y
+    // los removes vía removed, así que `node_count_changed` ya NO fuerza
+    // full — antes era O(N) por cada add (10k) aunque sólo cambiaran 25.
+    let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
+        return;
     };
-    world.insert_resource(mirror.clone());
+    refresh_dom_mirror_in_place(
+        mirror,
+        &specs_world.0,
+        attached_node_ids,
+        requires_full_snapshot,
+        touched_mirror_nodes,
+        removed_mirror_nodes,
+    );
+    // Red de seguridad anti-desync: si tras el refresh incremental el conteo
+    // no coincide, algún productor dejó touched/removed incompletos. Full
+    // rebuild UNA vez (correctness > velocidad ante bug). Si esto se queda
+    // pegado en true en el panel, hay un productor que no marca dirty.
+    let desynced = mirror.nodes.len() != attached_node_ids.len();
+    if !requires_full_snapshot && desynced {
+        refresh_dom_mirror_in_place(
+            mirror,
+            &specs_world.0,
+            attached_node_ids,
+            true,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+    }
+    let requires_full_snapshot = requires_full_snapshot || desynced;
 
     let active_space_ids: HashSet<u32> = mirror.space_subtrees.keys().copied().collect();
     let mut removed_contexts = Vec::new();
@@ -1252,7 +1314,7 @@ pub fn js_update_snapshots_system(world: &mut World) {
         if let Some(mut tables) = world.get_resource_mut::<SpaceHandleTables>() {
             for (space_id, allowed) in &mirror.space_subtrees {
                 let table = ensure_space_handle_table(&mut tables, *space_id);
-                for &g in &touched_mirror_nodes {
+                for &g in touched_mirror_nodes {
                     if allowed.contains(&(g as i32)) {
                         table.pending_touched_globals.insert(g);
                     }
@@ -2832,6 +2894,7 @@ mod tests {
         app.insert_resource(PendingJsAttachNodes::default());
         app.insert_resource(DomMirror::default());
         app.insert_resource(DomMirrorDirty::default());
+        app.insert_resource(crate::PerformanceStats::default());
         app.insert_non_send_resource(ScriptRuntimeManager::default());
 
         let specs_world = build_world();
@@ -3268,6 +3331,19 @@ mod tests {
             app.world().resource::<DomMirror>().version,
             version_after_first_send,
             "pending snapshot ACK alone must not rebuild the mirror from Specs each frame"
+        );
+        let perf = app.world().resource::<crate::PerformanceStats>();
+        assert_eq!(
+            perf.waiting_on_ack, 1,
+            "ACK-only fast path must report the waiting worker"
+        );
+        assert_eq!(
+            perf.snapshots_sent, 0,
+            "ACK-only fast path must not enqueue an empty snapshot"
+        );
+        assert!(
+            app.world().resource::<JsSnapshotState>().dirty,
+            "ACK-only fast path must leave dirty set until js_tick consumes the ACK"
         );
     }
 
