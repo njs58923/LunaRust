@@ -44,6 +44,11 @@ pub enum IoResult {
         url: String,
         result: Result<String, String>,
     },
+    SkyboxPrepared {
+        network_id: u64,
+        key: String,
+        result: Result<[String; 6], String>,
+    },
     IncludeLoaded {
         network_id: u64,
         parent_node_id: u32,
@@ -58,6 +63,7 @@ pub enum NetworkRequestKind {
     Fetch,
     Script,
     Model,
+    Skybox,
     Include,
 }
 
@@ -68,6 +74,7 @@ impl NetworkRequestKind {
             Self::Fetch => "fetch",
             Self::Script => "script",
             Self::Model => "model",
+            Self::Skybox => "skybox",
             Self::Include => "include",
         }
     }
@@ -402,6 +409,26 @@ pub fn request_model_prepare(rt: &Runtime, io_service: &IoService, url: String) 
     });
 }
 
+pub fn request_skybox_prepare(
+    rt: &Runtime,
+    io_service: &IoService,
+    key: String,
+    face_urls: [String; 6],
+) {
+    let network_id =
+        io_service.begin_request(NetworkRequestKind::Skybox, key.clone(), "skybox-cache");
+    let tx = io_service.sender();
+    let client = io_service.http_client();
+    rt.spawn(async move {
+        let result = prepare_skybox_assets(face_urls, &client).await;
+        let _ = tx.send(IoResult::SkyboxPrepared {
+            network_id,
+            key,
+            result,
+        });
+    });
+}
+
 async fn load_text_resource(url: &str, client: &reqwest::Client) -> Result<String, String> {
     if crate::routes::VirtualRoutes::is_virtual_url(url) {
         return VIRTUAL_ROUTES
@@ -574,6 +601,74 @@ async fn prepare_model_asset(url: &str, client: &reqwest::Client) -> Result<Stri
         })
 }
 
+async fn prepare_cached_image(url: String, client: reqwest::Client) -> Result<String, String> {
+    let (assets_dir, cache_dir) = resolve_assets_and_cache_dirs();
+    let local_path = cache_dir.join(encode_url_to_filename(&url));
+
+    if !local_path.exists() {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            let bytes = client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| format!("HTTP error for '{url}': {e}"))?
+                .error_for_status()
+                .map_err(|e| format!("HTTP status error for '{url}': {e}"))?
+                .bytes()
+                .await
+                .map_err(|e| format!("Read bytes error for '{url}': {e}"))?
+                .to_vec();
+            write_bytes_atomic(local_path.clone(), bytes).await?;
+        } else {
+            let from = PathBuf::from(&url);
+            if !from.exists() {
+                return Err(format!("Local skybox face not found: {url}"));
+            }
+            copy_file_atomic(from, local_path.clone()).await?;
+        }
+    }
+
+    to_assets_relative(&local_path, &assets_dir)
+        .map(|path| path.replace('\\', "/"))
+        .ok_or_else(|| {
+            format!(
+                "Cached skybox face is outside assets dir: {}",
+                local_path.display()
+            )
+        })
+}
+
+async fn prepare_skybox_assets(
+    face_urls: [String; 6],
+    client: &reqwest::Client,
+) -> Result<[String; 6], String> {
+    let unique_urls = face_urls.iter().cloned().collect::<HashSet<_>>();
+    let preparations = unique_urls.into_iter().map(|url| {
+        let prepared_url = url.clone();
+        let client = client.clone();
+        async move {
+            let path = prepare_cached_image(url, client).await?;
+            Ok::<_, String>((prepared_url, path))
+        }
+    });
+    let prepared_by_url = futures_util::future::try_join_all(preparations)
+        .await?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+
+    let mut paths = Vec::with_capacity(face_urls.len());
+    for url in face_urls {
+        let path = prepared_by_url
+            .get(&url)
+            .cloned()
+            .ok_or_else(|| format!("Missing prepared skybox face: {url}"))?;
+        paths.push(path);
+    }
+    paths
+        .try_into()
+        .map_err(|_| "Skybox preparation returned an invalid face count".to_string())
+}
+
 fn matches_current_script_url(
     specs_world: &specs::World,
     current_url: &str,
@@ -607,6 +702,7 @@ pub fn poll_io_results_system(
     mut script_load_states: ResMut<ScriptLoadStates>,
     mut pending_model_loads: ResMut<PendingModelLoads>,
     mut model_load_states: ResMut<ModelLoadStates>,
+    mut skybox: ResMut<crate::SkyboxEntity>,
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut manager: NonSendMut<ScriptRuntimeManager>,
     mut pending_includes: ResMut<crate::PendingIncludes>,
@@ -762,6 +858,51 @@ pub fn poll_io_results_system(
                             "Model prepare failed asynchronously: {url} -> {error}"
                         ));
                     }
+                }
+            }
+            IoResult::SkyboxPrepared {
+                network_id,
+                key,
+                result,
+            } => {
+                let status = if result.is_ok() {
+                    NetworkRequestStatus::Ok
+                } else {
+                    NetworkRequestStatus::Error
+                };
+                let detail = result.as_ref().err().cloned();
+                io_service.finish_request(network_id, status, detail);
+                let waiters = skybox.take_waiters(&key);
+
+                for node_id in waiters {
+                    let Some(node_state) = skybox.nodes.get_mut(&node_id) else {
+                        continue;
+                    };
+                    if node_state.key != key
+                        || !matches!(node_state.status, crate::SkyboxLoadStatus::Requested)
+                    {
+                        continue;
+                    }
+
+                    match &result {
+                        Ok(asset_paths) => {
+                            node_state.status = crate::SkyboxLoadStatus::Ready {
+                                asset_paths: asset_paths.clone(),
+                            };
+                            log_panel.push_info(format!(
+                                "Skybox prepared asynchronously for node {node_id}"
+                            ));
+                        }
+                        Err(error) => {
+                            node_state.status = crate::SkyboxLoadStatus::Failed {
+                                error: error.clone(),
+                            };
+                            log_panel.push_error(format!(
+                                "Skybox prepare failed for node {node_id}: {error}"
+                            ));
+                        }
+                    }
+                    dirty_nodes.0.push(node_id);
                 }
             }
             IoResult::IncludeLoaded {

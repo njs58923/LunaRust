@@ -19,7 +19,7 @@ use virtual_dom::{
 
 use crate::io::{
     clear_async_node_state, request_document_load, request_include_load, request_model_prepare,
-    request_script_load,
+    request_script_load, request_skybox_prepare,
 };
 use crate::render::{
     apply_transform, build_text_transform, get_or_create_primitive_material,
@@ -455,6 +455,7 @@ pub fn commit_pending_document_load_system(
                         commit.script_load_states.0.clear();
                         commit.pending_model_loads.0.clear();
                         commit.model_load_states.0.clear();
+                        commit.skybox.clear_runtime();
                         commit.pending_includes.0.clear();
                         commit.include_load_states.0.clear();
                         commit.attribute_updates.0.clear();
@@ -660,6 +661,7 @@ fn remove_dom_subtree(
     script_load_states: &mut ScriptLoadStates,
     pending_model_loads: &mut PendingModelLoads,
     model_load_states: &mut ModelLoadStates,
+    skybox: &mut crate::SkyboxEntity,
     space_handle_tables: &mut crate::SpaceHandleTables,
     bevy_parents: &Query<&Parent>,
 ) -> usize {
@@ -704,6 +706,7 @@ fn remove_dom_subtree(
             pending_model_loads,
             model_load_states,
         );
+        skybox.clear_node(node_id);
         include_load_states.0.remove(&node_id);
         dom_data.nodes.remove(&node_id);
         entity_map.0.remove(&node_id);
@@ -1153,10 +1156,7 @@ pub fn process_delete_requests(
     mut entity_map: ResMut<EntityMap>,
     mut commands: Commands,
     mut log_panel: ResMut<LogPanel>,
-    mut script_load_states: ResMut<ScriptLoadStates>,
-    mut pending_model_loads: ResMut<PendingModelLoads>,
-    mut model_load_states: ResMut<ModelLoadStates>,
-    mut space_handle_tables: ResMut<crate::SpaceHandleTables>,
+    mut cleanup: crate::AsyncNodeCleanupParams,
     mut dom_data: ResMut<VirtualDomData>,
     bevy_parents: Query<&Parent>,
     mut include_load_states: ResMut<crate::IncludeLoadStates>,
@@ -1177,10 +1177,11 @@ pub fn process_delete_requests(
             &mut commands,
             &mut dom_data,
             &mut include_load_states,
-            &mut script_load_states,
-            &mut pending_model_loads,
-            &mut model_load_states,
-            &mut space_handle_tables,
+            &mut cleanup.script_load_states,
+            &mut cleanup.pending_model_loads,
+            &mut cleanup.model_load_states,
+            &mut cleanup.skybox,
+            &mut cleanup.space_handle_tables,
             &bevy_parents,
         );
 
@@ -1270,10 +1271,7 @@ pub fn commit_pending_includes_system(
     current_url: Res<CurrentUrl>,
     mut entity_map: ResMut<EntityMap>,
     mut commands: Commands,
-    mut script_load_states: ResMut<ScriptLoadStates>,
-    mut pending_model_loads: ResMut<PendingModelLoads>,
-    mut model_load_states: ResMut<ModelLoadStates>,
-    mut space_handle_tables: ResMut<crate::SpaceHandleTables>,
+    mut cleanup: crate::AsyncNodeCleanupParams,
     mut js_snapshot_state: ResMut<crate::JsSnapshotState>,
     bevy_parents: Query<&Parent>,
     mut space_policies: ResMut<crate::permissions::SpacePolicies>,
@@ -1338,10 +1336,11 @@ pub fn commit_pending_includes_system(
                         &mut commands,
                         &mut dom_data,
                         &mut include_load_states,
-                        &mut script_load_states,
-                        &mut pending_model_loads,
-                        &mut model_load_states,
-                        &mut space_handle_tables,
+                        &mut cleanup.script_load_states,
+                        &mut cleanup.pending_model_loads,
+                        &mut cleanup.model_load_states,
+                        &mut cleanup.skybox,
+                        &mut cleanup.space_handle_tables,
                         &bevy_parents,
                     );
                 }
@@ -1491,6 +1490,73 @@ fn queue_model_prepare_if_needed(
             log_panel.push_info(format!("Queued async model prepare: {final_url}"));
         }
     }
+}
+
+const SKYBOX_FACE_NAMES: [&str; 6] = ["pz", "nz", "nx", "px", "py", "ny"];
+
+fn skybox_face_urls(key: &str) -> [String; 6] {
+    std::array::from_fn(|index| key.replace("$1", SKYBOX_FACE_NAMES[index]))
+}
+
+fn queue_skybox_prepare_if_needed(
+    node_id: u32,
+    src_pattern: &str,
+    node: SpecEntity,
+    specs_world: &SpecWorld,
+    current_url: &CurrentUrl,
+    skybox: &mut crate::SkyboxEntity,
+    tokio_rt: &TokioRuntime,
+    io_service: &IoService,
+    log_panel: &mut LogPanel,
+) -> Option<String> {
+    if src_pattern.trim().is_empty() {
+        return None;
+    }
+
+    let Some(key) = resolve_node_relative_url(
+        specs_world,
+        node,
+        &current_url.0,
+        src_pattern,
+    ) else {
+        log_panel.push_error(format!(
+            "Cannot resolve skybox src '{src_pattern}' against '{}'",
+            current_url.0
+        ));
+        return None;
+    };
+
+    if matches!(skybox.nodes.get(&node_id), Some(state) if state.key == key) {
+        return Some(key);
+    }
+
+    let mounted = skybox
+        .nodes
+        .remove(&node_id)
+        .and_then(|state| state.mounted);
+    let face_urls = skybox_face_urls(&key);
+    let should_request = skybox.enqueue(&key, node_id);
+    skybox.nodes.insert(
+        node_id,
+        crate::SkyboxNodeState {
+            key: key.clone(),
+            status: crate::SkyboxLoadStatus::Requested,
+            mounted,
+        },
+    );
+
+    if should_request {
+        request_skybox_prepare(
+            &tokio_rt.0,
+            io_service,
+            key.clone(),
+            face_urls,
+        );
+        log_panel.push_info(format!(
+            "Queued async skybox prepare: {key} (node {node_id})"
+        ));
+    }
+    Some(key)
 }
 
 /// Reordena `dirty_node_ids` in-place por profundidad ascendente (root primero,
@@ -1794,6 +1860,87 @@ pub fn dom_sync_system(
             if tag == "skybox" {
                 if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
                     *t = transform_b;
+                }
+                let has_perm = crate::js::find_owner_space_id(&world.0, *node)
+                    .and_then(|sid| skybox.space_policies.by_space.get(&sid))
+                    .map(|policy| {
+                        policy
+                            .effective_caps
+                            .contains(crate::permissions::CapabilityBits::SKYBOX)
+                    })
+                    .unwrap_or(false);
+                if !has_perm {
+                    clear_skybox_node_visuals(
+                        &mut commands,
+                        &mut skybox.skybox_entity,
+                        node_id,
+                    );
+                    log_panel.push_warn(format!(
+                        "Skybox blocked: space lacks 'skybox' permission (node {node_id})"
+                    ));
+                    transform_only_dirty.0.remove(&node_id);
+                    continue;
+                }
+
+                let src = attrs_storage
+                    .get(*node)
+                    .and_then(|attrs| attrs.0.get("src"))
+                    .cloned()
+                    .unwrap_or_default();
+                let Some(_key) = queue_skybox_prepare_if_needed(
+                    node_id,
+                    &src,
+                    *node,
+                    &world.0,
+                    current_url,
+                    &mut skybox.skybox_entity,
+                    tokio_rt,
+                    io_service,
+                    &mut log_panel,
+                ) else {
+                    clear_skybox_node_visuals(
+                        &mut commands,
+                        &mut skybox.skybox_entity,
+                        node_id,
+                    );
+                    transform_only_dirty.0.remove(&node_id);
+                    continue;
+                };
+
+                let ready_paths = skybox
+                    .skybox_entity
+                    .nodes
+                    .get(&node_id)
+                    .and_then(|state| match &state.status {
+                        crate::SkyboxLoadStatus::Ready { asset_paths } => {
+                            Some(asset_paths.clone())
+                        }
+                        _ => None,
+                    });
+                if let Some(asset_paths) = ready_paths {
+                    let previous = skybox.skybox_entity.active.take();
+                    let replace_existing_faces = matches!(
+                        previous,
+                        Some((old_node, old_root))
+                            if old_node == node_id && old_root == bevy_ent
+                    );
+                    if let Some((old_node_id, old_ent)) = previous {
+                        if !replace_existing_faces {
+                            deferred_despawns.push((old_ent, old_node_id));
+                            entity_map.0.remove(&old_node_id);
+                        }
+                    }
+                    mount_prepared_skybox(
+                        &mut commands,
+                        &mut skybox.skybox_entity,
+                        node_id,
+                        bevy_ent,
+                        asset_paths,
+                        replace_existing_faces,
+                        &asset_server,
+                        &mut text_render.materials,
+                        &shared_resources,
+                    );
                 }
                 transform_only_dirty.0.remove(&node_id);
                 continue;
@@ -2108,50 +2255,89 @@ pub fn dom_sync_system(
                 "skybox" => {
                     let has_perm = crate::js::find_owner_space_id(&world.0, *node)
                         .and_then(|sid| skybox.space_policies.by_space.get(&sid))
-                        .map(|p| p.effective_caps.contains(crate::permissions::CapabilityBits::SKYBOX))
+                        .map(|policy| {
+                            policy
+                                .effective_caps
+                                .contains(crate::permissions::CapabilityBits::SKYBOX)
+                        })
                         .unwrap_or(false);
 
                     if !has_perm {
                         log_panel.push_warn(format!(
                             "Skybox blocked: space lacks 'skybox' permission (node {node_id})"
                         ));
-                        commands.spawn((SpatialBundle { transform: transform_b, ..Default::default() }, Dirty)).id()
+                        commands
+                            .spawn((
+                                SpatialBundle {
+                                    transform: transform_b,
+                                    ..Default::default()
+                                },
+                                Dirty,
+                            ))
+                            .id()
                     } else {
                         let src = attrs_storage
                             .get(*node)
                             .and_then(|a| a.0.get("src"))
                             .cloned()
                             .unwrap_or_default();
-
-                        // Despawn previous skybox if different node
-                        if let Some((old_node_id, old_ent)) = skybox.skybox_entity.0.take() {
-                            if old_node_id != node_id {
-                                deferred_despawns.push((old_ent, old_node_id));
-                                entity_map.0.remove(&old_node_id);
-                            } else {
-                                skybox.skybox_entity.0 = Some((old_node_id, old_ent));
-                            }
-                        }
-
                         let skybox_root = commands
-                            .spawn((SpatialBundle { transform: transform_b, ..Default::default() }, Dirty))
+                            .spawn((
+                                SpatialBundle {
+                                    transform: transform_b,
+                                    ..Default::default()
+                                },
+                                Dirty,
+                            ))
                             .id();
-
-                        spawn_skybox_faces(
+                        let key = queue_skybox_prepare_if_needed(
+                            node_id,
                             &src,
-                            &world.0,
                             *node,
-                            &current_url.0,
-                            &tokio_rt.0,
-                            &asset_server,
-                            &mut text_render.materials,
-                            &shared_resources,
-                            &mut commands,
-                            skybox_root,
+                            &world.0,
+                            current_url,
+                            &mut skybox.skybox_entity,
+                            tokio_rt,
+                            io_service,
                             &mut log_panel,
                         );
-
-                        skybox.skybox_entity.0 = Some((node_id, skybox_root));
+                        let prepared = key.as_ref().and_then(|_| {
+                            skybox
+                                .skybox_entity
+                                .nodes
+                                .get(&node_id)
+                                .and_then(|state| match &state.status {
+                                    crate::SkyboxLoadStatus::Ready { asset_paths } => {
+                                        Some(asset_paths.clone())
+                                    }
+                                    crate::SkyboxLoadStatus::Mounted => state
+                                        .mounted
+                                        .as_ref()
+                                        .map(|mounted| mounted.asset_paths.clone()),
+                                    _ => None,
+                                })
+                        });
+                        if let Some(asset_paths) = prepared {
+                            if let Some((old_node_id, old_ent)) =
+                                skybox.skybox_entity.active.take()
+                            {
+                                if old_ent != skybox_root {
+                                    deferred_despawns.push((old_ent, old_node_id));
+                                    entity_map.0.remove(&old_node_id);
+                                }
+                            }
+                            mount_prepared_skybox(
+                                &mut commands,
+                                &mut skybox.skybox_entity,
+                                node_id,
+                                skybox_root,
+                                asset_paths,
+                                false,
+                                &asset_server,
+                                &mut text_render.materials,
+                                &shared_resources,
+                            );
+                        }
                         skybox_root
                     }
                 }
@@ -2408,37 +2594,29 @@ fn spawn_model_entity(
 }
 
 fn spawn_skybox_faces(
-    src_pattern: &str,
-    specs_world: &specs::World,
-    node: specs::Entity,
-    current_url: &str,
-    rt: &tokio::runtime::Runtime,
+    asset_paths: &[String; 6],
     asset_server: &AssetServer,
     materials: &mut Assets<StandardMaterial>,
     shared_resources: &SharedResources,
     commands: &mut Commands,
     parent: Entity,
-    log_panel: &mut LogPanel,
-) {
+) -> Vec<Entity> {
     use std::f32::consts::{FRAC_PI_2, PI};
 
     const SKY_SIZE: f32 = 500.0;
 
-    let faces: &[(&str, [f32; 3], bevy::math::Quat)] = &[
-        ("pz", [0.0, 0.0, -SKY_SIZE], bevy::math::Quat::IDENTITY),
-        ("nz", [0.0, 0.0,  SKY_SIZE], bevy::math::Quat::from_rotation_y(PI)),
-        ("nx", [-SKY_SIZE, 0.0, 0.0], bevy::math::Quat::from_rotation_y(FRAC_PI_2)),
-        ("px", [ SKY_SIZE, 0.0, 0.0], bevy::math::Quat::from_rotation_y(-FRAC_PI_2)),
-        ("py", [0.0,  SKY_SIZE, 0.0], bevy::math::Quat::from_rotation_x(FRAC_PI_2)),
-        ("ny", [0.0, -SKY_SIZE, 0.0], bevy::math::Quat::from_rotation_x(-FRAC_PI_2)),
+    let faces: &[([f32; 3], bevy::math::Quat)] = &[
+        ([0.0, 0.0, -SKY_SIZE], bevy::math::Quat::IDENTITY),
+        ([0.0, 0.0, SKY_SIZE], bevy::math::Quat::from_rotation_y(PI)),
+        ([-SKY_SIZE, 0.0, 0.0], bevy::math::Quat::from_rotation_y(FRAC_PI_2)),
+        ([SKY_SIZE, 0.0, 0.0], bevy::math::Quat::from_rotation_y(-FRAC_PI_2)),
+        ([0.0, SKY_SIZE, 0.0], bevy::math::Quat::from_rotation_x(FRAC_PI_2)),
+        ([0.0, -SKY_SIZE, 0.0], bevy::math::Quat::from_rotation_x(-FRAC_PI_2)),
     ];
 
-    for (face, pos, rot) in faces {
-        let face_src = src_pattern.replace("$1", face);
-        let resolved_url = resolve_node_relative_url(specs_world, node, current_url, &face_src)
-            .unwrap_or_else(|| face_src.clone());
-
-        let image_handle = load_skybox_face_image(&resolved_url, rt, asset_server, log_panel);
+    let mut face_entities = Vec::with_capacity(faces.len());
+    for ((pos, rot), asset_path) in faces.iter().zip(asset_paths) {
+        let image_handle = asset_server.load(asset_path.clone());
 
         let mat = materials.add(StandardMaterial {
             base_color_texture: Some(image_handle),
@@ -2461,50 +2639,70 @@ fn spawn_skybox_faces(
             .id();
 
         commands.entity(face_ent).set_parent(parent);
+        face_entities.push(face_ent);
     }
+    face_entities
 }
 
-fn load_skybox_face_image(
-    url: &str,
-    rt: &tokio::runtime::Runtime,
+fn clear_skybox_node_visuals(
+    commands: &mut Commands,
+    skybox: &mut crate::SkyboxEntity,
+    node_id: u32,
+) {
+    let is_active = matches!(skybox.active, Some((active_node, _)) if active_node == node_id);
+    if is_active {
+        if let Some(mounted) = skybox
+            .nodes
+            .get(&node_id)
+            .and_then(|state| state.mounted.as_ref())
+        {
+            for face in &mounted.face_entities {
+                commands.entity(*face).despawn_recursive();
+            }
+        }
+    }
+    skybox.clear_node(node_id);
+}
+
+fn mount_prepared_skybox(
+    commands: &mut Commands,
+    skybox: &mut crate::SkyboxEntity,
+    node_id: u32,
+    root: Entity,
+    asset_paths: [String; 6],
+    replace_existing_faces: bool,
     asset_server: &AssetServer,
-    log_panel: &mut LogPanel,
-) -> Handle<Image> {
-    let (assets_dir, cache_dir) = crate::utils::folder::resolve_assets_and_cache_dirs();
-    let _ = std::fs::create_dir_all(&cache_dir);
-    let filename = crate::render::encode_url_to_filename(url);
-    let local_path = cache_dir.join(&filename);
-
-    if !local_path.exists() {
-        if url.starts_with("http://") || url.starts_with("https://") {
-            match rt.block_on(crate::render::load_bytes_from_url(url)) {
-                Ok(bytes) => {
-                    if let Err(e) = std::fs::write(&local_path, &bytes) {
-                        log_panel.push_error(format!("Skybox face write '{url}': {e}"));
-                        return Handle::default();
-                    }
-                }
-                Err(e) => {
-                    log_panel.push_error(format!("Skybox face download '{url}': {e}"));
-                    return Handle::default();
-                }
-            }
-        } else {
-            let from = std::path::PathBuf::from(url);
-            if let Err(e) = std::fs::copy(&from, &local_path) {
-                log_panel.push_error(format!("Skybox face copy '{url}': {e}"));
-                return Handle::default();
+    materials: &mut Assets<StandardMaterial>,
+    shared_resources: &SharedResources,
+) {
+    if replace_existing_faces {
+        if let Some(mounted) = skybox
+            .nodes
+            .get(&node_id)
+            .and_then(|state| state.mounted.as_ref())
+        {
+            for face in &mounted.face_entities {
+                commands.entity(*face).despawn_recursive();
             }
         }
     }
 
-    match crate::utils::folder::to_assets_relative(&local_path, &assets_dir) {
-        Some(rel) => asset_server.load(rel),
-        None => {
-            log_panel.push_error(format!("Skybox face outside assets dir: {}", local_path.display()));
-            Handle::default()
-        }
+    let face_entities = spawn_skybox_faces(
+        &asset_paths,
+        asset_server,
+        materials,
+        shared_resources,
+        commands,
+        root,
+    );
+    if let Some(state) = skybox.nodes.get_mut(&node_id) {
+        state.status = crate::SkyboxLoadStatus::Mounted;
+        state.mounted = Some(crate::MountedSkybox {
+            asset_paths,
+            face_entities,
+        });
     }
+    skybox.active = Some((node_id, root));
 }
 
 #[cfg(test)]
@@ -2521,6 +2719,21 @@ mod tests {
     };
     use crate::{IncludeLoadState, IncludeLoadStates, JsSnapshotState, PendingInclude, PendingIncludes, SpaceHandleTables};
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn skybox_pattern_expands_to_all_six_faces_in_render_order() {
+        assert_eq!(
+            skybox_face_urls("https://example.test/sky_$1.png"),
+            [
+                "https://example.test/sky_pz.png".to_string(),
+                "https://example.test/sky_nz.png".to_string(),
+                "https://example.test/sky_nx.png".to_string(),
+                "https://example.test/sky_px.png".to_string(),
+                "https://example.test/sky_py.png".to_string(),
+                "https://example.test/sky_ny.png".to_string(),
+            ]
+        );
+    }
 
     fn collect_all_nodes(world: &SpecWorld, root: SpecEntity) -> HashMap<u32, SpecEntity> {
         let mut ids = Vec::new();
@@ -2601,6 +2814,7 @@ mod tests {
         app.insert_resource(ScriptLoadStates::default());
         app.insert_resource(PendingModelLoads::default());
         app.insert_resource(ModelLoadStates::default());
+        app.insert_resource(crate::SkyboxEntity::default());
         app.insert_resource(SpaceHandleTables::default());
         app.insert_resource(JsSnapshotState::default());
         app.insert_resource(crate::permissions::SpacePolicies::default());

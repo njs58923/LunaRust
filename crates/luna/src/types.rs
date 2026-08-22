@@ -361,9 +361,120 @@ pub struct SharedResources {
     pub default_material: Handle<StandardMaterial>,
 }
 
-/// Tracks the active skybox: (node_id, root_entity). Last-wins singleton.
+#[derive(Debug, Clone)]
+pub enum SkyboxLoadStatus {
+    Requested,
+    Ready { asset_paths: [String; 6] },
+    Mounted,
+    Failed { error: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct MountedSkybox {
+    pub asset_paths: [String; 6],
+    pub face_entities: Vec<Entity>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SkyboxNodeState {
+    pub key: String,
+    pub status: SkyboxLoadStatus,
+    /// The currently visible faces remain mounted while a changed `src` loads.
+    pub mounted: Option<MountedSkybox>,
+}
+
+/// Runtime state for skybox preparation and the last-wins active skybox.
 #[derive(Resource, Default)]
-pub struct SkyboxEntity(pub Option<(u32, Entity)>);
+pub struct SkyboxEntity {
+    pub active: Option<(u32, Entity)>,
+    pub nodes: HashMap<u32, SkyboxNodeState>,
+    pub pending: HashMap<String, HashSet<u32>>,
+}
+
+impl SkyboxEntity {
+    pub fn enqueue(&mut self, key: &str, node_id: u32) -> bool {
+        self.remove_pending_node(node_id);
+        let waiters = self.pending.entry(key.to_string()).or_default();
+        let should_spawn = waiters.is_empty();
+        waiters.insert(node_id);
+        should_spawn
+    }
+
+    pub fn take_waiters(&mut self, key: &str) -> Vec<u32> {
+        self.pending
+            .remove(key)
+            .map(|waiters| waiters.into_iter().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn remove_pending_node(&mut self, node_id: u32) {
+        self.pending.retain(|_, waiters| {
+            waiters.remove(&node_id);
+            !waiters.is_empty()
+        });
+    }
+
+    pub fn clear_node(&mut self, node_id: u32) {
+        self.remove_pending_node(node_id);
+        self.nodes.remove(&node_id);
+        if matches!(self.active, Some((active_node, _)) if active_node == node_id) {
+            self.active = None;
+        }
+    }
+
+    pub fn clear_runtime(&mut self) {
+        self.active = None;
+        self.nodes.clear();
+        self.pending.clear();
+    }
+}
+
+#[cfg(test)]
+mod skybox_state_tests {
+    use super::*;
+
+    #[test]
+    fn pending_skybox_preparation_is_shared_by_key() {
+        let mut state = SkyboxEntity::default();
+
+        assert!(state.enqueue("https://example.test/sky_$1.png", 10));
+        assert!(!state.enqueue("https://example.test/sky_$1.png", 11));
+        assert_eq!(state.pending.len(), 1);
+        assert_eq!(state.pending.values().next().map(HashSet::len), Some(2));
+    }
+
+    #[test]
+    fn changing_key_removes_the_node_from_its_stale_request() {
+        let mut state = SkyboxEntity::default();
+        state.enqueue("old", 10);
+        state.enqueue("old", 11);
+
+        assert!(state.enqueue("new", 10));
+        assert_eq!(state.pending.get("old"), Some(&HashSet::from([11])));
+        assert_eq!(state.pending.get("new"), Some(&HashSet::from([10])));
+    }
+
+    #[test]
+    fn clearing_node_drops_pending_load_and_active_reference() {
+        let mut state = SkyboxEntity::default();
+        state.enqueue("sky", 10);
+        state.nodes.insert(
+            10,
+            SkyboxNodeState {
+                key: "sky".to_string(),
+                status: SkyboxLoadStatus::Requested,
+                mounted: None,
+            },
+        );
+        state.active = Some((10, Entity::from_raw(7)));
+
+        state.clear_node(10);
+
+        assert!(state.pending.is_empty());
+        assert!(state.nodes.is_empty());
+        assert!(state.active.is_none());
+    }
+}
 
 #[derive(Resource)]
 pub struct TokioRuntime(pub Runtime);
@@ -809,6 +920,15 @@ pub struct SkyboxParams<'w> {
 }
 
 #[derive(SystemParam)]
+pub struct AsyncNodeCleanupParams<'w> {
+    pub script_load_states: ResMut<'w, crate::ScriptLoadStates>,
+    pub pending_model_loads: ResMut<'w, crate::PendingModelLoads>,
+    pub model_load_states: ResMut<'w, crate::ModelLoadStates>,
+    pub skybox: ResMut<'w, SkyboxEntity>,
+    pub space_handle_tables: ResMut<'w, SpaceHandleTables>,
+}
+
+#[derive(SystemParam)]
 pub struct DocumentCommitParams<'w> {
     pub attribute_updates: ResMut<'w, AttributeUpdates>,
     pub delete_requests: ResMut<'w, DeleteRequests>,
@@ -816,6 +936,7 @@ pub struct DocumentCommitParams<'w> {
     pub script_load_states: ResMut<'w, crate::ScriptLoadStates>,
     pub pending_model_loads: ResMut<'w, crate::PendingModelLoads>,
     pub model_load_states: ResMut<'w, crate::ModelLoadStates>,
+    pub skybox: ResMut<'w, SkyboxEntity>,
     pub pending_includes: ResMut<'w, crate::PendingIncludes>,
     pub include_load_states: ResMut<'w, crate::IncludeLoadStates>,
     pub space_handle_tables: ResMut<'w, SpaceHandleTables>,
