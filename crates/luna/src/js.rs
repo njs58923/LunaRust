@@ -1,8 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread::{self, JoinHandle},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use bevy::prelude::*;
@@ -210,11 +213,118 @@ pub struct SpaceScriptWorker {
     pub tick_in_flight: bool,
     pub needs_tick: bool,
     pub join: Option<JoinHandle<()>>,
+    termination: WorkerTermination,
     pub bootstrap_scripts_enqueued: HashSet<String>,
     pub last_capabilities_bits: u64,
     /// True once `luna://internal/root_api.js` has been flushed into the worker's cmd channel.
     /// Guards any eval that calls `dimension.luna.*`.
     pub root_api_sent: bool,
+}
+
+#[derive(Clone, Default)]
+struct WorkerTermination {
+    handle: Arc<Mutex<Option<js_runtime::ExecutionHandle>>>,
+    shutdown_requested: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy)]
+struct WorkerExecutionLimits {
+    eval: Duration,
+    tick: Duration,
+}
+
+impl Default for WorkerExecutionLimits {
+    fn default() -> Self {
+        Self {
+            eval: Duration::from_secs(2),
+            tick: Duration::from_millis(50),
+        }
+    }
+}
+
+enum WatchdogCommand {
+    Arm(Duration),
+    Complete(mpsc::SyncSender<bool>),
+    Shutdown,
+}
+
+struct ExecutionWatchdog {
+    tx: mpsc::Sender<WatchdogCommand>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl ExecutionWatchdog {
+    fn spawn(
+        space_id: u32,
+        execution_handle: js_runtime::ExecutionHandle,
+    ) -> std::result::Result<Self, String> {
+        let (tx, rx) = mpsc::channel();
+        let join = thread::Builder::new()
+            .name(format!("js-watchdog-{space_id}"))
+            .spawn(move || watchdog_loop(rx, execution_handle))
+            .map_err(|err| format!("failed to spawn JS watchdog for space {space_id}: {err}"))?;
+        Ok(Self {
+            tx,
+            join: Some(join),
+        })
+    }
+
+    fn arm(&self, budget: Duration) -> bool {
+        self.tx.send(WatchdogCommand::Arm(budget)).is_ok()
+    }
+
+    fn complete(&self) -> std::result::Result<bool, String> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(0);
+        self.tx
+            .send(WatchdogCommand::Complete(reply_tx))
+            .map_err(|_| "JS watchdog disconnected".to_string())?;
+        reply_rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|_| "JS watchdog did not acknowledge completion".to_string())
+    }
+
+    fn shutdown(mut self) {
+        let _ = self.tx.send(WatchdogCommand::Shutdown);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+fn watchdog_loop(
+    rx: mpsc::Receiver<WatchdogCommand>,
+    execution_handle: js_runtime::ExecutionHandle,
+) {
+    'watchdog: while let Ok(command) = rx.recv() {
+        match command {
+            WatchdogCommand::Arm(budget) => match rx.recv_timeout(budget) {
+                Ok(WatchdogCommand::Complete(reply)) => {
+                    let _ = reply.send(false);
+                }
+                Ok(WatchdogCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    execution_handle.terminate_execution();
+                    loop {
+                        match rx.recv() {
+                            Ok(WatchdogCommand::Complete(reply)) => {
+                                let _ = reply.send(true);
+                                break;
+                            }
+                            Ok(WatchdogCommand::Shutdown) | Err(_) => break 'watchdog,
+                            Ok(WatchdogCommand::Arm(_)) => {}
+                        }
+                    }
+                }
+                Ok(WatchdogCommand::Arm(_)) => {}
+            },
+            WatchdogCommand::Shutdown => break,
+            WatchdogCommand::Complete(reply) => {
+                let _ = reply.send(false);
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -267,8 +377,17 @@ fn create_space_context(space_id: u32) -> std::result::Result<SpaceScriptContext
 }
 
 pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorker, String> {
+    spawn_space_worker_with_limits(space_id, WorkerExecutionLimits::default())
+}
+
+fn spawn_space_worker_with_limits(
+    space_id: u32,
+    limits: WorkerExecutionLimits,
+) -> std::result::Result<SpaceScriptWorker, String> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<JsWorkerCommand>();
     let (event_tx, event_rx) = mpsc::channel::<JsWorkerEvent>();
+    let termination = WorkerTermination::default();
+    let worker_termination = termination.clone();
 
     let join = thread::Builder::new()
         .name(format!("js-space-{}", space_id))
@@ -281,7 +400,22 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                 }
             };
 
-            while let Ok(cmd) = cmd_rx.recv() {
+            let execution_handle = ctx.engine.execution_handle();
+            if let Ok(mut handle) = worker_termination.handle.lock() {
+                *handle = Some(execution_handle.clone());
+            }
+            let watchdog = match ExecutionWatchdog::spawn(space_id, execution_handle) {
+                Ok(watchdog) => watchdog,
+                Err(err) => {
+                    let _ = event_tx.send(JsWorkerEvent::WorkerError(err));
+                    if let Ok(mut handle) = worker_termination.handle.lock() {
+                        *handle = None;
+                    }
+                    return;
+                }
+            };
+
+            'worker: while let Ok(cmd) = cmd_rx.recv() {
                 match cmd {
                     JsWorkerCommand::SetCapabilities(bits) => {
                         ctx.capabilities_bits = bits;
@@ -324,7 +458,31 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                         //     continue;
                         // }
                         let wrapped_code = format!("(function(){{\n{}\n}})();", code);
-                        match ctx.engine.eval(&wrapped_code) {
+                        if !watchdog.arm(limits.eval) {
+                            let _ = event_tx.send(JsWorkerEvent::WorkerError(
+                                "JS watchdog disconnected before eval".to_string(),
+                            ));
+                            break;
+                        }
+                        let eval_result = ctx.engine.eval(&wrapped_code);
+                        let timed_out = match watchdog.complete() {
+                            Ok(timed_out) => timed_out,
+                            Err(err) => {
+                                let _ = event_tx.send(JsWorkerEvent::WorkerError(err));
+                                break;
+                            }
+                        };
+                        if worker_termination.shutdown_requested.load(Ordering::Acquire) {
+                            break;
+                        }
+                        if timed_out {
+                            let _ = event_tx.send(JsWorkerEvent::WorkerError(format!(
+                                "JS eval exceeded its {} ms execution limit ({url})",
+                                limits.eval.as_millis()
+                            )));
+                            break;
+                        }
+                        match eval_result {
                             Ok(_) => {
                                 if !is_ephemeral {
                                     ctx.loaded_scripts.insert(url.clone());
@@ -345,7 +503,30 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                         }
                     }
                     JsWorkerCommand::Tick { elapsed_ms } => {
+                        if !watchdog.arm(limits.tick) {
+                            let _ = event_tx.send(JsWorkerEvent::WorkerError(
+                                "JS watchdog disconnected before tick".to_string(),
+                            ));
+                            break;
+                        }
                         ctx.engine.fire_raf(elapsed_ms);
+                        let timed_out = match watchdog.complete() {
+                            Ok(timed_out) => timed_out,
+                            Err(err) => {
+                                let _ = event_tx.send(JsWorkerEvent::WorkerError(err));
+                                break;
+                            }
+                        };
+                        if worker_termination.shutdown_requested.load(Ordering::Acquire) {
+                            break;
+                        }
+                        if timed_out {
+                            let _ = event_tx.send(JsWorkerEvent::WorkerError(format!(
+                                "JS tick exceeded its {} ms execution limit",
+                                limits.tick.as_millis()
+                            )));
+                            break;
+                        }
                         let tick_data = JsTickData {
                             needs_continuous_ticks: ctx.engine.needs_continuous_ticks(),
                             logs: ctx.engine.drain_logs(),
@@ -436,9 +617,14 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
                             capabilities_bits: ctx.capabilities_bits,
                         });
                     }
-                    JsWorkerCommand::Shutdown => break,
+                    JsWorkerCommand::Shutdown => break 'worker,
                 }
             }
+
+            if let Ok(mut handle) = worker_termination.handle.lock() {
+                *handle = None;
+            }
+            watchdog.shutdown();
         })
         .map_err(|e| format!("failed to spawn JS worker for space {}: {}", space_id, e))?;
 
@@ -449,6 +635,7 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
         tick_in_flight: false,
         needs_tick: true,
         join: Some(join),
+        termination,
         bootstrap_scripts_enqueued: HashSet::new(),
         last_capabilities_bits: 0,
         root_api_sent: false,
@@ -456,9 +643,28 @@ pub fn spawn_space_worker(space_id: u32) -> std::result::Result<SpaceScriptWorke
 }
 
 pub fn stop_space_worker(worker: &mut SpaceScriptWorker) {
+    worker
+        .termination
+        .shutdown_requested
+        .store(true, Ordering::Release);
+    if let Ok(handle) = worker.termination.handle.lock() {
+        if let Some(handle) = handle.as_ref() {
+            handle.terminate_execution();
+        }
+    }
     let _ = worker.cmd_tx.send(JsWorkerCommand::Shutdown);
     if let Some(join) = worker.join.take() {
-        let _ = join.join();
+        if join.is_finished() {
+            let _ = join.join();
+        } else {
+            // Never make Bevy's main thread wait for a JS isolate to unwind.
+            // The reaper owns the join handle until V8 has finished shutting down.
+            let _ = thread::Builder::new()
+                .name("js-worker-reaper".to_string())
+                .spawn(move || {
+                    let _ = join.join();
+                });
+        }
     }
 }
 
@@ -3196,6 +3402,7 @@ mod tests {
                 tick_in_flight: false,
                 needs_tick,
                 join: None,
+                termination: WorkerTermination::default(),
                 bootstrap_scripts_enqueued: HashSet::new(),
                 last_capabilities_bits: 0,
                 root_api_sent: false,
@@ -3203,6 +3410,126 @@ mod tests {
             cmd_rx,
             event_tx,
         )
+    }
+
+    fn wait_for_worker_error(
+        worker: &SpaceScriptWorker,
+        timeout: Duration,
+    ) -> Option<String> {
+        let deadline = Instant::now() + timeout;
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            match worker.event_rx.recv_timeout(remaining) {
+                Ok(JsWorkerEvent::WorkerError(err)) => return Some(err),
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn infinite_eval_is_terminated_at_its_execution_limit() {
+        let mut worker = spawn_space_worker_with_limits(
+            90_001,
+            WorkerExecutionLimits {
+                eval: Duration::from_millis(100),
+                tick: Duration::from_millis(100),
+            },
+        )
+        .expect("worker should spawn");
+
+        worker
+            .cmd_tx
+            .send(JsWorkerCommand::EvalScript {
+                url: "eval://infinite".to_string(),
+                code: "for (;;) {}".to_string(),
+            })
+            .expect("infinite eval should be queued");
+
+        let error = wait_for_worker_error(&worker, Duration::from_secs(5));
+        stop_space_worker(&mut worker);
+        let error = error.expect("watchdog should report the execution limit");
+        assert!(error.contains("eval exceeded its 100 ms execution limit"));
+    }
+
+    #[test]
+    fn infinite_animation_frame_is_terminated_at_the_tick_limit() {
+        let mut worker = spawn_space_worker_with_limits(
+            90_002,
+            WorkerExecutionLimits {
+                eval: Duration::from_secs(1),
+                tick: Duration::from_millis(100),
+            },
+        )
+        .expect("worker should spawn");
+
+        worker
+            .cmd_tx
+            .send(JsWorkerCommand::EvalScript {
+                url: "eval://raf-infinite".to_string(),
+                code: "requestAnimationFrame(() => { for (;;) {} });".to_string(),
+            })
+            .expect("RAF registration should be queued");
+        match worker.event_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(JsWorkerEvent::EvalResult { error: None, .. }) => {}
+            _ => panic!("RAF registration should complete successfully"),
+        }
+
+        worker
+            .cmd_tx
+            .send(JsWorkerCommand::Tick { elapsed_ms: 16.0 })
+            .expect("tick should be queued");
+        let error = wait_for_worker_error(&worker, Duration::from_secs(5));
+        stop_space_worker(&mut worker);
+        let error = error.expect("watchdog should report the tick limit");
+        assert!(error.contains("tick exceeded its 100 ms execution limit"));
+    }
+
+    #[test]
+    fn stopping_worker_interrupts_running_js_without_waiting_on_main_thread() {
+        let mut worker = spawn_space_worker_with_limits(
+            90_003,
+            WorkerExecutionLimits {
+                eval: Duration::from_secs(30),
+                tick: Duration::from_secs(30),
+            },
+        )
+        .expect("worker should spawn");
+
+        worker
+            .cmd_tx
+            .send(JsWorkerCommand::EvalScript {
+                url: "eval://ready".to_string(),
+                code: "globalThis.__workerReady = true;".to_string(),
+            })
+            .expect("readiness eval should be queued");
+        match worker.event_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(JsWorkerEvent::EvalResult { error: None, .. }) => {}
+            _ => panic!("worker should finish its readiness eval"),
+        }
+
+        worker
+            .cmd_tx
+            .send(JsWorkerCommand::EvalScript {
+                url: "eval://shutdown-infinite".to_string(),
+                code: "for (;;) {}".to_string(),
+            })
+            .expect("infinite eval should be queued");
+        thread::sleep(Duration::from_millis(50));
+
+        let started = Instant::now();
+        stop_space_worker(&mut worker);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "stop must not join a running JS worker on the caller thread"
+        );
+        assert!(
+            matches!(
+                worker.event_rx.recv_timeout(Duration::from_secs(2)),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            ),
+            "interrupting the isolate should let the worker exit promptly"
+        );
     }
 
     #[test]

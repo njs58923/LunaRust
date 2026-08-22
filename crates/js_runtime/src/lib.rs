@@ -1211,6 +1211,21 @@ pub struct Engine {
     document_origin: Shared<String>,
 }
 
+/// Thread-safe control handle for interrupting JavaScript currently running in
+/// an [`Engine`]. Keeping the V8 type private prevents callers from depending
+/// on the runtime implementation details.
+#[derive(Clone, Debug)]
+pub struct ExecutionHandle(deno_core::v8::IsolateHandle);
+
+impl ExecutionHandle {
+    /// Interrupts JavaScript currently executing in the isolate.
+    ///
+    /// Returns `false` when the isolate has already been destroyed.
+    pub fn terminate_execution(&self) -> bool {
+        self.0.terminate_execution()
+    }
+}
+
 impl Engine {
     pub fn new() -> Self {
         let timers = Timers::default();
@@ -1548,6 +1563,11 @@ impl Engine {
         let script_fast = FastString::Owned(code.to_string().into_boxed_str());
         self.rt.execute_script("<eval>", script_fast)?;
         Ok(())
+    }
+
+    /// Returns a thread-safe handle that can interrupt a long-running script.
+    pub fn execution_handle(&mut self) -> ExecutionHandle {
+        ExecutionHandle(self.rt.v8_isolate().thread_safe_handle())
     }
 
     pub fn fire_raf(&mut self, timestamp_ms: f64) {
