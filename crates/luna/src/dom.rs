@@ -1181,18 +1181,6 @@ pub fn process_delete_requests(
     }
 }
 
-// ─── Mark dirty ──────────────────────────────────────────────────────────────
-//
-// El componente `Dirty` ya no se inserta por frame: causaba archetype churn de
-// O(N) cubos × 2 moves cada frame durante animaciones (3000 cubos→500 cubos a
-// <60fps). La señal real de "este nodo necesita re-sync" es `dirty_nodes.0`,
-// que ya garantizan `apply_transform_updates` y `apply_attribute_updates`.
-// `Dirty` se conserva como marker en spawns (compat con tests) y para señalar
-// "primer render pendiente" — no se toca en el hot-path por frame.
-pub fn mark_dirty_system(mut dirty_nodes: ResMut<DirtyNodes>) {
-    dirty_nodes.dedup_in_place();
-}
-
 // ─── Include loading ─────────────────────────────────────────────────────────
 
 fn queue_include_load_if_needed(
@@ -2674,9 +2662,8 @@ mod tests {
     ///    which doesn't exist."
     /// — even before `.try_insert(...)` is queued. So `try_insert` is NOT a
     /// sufficient guard against stale-handle inputs (it only protects against
-    /// post-queue despawn). The mark_dirty_system comment at dom.rs:1003
-    /// implies otherwise — that comment is misleading for the stale-handle
-    /// scenario; it only covers the queue-order scenario.
+    /// post-queue despawn). `try_insert` is therefore insufficient for the
+    /// stale-handle scenario; it only protects the queue-order scenario.
     ///
     /// The correct guard for stale handles is `commands.get_entity(ent)` →
     /// `Option<EntityCommands>`. This test pins that behavior so we don't
@@ -2996,18 +2983,12 @@ mod tests {
     // ─── Performance regression: cube animation hot-path ─────────────────────
     //
     // Antes la demo de cubos sostenía 3000 cubos a ~400 fps; tras un cambio,
-    // 500 cubos caen por debajo de 60 fps. Causa raíz: `mark_dirty_system`
-    // encolaba `try_insert(Dirty)` por cubo cada frame, y `dom_sync_system`
-    // hacía `remove::<Dirty>` por cubo cada frame. Eso son 1–2 archetype
-    // moves por entidad por frame, copiando todos los componentes de
-    // `PbrBundle` a otro archetype. Estos tests pinchan la garantía de
-    // que el hot-path NO produce archetype churn.
+    // 500 cubos caían por debajo de 60 fps debido a insertar/quitar `Dirty`
+    // por cubo cada frame. La cola lógica debe deduplicarse sin tocar entidades
+    // Bevy ni provocar archetype churn.
 
-    /// `mark_dirty_system` no debe insertar `Dirty` por frame en entidades
-    /// existentes. Si lo hiciera, archetype churn O(N) por frame durante
-    /// animaciones masivas tira FPS.
     #[test]
-    fn mark_dirty_system_no_dirty_insertion_during_animation() {
+    fn dirty_queue_deduplicates_without_ecs_churn() {
         use bevy::prelude::*;
 
         let mut app = App::new();
@@ -3015,25 +2996,15 @@ mod tests {
         // dom_sync en frames anteriores).
         let bevy_ent = app.world_mut().spawn(SpatialBundle::default()).id();
 
-        let mut entity_map = EntityMap::default();
-        entity_map.0.insert(42, bevy_ent);
-        app.insert_resource(entity_map);
-        app.insert_resource(DirtyNodes::default());
-        app.add_systems(Update, mark_dirty_system);
-
-        // Simula 30 "frames" de animación: cada frame el nodo se marca
-        // dirty (como hace `apply_transform_updates`).
-        for _ in 0..30 {
-            app.world_mut().resource_mut::<DirtyNodes>().0.push(42);
-            app.update();
-        }
+        let mut dirty_nodes = DirtyNodes(vec![42; 30]);
+        let unique = dirty_nodes.take_unique();
 
         assert!(
             !app.world().entity(bevy_ent).contains::<Dirty>(),
-            "mark_dirty_system insertó Dirty: regresión perf cubos (archetype churn)"
+            "deduplicar DirtyNodes no debe insertar el componente Dirty"
         );
-        // Tras dedup la lista de dirty queda con un único id por frame.
-        assert_eq!(app.world().resource::<DirtyNodes>().0.len(), 1);
+        assert_eq!(unique, vec![42]);
+        assert!(dirty_nodes.0.is_empty());
     }
 
     /// `apply_transform_updates` debe escribir el Transform2 de SPECS,
@@ -3320,7 +3291,6 @@ mod tests {
             (
                 apply_transform_updates,
                 apply_attribute_updates.run_if(|a: Res<crate::AttributeUpdates>| !a.0.is_empty()),
-                mark_dirty_system,
                 dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
             )
                 .chain(),
@@ -3451,7 +3421,6 @@ mod tests {
             (
                 apply_transform_updates,
                 apply_attribute_updates.run_if(|a: Res<crate::AttributeUpdates>| !a.0.is_empty()),
-                mark_dirty_system,
                 dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
             )
                 .chain(),

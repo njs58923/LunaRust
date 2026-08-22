@@ -173,7 +173,7 @@ fn main() {
     // entidades creadas desde JS aparecen pero no se animan (97% de bullets
     // "stuck in air" en demo zombies). Chain garantiza:
     //   commit_pending_js_attaches → apply_transform → apply_attribute →
-    //   activate_first_render → mark_dirty → dom_sync
+    //   activate_first_render → dom_sync
     // que es el invariante temporal del que depende todo el flujo JS→render.
     app.add_systems(
         Update,
@@ -193,7 +193,6 @@ fn main() {
             dom::commit_pending_includes_system.run_if(|p: Res<PendingIncludes>| !p.0.is_empty()),
             permissions::rebuild_space_policies_system.run_if(|p: Res<SpacePolicies>| p.dirty),
             permissions::update_active_native_services_system,
-            dom::mark_dirty_system,
             dom::dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
         )
             .chain(),
