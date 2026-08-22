@@ -160,18 +160,16 @@ pub fn get_or_create_text_material(
     materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
     text_value: &str,
-    text_size: f32,
     text_color: Color,
 ) -> Handle<StandardMaterial> {
-    let [r, g, b, a] = text_color.to_srgba().to_u8_array();
+    let color_rgba = text_color.to_srgba().to_u8_array();
     let cache_key = TextMaterialKey {
         value: text_value.to_string(),
-        size_bits: text_size.to_bits(),
-        color_key: format!("{r:02x}{g:02x}{b:02x}{a:02x}"),
+        color_rgba,
     };
 
-    if let Some(handle) = text_cache.materials.get(&cache_key) {
-        return handle.clone();
+    if let Some(handle) = text_cache.get(&cache_key) {
+        return handle;
     }
 
     let text_texture = create_text_texture(text_value, text_color, images);
@@ -182,9 +180,7 @@ pub fn get_or_create_text_material(
         ..Default::default()
     });
 
-    text_cache
-        .materials
-        .insert(cache_key, text_material.clone());
+    text_cache.insert(cache_key, text_material.clone());
     text_material
 }
 
@@ -194,14 +190,14 @@ pub fn get_or_create_primitive_material(
     color: Color,
     double_sided: bool,
 ) -> Handle<StandardMaterial> {
-    let [r, g, b, a] = color.to_srgba().to_u8_array();
+    let color_rgba = color.to_srgba().to_u8_array();
     let cache_key = PrimitiveMaterialKey {
-        color_key: format!("{r:02x}{g:02x}{b:02x}{a:02x}"),
+        color_rgba,
         double_sided,
     };
 
-    if let Some(handle) = primitive_cache.materials.get(&cache_key) {
-        return handle.clone();
+    if let Some(handle) = primitive_cache.get(&cache_key) {
+        return handle;
     }
 
     let material = materials.add(StandardMaterial {
@@ -215,9 +211,7 @@ pub fn get_or_create_primitive_material(
         ..Default::default()
     });
 
-    primitive_cache
-        .materials
-        .insert(cache_key, material.clone());
+    primitive_cache.insert(cache_key, material.clone());
     material
 }
 
@@ -417,6 +411,34 @@ mod tests {
     fn attr_string_missing_uses_default() {
         let m = HashMap::new();
         assert_eq!(get_attr_string(&m, "value", "default"), "default");
+    }
+
+    #[test]
+    fn text_material_cache_reuses_material_for_same_text_and_color() {
+        let mut cache = TextMaterialCache::default();
+        let mut materials = Assets::<StandardMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let color = Color::srgb(1.0, 1.0, 1.0);
+
+        let first = get_or_create_text_material(
+            &mut cache,
+            &mut materials,
+            &mut images,
+            "same text",
+            color,
+        );
+        let second = get_or_create_text_material(
+            &mut cache,
+            &mut materials,
+            &mut images,
+            "same text",
+            color,
+        );
+
+        assert_eq!(first.id(), second.id());
+        assert_eq!(cache.len(), 1);
+        assert_eq!(materials.len(), 1);
+        assert_eq!(images.len(), 1);
     }
 
     // encode_url_to_filename

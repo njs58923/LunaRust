@@ -245,6 +245,19 @@ fn rounded_box_radii(radius: f32, scale: Vec3) -> [f32; 3] {
     ]
 }
 
+const ROUNDED_RADIUS_QUANTIZATION_STEPS: f32 = 4096.0;
+
+fn quantize_rounded_radius(radius: f32) -> u16 {
+    if !radius.is_finite() {
+        return 0;
+    }
+    (radius.clamp(0.0, 0.499) * ROUNDED_RADIUS_QUANTIZATION_STEPS).round() as u16
+}
+
+fn dequantize_rounded_radius(radius: u16) -> f32 {
+    radius as f32 / ROUNDED_RADIUS_QUANTIZATION_STEPS
+}
+
 fn get_or_create_rounded_mesh(
     rounded_mesh_cache: Option<&mut crate::RoundedMeshCache>,
     meshes: &mut Assets<Mesh>,
@@ -253,33 +266,37 @@ fn get_or_create_rounded_mesh(
     segments: u32,
 ) -> Handle<Mesh> {
     if let Some(cache) = rounded_mesh_cache {
+        let quantized_radii = radii.map(quantize_rounded_radius);
         let key = crate::RoundedMeshKey {
             kind,
-            radius_x_bits: radii[0].to_bits(),
-            radius_y_bits: radii[1].to_bits(),
-            radius_z_bits: radii[2].to_bits(),
+            radius_x_quantized: quantized_radii[0],
+            radius_y_quantized: quantized_radii[1],
+            radius_z_quantized: quantized_radii[2],
             segments,
         };
-        if let Some(handle) = cache.meshes.get(&key) {
-            return handle.clone();
+        if let Some(handle) = cache.get(&key) {
+            return handle;
         }
+        let radii = quantized_radii.map(dequantize_rounded_radius);
         let handle = match kind {
             crate::RoundedMeshKind::Cube => {
-                if radii[0].to_bits() == radii[1].to_bits()
-                    && radii[1].to_bits() == radii[2].to_bits()
+                if quantized_radii[0] == quantized_radii[1]
+                    && quantized_radii[1] == quantized_radii[2]
                 {
-                    meshes.add(crate::utils::shapes::create_rounded_cube(radii[0], segments))
+                    meshes.add(crate::utils::shapes::create_rounded_cube(
+                        radii[0], segments,
+                    ))
                 } else {
                     meshes.add(crate::utils::shapes::create_rounded_cube_aniso(
                         radii[0], radii[1], radii[2], segments,
                     ))
                 }
             }
-            crate::RoundedMeshKind::Plane => {
-                meshes.add(crate::utils::shapes::create_rounded_plane(radii[0], segments))
-            }
+            crate::RoundedMeshKind::Plane => meshes.add(
+                crate::utils::shapes::create_rounded_plane(radii[0], segments),
+            ),
         };
-        cache.meshes.insert(key, handle.clone());
+        cache.insert(key, handle.clone());
         handle
     } else {
         match kind {
@@ -445,8 +462,9 @@ pub fn commit_pending_document_load_system(
                         commit.pending_scripts.0.clear();
                         commit.space_handle_tables.by_space.clear();
                         commit.space_handle_tables.next_runtime_id = 0;
-                        commit.text_material_cache.materials.clear();
-                        commit.primitive_material_cache.materials.clear();
+                        commit.text_material_cache.clear();
+                        commit.primitive_material_cache.clear();
+                        commit.rounded_mesh_cache.clear();
                         // Drenar colas JS→DOM del espacio anterior. Si quedan,
                         // sus node_ids stale colisionan con slots del nuevo
                         // SPECS world (build_world() reinicia desde 0) y
@@ -1807,7 +1825,6 @@ pub fn dom_sync_system(
                     &mut text_render.materials,
                     &mut text_render.images,
                     &text_value,
-                    text_size,
                     text_color,
                 );
                 let text_transform = build_text_transform(transform_b, &text_value, text_size);
@@ -2231,7 +2248,6 @@ pub fn dom_sync_system(
                         &mut text_render.materials,
                         &mut text_render.images,
                         &text_value,
-                        text_size,
                         text_color,
                     );
                     let text_transform = build_text_transform(transform_b, &text_value, text_size);
@@ -2522,6 +2538,31 @@ mod tests {
         assert!((radii[0] * 20.0 - 1.0).abs() < 1e-6);
         assert!((radii[1] * 10.0 - 1.0).abs() < 1e-6);
         assert!((radii[2] * 4.0 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn nearby_rounded_radii_reuse_the_same_cached_mesh() {
+        let mut cache = crate::RoundedMeshCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+
+        let first = get_or_create_rounded_mesh(
+            Some(&mut cache),
+            &mut meshes,
+            crate::RoundedMeshKind::Plane,
+            [0.12340, 0.0, 0.0],
+            6,
+        );
+        let second = get_or_create_rounded_mesh(
+            Some(&mut cache),
+            &mut meshes,
+            crate::RoundedMeshKind::Plane,
+            [0.12341, 0.0, 0.0],
+            6,
+        );
+
+        assert_eq!(first.id(), second.id());
+        assert_eq!(cache.len(), 1);
+        assert_eq!(meshes.len(), 1);
     }
 
     #[test]
@@ -3630,6 +3671,7 @@ mod tests {
         app.insert_resource(DeleteRequests::default());
         app.insert_resource(TextMaterialCache::default());
         app.insert_resource(PrimitiveMaterialCache::default());
+        app.insert_resource(RoundedMeshCache::default());
         app.insert_resource(TokioRuntime(
             tokio::runtime::Runtime::new().expect("tokio rt"),
         ));
@@ -3666,6 +3708,22 @@ mod tests {
         app.init_asset::<Image>();
         app.init_asset::<Scene>();
         install_navigation_resources(&mut app);
+
+        let cached_mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(bevy::math::primitives::Rectangle::new(0.5, 0.5));
+        app.world_mut().resource_mut::<RoundedMeshCache>().insert(
+            RoundedMeshKey {
+                kind: RoundedMeshKind::Plane,
+                radius_x_quantized: 128,
+                radius_y_quantized: 0,
+                radius_z_quantized: 0,
+                segments: 6,
+            },
+            cached_mesh,
+        );
+        assert_eq!(app.world().resource::<RoundedMeshCache>().len(), 1);
 
         // Espacio inicial: SPECS world con un montón de bullets.
         {
@@ -3751,6 +3809,11 @@ mod tests {
         assert!(
             app.world().resource::<AttributeUpdates>().0.is_empty(),
             "AttributeUpdates stale"
+        );
+        assert_eq!(
+            app.world().resource::<RoundedMeshCache>().len(),
+            0,
+            "RoundedMeshCache debe vaciarse al navegar"
         );
 
         // Y el HSML nuevo está cargado.

@@ -1,4 +1,9 @@
-use std::{collections::{HashMap, HashSet}, fs, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    hash::Hash,
+    path::PathBuf,
+};
 
 use bevy::{ecs::system::SystemParam, prelude::*};
 use serde::{Deserialize, Serialize};
@@ -368,22 +373,136 @@ pub struct ModelCache {
     pub cache: HashMap<String, String>,
 }
 
+pub const TEXT_MATERIAL_CACHE_CAPACITY: usize = 256;
+pub const PRIMITIVE_MATERIAL_CACHE_CAPACITY: usize = 512;
+pub const ROUNDED_MESH_CACHE_CAPACITY: usize = 256;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TextMaterialKey {
     pub value: String,
-    pub size_bits: u32,
-    pub color_key: String,
+    pub color_rgba: [u8; 4],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PrimitiveMaterialKey {
-    pub color_key: String,
+    pub color_rgba: [u8; 4],
     pub double_sided: bool,
 }
 
-#[derive(Resource, Default)]
+#[derive(Debug, Clone)]
+struct CachedAsset<V> {
+    value: V,
+    last_used: u64,
+}
+
+/// Caché LRU acotada. La búsqueda es O(1); únicamente busca la entrada menos
+/// reciente (O(capacidad)) al insertar un miss cuando ya alcanzó el límite.
+///
+/// Expulsar un Handle de aquí no invalida entidades que aún lo usan: sus
+/// propios Handles fuertes mantienen vivo el asset en Bevy.
+#[derive(Debug, Clone)]
+struct BoundedAssetCache<K, V> {
+    entries: HashMap<K, CachedAsset<V>>,
+    clock: u64,
+    capacity: usize,
+}
+
+impl<K, V> BoundedAssetCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            clock: 0,
+            capacity,
+        }
+    }
+
+    fn next_stamp(&mut self) -> u64 {
+        self.clock = self.clock.saturating_add(1);
+        self.clock
+    }
+
+    fn get_cloned(&mut self, key: &K) -> Option<V> {
+        let stamp = self.next_stamp();
+        let entry = self.entries.get_mut(key)?;
+        entry.last_used = stamp;
+        Some(entry.value.clone())
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        if self.capacity == 0 {
+            return;
+        }
+
+        let stamp = self.next_stamp();
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.value = value;
+            entry.last_used = stamp;
+            return;
+        }
+
+        if self.entries.len() >= self.capacity {
+            let lru_key = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone());
+            if let Some(lru_key) = lru_key {
+                self.entries.remove(&lru_key);
+            }
+        }
+
+        self.entries.insert(
+            key,
+            CachedAsset {
+                value,
+                last_used: stamp,
+            },
+        );
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.clock = 0;
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+#[derive(Resource)]
 pub struct PrimitiveMaterialCache {
-    pub materials: HashMap<PrimitiveMaterialKey, Handle<StandardMaterial>>,
+    materials: BoundedAssetCache<PrimitiveMaterialKey, Handle<StandardMaterial>>,
+}
+
+impl Default for PrimitiveMaterialCache {
+    fn default() -> Self {
+        Self {
+            materials: BoundedAssetCache::new(PRIMITIVE_MATERIAL_CACHE_CAPACITY),
+        }
+    }
+}
+
+impl PrimitiveMaterialCache {
+    pub fn get(&mut self, key: &PrimitiveMaterialKey) -> Option<Handle<StandardMaterial>> {
+        self.materials.get_cloned(key)
+    }
+
+    pub fn insert(&mut self, key: PrimitiveMaterialKey, value: Handle<StandardMaterial>) {
+        self.materials.insert(key, value);
+    }
+
+    pub fn clear(&mut self) {
+        self.materials.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.materials.len()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -395,20 +514,147 @@ pub enum RoundedMeshKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RoundedMeshKey {
     pub kind: RoundedMeshKind,
-    pub radius_x_bits: u32,
-    pub radius_y_bits: u32,
-    pub radius_z_bits: u32,
+    pub radius_x_quantized: u16,
+    pub radius_y_quantized: u16,
+    pub radius_z_quantized: u16,
     pub segments: u32,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct RoundedMeshCache {
-    pub meshes: HashMap<RoundedMeshKey, Handle<Mesh>>,
+    meshes: BoundedAssetCache<RoundedMeshKey, Handle<Mesh>>,
 }
 
-#[derive(Resource, Default)]
+impl Default for RoundedMeshCache {
+    fn default() -> Self {
+        Self {
+            meshes: BoundedAssetCache::new(ROUNDED_MESH_CACHE_CAPACITY),
+        }
+    }
+}
+
+impl RoundedMeshCache {
+    pub fn get(&mut self, key: &RoundedMeshKey) -> Option<Handle<Mesh>> {
+        self.meshes.get_cloned(key)
+    }
+
+    pub fn insert(&mut self, key: RoundedMeshKey, value: Handle<Mesh>) {
+        self.meshes.insert(key, value);
+    }
+
+    pub fn clear(&mut self) {
+        self.meshes.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.meshes.len()
+    }
+}
+
+#[derive(Resource)]
 pub struct TextMaterialCache {
-    pub materials: HashMap<TextMaterialKey, Handle<StandardMaterial>>,
+    materials: BoundedAssetCache<TextMaterialKey, Handle<StandardMaterial>>,
+}
+
+impl Default for TextMaterialCache {
+    fn default() -> Self {
+        Self {
+            materials: BoundedAssetCache::new(TEXT_MATERIAL_CACHE_CAPACITY),
+        }
+    }
+}
+
+impl TextMaterialCache {
+    pub fn get(&mut self, key: &TextMaterialKey) -> Option<Handle<StandardMaterial>> {
+        self.materials.get_cloned(key)
+    }
+
+    pub fn insert(&mut self, key: TextMaterialKey, value: Handle<StandardMaterial>) {
+        self.materials.insert(key, value);
+    }
+
+    pub fn clear(&mut self) {
+        self.materials.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.materials.len()
+    }
+}
+
+#[cfg(test)]
+mod bounded_asset_cache_tests {
+    use super::*;
+
+    #[test]
+    fn evicts_the_least_recently_used_entry_at_capacity() {
+        let mut cache = BoundedAssetCache::new(2);
+        cache.insert("a", 1);
+        cache.insert("b", 2);
+
+        assert_eq!(cache.get_cloned(&"a"), Some(1));
+        cache.insert("c", 3);
+
+        assert_eq!(cache.get_cloned(&"a"), Some(1));
+        assert_eq!(cache.get_cloned(&"b"), None);
+        assert_eq!(cache.get_cloned(&"c"), Some(3));
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn clear_drops_entries_and_resets_cache_for_reuse() {
+        let mut cache = BoundedAssetCache::new(1);
+        cache.insert("a", 1);
+        cache.clear();
+        cache.insert("b", 2);
+
+        assert_eq!(cache.get_cloned(&"a"), None);
+        assert_eq!(cache.get_cloned(&"b"), Some(2));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn configured_asset_caches_never_exceed_their_limits() {
+        let mut text = TextMaterialCache::default();
+        for i in 0..=TEXT_MATERIAL_CACHE_CAPACITY {
+            text.insert(
+                TextMaterialKey {
+                    value: i.to_string(),
+                    color_rgba: [255; 4],
+                },
+                Handle::default(),
+            );
+        }
+
+        let mut primitives = PrimitiveMaterialCache::default();
+        for i in 0..=PRIMITIVE_MATERIAL_CACHE_CAPACITY {
+            primitives.insert(
+                PrimitiveMaterialKey {
+                    color_rgba: (i as u32).to_le_bytes(),
+                    double_sided: false,
+                },
+                Handle::default(),
+            );
+        }
+
+        let mut rounded = RoundedMeshCache::default();
+        for i in 0..=ROUNDED_MESH_CACHE_CAPACITY {
+            rounded.insert(
+                RoundedMeshKey {
+                    kind: RoundedMeshKind::Plane,
+                    radius_x_quantized: i as u16,
+                    radius_y_quantized: 0,
+                    radius_z_quantized: 0,
+                    segments: 6,
+                },
+                Handle::default(),
+            );
+        }
+
+        assert_eq!(text.len(), TEXT_MATERIAL_CACHE_CAPACITY);
+        assert_eq!(primitives.len(), PRIMITIVE_MATERIAL_CACHE_CAPACITY);
+        assert_eq!(rounded.len(), ROUNDED_MESH_CACHE_CAPACITY);
+    }
 }
 
 #[derive(Resource, Default)]
@@ -575,6 +821,7 @@ pub struct DocumentCommitParams<'w> {
     pub space_handle_tables: ResMut<'w, SpaceHandleTables>,
     pub text_material_cache: ResMut<'w, TextMaterialCache>,
     pub primitive_material_cache: ResMut<'w, PrimitiveMaterialCache>,
+    pub rounded_mesh_cache: ResMut<'w, RoundedMeshCache>,
     pub js_snapshot_state: ResMut<'w, JsSnapshotState>,
     // Colas de ops del JS pendientes del documento anterior. Si no se limpian,
     // las pos/rot/attr/attaches stale se aplicarían sobre el SPECS world nuevo,
