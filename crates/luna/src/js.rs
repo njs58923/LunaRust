@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc, Mutex,
@@ -206,9 +206,35 @@ pub enum JsWorkerEvent {
     WorkerError(String),
 }
 
+const JS_WORKER_COMMAND_CAPACITY: usize = 128;
+const JS_WORKER_BACKLOG_CAPACITY: usize = 128;
+const JS_WORKER_EVENT_CAPACITY: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsWorkerQueueError {
+    Full,
+    Disconnected,
+}
+
+impl JsWorkerQueueError {
+    pub fn is_full(self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
+impl std::fmt::Display for JsWorkerQueueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Full => f.write_str("JS worker command queue is full"),
+            Self::Disconnected => f.write_str("JS worker command queue is disconnected"),
+        }
+    }
+}
+
 pub struct SpaceScriptWorker {
-    pub cmd_tx: mpsc::Sender<JsWorkerCommand>,
+    pub cmd_tx: mpsc::SyncSender<JsWorkerCommand>,
     pub event_rx: mpsc::Receiver<JsWorkerEvent>,
+    pending_commands: VecDeque<JsWorkerCommand>,
     pub snapshot_in_flight: bool,
     pub tick_in_flight: bool,
     pub needs_tick: bool,
@@ -219,6 +245,76 @@ pub struct SpaceScriptWorker {
     /// True once `luna://internal/root_api.js` has been flushed into the worker's cmd channel.
     /// Guards any eval that calls `dimension.luna.*`.
     pub root_api_sent: bool,
+}
+
+impl SpaceScriptWorker {
+    /// Encola sin bloquear el hilo principal. Si el canal está temporalmente
+    /// lleno, conserva un backlog también acotado. Los streams de alta
+    /// frecuencia se coalescen para retener sólo el valor más reciente.
+    pub fn try_send(
+        &mut self,
+        command: JsWorkerCommand,
+    ) -> std::result::Result<(), JsWorkerQueueError> {
+        match self.flush_pending() {
+            Ok(()) | Err(JsWorkerQueueError::Full) => {}
+            Err(err) => return Err(err),
+        }
+        match self.cmd_tx.try_send(command) {
+            Ok(()) => Ok(()),
+            Err(mpsc::TrySendError::Disconnected(_)) => Err(JsWorkerQueueError::Disconnected),
+            Err(mpsc::TrySendError::Full(command)) => self.defer_command(command),
+        }
+    }
+
+    fn flush_pending(&mut self) -> std::result::Result<(), JsWorkerQueueError> {
+        while let Some(command) = self.pending_commands.pop_front() {
+            match self.cmd_tx.try_send(command) {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(command)) => {
+                    self.pending_commands.push_front(command);
+                    return Err(JsWorkerQueueError::Full);
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    self.pending_commands.clear();
+                    return Err(JsWorkerQueueError::Disconnected);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn defer_command(
+        &mut self,
+        command: JsWorkerCommand,
+    ) -> std::result::Result<(), JsWorkerQueueError> {
+        let replace = match &command {
+            JsWorkerCommand::SetCapabilities(_) => self
+                .pending_commands
+                .iter()
+                .rposition(|queued| matches!(queued, JsWorkerCommand::SetCapabilities(_))),
+            JsWorkerCommand::SetViewerPose(_) => self
+                .pending_commands
+                .iter()
+                .rposition(|queued| matches!(queued, JsWorkerCommand::SetViewerPose(_))),
+            JsWorkerCommand::Tick { .. } => self
+                .pending_commands
+                .iter()
+                .rposition(|queued| matches!(queued, JsWorkerCommand::Tick { .. })),
+            JsWorkerCommand::PushPoseMoveEvents(_) => self.pending_commands.iter().rposition(
+                |queued| matches!(queued, JsWorkerCommand::PushPoseMoveEvents(_)),
+            ),
+            _ => None,
+        };
+        if let Some(index) = replace {
+            self.pending_commands[index] = command;
+            return Ok(());
+        }
+        if self.pending_commands.len() == JS_WORKER_BACKLOG_CAPACITY {
+            return Err(JsWorkerQueueError::Full);
+        }
+        self.pending_commands.push_back(command);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Default)]
@@ -384,8 +480,8 @@ fn spawn_space_worker_with_limits(
     space_id: u32,
     limits: WorkerExecutionLimits,
 ) -> std::result::Result<SpaceScriptWorker, String> {
-    let (cmd_tx, cmd_rx) = mpsc::channel::<JsWorkerCommand>();
-    let (event_tx, event_rx) = mpsc::channel::<JsWorkerEvent>();
+    let (cmd_tx, cmd_rx) = mpsc::sync_channel::<JsWorkerCommand>(JS_WORKER_COMMAND_CAPACITY);
+    let (event_tx, event_rx) = mpsc::sync_channel::<JsWorkerEvent>(JS_WORKER_EVENT_CAPACITY);
     let termination = WorkerTermination::default();
     let worker_termination = termination.clone();
 
@@ -415,7 +511,18 @@ fn spawn_space_worker_with_limits(
                 }
             };
 
-            'worker: while let Ok(cmd) = cmd_rx.recv() {
+            'worker: loop {
+                if worker_termination.shutdown_requested.load(Ordering::Acquire) {
+                    break;
+                }
+                let cmd = match cmd_rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok(cmd) => cmd,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+                if worker_termination.shutdown_requested.load(Ordering::Acquire) {
+                    break;
+                }
                 match cmd {
                     JsWorkerCommand::SetCapabilities(bits) => {
                         ctx.capabilities_bits = bits;
@@ -631,6 +738,7 @@ fn spawn_space_worker_with_limits(
     Ok(SpaceScriptWorker {
         cmd_tx,
         event_rx,
+        pending_commands: VecDeque::new(),
         snapshot_in_flight: false,
         tick_in_flight: false,
         needs_tick: true,
@@ -652,7 +760,8 @@ pub fn stop_space_worker(worker: &mut SpaceScriptWorker) {
             handle.terminate_execution();
         }
     }
-    let _ = worker.cmd_tx.send(JsWorkerCommand::Shutdown);
+    worker.pending_commands.clear();
+    let _ = worker.cmd_tx.try_send(JsWorkerCommand::Shutdown);
     if let Some(join) = worker.join.take() {
         if join.is_finished() {
             let _ = join.join();
@@ -1269,8 +1378,12 @@ pub fn js_sync_space_permissions_system(world: &mut World) {
     for (space_id, bits) in desired {
         if let Some(worker) = manager.contexts.get_mut(&space_id) {
             if worker.last_capabilities_bits != bits {
-                let _ = worker.cmd_tx.send(JsWorkerCommand::SetCapabilities(bits));
-                worker.last_capabilities_bits = bits;
+                if worker
+                    .try_send(JsWorkerCommand::SetCapabilities(bits))
+                    .is_ok()
+                {
+                    worker.last_capabilities_bits = bits;
+                }
             }
         }
     }
@@ -1501,6 +1614,16 @@ fn sync_snapshots_with_mirror(
     }
 
     if !removed_contexts.is_empty() || !created_contexts.is_empty() {
+        if let Some(ws_service) = world.get_resource::<crate::WsService>() {
+            for &space_id in &removed_contexts {
+                ws_service.close_space(space_id);
+            }
+        }
+        if let Some(io_service) = world.get_resource::<IoService>() {
+            for &space_id in &removed_contexts {
+                io_service.cancel_space(space_id);
+            }
+        }
         let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() else {
             return;
         };
@@ -1641,19 +1764,24 @@ fn sync_snapshots_with_mirror(
             }
             let send_result = match batch {
                 SnapshotBatch::Full(snap) => {
-                    worker.cmd_tx.send(JsWorkerCommand::UpdateSnapshots(snap))
+                    worker.try_send(JsWorkerCommand::UpdateSnapshots(snap))
                 }
                 SnapshotBatch::Patch(patch) => {
-                    worker.cmd_tx.send(JsWorkerCommand::PatchSnapshots(patch))
+                    worker.try_send(JsWorkerCommand::PatchSnapshots(patch))
                 }
             };
             if let Err(e) = send_result {
+                all_snapshots_sent = false;
+                if e.is_full() {
+                    // El delta permanece en SpaceHandleTable y se reintenta en
+                    // el siguiente frame sin bloquear ni perder cambios.
+                    continue;
+                }
                 errors.push(format!(
                     "failed to send snapshots to space {}: {}",
                     space_id, e
                 ));
                 broken_contexts.push(space_id);
-                all_snapshots_sent = false;
             } else {
                 worker.snapshot_in_flight = true;
                 snapshots_sent_this_run += 1;
@@ -1685,6 +1813,16 @@ fn sync_snapshots_with_mirror(
     }
 
     if !removed_contexts.is_empty() {
+        if let Some(ws_service) = world.get_resource::<crate::WsService>() {
+            for &space_id in &removed_contexts {
+                ws_service.close_space(space_id);
+            }
+        }
+        if let Some(io_service) = world.get_resource::<IoService>() {
+            for &space_id in &removed_contexts {
+                io_service.cancel_space(space_id);
+            }
+        }
         let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() else {
             return;
         };
@@ -1768,12 +1906,11 @@ pub fn js_eval_pending_scripts(world: &mut World) {
             };
             if let Some(worker) = manager.contexts.get_mut(&space_id) {
                 let result = worker
-                    .cmd_tx
-                    .send(JsWorkerCommand::EvalScript {
+                    .try_send(JsWorkerCommand::EvalScript {
                         url: url.clone(),
                         code: code.clone(),
                     })
-                    .map_err(|e| e.to_string());
+                    .map_err(|e| e);
                 if result.is_ok() && url == "luna://internal/root_api.js" {
                     worker.root_api_sent = true;
                 }
@@ -1782,7 +1919,8 @@ pub fn js_eval_pending_scripts(world: &mut World) {
                 }
                 match result {
                     Ok(_) => ScriptEnqueueResult::Queued,
-                    Err(err) => ScriptEnqueueResult::Error(err),
+                    Err(err) if err.is_full() => ScriptEnqueueResult::DeferUntilContext,
+                    Err(err) => ScriptEnqueueResult::Error(err.to_string()),
                 }
             } else {
                 let space_still_attached = world
@@ -1849,6 +1987,7 @@ pub fn js_tick_system(world: &mut World) {
     let mut eval_events: Vec<(u32, String, bool, Option<String>)> = Vec::new();
     let mut tick_batches: Vec<(u32, JsTickData)> = Vec::new();
     let mut worker_errors: Vec<String> = Vec::new();
+    let mut removed_worker_space_ids = Vec::new();
     let mut snapshot_acks = 0usize;
     let mut contexts_removed = false;
     let pending_snapshot_in_flight;
@@ -1860,11 +1999,19 @@ pub fn js_tick_system(world: &mut World) {
 
         let mut broken_contexts = Vec::new();
         for (space_id, worker) in manager.contexts.iter_mut() {
+            if matches!(
+                worker.flush_pending(),
+                Err(JsWorkerQueueError::Disconnected)
+            ) {
+                broken_contexts.push(*space_id);
+                continue;
+            }
             if worker.tick_in_flight || !worker.needs_tick {
                 continue;
             }
-            match worker.cmd_tx.send(JsWorkerCommand::Tick { elapsed_ms }) {
+            match worker.try_send(JsWorkerCommand::Tick { elapsed_ms }) {
                 Ok(_) => worker.tick_in_flight = true,
+                Err(err) if err.is_full() => {}
                 Err(_) => broken_contexts.push(*space_id),
             }
         }
@@ -1924,6 +2071,7 @@ pub fn js_tick_system(world: &mut World) {
             if let Some(mut worker) = manager.contexts.remove(&space_id) {
                 stop_space_worker(&mut worker);
                 worker_errors.push(format!("[JS][space:{}] worker disconnected", space_id));
+                removed_worker_space_ids.push(space_id);
                 contexts_removed = true;
             }
         }
@@ -1932,6 +2080,17 @@ pub fn js_tick_system(world: &mut World) {
             .contexts
             .values()
             .any(|worker| worker.snapshot_in_flight);
+    }
+
+    if let Some(ws_service) = world.get_resource::<crate::WsService>() {
+        for &space_id in &removed_worker_space_ids {
+            ws_service.close_space(space_id);
+        }
+    }
+    if let Some(io_service) = world.get_resource::<IoService>() {
+        for space_id in removed_worker_space_ids {
+            io_service.cancel_space(space_id);
+        }
     }
 
     if !eval_events.is_empty() || !worker_errors.is_empty() {
@@ -2257,11 +2416,9 @@ pub fn js_tick_system(world: &mut World) {
         }
         if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() {
             if let Some(worker) = manager.contexts.get_mut(&space_id) {
-                let send_result = worker
-                    .cmd_tx
-                    .send(JsWorkerCommand::PushElementCreationResults(
-                        creation_results,
-                    ));
+                let send_result = worker.try_send(JsWorkerCommand::PushElementCreationResults(
+                    creation_results,
+                ));
                 if send_result.is_ok() {
                     worker.needs_tick = true;
                 }
@@ -2636,8 +2793,31 @@ pub fn js_tick_system(world: &mut World) {
         let Some(io_service) = world.get_resource::<IoService>() else {
             return;
         };
+        let mut rejected = Vec::new();
         for (request_id, url) in &fetch_queue {
-            request_fetch_text(&tokio_rt.0, &io_service, space_id, *request_id, url.clone());
+            if let Err(error) =
+                request_fetch_text(&tokio_rt.0, &io_service, space_id, *request_id, url.clone())
+            {
+                rejected.push((*request_id, Err(error)));
+            }
+        }
+        if !rejected.is_empty() {
+            let rejected_count = rejected.len();
+            if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() {
+                if let Some(worker) = manager.contexts.get_mut(&space_id) {
+                    if worker
+                        .try_send(JsWorkerCommand::PushFetchResults(rejected))
+                        .is_ok()
+                    {
+                        worker.needs_tick = true;
+                    }
+                }
+            }
+            if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
+                log_panel.push_warn(format!(
+                    "[JS][space:{space_id}] rejected {rejected_count} fetch request(s): backpressure limit"
+                ));
+            }
         }
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
             for (_, url) in &fetch_queue {
@@ -2648,6 +2828,7 @@ pub fn js_tick_system(world: &mut World) {
 
     // WebSocket: abre conexiones, encola sends, cierra. El transporte real vive
     // en `ws.rs`; aquí sólo encaminamos las colas drenadas del engine.
+    let mut ws_send_failures = Vec::new();
     if !ws_connect_batches.is_empty() || !ws_send_batches.is_empty() || !ws_close_batches.is_empty()
     {
         let (Some(tokio_rt), Some(ws_service)) = (
@@ -2663,12 +2844,38 @@ pub fn js_tick_system(world: &mut World) {
         }
         for (space_id, queue) in ws_send_batches {
             for (conn_id, msg) in queue {
-                crate::ws::ws_send(ws_service, space_id, conn_id, msg);
+                if let Err(err) = crate::ws::ws_send(ws_service, space_id, conn_id, msg) {
+                    ws_send_failures.push((space_id, conn_id, err.to_string()));
+                    if matches!(
+                        err,
+                        crate::ws::WsSendError::QueueFull
+                            | crate::ws::WsSendError::Disconnected
+                    ) {
+                        crate::ws::ws_close(ws_service, space_id, conn_id);
+                    }
+                }
             }
         }
         for (space_id, queue) in ws_close_batches {
             for conn_id in queue {
                 crate::ws::ws_close(ws_service, space_id, conn_id);
+            }
+        }
+    }
+    if !ws_send_failures.is_empty() {
+        if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() {
+            for (space_id, conn_id, error) in ws_send_failures {
+                if let Some(worker) = manager.contexts.get_mut(&space_id) {
+                    let result = worker.try_send(JsWorkerCommand::PushWsEvents(vec![
+                        WsWorkerEvent::Status {
+                            conn_id,
+                            status: format!("error: {error}"),
+                        },
+                    ]));
+                    if result.is_ok() {
+                        worker.needs_tick = true;
+                    }
+                }
             }
         }
     }
@@ -2896,7 +3103,7 @@ pub fn js_tick_system(world: &mut World) {
                                     "dimension.luna.setSpacePoseByTabId({}, {{x:{},y:{},z:{}}}, {{x:{},y:{},z:{}}});",
                                     tab_id, p[0], p[1], p[2], p[3], p[4], p[5]
                                 );
-                                let send_result = worker.cmd_tx.send(JsWorkerCommand::EvalScript {
+                                let send_result = worker.try_send(JsWorkerCommand::EvalScript {
                                     url: format!("eval://setPose/{}", tab_id),
                                     code,
                                 });
@@ -2910,7 +3117,7 @@ pub fn js_tick_system(world: &mut World) {
                                     tab_id,
                                     if visible { "true" } else { "false" }
                                 );
-                                let send_result = worker.cmd_tx.send(JsWorkerCommand::EvalScript {
+                                let send_result = worker.try_send(JsWorkerCommand::EvalScript {
                                     url: format!("eval://setVisible/{}/{}", tab_id, visible),
                                     code,
                                 });
@@ -3021,8 +3228,7 @@ pub fn js_tick_system(world: &mut World) {
                 };
                 for (target_space_id, msgs) in routes {
                     if let Some(worker) = manager.contexts.get_mut(&target_space_id) {
-                        let send_result =
-                            worker.cmd_tx.send(JsWorkerCommand::PushShellMessages(msgs));
+                        let send_result = worker.try_send(JsWorkerCommand::PushShellMessages(msgs));
                         if send_result.is_ok() {
                             worker.needs_tick = true;
                         }
@@ -3390,14 +3596,17 @@ mod tests {
     ) -> (
         SpaceScriptWorker,
         std::sync::mpsc::Receiver<JsWorkerCommand>,
-        std::sync::mpsc::Sender<JsWorkerEvent>,
+        std::sync::mpsc::SyncSender<JsWorkerEvent>,
     ) {
-        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<JsWorkerCommand>();
-        let (event_tx, event_rx) = std::sync::mpsc::channel::<JsWorkerEvent>();
+        let (cmd_tx, cmd_rx) =
+            std::sync::mpsc::sync_channel::<JsWorkerCommand>(JS_WORKER_COMMAND_CAPACITY);
+        let (event_tx, event_rx) =
+            std::sync::mpsc::sync_channel::<JsWorkerEvent>(JS_WORKER_EVENT_CAPACITY);
         (
             SpaceScriptWorker {
                 cmd_tx,
                 event_rx,
+                pending_commands: VecDeque::new(),
                 snapshot_in_flight: false,
                 tick_in_flight: false,
                 needs_tick,
@@ -3410,6 +3619,45 @@ mod tests {
             cmd_rx,
             event_tx,
         )
+    }
+
+    #[test]
+    fn worker_command_queue_is_bounded_and_non_blocking() {
+        let (mut worker, _cmd_rx, _event_tx) = fake_worker(false);
+
+        for _ in 0..(JS_WORKER_COMMAND_CAPACITY + JS_WORKER_BACKLOG_CAPACITY) {
+            worker
+                .try_send(JsWorkerCommand::PushShellMessages(Vec::new()))
+                .expect("queue should accept commands up to its capacity");
+        }
+
+        assert_eq!(
+            worker.try_send(JsWorkerCommand::PushShellMessages(Vec::new())),
+            Err(JsWorkerQueueError::Full)
+        );
+    }
+
+    #[test]
+    fn saturated_worker_coalesces_high_frequency_commands() {
+        let (mut worker, _cmd_rx, _event_tx) = fake_worker(false);
+        for _ in 0..JS_WORKER_COMMAND_CAPACITY {
+            worker
+                .try_send(JsWorkerCommand::PushShellMessages(Vec::new()))
+                .unwrap();
+        }
+
+        worker
+            .try_send(JsWorkerCommand::SetViewerPose(None))
+            .unwrap();
+        worker
+            .try_send(JsWorkerCommand::SetViewerPose(None))
+            .unwrap();
+
+        assert_eq!(worker.pending_commands.len(), 1);
+        assert!(matches!(
+            worker.pending_commands.front(),
+            Some(JsWorkerCommand::SetViewerPose(None))
+        ));
     }
 
     fn wait_for_worker_error(

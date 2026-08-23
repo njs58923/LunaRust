@@ -943,6 +943,8 @@ pub struct DocumentCommitParams<'w> {
     pub text_material_cache: ResMut<'w, TextMaterialCache>,
     pub primitive_material_cache: ResMut<'w, PrimitiveMaterialCache>,
     pub rounded_mesh_cache: ResMut<'w, RoundedMeshCache>,
+    pub ws_service: Option<Res<'w, crate::WsService>>,
+    pub io_service: Option<Res<'w, crate::IoService>>,
     pub js_snapshot_state: ResMut<'w, JsSnapshotState>,
     // Colas de ops del JS pendientes del documento anterior. Si no se limpian,
     // las pos/rot/attr/attaches stale se aplicarían sobre el SPECS world nuevo,

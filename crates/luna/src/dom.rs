@@ -449,6 +449,12 @@ pub fn commit_pending_document_load_system(
                             crate::js::stop_space_worker(worker);
                         }
                         manager.contexts.clear();
+                        if let Some(ws_service) = commit.ws_service.as_deref() {
+                            ws_service.close_all();
+                        }
+                        if let Some(io_service) = commit.io_service.as_deref() {
+                            io_service.cancel_all_spaces();
+                        }
                         log_panel
                             .push_info("[JS] All JS contexts cleared for committed navigation");
 

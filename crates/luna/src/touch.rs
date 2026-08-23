@@ -512,6 +512,9 @@ pub fn dispatch_toque_events_to_js(
 
     let events: Vec<HostToqueHit> = toque_hits.0.drain(..).collect();
 
+    let mut dom_by_space: HashMap<u32, Vec<(i32, f32, f32, f32)>> = HashMap::new();
+    let mut raw_by_space: HashMap<u32, Vec<(i32, f32, f32, f32)>> = HashMap::new();
+
     for evt in events {
         let ent = world.0.entities().entity(evt.node_id);
         if !world.0.entities().is_alive(ent) {
@@ -532,25 +535,31 @@ pub fn dispatch_toque_events_to_js(
         let allow_raw =
             space_has_capability(space_id, CapabilityBits::READ_TOQUE_RAW, &space_policies);
 
+        dom_by_space
+            .entry(space_id)
+            .or_default()
+            .push((local_id, evt.x, evt.y, evt.z));
+        if allow_raw {
+            raw_by_space
+                .entry(space_id)
+                .or_default()
+                .push((local_id, evt.x, evt.y, evt.z));
+        }
+    }
+
+    for (space_id, batch) in dom_by_space {
         if let Some(worker) = manager.contexts.get_mut(&space_id) {
-            let send_result = worker
-                .cmd_tx
-                .send(JsWorkerCommand::PushDomToqueEvents(vec![(
-                    local_id, evt.x, evt.y, evt.z,
-                )]));
+            let send_result = worker.try_send(JsWorkerCommand::PushDomToqueEvents(batch));
             if send_result.is_ok() {
                 worker.needs_tick = true;
             }
-
-            if allow_raw {
-                let send_result = worker
-                    .cmd_tx
-                    .send(JsWorkerCommand::PushToqueRawEvents(vec![(
-                        local_id, evt.x, evt.y, evt.z,
-                    )]));
-                if send_result.is_ok() {
-                    worker.needs_tick = true;
-                }
+        }
+    }
+    for (space_id, batch) in raw_by_space {
+        if let Some(worker) = manager.contexts.get_mut(&space_id) {
+            let send_result = worker.try_send(JsWorkerCommand::PushToqueRawEvents(batch));
+            if send_result.is_ok() {
+                worker.needs_tick = true;
             }
         }
     }
@@ -617,7 +626,7 @@ pub fn dispatch_posemove_events_to_js(
 
     for (space_id, batch) in per_space {
         if let Some(worker) = manager.contexts.get_mut(&space_id) {
-            let send_result = worker.cmd_tx.send(JsWorkerCommand::PushPoseMoveEvents(batch));
+            let send_result = worker.try_send(JsWorkerCommand::PushPoseMoveEvents(batch));
             if send_result.is_ok() {
                 worker.needs_tick = true;
             }

@@ -73,9 +73,8 @@ pub fn dispatch_system_input_events_to_js(
         if !space_has_capability(*space_id, CapabilityBits::READ_SYSTEM_INPUT, &space_policies) {
             continue;
         }
-        let send_result = worker
-            .cmd_tx
-            .send(JsWorkerCommand::PushSystemInputEvents(batch.clone()));
+        let send_result =
+            worker.try_send(JsWorkerCommand::PushSystemInputEvents(batch.clone()));
         if send_result.is_ok() {
             worker.needs_tick = true;
         }

@@ -1,14 +1,14 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
-    sync::{mpsc, Mutex},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
 use bevy::prelude::*;
 use quick_xml::{events::Event, Reader};
 use specs::WorldExt;
-use tokio::{runtime::Runtime, task};
+use tokio::{runtime::Runtime, sync::mpsc, task};
 use virtual_dom::dom::hsml::Script;
 
 use crate::{
@@ -129,11 +129,14 @@ pub struct IoService {
     result_rx: Mutex<mpsc::Receiver<IoResult>>,
     http_client: reqwest::Client,
     network_tracker: Mutex<NetworkTracker>,
+    pending_fetch_results: Mutex<HashMap<u32, VecDeque<(i32, Result<String, String>)>>>,
+    fetch_tasks: Mutex<HashMap<u32, HashMap<u64, Option<tokio::task::AbortHandle>>>>,
 }
 
 impl Default for IoService {
     fn default() -> Self {
-        let (result_tx, result_rx) = mpsc::channel();
+        const IO_RESULT_CAPACITY: usize = 256;
+        let (result_tx, result_rx) = mpsc::channel(IO_RESULT_CAPACITY);
         let http_client = reqwest::Client::builder()
             .user_agent("Luna/0.1")
             .timeout(Duration::from_secs(20))
@@ -147,11 +150,16 @@ impl Default for IoService {
             result_rx: Mutex::new(result_rx),
             http_client,
             network_tracker: Mutex::new(NetworkTracker::default()),
+            pending_fetch_results: Mutex::new(HashMap::new()),
+            fetch_tasks: Mutex::new(HashMap::new()),
         }
     }
 }
 
 impl IoService {
+    const MAX_OUTSTANDING_FETCHES_PER_SPACE: usize = 64;
+    const PENDING_FETCH_RESULTS_PER_SPACE: usize = Self::MAX_OUTSTANDING_FETCHES_PER_SPACE;
+
     fn sender(&self) -> mpsc::Sender<IoResult> {
         self.result_tx.clone()
     }
@@ -218,6 +226,100 @@ impl IoService {
             return;
         };
         tracker.entries.clear();
+    }
+
+    fn reserve_fetch_task(&self, space_id: u32, network_id: u64) -> bool {
+        let pending_count = self
+            .pending_fetch_results
+            .lock()
+            .ok()
+            .and_then(|pending| pending.get(&space_id).map(VecDeque::len))
+            .unwrap_or(0);
+        let Ok(mut tasks) = self.fetch_tasks.lock() else {
+            return false;
+        };
+        let by_id = tasks.entry(space_id).or_default();
+        if by_id.len() + pending_count >= Self::MAX_OUTSTANDING_FETCHES_PER_SPACE {
+            return false;
+        }
+        by_id.insert(network_id, None);
+        true
+    }
+
+    fn track_fetch_task(
+        &self,
+        space_id: u32,
+        network_id: u64,
+        abort: tokio::task::AbortHandle,
+    ) {
+        if let Ok(mut tasks) = self.fetch_tasks.lock() {
+            if let Some(slot) = tasks
+                .get_mut(&space_id)
+                .and_then(|by_id| by_id.get_mut(&network_id))
+            {
+                *slot = Some(abort);
+            } else {
+                abort.abort();
+            }
+        }
+    }
+
+    fn finish_fetch_task(&self, space_id: u32, network_id: u64) {
+        if let Ok(mut tasks) = self.fetch_tasks.lock() {
+            if let Some(by_id) = tasks.get_mut(&space_id) {
+                by_id.remove(&network_id);
+                if by_id.is_empty() {
+                    tasks.remove(&space_id);
+                }
+            }
+        }
+    }
+
+    fn defer_fetch_results(
+        &self,
+        space_id: u32,
+        results: Vec<(i32, Result<String, String>)>,
+    ) {
+        let Ok(mut pending) = self.pending_fetch_results.lock() else {
+            return;
+        };
+        let queue = pending.entry(space_id).or_default();
+        for result in results {
+            if queue.len() == Self::PENDING_FETCH_RESULTS_PER_SPACE {
+                queue.pop_front();
+            }
+            queue.push_back(result);
+        }
+    }
+
+    pub fn cancel_space(&self, space_id: u32) {
+        if let Ok(mut tasks) = self.fetch_tasks.lock() {
+            if let Some(by_id) = tasks.remove(&space_id) {
+                for (_, abort) in by_id {
+                    if let Some(abort) = abort {
+                        abort.abort();
+                    }
+                }
+            }
+        }
+        if let Ok(mut pending) = self.pending_fetch_results.lock() {
+            pending.remove(&space_id);
+        }
+    }
+
+    pub fn cancel_all_spaces(&self) {
+        if let Ok(mut tasks) = self.fetch_tasks.lock() {
+            for (_, by_id) in tasks.drain() {
+                for (_, abort) in by_id {
+                    if let Some(abort) = abort {
+                        abort.abort();
+                    }
+                }
+            }
+        }
+        if let Ok(mut pending) = self.pending_fetch_results.lock() {
+            pending.clear();
+        }
     }
 }
 
@@ -313,23 +415,36 @@ pub fn request_fetch_text(
     space_id: u32,
     request_id: i32,
     url: String,
-) {
+) -> Result<(), String> {
     let network_id = io_service.begin_request(
         NetworkRequestKind::Fetch,
         url.clone(),
         format!("space:{space_id}"),
     );
+    if !io_service.reserve_fetch_task(space_id, network_id) {
+        io_service.finish_request(
+            network_id,
+            NetworkRequestStatus::Error,
+            Some("too many outstanding fetches for this space".to_string()),
+        );
+        return Err(format!(
+            "fetch limit reached ({} outstanding requests per space)",
+            IoService::MAX_OUTSTANDING_FETCHES_PER_SPACE
+        ));
+    }
     let tx = io_service.sender();
     let client = io_service.http_client();
-    rt.spawn(async move {
+    let task = rt.spawn(async move {
         let result = load_text_resource(&url, &client).await;
         let _ = tx.send(IoResult::FetchCompleted {
             network_id,
             space_id,
             request_id,
             result,
-        });
+        }).await;
     });
+    io_service.track_fetch_task(space_id, network_id, task.abort_handle());
+    Ok(())
 }
 
 pub fn request_document_load(rt: &Runtime, io_service: &IoService, epoch: u64, url: String) {
@@ -347,7 +462,7 @@ pub fn request_document_load(rt: &Runtime, io_service: &IoService, epoch: u64, u
             epoch,
             url,
             result,
-        });
+        }).await;
     });
 }
 
@@ -366,7 +481,7 @@ pub fn request_script_load(rt: &Runtime, io_service: &IoService, node_id: u32, u
             node_id,
             url,
             result,
-        });
+        }).await;
     });
 }
 
@@ -390,7 +505,7 @@ pub fn request_include_load(
             parent_node_id,
             url,
             result,
-        });
+        }).await;
     });
 }
 
@@ -405,7 +520,7 @@ pub fn request_model_prepare(rt: &Runtime, io_service: &IoService, url: String) 
             network_id,
             url,
             result,
-        });
+        }).await;
     });
 }
 
@@ -425,7 +540,7 @@ pub fn request_skybox_prepare(
             network_id,
             key,
             result,
-        });
+        }).await;
     });
 }
 
@@ -708,14 +823,37 @@ pub fn poll_io_results_system(
     mut pending_includes: ResMut<crate::PendingIncludes>,
     mut include_load_states: ResMut<crate::IncludeLoadStates>,
 ) {
-    let Ok(rx) = io_service.result_rx.lock() else {
+    let deferred_fetches = io_service
+        .pending_fetch_results
+        .lock()
+        .map(|mut pending| std::mem::take(&mut *pending))
+        .unwrap_or_default();
+    for (space_id, results) in deferred_fetches {
+        let results = results.into_iter().collect::<Vec<_>>();
+        let Some(worker) = manager.contexts.get_mut(&space_id) else {
+            continue;
+        };
+        match worker
+            .cmd_tx
+            .try_send(JsWorkerCommand::PushFetchResults(results))
+        {
+            Ok(()) => worker.needs_tick = true,
+            Err(std::sync::mpsc::TrySendError::Full(
+                JsWorkerCommand::PushFetchResults(results),
+            )) => io_service.defer_fetch_results(space_id, results),
+            Err(_) => {}
+        }
+    }
+
+    let Ok(mut rx) = io_service.result_rx.lock() else {
         return;
     };
 
     loop {
         let result = match rx.try_recv() {
             Ok(result) => result,
-            Err(mpsc::TryRecvError::Empty) | Err(mpsc::TryRecvError::Disconnected) => break,
+            Err(mpsc::error::TryRecvError::Empty)
+            | Err(mpsc::error::TryRecvError::Disconnected) => break,
         };
 
         match result {
@@ -742,6 +880,7 @@ pub fn poll_io_results_system(
                 request_id,
                 result,
             } => {
+                io_service.finish_fetch_task(space_id, network_id);
                 let status = if result.is_ok() {
                     NetworkRequestStatus::Ok
                 } else {
@@ -750,11 +889,14 @@ pub fn poll_io_results_system(
                 let detail = result.as_ref().err().cloned();
                 io_service.finish_request(network_id, status, detail);
                 if let Some(worker) = manager.contexts.get_mut(&space_id) {
-                    let send_result = worker.cmd_tx.send(JsWorkerCommand::PushFetchResults(vec![(
+                    match worker.cmd_tx.try_send(JsWorkerCommand::PushFetchResults(vec![(
                         request_id, result,
-                    )]));
-                    if send_result.is_ok() {
-                        worker.needs_tick = true;
+                    )])) {
+                        Ok(()) => worker.needs_tick = true,
+                        Err(std::sync::mpsc::TrySendError::Full(
+                            JsWorkerCommand::PushFetchResults(results),
+                        )) => io_service.defer_fetch_results(space_id, results),
+                        Err(_) => {}
                     }
                 } else {
                     log_panel.push_warn(format!(
@@ -941,5 +1083,33 @@ pub fn poll_io_results_system(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod backpressure_tests {
+    use super::*;
+
+    #[test]
+    fn deferred_fetch_results_are_bounded_and_cleared_per_space() {
+        let service = IoService::default();
+        let space_id = 17;
+
+        for request_id in 0..(IoService::PENDING_FETCH_RESULTS_PER_SPACE as i32 + 20) {
+            service.defer_fetch_results(space_id, vec![(request_id, Ok("ok".to_string()))]);
+        }
+
+        let pending = service.pending_fetch_results.lock().unwrap();
+        let queue = pending.get(&space_id).unwrap();
+        assert_eq!(queue.len(), IoService::PENDING_FETCH_RESULTS_PER_SPACE);
+        assert_eq!(queue.front().map(|(id, _)| *id), Some(20));
+        drop(pending);
+
+        service.cancel_space(space_id);
+        assert!(!service
+            .pending_fetch_results
+            .lock()
+            .unwrap()
+            .contains_key(&space_id));
     }
 }

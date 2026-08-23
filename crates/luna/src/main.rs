@@ -499,6 +499,7 @@ fn process_space_mount_queue(
         return;
     }
     let requests: Vec<SpaceMountRequest> = mount_queue.0.drain(..).collect();
+    let mut deferred = Vec::new();
     for request in requests {
         let escaped_url = request.url.replace('\\', "\\\\").replace('\'', "\\'");
         let kind_raw = if request.kind.is_empty() { "spatial" } else { request.kind.as_str() };
@@ -511,14 +512,17 @@ fn process_space_mount_queue(
             "dimension.luna.mountSpace('{}', {{ tabId: {}, kind: '{}' }});",
             escaped_url, request.tab_id, escaped_kind
         );
-        let send_result = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
+        let send_result = worker.try_send(js::JsWorkerCommand::EvalScript {
             url: format!("eval://mount/{}", request.url),
             code,
         });
         if send_result.is_ok() {
             worker.needs_tick = true;
+        } else if send_result.is_err_and(js::JsWorkerQueueError::is_full) {
+            deferred.push(request);
         }
     }
+    mount_queue.0.extend(deferred);
 }
 
 fn process_space_unmount_queue(
@@ -537,19 +541,23 @@ fn process_space_unmount_queue(
         return;
     };
     let requests: Vec<SpaceUnmountRequest> = unmount_queue.0.drain(..).collect();
+    let mut deferred = Vec::new();
     for request in requests {
         let code = format!(
             "(() => {{ var list = dimension.luna.listMountedSpaces(); for (var i = 0; i < list.length; i++) {{ if (String(list[i].tabId) === '{}' ) {{ dimension.luna.unmountSpace(list[i].id); break; }} }} }})()",
             request.tab_id
         );
-        let send_result = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
+        let send_result = worker.try_send(js::JsWorkerCommand::EvalScript {
             url: format!("eval://unmount/{}", request.url),
             code,
         });
         if send_result.is_ok() {
             worker.needs_tick = true;
+        } else if send_result.is_err_and(js::JsWorkerQueueError::is_full) {
+            deferred.push(request);
         }
     }
+    unmount_queue.0.extend(deferred);
 }
 
 fn toggle_render_mode(
@@ -605,7 +613,7 @@ fn sync_root_mode_resources(
     let code = format!(
         "dimension.luna.switchMode('{mode}'); dimension.luna.regrantMountedSpaces('{mode}');"
     );
-    let send_result = worker.cmd_tx.send(js::JsWorkerCommand::EvalScript {
+    let send_result = worker.try_send(js::JsWorkerCommand::EvalScript {
         url: format!("eval://mode/{}", mode),
         code,
     });
@@ -613,5 +621,7 @@ fn sync_root_mode_resources(
         worker.needs_tick = true;
     }
 
-    *ran_once = true;
+    if send_result.is_ok() {
+        *ran_once = true;
+    }
 }

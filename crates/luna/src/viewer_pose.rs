@@ -133,8 +133,8 @@ pub fn propagate_viewer_pose_to_workers(
         // Envío vía canal mpsc al thread del worker (thread-safe). El worker
         // procesa SetViewerPose y llama engine.set_viewer_pose; las ops JS
         // (que corren en ese mismo thread) leen el Shared sin race.
-        let _ = worker
-            .cmd_tx
-            .send(crate::js::JsWorkerCommand::SetViewerPose(data));
+        // Si el worker está saturado, el valor se coalesce naturalmente: el
+        // siguiente frame vuelve a enviar la pose más reciente.
+        let _ = worker.try_send(crate::js::JsWorkerCommand::SetViewerPose(data));
     }
 }
