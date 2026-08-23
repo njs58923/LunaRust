@@ -868,6 +868,9 @@ pub struct UiSystemParams<'w> {
     pub fps_counter: Res<'w, FpsCounter>,
     pub perf_stats: Res<'w, PerformanceStats>,
     pub dom_mirror: Res<'w, crate::js::DomMirror>,
+    pub permission_decisions: ResMut<'w, crate::permissions::PermissionDecisionStore>,
+    pub permission_prompts: ResMut<'w, crate::permissions::PermissionPromptQueue>,
+    pub space_policies: ResMut<'w, crate::permissions::SpacePolicies>,
     pub root_config: ResMut<'w, RootConfig>,
 }
 

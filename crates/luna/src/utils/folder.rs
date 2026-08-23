@@ -104,6 +104,10 @@ pub fn resolve_root_config_path() -> PathBuf {
     resolve_luna_state_dir().join("root-config.json")
 }
 
+pub fn resolve_permission_decisions_path() -> PathBuf {
+    resolve_luna_state_dir().join("permissions.json")
+}
+
 pub fn to_assets_relative(abs_path: &Path, assets_dir: &Path) -> Option<String> {
     abs_path
         .strip_prefix(assets_dir)
@@ -149,5 +153,10 @@ mod tests {
     #[test]
     fn root_config_path_ends_with_expected_filename() {
         assert!(resolve_root_config_path().ends_with("root-config.json"));
+    }
+
+    #[test]
+    fn permission_decisions_path_ends_with_expected_filename() {
+        assert!(resolve_permission_decisions_path().ends_with("permissions.json"));
     }
 }

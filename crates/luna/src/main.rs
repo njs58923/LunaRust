@@ -142,6 +142,8 @@ fn main() {
     app.insert_resource(touch::HostPoseMoveEvents::default());
     app.insert_resource(luna::system_input::HostSystemInputEvents::default());
     app.insert_resource(luna::viewer_pose::ViewerPoseGlobalSnapshot::default());
+    app.insert_resource(PermissionDecisionStore::load());
+    app.insert_resource(PermissionPromptQueue::default());
     app.insert_resource(SpacePolicies::default());
     app.insert_resource(ActiveNativeServices::default());
     app.insert_resource(permissions::SpacePolicyHistory {

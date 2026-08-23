@@ -463,6 +463,54 @@ pub fn ui_system(
             });
     }
 
+    // ═══ Permission prompt ═══
+    if let Some(prompt) = ui_params.permission_prompts.pending.front().cloned() {
+        let mut decision = None;
+        egui::Window::new("Permission request")
+            .id(egui::Id::new("permission_prompt_window"))
+            .collapsible(false)
+            .resizable(false)
+            .show(contexts.ctx_mut(), |ui| {
+                ui.label(format!("Origin: {}", prompt.origin));
+                ui.label(format!("Capability: {}", prompt.capability_label()));
+                ui.label(format!("Requested by spaces: {:?}", prompt.space_ids));
+                ui.separator();
+                ui.label("This decision is saved for this origin and capability.");
+                ui.horizontal(|ui| {
+                    if ui.button("Allow").clicked() {
+                        decision = Some(crate::permissions::PermissionDecision::Allow);
+                    }
+                    if ui.button("Deny").clicked() {
+                        decision = Some(crate::permissions::PermissionDecision::Deny);
+                    }
+                });
+            });
+
+        if let Some(decision) = decision {
+            ui_params.permission_decisions.set_decision(
+                prompt.origin.clone(),
+                prompt.capability,
+                decision,
+            );
+            ui_params
+                .permission_prompts
+                .resolve(&prompt.origin, prompt.capability);
+            ui_params.space_policies.dirty = true;
+            match ui_params.permission_decisions.save() {
+                Ok(path) => log_panel.push_info(format!(
+                    "[perm] {:?} {} for {}; saved to {}",
+                    decision,
+                    prompt.capability_label(),
+                    prompt.origin,
+                    path.display()
+                )),
+                Err(err) => log_panel.push_error(format!(
+                    "[perm] decision applied for this session but could not be saved: {err}"
+                )),
+            }
+        }
+    }
+
     // ═══ Config window ═══
     if devtool.config_visible.0 {
         egui::Window::new("Config")
@@ -496,6 +544,70 @@ pub fn ui_system(
                             "VR",
                         );
                     });
+                ui.separator();
+                egui::CollapsingHeader::new("Site permissions").show(ui, |ui| {
+                    let entries = ui_params.permission_decisions.entries();
+                    if entries.is_empty() {
+                        ui.label("No saved permission decisions.");
+                    }
+
+                    let mut update = None;
+                    for (origin, capability, decision) in entries {
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "{} · {} · {:?}",
+                                origin,
+                                crate::permissions::describe_capability_bits(capability),
+                                decision
+                            ));
+                            match decision {
+                                crate::permissions::PermissionDecision::Allow => {
+                                    if ui.button("Revoke").clicked() {
+                                        update = Some((
+                                            origin.clone(),
+                                            capability,
+                                            Some(crate::permissions::PermissionDecision::Deny),
+                                        ));
+                                    }
+                                }
+                                crate::permissions::PermissionDecision::Deny => {
+                                    if ui.button("Ask again").clicked() {
+                                        update = Some((origin.clone(), capability, None));
+                                    }
+                                }
+                            }
+                        });
+                    }
+
+                    if let Some((origin, capability, decision)) = update {
+                        match decision {
+                            Some(decision) => {
+                                ui_params.permission_decisions.set_decision(
+                                    origin.clone(),
+                                    capability,
+                                    decision,
+                                );
+                            }
+                            None => {
+                                ui_params
+                                    .permission_decisions
+                                    .forget_decision(&origin, capability);
+                            }
+                        }
+                        ui_params.space_policies.dirty = true;
+                        match ui_params.permission_decisions.save() {
+                            Ok(path) => log_panel.push_info(format!(
+                                "[perm] updated {} for {}; saved to {}",
+                                crate::permissions::describe_capability_bits(capability),
+                                origin,
+                                path.display()
+                            )),
+                            Err(err) => log_panel.push_error(format!(
+                                "[perm] permission updated for this session but could not be saved: {err}"
+                            )),
+                        }
+                    }
+                });
                 ui.separator();
                 ui.label(format!("Root shell URL: {}", root_url.0));
                 ui.label(format!("Config path: {}", RootConfig::path().display()));
