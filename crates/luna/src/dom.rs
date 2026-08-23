@@ -6,15 +6,13 @@ use std::{
 use anyhow::Result;
 use bevy::prelude::*;
 use specs::{Entity as SpecEntity, Join, ReadStorage, World as SpecWorld, WorldExt};
-use tokio::runtime::Runtime;
-
 use virtual_dom::{
     dom::{
         element::{build_world, Attrs, BaseUrl, Hierarchy, Tag, Transform2},
         hsml::{Include, Model, Script},
         TRANSFORM_POSITION, TRANSFORM_ROTATION, TRANSFORM_SCALE,
     },
-    load_xml_from_url, parse_xml,
+    parse_xml,
 };
 
 use crate::io::{
@@ -514,55 +512,6 @@ pub fn commit_pending_document_load_system(
 
 // ─── Load & flatten ──────────────────────────────────────────────────────────
 
-pub fn load_and_flatten_xml(
-    world: &mut SpecWorld,
-    url: &str,
-    rt: &Runtime,
-    log_panel: &mut LogPanel,
-) -> Result<(HashMap<u32, SpecEntity>, Vec<u32>)> {
-    log_panel.push_info(format!("Loading document from: {url}"));
-
-    let xml_content = if crate::routes::VirtualRoutes::is_virtual_url(url) {
-        match VIRTUAL_ROUTES.resolve(url) {
-            Some(content) => {
-                log_panel.push_info(format!("Virtual route resolved: {url}"));
-                content
-            }
-            None => {
-                log_panel.push_error(format!("Virtual route not found: {url}"));
-                return Err(anyhow::anyhow!("Virtual route not found: {url}"));
-            }
-        }
-    } else {
-        match rt.block_on(load_xml_from_url(url)) {
-            Ok(c) => c,
-            Err(e) => return Err(anyhow::anyhow!("Error downloading XML from {url}: {e}")),
-        }
-    };
-
-    flatten_loaded_xml(world, url, &xml_content, rt, log_panel)
-}
-
-pub fn flatten_loaded_xml(
-    world: &mut SpecWorld,
-    url: &str,
-    xml_content: &str,
-    rt: &Runtime,
-    log_panel: &mut LogPanel,
-) -> Result<(HashMap<u32, SpecEntity>, Vec<u32>)> {
-    log_panel.push_info(format!(
-        "Content retrieved. Length: {} chars",
-        xml_content.len()
-    ));
-
-    let root_node =
-        parse_xml(world, &xml_content).map_err(|e| anyhow::anyhow!("Error parsing XML: {e}"))?;
-    set_node_base_url(world, root_node, url);
-
-    let mut include_dirty = expand_includes(world, url, rt, log_panel).unwrap_or_default();
-    finish_flatten(world, root_node, &mut include_dirty, log_panel)
-}
-
 pub fn flatten_loaded_document_bundle(
     world: &mut SpecWorld,
     url: &str,
@@ -780,36 +729,6 @@ fn remove_dom_subtree(
     }
 
     subtree_ids.len()
-}
-
-pub fn expand_includes(
-    world: &mut SpecWorld,
-    base_url: &str,
-    rt: &Runtime,
-    log: &mut LogPanel,
-) -> anyhow::Result<Vec<u32>> {
-    expand_includes_with_loader(world, base_url, log, |final_url, log| {
-        if crate::routes::VirtualRoutes::is_virtual_url(final_url) {
-            match VIRTUAL_ROUTES.resolve(final_url) {
-                Some(content) => {
-                    log.push_info(format!("Virtual include: {}", final_url));
-                    Ok(Some(content))
-                }
-                None => {
-                    log.push_error(format!("Virtual include not found: {}", final_url));
-                    Ok(None)
-                }
-            }
-        } else {
-            match rt.block_on(load_xml_from_url(final_url)) {
-                Ok(x) => Ok(Some(x)),
-                Err(e) => {
-                    log.push_error(format!("include: download error {} -> {e}", final_url));
-                    Ok(None)
-                }
-            }
-        }
-    })
 }
 
 pub fn expand_includes_from_bundle(

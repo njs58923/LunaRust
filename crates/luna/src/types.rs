@@ -479,11 +479,6 @@ mod skybox_state_tests {
 #[derive(Resource)]
 pub struct TokioRuntime(pub Runtime);
 
-#[derive(Resource, Default)]
-pub struct ModelCache {
-    pub cache: HashMap<String, String>,
-}
-
 pub const TEXT_MATERIAL_CACHE_CAPACITY: usize = 256;
 pub const PRIMITIVE_MATERIAL_CACHE_CAPACITY: usize = 512;
 pub const ROUNDED_MESH_CACHE_CAPACITY: usize = 256;

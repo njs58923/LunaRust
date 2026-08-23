@@ -120,7 +120,6 @@ fn main() {
     app.insert_resource(TokioRuntime(
         Runtime::new().expect("Failed to create Tokio runtime"),
     ));
-    app.insert_resource(ModelCache::default());
     app.insert_resource(crate::SkyboxEntity::default());
     app.insert_resource(TextMaterialCache::default());
     app.insert_resource(PrimitiveMaterialCache::default());

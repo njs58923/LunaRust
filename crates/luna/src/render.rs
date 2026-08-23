@@ -1,17 +1,13 @@
 use std::{collections::HashMap, path::Path, sync::OnceLock};
 
-use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as Base64Engine, Engine as _};
-use bevy::{gltf::GltfLoaderSettings, prelude::*};
+use bevy::prelude::*;
 use fontdue::{
     layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
     Font, FontSettings,
 };
-use tokio::runtime::Runtime;
-
 use crate::{
-    LogPanel, ModelCache, PrimitiveMaterialCache, PrimitiveMaterialKey, TextMaterialCache,
-    TextMaterialKey,
+    PrimitiveMaterialCache, PrimitiveMaterialKey, TextMaterialCache, TextMaterialKey,
 };
 
 // ─── Transform helper (from render/mod.rs) ──────────────────────────────────
@@ -215,7 +211,7 @@ pub fn get_or_create_primitive_material(
     material
 }
 
-// ─── Model loading & cache ───────────────────────────────────────────────────
+// ─── Stable cache filenames ──────────────────────────────────────────────────
 
 pub fn encode_url_to_filename(url: &str) -> String {
     let b64 = Base64Engine.encode(url);
@@ -225,94 +221,6 @@ pub fn encode_url_to_filename(url: &str) -> String {
         None => "bin".to_string(),
     };
     format!("{safe_b64}.{ext}")
-}
-
-pub async fn load_bytes_from_url(url: &str) -> Result<Vec<u8>> {
-    let resp = reqwest::get(url).await?;
-    let resp = resp.error_for_status()?;
-    Ok(resp.bytes().await?.to_vec())
-}
-
-pub fn download_model_if_needed(
-    rt: &Runtime,
-    url: &str,
-    cache: &mut ModelCache,
-    log_panel: &mut LogPanel,
-) -> Result<String> {
-    if let Some(cached_path) = cache.cache.get(url) {
-        if Path::new(cached_path).exists() {
-            log_panel.push_info(format!("Cache hit: {} -> {}", url, cached_path));
-            return Ok(cached_path.clone());
-        }
-        log_panel.push_warn(format!(
-            "Cache stale: {} -> {}. Re-downloading.",
-            url, cached_path
-        ));
-    } else {
-        log_panel.push_info(format!("Cache miss, downloading: {}", url));
-    }
-
-    let (assets_dir, cache_dir) = crate::utils::folder::resolve_assets_and_cache_dirs();
-    log_panel.push_info(format!("Assets dir: {}", assets_dir.display()));
-    log_panel.push_info(format!("Cache dir:  {}", cache_dir.display()));
-
-    let _ = std::fs::create_dir_all(cache_dir.clone());
-    let filename = encode_url_to_filename(url);
-    let local_path = cache_dir.join(filename).to_string_lossy().to_string();
-
-    if url.starts_with("http://") || url.starts_with("https://") {
-        log_panel.push_info(format!("Downloading: {}", url));
-        let bytes = rt
-            .block_on(load_bytes_from_url(url))
-            .map_err(|e| anyhow::anyhow!("Download failed: {e}"))?;
-        std::fs::write(&local_path, bytes).map_err(|e| anyhow::anyhow!("Write failed: {e}"))?;
-    } else {
-        let from = std::path::PathBuf::from(url);
-        if !from.exists() {
-            return Err(anyhow::anyhow!("Local file not found: {url}"));
-        }
-        std::fs::copy(&from, &local_path).map_err(|e| anyhow::anyhow!("Copy failed: {e}"))?;
-    }
-
-    cache.cache.insert(url.to_string(), local_path.clone());
-    log_panel.push_info(format!("Cached: {} -> {}", url, local_path));
-    Ok(local_path)
-}
-
-pub fn apply_model_with_cache(
-    remote_path: &str,
-    asset_server: &AssetServer,
-    log_panel: &mut LogPanel,
-    model_cache: &mut ModelCache,
-    rt: &Runtime,
-) -> Handle<Scene> {
-    match download_model_if_needed(rt, remote_path, model_cache, log_panel) {
-        Ok(local_path) => {
-            log_panel.push_info(format!("Model ready: {local_path}"));
-            let relative: String = local_path
-                .strip_prefix("crates/luna/assets/")
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| local_path.clone());
-            log_panel.push_info(format!("Loading: '{relative}'"));
-
-            if relative.ends_with(".gltf") || relative.ends_with(".glb") {
-                let final_path = format!("{relative}#Scene0");
-                asset_server.load_with_settings(final_path, |s: &mut GltfLoaderSettings| {
-                    s.load_cameras = false;
-                    s.load_lights = false;
-                })
-            } else {
-                asset_server.load_with_settings(relative, |s: &mut GltfLoaderSettings| {
-                    s.load_cameras = false;
-                    s.load_lights = false;
-                })
-            }
-        }
-        Err(e) => {
-            log_panel.push_error(format!("Model prepare failed '{}': {e}", remote_path));
-            Handle::default()
-        }
-    }
 }
 
 // ─── URL resolution ──────────────────────────────────────────────────────────
