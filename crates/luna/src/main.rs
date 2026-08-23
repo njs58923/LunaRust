@@ -28,6 +28,22 @@ use bevy::prelude::AmbientLight;
 
 // ─── main ────────────────────────────────────────────────────────────────────
 
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum LunaUpdatePhase {
+    HostIngress,
+    DomPrepare,
+    DomCommit,
+    DomFinalize,
+    Permissions,
+    RenderSync,
+    JsSnapshot,
+    JsPolicy,
+    JsExecute,
+    LifecyclePrepare,
+    LifecycleUnmount,
+    LifecycleMount,
+}
+
 fn main() {
     let mut app = App::new();
 
@@ -164,38 +180,114 @@ fn main() {
     // Systems
     app.add_systems(Startup, (setup, js::init_js_runtime).chain());
 
-    // DOM pipeline: orden estricto via `.chain()`. Sin él, el scheduler de Bevy
-    // puede correr `dom_sync_system` ANTES de `apply_transform_updates` en el
-    // mismo frame, porque ambos compiten por `ResMut<DirtyNodes>` y sin Commands
-    // como barrera implícita Bevy elige cualquier orden válido. Resultado: las
-    // pos/attr updates de JS se aplican a SPECS pero `dom_sync` ya drenó la lista
-    // de dirty para ese frame, así que nunca escribe el Transform de Bevy →
-    // entidades creadas desde JS aparecen pero no se animan (97% de bullets
-    // "stuck in air" en demo zombies). Chain garantiza:
-    //   commit_pending_js_attaches → apply_transform → apply_attribute →
-    //   activate_first_render → dom_sync
-    // que es el invariante temporal del que depende todo el flujo JS→render.
+    // El pipeline se expresa por fases, no como una única cadena de sistemas.
+    // Dentro de cada fase Bevy puede ejecutar trabajo independiente en paralelo;
+    // entre fases se conservan los invariantes JS → SPECS → render y el orden de
+    // lifecycle de tabs.
+    app.configure_sets(
+        Update,
+        (
+            LunaUpdatePhase::HostIngress,
+            LunaUpdatePhase::DomPrepare.after(LunaUpdatePhase::HostIngress),
+            LunaUpdatePhase::DomCommit.after(LunaUpdatePhase::DomPrepare),
+            LunaUpdatePhase::DomFinalize.after(LunaUpdatePhase::DomCommit),
+            LunaUpdatePhase::Permissions.after(LunaUpdatePhase::DomFinalize),
+            LunaUpdatePhase::RenderSync.after(LunaUpdatePhase::Permissions),
+            LunaUpdatePhase::JsSnapshot.after(LunaUpdatePhase::RenderSync),
+            LunaUpdatePhase::JsPolicy.after(LunaUpdatePhase::JsSnapshot),
+            LunaUpdatePhase::JsExecute.after(LunaUpdatePhase::JsPolicy),
+            LunaUpdatePhase::LifecyclePrepare.after(LunaUpdatePhase::JsExecute),
+            LunaUpdatePhase::LifecycleUnmount.after(LunaUpdatePhase::LifecyclePrepare),
+            LunaUpdatePhase::LifecycleMount.after(LunaUpdatePhase::LifecycleUnmount),
+        ),
+    );
+
+    app.add_systems(
+        Update,
+        (io::poll_io_results_system, ws::poll_ws_results_system)
+            .in_set(LunaUpdatePhase::HostIngress),
+    );
     app.add_systems(
         Update,
         (
-            io::poll_io_results_system,
-            ws::poll_ws_results_system,
             dom::commit_pending_js_attaches_system
                 .run_if(|p: Res<PendingJsAttachNodes>| !p.0.is_empty()),
-            dom::apply_transform_updates.run_if(|u: Res<TransformUpdates>| !u.is_empty()),
             dom::request_navigation_system.run_if(|r: Res<ReloadTrigger>| r.0),
+        )
+            .in_set(LunaUpdatePhase::DomPrepare),
+    );
+    app.add_systems(
+        Update,
+        (
+            dom::apply_transform_updates.run_if(|u: Res<TransformUpdates>| !u.is_empty()),
             dom::commit_pending_document_load_system
                 .run_if(|p: Res<PendingDocumentLoads>| !p.0.is_empty()),
+        )
+            .chain()
+            .in_set(LunaUpdatePhase::DomCommit),
+    );
+    app.add_systems(
+        Update,
+        (
             dom::apply_attribute_updates.run_if(|a: Res<AttributeUpdates>| !a.0.is_empty()),
             dom::activate_pending_js_first_render_system
                 .run_if(|p: Res<PendingJsFirstRenderNodes>| !p.0.is_empty()),
             dom::process_delete_requests.run_if(|del: Res<DeleteRequests>| !del.0.is_empty()),
             dom::commit_pending_includes_system.run_if(|p: Res<PendingIncludes>| !p.0.is_empty()),
+        )
+            .chain()
+            .in_set(LunaUpdatePhase::DomFinalize),
+    );
+    app.add_systems(
+        Update,
+        (
             permissions::rebuild_space_policies_system.run_if(|p: Res<SpacePolicies>| p.dirty),
             permissions::update_active_native_services_system,
-            dom::dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
         )
-            .chain(),
+            .chain()
+            .in_set(LunaUpdatePhase::Permissions),
+    );
+    app.add_systems(
+        Update,
+        dom::dom_sync_system
+            .run_if(|d: Res<DirtyNodes>| !d.0.is_empty())
+            .in_set(LunaUpdatePhase::RenderSync),
+    );
+
+    app.add_systems(
+        Update,
+        js::js_update_snapshots_system.in_set(LunaUpdatePhase::JsSnapshot),
+    );
+    app.add_systems(
+        Update,
+        (
+            js::js_sync_space_permissions_system,
+            js::js_auto_inject_resource_scripts_system,
+        )
+            .in_set(LunaUpdatePhase::JsPolicy),
+    );
+    app.add_systems(
+        Update,
+        (js::js_eval_pending_scripts, js::js_tick_system)
+            .chain()
+            .in_set(LunaUpdatePhase::JsExecute),
+    );
+    app.add_systems(
+        Update,
+        (sync_root_mode_resources, ui::flush_deferred_space_mounts_system)
+            .in_set(LunaUpdatePhase::LifecyclePrepare),
+    );
+    app.add_systems(
+        Update,
+        process_space_unmount_queue
+            .run_if(|q: Res<SpaceUnmountQueue>| !q.0.is_empty())
+            .in_set(LunaUpdatePhase::LifecycleUnmount),
+    );
+    app.add_systems(
+        Update,
+        process_space_mount_queue
+            .run_if(|q: Res<SpaceMountQueue>| !q.0.is_empty())
+            .in_set(LunaUpdatePhase::LifecycleMount),
     );
 
     app.add_systems(Update, ui::ui_system);
@@ -245,30 +337,6 @@ fn main() {
         )
             .chain(),
     );
-    // JS pipeline: forzado a correr DESPUÉS del DOM pipeline. Si
-    // `js_update_snapshots_system` corre antes que
-    // `commit_pending_js_attaches_system`, los nodos recién creados desde JS
-    // (bullets) aún no están en `dom_data.nodes`, no entran a `allowed_globals`
-    // del snapshot, y `sync_space_handle_table` poda su mapping local→global.
-    // Resultado: futuras escrituras de pos/rot del JS para ese nodo fallan
-    // como "Blocked invalid local position write" — bullets stuck in air.
-    app.add_systems(
-        Update,
-        (
-            js::js_update_snapshots_system,
-            js::js_sync_space_permissions_system,
-            js::js_auto_inject_resource_scripts_system,
-            js::js_eval_pending_scripts,
-            js::js_tick_system,
-            sync_root_mode_resources,
-            ui::flush_deferred_space_mounts_system,
-            process_space_unmount_queue.run_if(|q: Res<SpaceUnmountQueue>| !q.0.is_empty()),
-            process_space_mount_queue.run_if(|q: Res<SpaceMountQueue>| !q.0.is_empty()),
-        )
-            .chain()
-            .after(dom::dom_sync_system),
-    );
-
     app.run();
 }
 
