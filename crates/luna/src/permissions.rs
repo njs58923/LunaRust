@@ -669,7 +669,13 @@ pub fn update_active_native_services_system(
     policies: Res<SpacePolicies>,
     mut active: ResMut<ActiveNativeServices>,
     mut log_panel: ResMut<crate::LogPanel>,
+    mut applied_generation: Local<Option<u64>>,
 ) {
+    if *applied_generation == Some(policies.generation) {
+        return;
+    }
+    *applied_generation = Some(policies.generation);
+
     let mut enabled = NativeServiceBits::empty();
     for policy in policies.by_space.values() {
         enabled |= policy.effective_native;

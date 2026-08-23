@@ -426,6 +426,16 @@ fn watchdog_loop(
 #[derive(Default)]
 pub struct ScriptRuntimeManager {
     pub contexts: HashMap<u32, SpaceScriptWorker>,
+    /// Cambia únicamente cuando se agrega o quita un isolate. Los bridges de
+    /// políticas lo usan junto con `SpacePolicies::generation` para evitar
+    /// recorrer todos los spaces en cada frame.
+    context_generation: u64,
+}
+
+#[derive(Resource, Default)]
+struct JsPolicyBridgeState {
+    capabilities_generation: Option<(u64, u64)>,
+    auto_scripts_generation: Option<(u64, u64)>,
 }
 
 impl Drop for ScriptRuntimeManager {
@@ -1360,10 +1370,30 @@ fn plan_navigation_for_space(
 }
 
 pub fn js_sync_space_permissions_system(world: &mut World) {
-    let desired: Vec<(u32, u64)> = {
+    world.init_resource::<JsPolicyBridgeState>();
+
+    let policy_generation = {
         let Some(policies) = world.get_resource::<SpacePolicies>() else {
             return;
         };
+        policies.generation
+    };
+    let context_generation = {
+        let Some(manager) = world.get_non_send_resource::<ScriptRuntimeManager>() else {
+            return;
+        };
+        manager.context_generation
+    };
+    if world
+        .resource::<JsPolicyBridgeState>()
+        .capabilities_generation
+        == Some((policy_generation, context_generation))
+    {
+        return;
+    }
+
+    let desired: Vec<(u32, u64)> = {
+        let policies = world.resource::<SpacePolicies>();
         policies
             .by_space
             .iter()
@@ -1387,23 +1417,43 @@ pub fn js_sync_space_permissions_system(world: &mut World) {
             }
         }
     }
+
+    world
+        .resource_mut::<JsPolicyBridgeState>()
+        .capabilities_generation = Some((policy_generation, context_generation));
 }
 
 pub fn js_auto_inject_resource_scripts_system(world: &mut World) {
-    let desired: Vec<(u32, Vec<String>)> = {
+    world.init_resource::<JsPolicyBridgeState>();
+
+    let policy_generation = {
         let Some(policies) = world.get_resource::<SpacePolicies>() else {
             return;
         };
+        policies.generation
+    };
+    let context_generation = {
+        let Some(manager) = world.get_non_send_resource::<ScriptRuntimeManager>() else {
+            return;
+        };
+        manager.context_generation
+    };
+    if world
+        .resource::<JsPolicyBridgeState>()
+        .auto_scripts_generation
+        == Some((policy_generation, context_generation))
+    {
+        return;
+    }
+
+    let desired: Vec<(u32, Vec<String>)> = {
+        let policies = world.resource::<SpacePolicies>();
         policies
             .by_space
             .iter()
             .map(|(&space_id, policy)| (space_id, policy.auto_scripts.clone()))
             .collect()
     };
-
-    if desired.is_empty() {
-        return;
-    }
 
     let mut queued = Vec::new();
     {
@@ -1430,6 +1480,10 @@ pub fn js_auto_inject_resource_scripts_system(world: &mut World) {
             pending_scripts.0.extend(queued);
         }
     }
+
+    world
+        .resource_mut::<JsPolicyBridgeState>()
+        .auto_scripts_generation = Some((policy_generation, context_generation));
 }
 
 // ─── Systems ─────────────────────────────────────────────────────────────────
@@ -1611,6 +1665,10 @@ fn sync_snapshots_with_mirror(
                 }
             }
         }
+
+        if !removed_contexts.is_empty() || !created_contexts.is_empty() {
+            manager.context_generation = manager.context_generation.wrapping_add(1);
+        }
     }
 
     if !removed_contexts.is_empty() || !created_contexts.is_empty() {
@@ -1789,11 +1847,16 @@ fn sync_snapshots_with_mirror(
             }
         }
 
+        let mut removed_broken_context = false;
         for space_id in broken_contexts {
             if let Some(mut worker) = manager.contexts.remove(&space_id) {
                 stop_space_worker(&mut worker);
                 removed_contexts.push(space_id);
+                removed_broken_context = true;
             }
+        }
+        if removed_broken_context {
+            manager.context_generation = manager.context_generation.wrapping_add(1);
         }
     }
 
@@ -2074,6 +2137,10 @@ pub fn js_tick_system(world: &mut World) {
                 removed_worker_space_ids.push(space_id);
                 contexts_removed = true;
             }
+        }
+
+        if contexts_removed {
+            manager.context_generation = manager.context_generation.wrapping_add(1);
         }
 
         pending_snapshot_in_flight = manager
@@ -3619,6 +3686,95 @@ mod tests {
             cmd_rx,
             event_tx,
         )
+    }
+
+    #[test]
+    fn capability_bridge_only_rescans_after_generation_change() {
+        let space_id = 41;
+        let (worker, cmd_rx, _event_tx) = fake_worker(false);
+        let mut manager = ScriptRuntimeManager::default();
+        manager.contexts.insert(space_id, worker);
+
+        let mut policies = SpacePolicies::default();
+        policies.generation = 7;
+        policies.by_space.insert(
+            space_id,
+            crate::permissions::SpacePolicy {
+                effective_caps: CapabilityBits::FETCH_TEXT,
+                ..Default::default()
+            },
+        );
+
+        let mut app = App::new();
+        app.insert_resource(policies);
+        app.insert_non_send_resource(manager);
+
+        js_sync_space_permissions_system(app.world_mut());
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok(JsWorkerCommand::SetCapabilities(bits))
+                if bits == CapabilityBits::FETCH_TEXT.bits()
+        ));
+
+        app.world_mut()
+            .resource_mut::<SpacePolicies>()
+            .by_space
+            .get_mut(&space_id)
+            .unwrap()
+            .effective_caps = CapabilityBits::NAVIGATE_SELF;
+        js_sync_space_permissions_system(app.world_mut());
+        assert!(matches!(cmd_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+
+        app.world_mut().resource_mut::<SpacePolicies>().generation += 1;
+        js_sync_space_permissions_system(app.world_mut());
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok(JsWorkerCommand::SetCapabilities(bits))
+                if bits == CapabilityBits::NAVIGATE_SELF.bits()
+        ));
+    }
+
+    #[test]
+    fn auto_script_bridge_only_rescans_after_policy_or_worker_change() {
+        let space_id = 52;
+        let (worker, _cmd_rx, _event_tx) = fake_worker(false);
+        let mut manager = ScriptRuntimeManager::default();
+        manager.contexts.insert(space_id, worker);
+
+        let mut policies = SpacePolicies::default();
+        policies.generation = 3;
+        policies.by_space.insert(
+            space_id,
+            crate::permissions::SpacePolicy {
+                auto_scripts: vec!["luna://internal/viewer_pose_api.js".to_string()],
+                ..Default::default()
+            },
+        );
+
+        let mut app = App::new();
+        app.insert_resource(policies);
+        app.insert_resource(PendingScripts::default());
+        app.insert_non_send_resource(manager);
+
+        js_auto_inject_resource_scripts_system(app.world_mut());
+        assert_eq!(app.world().resource::<PendingScripts>().0.len(), 1);
+        app.world_mut().resource_mut::<PendingScripts>().0.clear();
+        app.world_mut()
+            .non_send_resource_mut::<ScriptRuntimeManager>()
+            .contexts
+            .get_mut(&space_id)
+            .unwrap()
+            .bootstrap_scripts_enqueued
+            .clear();
+
+        js_auto_inject_resource_scripts_system(app.world_mut());
+        assert!(app.world().resource::<PendingScripts>().0.is_empty());
+
+        app.world_mut()
+            .non_send_resource_mut::<ScriptRuntimeManager>()
+            .context_generation += 1;
+        js_auto_inject_resource_scripts_system(app.world_mut());
+        assert_eq!(app.world().resource::<PendingScripts>().0.len(), 1);
     }
 
     #[test]

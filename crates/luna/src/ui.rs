@@ -36,7 +36,9 @@ pub fn ui_system(
         .and_then(|idx| space_params.mounted_spaces.0.get(idx))
         .map(|entry| entry.url.clone());
 
-    sync_mounted_spaces_from_dom(&world.0, &mut space_params.mounted_spaces.0);
+    if ui_params.dom_mirror.is_changed() {
+        sync_mounted_spaces_from_dom(&world.0, &mut space_params.mounted_spaces.0);
+    }
 
     if let (Some(idx), Some(prev_url)) = (active_space.0, prev_active_url) {
         if let Some(entry) = space_params.mounted_spaces.0.get(idx) {

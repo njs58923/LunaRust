@@ -867,6 +867,7 @@ pub struct UiSystemParams<'w> {
     pub entity_counter: Res<'w, EntityCounter>,
     pub fps_counter: Res<'w, FpsCounter>,
     pub perf_stats: Res<'w, PerformanceStats>,
+    pub dom_mirror: Res<'w, crate::js::DomMirror>,
     pub root_config: ResMut<'w, RootConfig>,
 }
 
