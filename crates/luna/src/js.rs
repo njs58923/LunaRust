@@ -1148,9 +1148,13 @@ fn refresh_dom_mirror_in_place(
     for &node_id in removed_nodes {
         let node_id_i32 = node_id as i32;
         changed |= mirror.nodes.remove(&node_id_i32).is_some();
+    }
+    // Limpiar enlaces una vez por batch, no una vez por nodo eliminado:
+    // O(removed + nodes + edges) en vez de O(removed * (nodes + edges)).
+    if !removed_nodes.is_empty() {
         for node in mirror.nodes.values_mut() {
             let before = node.children.len();
-            node.children.retain(|child| *child != node_id_i32);
+            node.children.retain(|child| !removed_nodes.contains(&(*child as u32)));
             changed |= node.children.len() != before;
         }
     }
@@ -3359,6 +3363,126 @@ mod tests {
     use bevy::prelude::{App, Time};
     use specs::WorldExt;
     use virtual_dom::dom::element::{build_world, Vec3 as DomVec3};
+
+    fn deletion_test_mirror(count: i32) -> DomMirror {
+        let mut mirror = DomMirror::default();
+        for id in 0..=count {
+            mirror.nodes.insert(
+                id,
+                DomMirrorNode {
+                    attrs: HashMap::new(),
+                    tag: if id == 0 { "space" } else { "box" }.into(),
+                    position: js_runtime::Vec3 {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                    rotation: js_runtime::Vec3 {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                    scale: js_runtime::Vec3 {
+                        x: 1.0,
+                        y: 1.0,
+                        z: 1.0,
+                    },
+                    parent: if id == 0 { -1 } else { 0 },
+                    children: if id == 0 {
+                        (1..=count).collect()
+                    } else {
+                        vec![]
+                    },
+                },
+            );
+        }
+        rebuild_dom_mirror_space_subtrees(&mut mirror);
+        mirror
+    }
+
+    #[test]
+    fn mirror_batch_removal_preserves_survivors_and_cleans_dangling_links() {
+        let world = build_world();
+        let mut mirror = deletion_test_mirror(10_000);
+        // Un ID ausente también puede quedar referenciado por un padre.
+        mirror.nodes.get_mut(&0).unwrap().children.push(20_000);
+        let removed: HashSet<u32> = (1..=1_000).chain([20_000]).collect();
+        let attached: HashSet<u32> = std::iter::once(0).chain(1_001..=10_000).collect();
+        refresh_dom_mirror_in_place(
+            &mut mirror,
+            &world,
+            &attached,
+            false,
+            &HashSet::new(),
+            &removed,
+        );
+        assert_eq!(mirror.version, 1);
+        assert_eq!(mirror.nodes.len(), 9_001);
+        assert_eq!(
+            mirror.nodes[&0].children,
+            (1_001..=10_000).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            mirror.space_subtrees[&0],
+            attached.iter().map(|&id| id as i32).collect()
+        );
+        // Repetir el mismo batch es un no-op y no cambia la versión.
+        refresh_dom_mirror_in_place(
+            &mut mirror,
+            &world,
+            &attached,
+            false,
+            &HashSet::new(),
+            &removed,
+        );
+        assert_eq!(mirror.version, 1);
+    }
+
+    #[test]
+    #[ignore = "manual mirror deletion benchmark"]
+    fn benchmark_mirror_batch_removal() {
+        let world = build_world();
+        let original = deletion_test_mirror(10_000);
+        let removed: HashSet<u32> = (1..=1_000).collect();
+        let attached: HashSet<u32> = std::iter::once(0).chain(1_001..=10_000).collect();
+        let mut old_samples = Vec::new();
+        let mut new_samples = Vec::new();
+        for _ in 0..12 {
+            let mut old = original.clone();
+            let start = Instant::now();
+            // Algoritmo anterior, conservado sólo como referencia del benchmark.
+            for &id in &removed {
+                old.nodes.remove(&(id as i32));
+                for node in old.nodes.values_mut() {
+                    node.children.retain(|child| *child != id as i32);
+                }
+            }
+            old.version += 1;
+            rebuild_dom_mirror_space_subtrees(&mut old);
+            old_samples.push(start.elapsed().as_secs_f64() * 1000.0);
+
+            let mut new = original.clone();
+            let start = Instant::now();
+            refresh_dom_mirror_in_place(
+                &mut new,
+                &world,
+                &attached,
+                false,
+                &HashSet::new(),
+                &removed,
+            );
+            new_samples.push(start.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(old.nodes.len(), new.nodes.len());
+            assert_eq!(old.nodes[&0].children, new.nodes[&0].children);
+            assert_eq!(old.space_subtrees, new.space_subtrees);
+        }
+        old_samples.sort_by(f64::total_cmp);
+        new_samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "mirror_delete nodes=10000 removed=1000 old_median_ms={:.3} new_median_ms={:.3}",
+            old_samples[6], new_samples[6]
+        );
+    }
 
     fn snapshot_test_app_with_spaces(space_count: usize) -> (App, Vec<u32>) {
         let mut app = App::new();

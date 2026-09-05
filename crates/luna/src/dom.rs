@@ -872,6 +872,9 @@ pub fn apply_transform_updates(
             continue;
         }
         if let Some(tr) = tr_storage.get_mut(ent) {
+            if tr.position.x == pos.x && tr.position.y == pos.y && tr.position.z == pos.z {
+                continue;
+            }
             tr.position.x = pos.x;
             tr.position.y = pos.y;
             tr.position.z = pos.z;
@@ -891,6 +894,9 @@ pub fn apply_transform_updates(
             continue;
         }
         if let Some(tr) = tr_storage.get_mut(ent) {
+            if tr.rotation.x == rot.x && tr.rotation.y == rot.y && tr.rotation.z == rot.z {
+                continue;
+            }
             tr.rotation.x = rot.x;
             tr.rotation.y = rot.y;
             tr.rotation.z = rot.z;
@@ -908,6 +914,9 @@ pub fn apply_transform_updates(
             continue;
         }
         if let Some(tr) = tr_storage.get_mut(ent) {
+            if tr.scale.x == scale.x && tr.scale.y == scale.y && tr.scale.z == scale.z {
+                continue;
+            }
             tr.scale.x = scale.x;
             tr.scale.y = scale.y;
             tr.scale.z = scale.z;
@@ -1498,32 +1507,26 @@ fn queue_skybox_prepare_if_needed(
 pub(crate) fn topo_sort_dirty_by_depth(
     specs_world: &specs::World,
     dirty_node_ids: &mut Vec<u32>,
-    attached: &HashSet<u32>,
+    is_attached: impl Fn(u32) -> bool,
 ) {
     let hier = specs_world.read_storage::<Hierarchy>();
     let entities_specs = specs_world.entities();
-    let mut depths: HashMap<u32, u32> = HashMap::new();
-    for &nid in dirty_node_ids.iter() {
-        let mut d = 0u32;
+    // Calcular una vez por nodo; no hacer búsquedas hash dentro del comparador.
+    dirty_node_ids.sort_by_cached_key(|&nid| {
+        let mut depth = 0u32;
         let mut current = entities_specs.entity(nid);
-        let mut steps = 0;
         while let Some(parent) = hier.get(current).and_then(|h| h.parent) {
-            if !attached.contains(&parent.id()) {
+            if !is_attached(parent.id()) || !entities_specs.is_alive(parent) {
                 break;
             }
-            if !entities_specs.is_alive(parent) {
-                break;
-            }
-            d += 1;
+            depth += 1;
             current = parent;
-            steps += 1;
-            if steps > 128 {
+            if depth > 128 {
                 break;
             }
         }
-        depths.insert(nid, d);
-    }
-    dirty_node_ids.sort_by_key(|nid| *depths.get(nid).unwrap_or(&0));
+        depth
+    });
 }
 
 pub fn dom_sync_system(
@@ -1553,19 +1556,6 @@ pub fn dom_sync_system(
     let mut dirty_node_ids = dirty_nodes.take_unique();
     if dirty_node_ids.is_empty() {
         return;
-    }
-
-    // Orden topológico: parents antes que children. Sólo hace falta cuando hay
-    // nodos attached que todavía no tienen entity Bevy en `entity_map`
-    // (spawns/attach recientes). En el hot-path de animación masiva (5k cubos
-    // ya existentes) este sort no aporta nada y sí mete hash+alloc+sort extra
-    // por frame.
-    let needs_topo_sort = dirty_node_ids
-        .iter()
-        .any(|nid| dom_data.nodes.contains_key(nid) && !entity_map.0.contains_key(nid));
-    if needs_topo_sort {
-        let attached: HashSet<u32> = dom_data.nodes.keys().copied().collect();
-        topo_sort_dirty_by_depth(&world.0, &mut dirty_node_ids, &attached);
     }
 
     // Despawns from in-place replacement (model/text/skybox) are deferred to
@@ -1631,8 +1621,8 @@ pub fn dom_sync_system(
     let dirty_in = dirty_node_ids.len();
     let mut fastlane_count = 0usize;
     let mut requeued = 0usize;
-    let mut generic_ids: Vec<u32> = Vec::with_capacity(dirty_node_ids.len());
-    for node_id in dirty_node_ids {
+    // Compactar sobre el mismo buffer, sin reservar otro Vec de N IDs por frame.
+    dirty_node_ids.retain(|&node_id| {
         if transform_only_dirty.0.contains(&node_id) {
             if let (Some(&bevy_ent), Some(node)) =
                 (entity_map.0.get(&node_id), dom_data.nodes.get(&node_id))
@@ -1644,18 +1634,35 @@ pub fn dom_sync_system(
                         apply_transform(tr2, &mut transform_b);
                     }
                     if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
-                        *t = transform_b;
+                        if *t != transform_b {
+                            *t = transform_b;
+                        }
                     }
                     transform_only_dirty.0.remove(&node_id);
                     fastlane_count += 1;
-                    continue;
+                    return false;
                 }
             }
         }
-        generic_ids.push(node_id);
+        true
+    });
+
+    // Ordenar DESPUÉS de la vía rápida: un spawn no debe ordenar todas las
+    // animaciones del frame. Parents antes que children; sólo hace falta cuando hay
+    // nodos attached que todavía no tienen entity Bevy en `entity_map`
+    // (spawns/attach recientes). En el hot-path de animación masiva (5k cubos
+    // ya existentes) este sort no aporta nada y sí mete hash+alloc+sort extra
+    // por frame.
+    let needs_topo_sort = dirty_node_ids
+        .iter()
+        .any(|nid| dom_data.nodes.contains_key(nid) && !entity_map.0.contains_key(nid));
+    if needs_topo_sort {
+        topo_sort_dirty_by_depth(&world.0, &mut dirty_node_ids, |id| {
+            dom_data.nodes.contains_key(&id)
+        });
     }
 
-    for node_id in generic_ids {
+    for node_id in dirty_node_ids {
         let Some(node) = dom_data.nodes.get(&node_id) else {
             if DOM_SYNC_VERBOSE_LOGS {
                 log_panel.push_warn(format!("dom_sync: skipping detached node id={}", node_id));
@@ -3277,7 +3284,9 @@ mod tests {
         let dirty = app.world().resource::<DirtyNodes>();
         let to_dirty = app.world().resource::<TransformOnlyDirtyNodes>();
         let dirty_set: HashSet<u32> = dirty.0.iter().copied().collect();
-        for &id in &node_ids {
+        assert!(!dirty_set.contains(&node_ids[0]));
+        assert!(!to_dirty.0.contains(&node_ids[0]));
+        for &id in &node_ids[1..] {
             assert!(dirty_set.contains(&id), "nodo {} no está dirty", id);
             assert!(to_dirty.0.contains(&id), "nodo {} no está en transform-only", id);
         }
@@ -3833,6 +3842,178 @@ mod tests {
         });
     }
 
+    fn dynamic_test_app(count: usize) -> (App, Vec<u32>, Vec<Entity>) {
+        let mut app = App::new();
+        app.add_plugins(bevy::MinimalPlugins);
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<Mesh>();
+        app.init_asset::<StandardMaterial>();
+        app.init_asset::<Image>();
+        app.init_asset::<Scene>();
+        install_navigation_resources(&mut app);
+        let mut specs = virtual_dom::dom::element::build_world();
+        let ids = populate_specs_with_bullets(&mut specs, count);
+        specs.maintain();
+        let mut entities = Vec::with_capacity(count);
+        for &id in &ids {
+            let entity = app.world_mut().spawn(SpatialBundle::default()).id();
+            app.world_mut()
+                .resource_mut::<EntityMap>()
+                .0
+                .insert(id, entity);
+            app.world_mut()
+                .resource_mut::<VirtualDomData>()
+                .nodes
+                .insert(id, specs.entities().entity(id));
+            entities.push(entity);
+        }
+        app.insert_resource(ElemenetWorld(specs));
+        app.add_systems(Update, (apply_transform_updates, dom_sync_system).chain());
+        (app, ids, entities)
+    }
+
+    fn queue_dynamic_frame(app: &mut App, ids: &[u32], x: f32) {
+        let mut updates = app.world_mut().resource_mut::<crate::TransformUpdates>();
+        for &id in ids {
+            updates
+                .positions
+                .push((id, js_runtime::Vec3 { x, y: 0.0, z: 0.0 }));
+            updates.rotations.push((
+                id,
+                js_runtime::Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ));
+            updates.scales.push((
+                id,
+                js_runtime::Vec3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            ));
+        }
+    }
+
+    fn queue_new_parent_and_child(app: &mut App) -> (u32, u32) {
+        use specs::Builder;
+        let (parent, child) = {
+            let mut world = app.world_mut().resource_mut::<ElemenetWorld>();
+            let parent = world
+                .0
+                .create_entity()
+                .with(Tag("group".into()))
+                .with(Hierarchy::default())
+                .build();
+            let child = world
+                .0
+                .create_entity()
+                .with(Tag("group".into()))
+                .with(Hierarchy::default())
+                .build();
+            Hierarchy::add_child(&mut world.0, parent, child);
+            world.0.maintain();
+            (parent, child)
+        };
+        {
+            let mut dom = app.world_mut().resource_mut::<VirtualDomData>();
+            dom.nodes.insert(parent.id(), parent);
+            dom.nodes.insert(child.id(), child);
+        }
+        app.world_mut()
+            .resource_mut::<DirtyNodes>()
+            .0
+            .extend([child.id(), parent.id()]);
+        (parent.id(), child.id())
+    }
+
+    #[test]
+    fn mass_animation_preserves_new_hierarchy_and_skips_redundant_changes() {
+        let (mut app, ids, entities) = dynamic_test_app(10_000);
+        let (parent, child) = queue_new_parent_and_child(&mut app);
+        queue_dynamic_frame(&mut app, &ids, 2.0);
+        app.update();
+        let map = app.world().resource::<EntityMap>();
+        assert_eq!(
+            app.world()
+                .entity(map.0[&child])
+                .get::<Parent>()
+                .unwrap()
+                .get(),
+            map.0[&parent]
+        );
+        assert_eq!(
+            app.world().resource::<PerformanceStats>().dom_sync_fastlane,
+            ids.len()
+        );
+        for &entity in &entities {
+            assert_eq!(
+                app.world()
+                    .entity(entity)
+                    .get::<Transform>()
+                    .unwrap()
+                    .translation
+                    .x,
+                2.0
+            );
+        }
+
+        app.world_mut().clear_trackers();
+        queue_dynamic_frame(&mut app, &ids, 2.0);
+        app.update();
+        assert!(app.world().resource::<DirtyNodes>().0.is_empty());
+        assert!(app
+            .world()
+            .resource::<crate::TransformOnlyDirtyNodes>()
+            .0
+            .is_empty());
+        for &entity in &entities {
+            assert!(!app
+                .world()
+                .entity(entity)
+                .get_ref::<Transform>()
+                .unwrap()
+                .is_changed());
+        }
+
+        // Duplicados: prevalece la última escritura, incluso al volver al inicio.
+        app.world_mut().clear_trackers();
+        queue_dynamic_frame(&mut app, &ids, 7.0);
+        queue_dynamic_frame(&mut app, &ids, 2.0);
+        app.update();
+        for &entity in &entities {
+            let transform = app.world().entity(entity).get_ref::<Transform>().unwrap();
+            assert_eq!(transform.translation.x, 2.0);
+            assert!(!transform.is_changed());
+        }
+    }
+
+    /// Medición CPU sin GPU ni runtime JS. No impone umbrales dependientes del equipo.
+    #[test]
+    #[ignore = "manual core benchmark"]
+    fn benchmark_dynamic_dom() {
+        for count in [1_000, 10_000, 50_000] {
+            let (mut app, ids, _) = dynamic_test_app(count);
+            let mut samples = Vec::new();
+            for frame in 0..120 {
+                queue_dynamic_frame(&mut app, &ids, frame as f32 + 1.0);
+                queue_new_parent_and_child(&mut app);
+                let start = Instant::now();
+                app.update();
+                if frame >= 20 {
+                    samples.push(start.elapsed().as_secs_f64() * 1000.0);
+                }
+            }
+            samples.sort_by(f64::total_cmp);
+            eprintln!(
+                "dynamic_dom nodes={count} median_ms={:.3} p95_ms={:.3}",
+                samples[50], samples[95]
+            );
+        }
+    }
+
     /// Stress: 50 ciclos de create-many+delete, luego navegación. Las colas
     /// JS→DOM stale del espacio viejo NO deben sobrevivir el commit; si
     /// sobreviven, se aplican a los slot ids del SPECS world nuevo.
@@ -4187,7 +4368,7 @@ mod tests {
             root.id(),
         ];
 
-        topo_sort_dirty_by_depth(&world, &mut dirty, &attached);
+        topo_sort_dirty_by_depth(&world, &mut dirty, |id| attached.contains(&id));
 
         // Computar la profundidad de cada id según orden final, debe ser monotónica.
         let depth_of = |id: u32| -> u32 {
@@ -4241,7 +4422,7 @@ mod tests {
         let attached: HashSet<u32> = [attached_mid.id(), leaf.id()].iter().copied().collect();
 
         let mut dirty = vec![leaf.id(), attached_mid.id()];
-        topo_sort_dirty_by_depth(&world, &mut dirty, &attached);
+        topo_sort_dirty_by_depth(&world, &mut dirty, |id| attached.contains(&id));
 
         // mid (depth=0 porque su parent no está attached) precede leaf (depth=1).
         assert_eq!(
