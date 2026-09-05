@@ -1754,6 +1754,89 @@ mod tests {
     use js_runtime::Engine;
     use std::collections::HashMap;
 
+    #[test]
+    fn scale_demo_spawn_batch_has_distinct_initial_positions_without_animation() {
+        let mut eng = Engine::new();
+        eng.update_tag_snapshot(HashMap::from([(0, "space".into())]));
+        let script = LUNA_SCALE_DEMO.split_once("<script>").unwrap().1
+            .split_once("</script>").unwrap().0;
+        eng.eval(&format!("(function() {{ {script}\nspawn('box', 100); }})();")).unwrap();
+        let creates = eng.drain_element_creation_queue();
+        assert_eq!(creates.len(), 100);
+        for (i, (request, _)) in creates.iter().enumerate() {
+            eng.push_element_creation_result(*request, i as i32 + 1);
+        }
+        eng.fire_raf(1.0);
+        let positions = eng.drain_transform_position_updates();
+        assert_eq!(positions.len(), 100);
+        let distinct: std::collections::HashSet<_> = positions.iter()
+            .map(|(_, p)| (p.x.to_bits(), p.y.to_bits(), p.z.to_bits())).collect();
+        assert_eq!(distinct.len(), 100, "spawned objects collapsed onto the last temporary vector");
+        assert_eq!(eng.drain_hierarchy_append_queue().len(), 100);
+    }
+
+    #[test]
+    fn shell_slot_matches_menu_pose_on_first_and_repeated_reposition() {
+        let source = include_str!("web/ux/ux_vr.hsml");
+        let reposition = source.split_once("function repositionShellAtViewer()").unwrap().1
+            .split_once("// ── Toggle shell").unwrap().0;
+        let compute = source.split_once("function computeFocusSlotPose()").unwrap().1
+            .split_once("// Envía el slot pose").unwrap().0;
+        let mut eng = Engine::new();
+        eng.eval(&format!(r#"
+            const panel = new HSMLElement(5);
+            const bottomBar = new HSMLElement(6);
+            const focusZone = new HSMLElement(7);
+            const shellState = {{ focusApp: null, anchored: [] }};
+            const SHELL_SPAWN_DISTANCE = 2;
+            const FOCUS_SLOT_W = 1, FOCUS_SLOT_H = 1, FOCUS_SLOT_D = 0.1;
+            function repositionShellAtViewer() {reposition}
+            function computeFocusSlotPose() {compute}
+            for (const yaw of [0, 1.2, -0.8]) {{
+                dimention.readViewerPose = () => ({{px: 4, py: 1.7, pz: -3, yaw}});
+                repositionShellAtViewer();
+                const slot = computeFocusSlotPose();
+                if (Math.abs(slot.position.x - (4 - Math.sin(yaw)*2)) > 1e-6 ||
+                    Math.abs(slot.position.z - (-3 - Math.cos(yaw)*2)) > 1e-6 ||
+                    slot.rotation.y !== yaw || focusZone.position.x !== slot.position.x)
+                    throw new Error('menu and app slot diverged before host commit');
+            }}
+        "#)).unwrap();
+    }
+
+    #[test]
+    fn embedded_pose_updates_reuse_content_even_before_creation_resolves() {
+        let mut eng = Engine::new();
+        eng.update_tag_snapshot(HashMap::from([(0, "space".into()), (1, "group".into())]));
+        eng.update_attr_snapshot(HashMap::from([(1, HashMap::from([("id".into(), "demo_root".into())]))]));
+        eng.update_hierarchy_snapshot(HashMap::from([(1, 0)]), HashMap::from([(0, vec![1])]));
+        eng.eval(r#"
+            globalThis.slotHandlers = {};
+            hiperspace.dimention.embedded = {
+                on(type, cb) { slotHandlers[type] = cb; },
+                requestSlot() {}, notifyReady() {}
+            };
+        "#).unwrap();
+        let script = LUNA_APP_DEMO_EMBEDDED.split_once("<script>").unwrap().1
+            .split_once("</script>").unwrap().0;
+        eng.eval(&format!("(function() {{ {script} }})();")).unwrap();
+        eng.eval(r#"
+            for (let i = 0; i < 3; i++) slotHandlers.slot({
+                position: {x: i, y: 1.5, z: -2}, rotation: {x:0,y:i*0.3,z:0}, size: {x:1,y:0.7}
+            });
+        "#).unwrap();
+        let creates = eng.drain_element_creation_queue();
+        assert_eq!(creates.len(), 2, "moving a slot must not destroy/recreate its contents");
+        for (i, (request, _)) in creates.iter().enumerate() {
+            eng.push_element_creation_result(*request, i as i32 + 10);
+        }
+        eng.fire_raf(1.0);
+        assert!(eng.drain_remove_element_queue().is_empty());
+        let positions = eng.drain_transform_position_updates();
+        assert_eq!(positions.iter().filter(|(id, _)| *id == 0).last().unwrap().1.x, 2.0);
+        assert!(positions.iter().filter(|(id, _)| *id >= 10).all(|(_, p)| p.x == 0.0));
+    }
+
     fn fire_demo_script() -> String {
         let start = LUNA_FIRE_DEMO.find("<script>").unwrap() + "<script>".len();
         let end = LUNA_FIRE_DEMO.find("</script>").unwrap();

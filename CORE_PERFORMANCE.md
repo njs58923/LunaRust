@@ -1,5 +1,35 @@
 # Core: elementos dinámicos
 
+## Corrección posterior: pivote VR y posición inicial de elementos y apps
+
+- El snap turn compensa la traslación del tracking root para conservar la
+  posición mundial del centro de los ojos. Antes rotaba alrededor del origen
+  de tracking y desplazaba al usuario si había caminado fuera de ese origen.
+  Se conserva el mapeo de controles existente.
+- Las asignaciones de vectores JS copian sus componentes antes de esperar a
+  que el host resuelva un elemento nuevo. `scale_demo` reutiliza los mismos
+  vectores temporales al crear 100 bloques: antes todos terminaban tomando
+  la última posición/rotación del lote. Animarlos después ocultaba ese fallo.
+- Los setters actualizan inmediatamente la caché de lectura, incluso cuando
+  aún no existía un proxy. El shell puede asignar su pose y leerla en el mismo
+  callback para calcular el slot de una app sin obtener el snapshot anterior.
+  Las asignaciones a elementos resueltos reutilizan la caché y no crean closures.
+- Una transformación no sustituye una sincronización estructural pendiente.
+  El reparentado invalida la vía rápida y actualiza en el espejo tanto al padre
+  anterior como al nuevo. Los hijos de anchors estructurales pendientes esperan
+  a que exista su padre Bevy, en vez de aparecer temporalmente en coordenadas
+  mundiales sin él.
+- La demo embebida conserva sus elementos al recibir una nueva pose de slot;
+  actualiza el tamaño sin destruirlos. Las solicitudes de apps ancladas se
+  responden con su propio slot y no pueden apropiarse del focus pendiente.
+
+Pruebas específicas: lote real de 100 bloques sin RAF; lectura inmediata y
+vectores mutados antes de resolver IDs; ocho snap turns con tracking desplazado
+y escalado; reparentado más movimiento en el mismo frame; padre creado con
+retraso; primer posicionamiento y reposicionamientos del menú; notificaciones
+de slot repetidas antes de resolver el contenido embebido. Estas comprobaciones
+son automatizadas, sin validación visual en un visor físico.
+
 ## Corrección posterior: animación y clics en scale_demo
 
 El watchdog del worker tenía un límite fatal de 50 ms por tick. Superarlo

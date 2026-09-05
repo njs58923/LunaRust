@@ -274,6 +274,7 @@ const SNAP_THRESHOLD: f32 = 0.6;
 fn handle_snap_turn(
     actions: Res<LunaLocomotionActions>,
     session: Res<OxrSession>,
+    views: Res<OxrViews>,
     mut root: Query<&mut Transform, With<XrTrackingRoot>>,
     mut cooldown: ResMut<SnapTurnCooldown>,
     time: Res<Time>,
@@ -287,8 +288,41 @@ fn handle_snap_turn(
 
     let Ok(mut root_tf) = root.get_single_mut() else { return };
     let angle = if x > 0.0 { -SNAP_ANGLE } else { SNAP_ANGLE };
-    root_tf.rotation *= Quat::from_rotation_y(angle);
+    if views.is_empty() { return; }
+    // Midpoint of both eyes, in tracking coordinates (also works for mono).
+    let hmd_position = views.iter().map(|v| Vec3::new(
+        v.pose.position.x, v.pose.position.y, v.pose.position.z,
+    )).sum::<Vec3>() / views.len() as f32;
+    rotate_tracking_root_about_head(&mut root_tf, hmd_position, angle);
     cooldown.0.reset();
+}
+
+fn rotate_tracking_root_about_head(root: &mut Transform, head_local: Vec3, angle: f32) {
+    let head_world = root.transform_point(head_local);
+    root.rotation = Quat::from_rotation_y(angle) * root.rotation;
+    root.translation = head_world - root.rotation * (root.scale * head_local);
+}
+
+#[cfg(test)]
+mod snap_turn_tests {
+    use super::*;
+
+    #[test]
+    fn snap_turn_preserves_head_position_away_from_tracking_origin() {
+        let mut root = Transform::from_xyz(4.0, 0.5, -7.0)
+            .with_rotation(Quat::from_rotation_y(0.7))
+            .with_scale(Vec3::splat(1.5));
+        let head = Vec3::new(2.0, 1.7, -3.0);
+        let before = root.transform_point(head);
+        let original = root;
+        for _ in 0..8 {
+            rotate_tracking_root_about_head(&mut root, head, SNAP_ANGLE);
+            assert!(root.transform_point(head).distance(before) < 0.0001);
+        }
+        assert!(root.translation.distance(original.translation) < 0.0001);
+        assert!(root.rotation.abs_diff_eq(original.rotation, 0.0001)
+            || root.rotation.abs_diff_eq(-original.rotation, 0.0001));
+    }
 }
 
 // ─── Button logging ───────────────────────────────────────────────────────────

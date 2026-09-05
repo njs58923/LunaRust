@@ -2539,7 +2539,7 @@ pub fn js_tick_system(world: &mut World) {
             .map(|dom| dom.nodes.keys().copied().collect())
             .unwrap_or_default();
 
-        let (newly_attached_ids, already_attached_dirty_ids, log_messages) = {
+        let (newly_attached_ids, already_attached_dirty_ids, changed_parent_ids, log_messages) = {
             let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else {
                 return;
             };
@@ -2547,6 +2547,7 @@ pub fn js_tick_system(world: &mut World) {
             let mut newly_attached_seen = HashSet::new();
             let mut already_attached_dirty_ids = HashSet::new();
             let mut log_messages = Vec::new();
+            let mut changed_parent_ids = HashSet::new();
             for (parent_id, child_id) in allowed_appends {
                 let (parent_ent, child_ent, are_alive) = {
                     let entities = specs_world.0.entities();
@@ -2556,6 +2557,11 @@ pub fn js_tick_system(world: &mut World) {
                     (parent_ent, child_ent, are_alive)
                 };
                 if are_alive {
+                    if let Some(old_parent) = specs_world.0.read_storage::<Hierarchy>()
+                        .get(child_ent).and_then(|h| h.parent) {
+                        changed_parent_ids.insert(old_parent.id());
+                    }
+                    changed_parent_ids.insert(parent_id);
                     Hierarchy::add_child(&mut specs_world.0, parent_ent, child_ent);
 
                     if attached_now.contains(&parent_id) {
@@ -2579,7 +2585,7 @@ pub fn js_tick_system(world: &mut World) {
                     ));
                 }
             }
-            (newly_attached_ids, already_attached_dirty_ids, log_messages)
+            (newly_attached_ids, already_attached_dirty_ids, changed_parent_ids, log_messages)
         };
 
         if let Some(mut pending_js_attaches) = world.get_resource_mut::<PendingJsAttachNodes>() {
@@ -2607,15 +2613,18 @@ pub fn js_tick_system(world: &mut World) {
                 table.detached_globals.remove(node_id);
             }
         }
+        if let Some(mut transform_only) = world.get_resource_mut::<crate::TransformOnlyDirtyNodes>() {
+            for id in &dirty_ids_vec { transform_only.0.remove(id); }
+        }
         if let Some(mut dirty_nodes) = world.get_resource_mut::<DirtyNodes>() {
             dirty_nodes.0.extend(dirty_ids_vec.iter().copied());
         }
         // Tocar el mirror para los nodos re-parentados YA attached: no pasan por
         // commit_pending_js_attaches (que cubre los newly_attached), así que sin
         // esto su jerarquía quedaría stale al quitar el force-rebuild blanket.
-        if !dirty_ids_vec.is_empty() {
+        if !dirty_ids_vec.is_empty() || !changed_parent_ids.is_empty() {
             if let Some(mut mirror_dirty) = world.get_resource_mut::<DomMirrorDirty>() {
-                for &nid in &dirty_ids_vec {
+                for &nid in dirty_ids_vec.iter().chain(changed_parent_ids.iter()) {
                     mirror_dirty.touch(nid);
                 }
             }

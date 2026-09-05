@@ -259,7 +259,7 @@
 
     get position() {
       if (!this._isResolved()) {
-        return { x: 0, y: 0, z: 0 };
+        return this._positionProxy ? { ...this._positionProxy._cache } : { x: 0, y: 0, z: 0 };
       }
       if (!this._positionProxy) {
         this._positionProxy = new ProxyVec3(
@@ -271,24 +271,28 @@
       return this._positionProxy;
     }
 
-    set position(v) {
-      if (typeof v === 'object' && v.x != null && v.y != null && v.z != null) {
-        if (this._isResolved()) {
-          core.ops.op_hsml_set_position(this._nodeId, v.x, v.y, v.z);
-        } else {
-          this._onResolved((nodeId) => {
-            core.ops.op_hsml_set_position(nodeId, v.x, v.y, v.z);
-          });
-        }
-        if (this._positionProxy) {
-          this._positionProxy._cache = { x: v.x, y: v.y, z: v.z };
-        }
+    _assignVector(proxyKey, getOp, setOp, v) {
+      if (!v || typeof v !== 'object' || v.x == null || v.y == null || v.z == null) return;
+      // Capture values now: callers often reuse one temporary vector for a batch.
+      const x = v.x, y = v.y, z = v.z;
+      if (!this[proxyKey]) this[proxyKey] = new ProxyVec3(getOp, setOp, this._nodeId);
+      const proxy = this[proxyKey];
+      if (proxy._cache) {
+        proxy._cache.x = x; proxy._cache.y = y; proxy._cache.z = z;
+      } else {
+        proxy._cache = { x, y, z };
       }
+      if (this._isResolved()) setOp(this._nodeId, x, y, z);
+      else this._onResolved((nodeId) => setOp(nodeId, x, y, z));
+    }
+
+    set position(v) {
+      this._assignVector('_positionProxy', core.ops.op_hsml_get_position, core.ops.op_hsml_set_position, v);
     }
 
     get rotation() {
       if (!this._isResolved()) {
-        return { x: 0, y: 0, z: 0 };
+        return this._rotationProxy ? { ...this._rotationProxy._cache } : { x: 0, y: 0, z: 0 };
       }
       if (!this._rotationProxy) {
         this._rotationProxy = new ProxyVec3(
@@ -301,23 +305,12 @@
     }
 
     set rotation(v) {
-      if (typeof v === 'object' && v.x != null && v.y != null && v.z != null) {
-        if (this._isResolved()) {
-          core.ops.op_hsml_set_rotation(this._nodeId, v.x, v.y, v.z);
-        } else {
-          this._onResolved((nodeId) => {
-            core.ops.op_hsml_set_rotation(nodeId, v.x, v.y, v.z);
-          });
-        }
-        if (this._rotationProxy) {
-          this._rotationProxy._cache = { x: v.x, y: v.y, z: v.z };
-        }
-      }
+      this._assignVector('_rotationProxy', core.ops.op_hsml_get_rotation, core.ops.op_hsml_set_rotation, v);
     }
 
     get scale() {
       if (!this._isResolved()) {
-        return { x: 1, y: 1, z: 1 };
+        return this._scaleProxy ? { ...this._scaleProxy._cache } : { x: 1, y: 1, z: 1 };
       }
       if (!this._scaleProxy) {
         this._scaleProxy = new ProxyVec3(
@@ -330,25 +323,8 @@
     }
 
     set scale(v) {
-      if (typeof v === 'number') {
-        if (this._isResolved()) {
-          core.ops.op_hsml_set_scale(this._nodeId, v, v, v);
-        } else {
-          this._onResolved((nodeId) => {
-            core.ops.op_hsml_set_scale(nodeId, v, v, v);
-          });
-        }
-        if (this._scaleProxy) {
-          this._scaleProxy._cache = { x: v, y: v, z: v };
-        }
-      } else if (typeof v === 'object' && v.x != null && v.y != null && v.z != null) {
-        this._onResolved((nodeId) => {
-          core.ops.op_hsml_set_scale(nodeId, v.x, v.y, v.z);
-        });
-        if (this._scaleProxy) {
-          this._scaleProxy._cache = { x: v.x, y: v.y, z: v.z };
-        }
-      }
+      if (typeof v === 'number') v = { x: v, y: v, z: v };
+      this._assignVector('_scaleProxy', core.ops.op_hsml_get_scale, core.ops.op_hsml_set_scale, v);
     }
     setLocalTransform(px, py, pz, rx, ry, rz) {
       this.position = { x: px, y: py, z: pz };
@@ -357,7 +333,7 @@
 
     get globalPosition() {
       if (!this._isResolved()) {
-        return { x: 0, y: 0, z: 0 };
+        return this._globalPositionProxy ? { ...this._globalPositionProxy._cache } : { x: 0, y: 0, z: 0 };
       }
       if (!this._globalPositionProxy) {
         this._globalPositionProxy = new ProxyVec3(
@@ -370,14 +346,7 @@
     }
 
     set globalPosition(v) {
-      if (typeof v === 'object' && v.x != null && v.y != null && v.z != null) {
-        this._onResolved((nodeId) => {
-          core.ops.op_hsml_set_global_position(nodeId, v.x, v.y, v.z);
-        });
-        if (this._globalPositionProxy) {
-          this._globalPositionProxy._cache = { x: v.x, y: v.y, z: v.z };
-        }
-      }
+      this._assignVector('_globalPositionProxy', core.ops.op_hsml_get_global_position, core.ops.op_hsml_set_global_position, v);
     }
 
     // --- Hierarchy ---

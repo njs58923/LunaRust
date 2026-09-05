@@ -21,6 +21,36 @@ mod tests {
     use js_runtime::Engine;
     use serde_json::Value;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn vector_assignments_capture_values_and_are_readable_before_host_commit() -> Result<()> {
+        let mut eng = Engine::new();
+        eng.eval(r#"
+            const vector = { x: 1, y: 2, z: 3 };
+            const pending = new HSMLElement(-123);
+            pending.position = vector;
+            pending.rotation = vector;
+            pending.scale = vector;
+            pending.globalPosition = vector;
+            vector.x = 99; vector.y = 98; vector.z = 97;
+            if (pending.position.x !== 1 || pending.rotation.y !== 2 || pending.scale.z !== 3)
+                throw new Error('pending transform aliased caller memory');
+            pending._resolveNodeId(123);
+            const resolved = new HSMLElement(456);
+            resolved.position = {x: 8, y: 9, z: 10};
+            resolved.rotation = {x: 0, y: 0.7, z: 0};
+            if (resolved.position.x !== 8 || resolved.rotation.y !== 0.7)
+                throw new Error('immediate pose read returned stale snapshot');
+        "#)?;
+        let positions = eng.drain_transform_position_updates();
+        assert_eq!(positions[0].0, 123);
+        assert_eq!(positions[0].1.x, 1.0);
+        assert_eq!(positions[1].1.x, 8.0);
+        assert_eq!(eng.drain_transform_rotation_updates()[0].1.y, 2.0);
+        assert_eq!(eng.drain_transform_scale_updates()[0].1.z, 3.0);
+        Ok(())
+    }
+
     use deno_core::{v8, FastString, JsRuntime, RuntimeOptions};
     use std::fs::File;
     use std::io::Write;

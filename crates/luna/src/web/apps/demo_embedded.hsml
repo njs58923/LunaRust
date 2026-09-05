@@ -44,12 +44,14 @@
         let labelText  = null;
 
         function renderInSlot(size) {
-          // Limpiar anterior.
-          if (contentBox) { try { contentBox.remove(); } catch (_) {} contentBox = null; }
-          if (labelText)  { try { labelText.remove();  } catch (_) {} labelText  = null; }
 
           const sx = (size && size.x) ? Number(size.x) : 1.0;
           const sy = (size && size.y) ? Number(size.y) : 0.7;
+
+          if (contentBox && labelText) {
+            contentBox.scale = { x: sx * 0.8, y: sy * 0.8, z: 0.03 };
+            return;
+          }
 
           // Box rojo centrado, llenando ~80% del slot.
           contentBox = root.createElement('box');

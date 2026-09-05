@@ -1117,7 +1117,9 @@
 
         // Si focusApp.tabId estaba pending (0) y la app manda algo, capturamos
         // el tabId del primer mensaje que llegue de la app correcta.
-        if (shellState.focusApp && shellState.focusApp.tabId === 0 && fromTabId > 0) {
+        if (shellState.focusApp && shellState.focusApp.tabId === 0 && fromTabId > 0
+            && (type === 'ready' || type === 'requestslot')
+            && !shellState.anchored.some(a => a.tabId === fromTabId)) {
           shellState.focusApp.tabId = fromTabId;
           // Construir frame con tabId temporalmente "pending" → applyVisibility
           // mantiene focusZone oculto mientras los spawn commands se commitean.
@@ -1137,8 +1139,13 @@
         }
 
         if (type === 'requestslot') {
-          // App pide slot — shell responde con la pose del focus actual.
-          sendFocusSlotToApp();
+          // Reply only to the requesting app, preserving its focus/anchor slot.
+          if (shellState.focusApp && shellState.focusApp.tabId === fromTabId) {
+            sendFocusSlotToApp();
+          } else {
+            const idx = shellState.anchored.findIndex(a => a.tabId === fromTabId);
+            if (idx >= 0) sendAnchoredSlotToApp(idx);
+          }
         } else if (type === 'ready') {
           // No-op por ahora — el shell ya captura el tabId del primer mensaje.
         } else if (type === 'closeself') {

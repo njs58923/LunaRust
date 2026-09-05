@@ -851,6 +851,9 @@ pub fn apply_transform_updates(
         return;
     }
 
+    // A queued structural/visual update must not be downgraded by a transform.
+    let full_sync_pending: HashSet<u32> = dirty_nodes.0.iter().copied()
+        .filter(|id| !transform_only_dirty.0.contains(id)).collect();
     let entities = world.0.entities();
     let mut tr_storage = world.0.write_storage::<Transform2>();
 
@@ -881,7 +884,7 @@ pub fn apply_transform_updates(
             // Para nodos ya attached: un único dirty por frame alcanza aunque
             // lleguen position+rotation+scale por separado.
             if dom_data.nodes.contains_key(&node_id) {
-                if transform_only_dirty.0.insert(node_id) {
+                if !full_sync_pending.contains(&node_id) && transform_only_dirty.0.insert(node_id) {
                     dirty_nodes.0.push(node_id);
                 }
             }
@@ -901,7 +904,7 @@ pub fn apply_transform_updates(
             tr.rotation.y = rot.y;
             tr.rotation.z = rot.z;
             if dom_data.nodes.contains_key(&node_id) {
-                if transform_only_dirty.0.insert(node_id) {
+                if !full_sync_pending.contains(&node_id) && transform_only_dirty.0.insert(node_id) {
                     dirty_nodes.0.push(node_id);
                 }
             }
@@ -921,7 +924,7 @@ pub fn apply_transform_updates(
             tr.scale.y = scale.y;
             tr.scale.z = scale.z;
             if dom_data.nodes.contains_key(&node_id) {
-                if transform_only_dirty.0.insert(node_id) {
+                if !full_sync_pending.contains(&node_id) && transform_only_dirty.0.insert(node_id) {
                     dirty_nodes.0.push(node_id);
                 }
             }
@@ -1678,6 +1681,18 @@ pub fn dom_sync_system(
         // bug histórico de reciclaje de slots specs.
         let parent_entity = hierarchy.and_then(|h| h.parent);
         let parent_id = parent_entity.map(|e| e.id());
+        // A delayed first render may deliver the child before its anchor.
+        // Never temporarily mount it at the world origin without that parent.
+        if let Some(parent) = parent_entity {
+            let parent_tag = tags.get(parent).map(|t| t.0.as_str()).unwrap_or("");
+            if dom_data.nodes.contains_key(&parent.id())
+                && !entity_map.0.contains_key(&parent.id())
+                && (is_structural_tag(parent_tag) || matches!(parent_tag, "space" | "include")) {
+                transform_only_dirty.0.remove(&node_id);
+                dirty_nodes.0.extend([parent.id(), node_id]);
+                continue;
+            }
+        }
         let transform_only = transform_only_dirty.0.contains(&node_id);
 
         let mut transform_b = Transform::default();
@@ -3988,6 +4003,38 @@ mod tests {
             assert_eq!(transform.translation.x, 2.0);
             assert!(!transform.is_changed());
         }
+    }
+
+    #[test]
+    fn reparent_and_transform_in_same_frame_preserve_structural_sync() {
+        let (mut app, ids, entities) = dynamic_test_app(1);
+        let (parent_id, _) = queue_new_parent_and_child(&mut app);
+        app.update();
+        {
+            let mut world = app.world_mut().resource_mut::<ElemenetWorld>();
+            let parent = world.0.entities().entity(parent_id);
+            let child = world.0.entities().entity(ids[0]);
+            Hierarchy::add_child(&mut world.0, parent, child);
+        }
+        app.world_mut().resource_mut::<DirtyNodes>().0.push(ids[0]);
+        queue_dynamic_frame(&mut app, &ids, 3.0);
+        app.update();
+        let parent = app.world().resource::<EntityMap>().0[&parent_id];
+        assert_eq!(app.world().entity(entities[0]).get::<Parent>().unwrap().get(), parent);
+        assert_eq!(app.world().entity(entities[0]).get::<Transform>().unwrap().translation.x, 3.0);
+    }
+
+    #[test]
+    fn delayed_parent_is_created_before_child_without_animation() {
+        let (mut app, _, _) = dynamic_test_app(0);
+        let (parent, child) = queue_new_parent_and_child(&mut app);
+        app.world_mut().resource_mut::<DirtyNodes>().0 = vec![child];
+        app.update();
+        assert!(!app.world().resource::<EntityMap>().0.contains_key(&child));
+        app.update();
+        let map = app.world().resource::<EntityMap>();
+        assert_eq!(app.world().entity(map.0[&child]).get::<Parent>().unwrap().get(), map.0[&parent]);
+        assert!(app.world().resource::<DirtyNodes>().0.is_empty());
     }
 
     /// Medición CPU sin GPU ni runtime JS. No impone umbrales dependientes del equipo.
