@@ -1,5 +1,37 @@
 # Core: elementos dinámicos
 
+## Corrección posterior: animación y clics en scale_demo
+
+El watchdog del worker tenía un límite fatal de 50 ms por tick. Superarlo
+destruía el isolate, incluidos sus callbacks RAF y listeners. No era un límite
+de cantidad de objetos: una pausa por carga o un callback finito lento podían
+dispararlo. Una regresión con un callback de 80 ms reprodujo el error
+`JS tick exceeded its 50 ms execution limit` antes del cambio.
+
+El límite de emergencia del tick ahora es de 2 segundos, igual que el de eval.
+El worker sigue siendo asíncrono y sólo admite un tick en vuelo; un frame lento
+no debe confundirse con un script bloqueado. Los bucles infinitos siguen siendo
+interrumpidos y cerrar el worker sigue sin bloquear al hilo principal.
+
+También se conserva la solicitud de un nuevo tick si llega un evento mientras
+se procesa el anterior. Antes, la respuesta del tick viejo podía sobrescribir
+esa solicitud con `needs_continuous_ticks = false`, dejando el clic sin un
+pump posterior. La solicitud se consume al enviar el tick, no al recibir su
+respuesta.
+
+En `scale_demo`, las referencias a controles estáticos se guardan para evitar
+búsquedas repetidas sobre miles de hijos, y los contadores/estado se actualizan
+una vez por lote de creación, en lugar de una vez por objeto.
+
+Validación posterior: **128 tests aprobados, 4 ignorados**. Se ejecuta el script
+real de `luna://scale_demo` en V8 con un snapshot de 5.000 elementos ya resueltos,
+verificando movimiento entre frames, recoloración, pausa y borrado por eventos
+`toque`. También hay regresiones del callback finito de 80 ms y del clic recibido
+durante un tick anterior. La prueba aislada de 5.000 elementos ya pasaba con el
+límite anterior en este equipo; la reproducción determinista del fallo es la
+del callback lento. No se midió aquí el umbral de carga en la aplicación gráfica
+ni el raycast físico del ratón/visor.
+
 ## Alcance
 
 Revisión del flujo JavaScript → colas de mutaciones → DOM en SPECS → entidades

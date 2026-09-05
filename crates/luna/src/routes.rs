@@ -349,7 +349,17 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
-    function byId(id) { return root.getElementById(id); }
+    // These controls live for the lifetime of this document. Avoid walking
+    // thousands of dynamic children for every status/counter update.
+    const controlsById = new Map();
+    function byId(id) {
+      let el = controlsById.get(id);
+      if (!el) {
+        el = root.getElementById(id);
+        if (el) controlsById.set(id, el);
+      }
+      return el;
+    }
 
     function setText(id, val) {
       const el = byId(id);
@@ -448,12 +458,13 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
       root.appendChild(el);
       dynamicNodes.push({ el, bx, by, bz, off });
-      updateCounters();
-      setStatus('spawned ' + tag + ' at ' + dist.toFixed(1) + ' m — scale ' + scale.toFixed(2) + ' m — y ' + by.toFixed(2));
+
     }
 
     function spawn(tag, amount) {
       for (let i = 0; i < amount; i++) spawnAround(tag);
+      updateCounters();
+      setStatus('spawned ' + amount + ' ' + tag + ' objects');
     }
 
     // ── actions ───────────────────────────────────────────────────────────────

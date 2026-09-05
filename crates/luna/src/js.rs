@@ -333,7 +333,9 @@ impl Default for WorkerExecutionLimits {
     fn default() -> Self {
         Self {
             eval: Duration::from_secs(2),
-            tick: Duration::from_millis(50),
+            // Hard runaway limit, not a frame budget. Workers are asynchronous;
+            // a finite slow frame must not destroy the isolate and its listeners.
+            tick: Duration::from_secs(2),
         }
     }
 }
@@ -2077,7 +2079,12 @@ pub fn js_tick_system(world: &mut World) {
                 continue;
             }
             match worker.try_send(JsWorkerCommand::Tick { elapsed_ms }) {
-                Ok(_) => worker.tick_in_flight = true,
+                Ok(_) => {
+                    worker.tick_in_flight = true;
+                    // Consume only the wakeup covered by this tick. Events queued
+                    // while it runs can request another tick independently.
+                    worker.needs_tick = false;
+                }
                 Err(err) if err.is_full() => {}
                 Err(_) => broken_contexts.push(*space_id),
             }
@@ -2103,7 +2110,7 @@ pub fn js_tick_system(world: &mut World) {
                     Ok(JsWorkerEvent::TickData(data)) => {
                         worker.snapshot_in_flight = false;
                         worker.tick_in_flight = false;
-                        worker.needs_tick = data.needs_continuous_ticks;
+                        worker.needs_tick |= data.needs_continuous_ticks;
                         tick_batches.push((*space_id, data));
                     }
                     Ok(JsWorkerEvent::DebugState {
@@ -3953,6 +3960,231 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn click_wakeup_survives_completion_of_an_older_idle_tick() {
+        let (worker, cmd_rx, event_tx) = fake_worker(true);
+        let mut manager = ScriptRuntimeManager::default();
+        manager.contexts.insert(42, worker);
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default());
+        app.insert_non_send_resource(manager);
+        js_tick_system(app.world_mut());
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok(JsWorkerCommand::Tick { .. })
+        ));
+        {
+            let mut manager = app
+                .world_mut()
+                .non_send_resource_mut::<ScriptRuntimeManager>();
+            let worker = manager.contexts.get_mut(&42).unwrap();
+            worker
+                .try_send(JsWorkerCommand::PushDomToqueEvents(vec![(
+                    1, 0.0, 0.0, 0.0,
+                )]))
+                .unwrap();
+            worker.needs_tick = true;
+        }
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok(JsWorkerCommand::PushDomToqueEvents(_))
+        ));
+        event_tx
+            .send(JsWorkerEvent::TickData(JsTickData {
+                needs_continuous_ticks: false,
+                logs: Vec::new(),
+                attr_updates: Vec::new(),
+                pos_updates: Vec::new(),
+                rot_updates: Vec::new(),
+                scale_updates: Vec::new(),
+                creation_queue: Vec::new(),
+                hierarchy_queue: Vec::new(),
+                remove_queue: Vec::new(),
+                fetch_queue: Vec::new(),
+                navigate_queue: Vec::new(),
+                tab_action_queue: Vec::new(),
+                shell_outbox: Vec::new(),
+                ws_connect_queue: Vec::new(),
+                ws_send_queue: Vec::new(),
+                ws_close_queue: Vec::new(),
+            }))
+            .unwrap();
+        js_tick_system(app.world_mut());
+        js_tick_system(app.world_mut());
+        assert!(
+            matches!(cmd_rx.try_recv(), Ok(JsWorkerCommand::Tick { .. })),
+            "a click arriving during the previous tick must schedule a new pump"
+        );
+    }
+
+    fn worker_eval(worker: &mut SpaceScriptWorker, code: String) {
+        worker
+            .try_send(JsWorkerCommand::EvalScript {
+                url: "eval://regression".into(),
+                code,
+            })
+            .unwrap();
+        match worker
+            .event_rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+        {
+            JsWorkerEvent::EvalResult { error: None, .. } => {}
+            JsWorkerEvent::WorkerError(error) => panic!("{error}"),
+            _ => panic!("eval failed"),
+        }
+    }
+
+    fn worker_tick(worker: &mut SpaceScriptWorker, elapsed_ms: f64) -> JsTickData {
+        worker
+            .try_send(JsWorkerCommand::Tick { elapsed_ms })
+            .unwrap();
+        match worker
+            .event_rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+        {
+            JsWorkerEvent::TickData(data) => data,
+            JsWorkerEvent::WorkerError(error) => panic!("{error}"),
+            _ => panic!("tick failed"),
+        }
+    }
+
+    #[test]
+    fn finite_slow_animation_does_not_destroy_worker_or_click_listeners() {
+        let mut worker = spawn_space_worker(90_010).unwrap();
+        worker_eval(
+            &mut worker,
+            r#"
+                const root = hiperspace.dimention;
+                root.addEventListener('toque', () => console.log('CLICK_ALIVE'));
+                requestAnimationFrame(function frame() {
+                    const until = Date.now() + 80;
+                    while (Date.now() < until) {}
+                    console.log('FRAME_ALIVE');
+                    requestAnimationFrame(frame);
+                });
+            "#
+            .into(),
+        );
+        let first = worker_tick(&mut worker, 16.0);
+        assert!(first.needs_continuous_ticks);
+        worker
+            .try_send(JsWorkerCommand::PushDomToqueEvents(vec![(
+                0, 0.0, 0.0, 0.0,
+            )]))
+            .unwrap();
+        let second = worker_tick(&mut worker, 32.0);
+        assert!(second.needs_continuous_ticks);
+        assert!(second
+            .logs
+            .iter()
+            .any(|(_, msg)| msg.contains("CLICK_ALIVE")));
+        assert!(second
+            .logs
+            .iter()
+            .any(|(_, msg)| msg.contains("FRAME_ALIVE")));
+        stop_space_worker(&mut worker);
+    }
+
+    #[test]
+    fn scale_demo_5000_nodes_keeps_animating_and_handles_controls() {
+        let mut worker = spawn_space_worker(90_011).unwrap();
+        let controls = [
+            "demo_toggle_anim",
+            "demo_recolor",
+            "demo_anim",
+            "demo_count",
+            "demo_status",
+            "demo_hint",
+            "demo_clear",
+        ];
+        let mut patch = SpaceSnapshotPatch::default();
+        patch.tag_updates.insert(0, "space".into());
+        let mut children = Vec::new();
+        for (i, name) in controls.iter().enumerate() {
+            let id = i as i32 + 1;
+            patch
+                .attr_updates
+                .insert(id, HashMap::from([("id".into(), name.to_string())]));
+            patch.tag_updates.insert(id, "box".into());
+            patch.parents.insert(id, 0);
+            children.push(id);
+        }
+        for id in 100..5100 {
+            patch.tag_updates.insert(id, "box".into());
+            patch.parents.insert(id, 0);
+            children.push(id);
+        }
+        patch.children.insert(0, children);
+        worker
+            .try_send(JsWorkerCommand::PatchSnapshots(patch))
+            .unwrap();
+        assert!(matches!(
+            worker.event_rx.recv_timeout(Duration::from_secs(10)),
+            Ok(JsWorkerEvent::SnapshotApplied)
+        ));
+        let document = crate::routes::VIRTUAL_ROUTES
+            .resolve("luna://scale_demo")
+            .unwrap();
+        let script = document
+            .split_once("<script>")
+            .unwrap()
+            .1
+            .split_once("</script>")
+            .unwrap()
+            .0;
+        worker_eval(
+            &mut worker,
+            format!(
+                r#"{script}
+                for (const el of root.children) {{
+                    if (el._nodeId >= 100) dynamicNodes.push({{ el, bx: 1, by: 2, bz: 3, off: el._nodeId * 0.38 }});
+                }}
+            "#
+            ),
+        );
+        worker
+            .try_send(JsWorkerCommand::PushDomToqueEvents(vec![(
+                1, 0.0, 0.0, 0.0,
+            )]))
+            .unwrap();
+        assert!(worker_tick(&mut worker, 16.0).needs_continuous_ticks);
+        let first = worker_tick(&mut worker, 32.0);
+        let second = worker_tick(&mut worker, 640.0);
+        assert_eq!(first.pos_updates.len(), 5000);
+        assert_eq!(second.pos_updates.len(), 5000);
+        assert_ne!(first.rot_updates[0].1.y, second.rot_updates[0].1.y);
+        worker
+            .try_send(JsWorkerCommand::PushDomToqueEvents(vec![(
+                2, 0.0, 0.0, 0.0,
+            )]))
+            .unwrap();
+        let recolor = worker_tick(&mut worker, 656.0);
+        assert_eq!(
+            recolor
+                .attr_updates
+                .iter()
+                .filter(|(id, key, _)| *id >= 100 && key == "color")
+                .count(),
+            5000
+        );
+        worker
+            .try_send(JsWorkerCommand::PushDomToqueEvents(vec![(
+                1, 0.0, 0.0, 0.0,
+            )]))
+            .unwrap();
+        worker_tick(&mut worker, 672.0);
+        assert!(!worker_tick(&mut worker, 688.0).needs_continuous_ticks);
+        worker
+            .try_send(JsWorkerCommand::PushDomToqueEvents(vec![(
+                7, 0.0, 0.0, 0.0,
+            )]))
+            .unwrap();
+        assert_eq!(worker_tick(&mut worker, 704.0).remove_queue.len(), 5000);
+        stop_space_worker(&mut worker);
     }
 
     #[test]
