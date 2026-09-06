@@ -545,6 +545,30 @@
       }
       core.ops.op_hsml_set_transform_batch(updates);
     }
+
+    // Captura el frame renderizado a un PNG. Requiere la cap CAPTURE_FRAME en
+    // este space; sin ella el host rechaza y la promesa falla.
+    //
+    // `name` es un nombre de archivo, no una ruta: el directorio lo decide el
+    // host. Resuelve con la ruta absoluta escrita, ya cerrada en disco, así
+    // que quien la reciba puede abrirla sin esperar nada más.
+    captureFrame(name) {
+      return new Promise((resolve, reject) => {
+        const requestId = core.ops.op_capture_frame(String(name || 'capture'));
+
+        function poll() {
+          const result = core.ops.op_capture_poll(requestId);
+          if (result.status === 'pending') {
+            setTimeout(poll, 16);
+          } else if (result.status === 'ok') {
+            resolve(result.path);
+          } else {
+            reject(new Error(result.error));
+          }
+        }
+        poll();
+      });
+    }
   }
 
   // ---------------------------------------------------------------------------

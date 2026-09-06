@@ -126,6 +126,7 @@ pub struct JsTickData {
     pub hierarchy_queue: Vec<(i32, i32)>,
     pub remove_queue: Vec<i32>,
     pub fetch_queue: Vec<(i32, String)>,
+    pub capture_queue: Vec<(i32, String)>,
     pub navigate_queue: Vec<String>,
     pub tab_action_queue: Vec<js_runtime::TabAction>,
     pub shell_outbox: Vec<js_runtime::ShellMessage>,
@@ -173,6 +174,8 @@ pub enum JsWorkerCommand {
     },
     PushElementCreationResults(Vec<(i32, i32)>),
     PushFetchResults(Vec<(i32, std::result::Result<String, String>)>),
+    /// Resultado de una captura de frame: Ok(ruta del PNG) o Err(motivo).
+    PushCaptureResults(Vec<(i32, std::result::Result<String, String>)>),
     PushWsEvents(Vec<WsWorkerEvent>),
     PushDomToqueEvents(Vec<(i32, f32, f32, f32)>),
     PushPoseMoveEvents(Vec<PoseMoveEventData>),
@@ -669,6 +672,7 @@ fn spawn_space_worker_configured(
                             hierarchy_queue: ctx.engine.drain_hierarchy_append_queue(),
                             remove_queue: ctx.engine.drain_remove_element_queue(),
                             fetch_queue: ctx.engine.drain_fetch_queue(),
+                            capture_queue: ctx.engine.drain_capture_queue(),
                             navigate_queue: ctx.engine.drain_navigate_queue(),
                             tab_action_queue: ctx.engine.drain_tab_action_queue(),
                             shell_outbox: ctx.engine.drain_shell_outbox(),
@@ -686,6 +690,11 @@ fn spawn_space_worker_configured(
                     JsWorkerCommand::PushFetchResults(results) => {
                         for (request_id, result) in results {
                             ctx.engine.push_fetch_result(request_id, result);
+                        }
+                    }
+                    JsWorkerCommand::PushCaptureResults(results) => {
+                        for (request_id, result) in results {
+                            ctx.engine.push_capture_result(request_id, result);
                         }
                     }
                     JsWorkerCommand::PushWsEvents(events) => {
@@ -2303,6 +2312,7 @@ pub fn js_tick_system(world: &mut World) {
     let mut hierarchy_batches = Vec::new();
     let mut remove_batches = Vec::new();
     let mut fetch_batches = Vec::new();
+    let mut capture_batches: Vec<(u32, Vec<(i32, String)>)> = Vec::new();
     let mut navigate_batches = Vec::new();
     let mut tab_action_batches: Vec<(u32, Vec<js_runtime::TabAction>)> = Vec::new();
     let mut shell_message_batches: Vec<(u32, Vec<js_runtime::ShellMessage>)> = Vec::new();
@@ -2328,6 +2338,9 @@ pub fn js_tick_system(world: &mut World) {
         }
         if !data.fetch_queue.is_empty() {
             fetch_batches.push((space_id, data.fetch_queue));
+        }
+        if !data.capture_queue.is_empty() {
+            capture_batches.push((space_id, data.capture_queue));
         }
         if !data.navigate_queue.is_empty() {
             navigate_batches.push((space_id, data.navigate_queue));
@@ -3000,6 +3013,57 @@ pub fn js_tick_system(world: &mut World) {
             for (_, url) in &fetch_queue {
                 log_panel.push_info(format!("[JS][space:{}] fetch queued: {}", space_id, url));
             }
+        }
+    }
+
+    // Capturas de frame: se valida CAPTURE_FRAME por space y recién ahí pasan a
+    // la cola del host. Un space sin la cap recibe el rechazo por la misma vía
+    // que el éxito, así la promesa de JS siempre termina.
+    for (space_id, requests) in capture_batches {
+        let caps = capabilities_by_space
+            .get(&space_id)
+            .copied()
+            .unwrap_or_default();
+
+        if caps.contains(CapabilityBits::CAPTURE_FRAME) {
+            if let Some(mut pendientes) =
+                world.get_resource_mut::<crate::capture::PendingFrameCaptures>()
+            {
+                for (request_id, name) in requests {
+                    pendientes.0.push(crate::capture::CaptureRequest {
+                        space_id,
+                        request_id,
+                        name,
+                    });
+                }
+            }
+            continue;
+        }
+
+        let rechazos: Vec<(i32, std::result::Result<String, String>)> = requests
+            .into_iter()
+            .map(|(request_id, _)| {
+                (
+                    request_id,
+                    Err("captureFrame denied (missing CAPTURE_FRAME)".to_string()),
+                )
+            })
+            .collect();
+        let rechazados = rechazos.len();
+        if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() {
+            if let Some(worker) = manager.contexts.get_mut(&space_id) {
+                if worker
+                    .try_send(JsWorkerCommand::PushCaptureResults(rechazos))
+                    .is_ok()
+                {
+                    worker.needs_tick = true;
+                }
+            }
+        }
+        if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
+            log_panel.push_warn(format!(
+                "[JS][space:{space_id}] captureFrame denied (missing CAPTURE_FRAME): {rechazados} pedido(s)"
+            ));
         }
     }
 

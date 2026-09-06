@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Puente del agente.
+     Se monta como app aditiva (kind='app'), así sobrevive a los cambios de
+     espacio spatial: puede navegar la escena bajo sus pies sin suicidarse.
+
+     No abre ningún puerto: Luna sólo sabe ser cliente WebSocket (ws.rs usa
+     connect_async), así que el que escucha es el servidor MCP y esta página se
+     conecta hacia él.
+
+     Permisos: los recibe por entry-grant del wrapper que lo monta.
+       capture_frame  -> dimention.captureFrame()
+       manage_tabs    -> dimention.tabs.open() para navegar la escena
+-->
+<hsml>
+  <head>
+    <name>Agente Luna</name>
+    <meta type="position" x="0" y="0" z="0"/>
+  </head>
+
+  <space role="application" resources="navigate_self,capture_frame,manage_tabs">
+    <!-- Testigo: va DETRÁS del punto de aparición (+z) para no meterse en las
+         capturas, que siempre miran hacia -z. Te das vuelta y lo ves. -->
+    <group id="testigo" x="0" y="0" z="0.9" ry="3.1415927">
+      <cylinder y="0.35" sx="0.03" sy="0.7" sz="0.03" color="#4A3B2A"/>
+      <box id="luz" y="0.78" sx="0.12" sy="0.12" sz="0.06" color="#8A5A20" border-radius="0.02"/>
+      <text id="etiqueta" y="0.95" z="0.04" value="agente: conectando" size="0.07" color="#F2ECDF"/>
+    </group>
+
+    <script>
+      // ── Configuración ────────────────────────────────────────────────────
+      const URL_MCP = 'ws://127.0.0.1:2054';
+      const REINTENTO_MS = 2000;
+
+      const root = hiperspace.dimention;
+      let luz = null;
+      let etiqueta = null;
+
+      const COLOR = {
+        conectando: '#8A5A20',
+        listo: '#2E7D32',
+        error: '#8C2F2F',
+      };
+
+      const TEXTO = {
+        conectando: 'agente: conectando',
+        listo: 'agente: conectado',
+        error: 'agente: sin servidor MCP',
+      };
+
+      function estado(nombre) {
+        // getElementById devuelve null hasta que el nodo se sincroniza, y este
+        // script corre antes de eso: se reintenta en cada cambio de estado.
+        luz = luz || root.getElementById('luz');
+        etiqueta = etiqueta || root.getElementById('etiqueta');
+        if (luz) luz.setAttribute('color', COLOR[nombre] || COLOR.error);
+        if (etiqueta) etiqueta.setAttribute('value', TEXTO[nombre] || TEXTO.error);
+        console.log('[agente]', nombre);
+      }
+
+      // ── Comandos ─────────────────────────────────────────────────────────
+      // Cada uno devuelve una promesa; el despachador se encarga de responder.
+      const comandos = {
+        ping() {
+          return Promise.resolve({ pong: true, t: Date.now() });
+        },
+
+        // Captura el frame renderizado. El host escribe el PNG y resuelve con
+        // la ruta absoluta, ya cerrada en disco.
+        capture(args) {
+          const nombre = (args && args.name) || ('luna-' + Date.now());
+          if (typeof root.captureFrame !== 'function') {
+            return Promise.reject(new Error('captureFrame no disponible en este runtime'));
+          }
+          return root.captureFrame(nombre).then((path) => ({ path }));
+        },
+
+        // Navega la escena. Abrir un spatial cierra el spatial anterior, así
+        // que esto sirve igual para "ir a" y para "recargar".
+        open(args) {
+          const url = args && args.url;
+          if (!url) return Promise.reject(new Error('open: falta url'));
+          if (!dimention.tabs || typeof dimention.tabs.open !== 'function') {
+            return Promise.reject(new Error('open: falta manage_tabs'));
+          }
+          const tabId = dimention.tabs.open(String(url), { kind: 'spatial' });
+          return Promise.resolve({ tabId, url: String(url) });
+        },
+
+        // Espera pasiva. Existe porque todavía no exponemos el estado de carga
+        // del host; cuando lo hagamos, esto se reemplaza por un wait_ready real.
+        wait(args) {
+          const ms = Math.max(0, Math.min(20000, Number(args && args.ms) || 0));
+          return new Promise((resolve) => setTimeout(() => resolve({ waited: ms }), ms));
+        },
+      };
+
+      // ── Transporte ───────────────────────────────────────────────────────
+      let ws = null;
+
+      function responder(id, promesa) {
+        promesa.then(
+          (result) => enviar({ id, ok: true, result }),
+          (err) => enviar({ id, ok: false, error: String((err && err.message) || err) }),
+        );
+      }
+
+      function enviar(obj) {
+        if (!ws) return;
+        try {
+          ws.send(JSON.stringify(obj));
+        } catch (err) {
+          console.warn('[agente] no se pudo responder:', err);
+        }
+      }
+
+      // El WebSocket del runtime emite 'error' O 'close', nunca los dos, y
+      // después de 'error' deja de pollear (runtime.js). Si el reintento
+      // colgara sólo de onclose, un primer intento fallido —servidor MCP
+      // todavía sin levantar— dejaría el puente muerto para siempre.
+      let reintentoPedido = false;
+      function reintentar() {
+        if (reintentoPedido) return;
+        reintentoPedido = true;
+        setTimeout(conectar, REINTENTO_MS);
+      }
+
+      function conectar() {
+        reintentoPedido = false;
+        estado('conectando');
+        ws = new WebSocket(URL_MCP);
+
+        ws.onopen = () => {
+          estado('listo');
+          enviar({ hello: 'luna-agent', version: 1, comandos: Object.keys(comandos) });
+        };
+
+        ws.onmessage = (evt) => {
+          let msg;
+          try {
+            msg = JSON.parse(evt.data);
+          } catch (err) {
+            return enviar({ ok: false, error: 'json inválido' });
+          }
+          const fn = comandos[msg && msg.cmd];
+          if (!fn) {
+            return enviar({ id: msg && msg.id, ok: false, error: 'comando desconocido: ' + (msg && msg.cmd) });
+          }
+          try {
+            responder(msg.id, Promise.resolve(fn(msg.args || {})));
+          } catch (err) {
+            enviar({ id: msg.id, ok: false, error: String(err && err.message || err) });
+          }
+        };
+
+        // El servidor MCP puede arrancar después que Luna, así que los dos
+        // caminos de falla reintentan.
+        ws.onerror = () => {
+          estado('error');
+          ws = null;
+          reintentar();
+        };
+
+        ws.onclose = () => {
+          estado('error');
+          ws = null;
+          reintentar();
+        };
+      }
+
+      conectar();
+    </script>
+  </space>
+</hsml>

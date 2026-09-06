@@ -1,0 +1,4 @@
+node_modules/
+bun.lock
+probe_out.txt
+sonda.log

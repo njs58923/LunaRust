@@ -35,6 +35,9 @@ bitflags! {
         const SKYBOX               = 1 << 15;
         const READ_SYSTEM_INPUT    = 1 << 16;
         const UX_EMBED             = 1 << 17;
+        /// Capturar el frame renderizado a un archivo. Es lectura de pantalla:
+        /// va elevada para que un origen remoto no pueda pedirla sin consenso.
+        const CAPTURE_FRAME        = 1 << 18;
     }
 }
 
@@ -45,15 +48,17 @@ pub const ELEVATED_CAPABILITIES: CapabilityBits = CapabilityBits::READ_SYSTEM_IN
     .union(CapabilityBits::UNMOUNT_ROOT_SPACE)
     .union(CapabilityBits::UPDATE_ROOT_SPACE)
     .union(CapabilityBits::LIST_ROOT_SPACES)
-    .union(CapabilityBits::UX_EMBED);
+    .union(CapabilityBits::UX_EMBED)
+    .union(CapabilityBits::CAPTURE_FRAME);
 
-const ELEVATED_CAPABILITY_DEFS: [(&str, CapabilityBits); 6] = [
+const ELEVATED_CAPABILITY_DEFS: [(&str, CapabilityBits); 7] = [
     ("READ_SYSTEM_INPUT", CapabilityBits::READ_SYSTEM_INPUT),
     ("MOUNT_ROOT_SPACE", CapabilityBits::MOUNT_ROOT_SPACE),
     ("UNMOUNT_ROOT_SPACE", CapabilityBits::UNMOUNT_ROOT_SPACE),
     ("UPDATE_ROOT_SPACE", CapabilityBits::UPDATE_ROOT_SPACE),
     ("LIST_ROOT_SPACES", CapabilityBits::LIST_ROOT_SPACES),
     ("UX_EMBED", CapabilityBits::UX_EMBED),
+    ("CAPTURE_FRAME", CapabilityBits::CAPTURE_FRAME),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +297,15 @@ lazy_static! {
         );
 
         m.insert(
+            "capture_frame",
+            ResourceBundleDef {
+                capabilities: CapabilityBits::CAPTURE_FRAME,
+                native_services: NativeServiceBits::empty(),
+                auto_scripts: &[],
+            },
+        );
+
+        m.insert(
             "desktop_camera_control",
             ResourceBundleDef {
                 capabilities: CapabilityBits::empty(),
@@ -468,6 +482,7 @@ pub fn capability_labels(bits: CapabilityBits) -> Vec<&'static str> {
         ("SKYBOX", CapabilityBits::SKYBOX),
         ("READ_SYSTEM_INPUT", CapabilityBits::READ_SYSTEM_INPUT),
         ("UX_EMBED", CapabilityBits::UX_EMBED),
+        ("CAPTURE_FRAME", CapabilityBits::CAPTURE_FRAME),
     ]
     .iter()
     .filter(|(_, flag)| bits.contains(*flag))

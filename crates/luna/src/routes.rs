@@ -65,6 +65,11 @@ impl VirtualRoutes {
 
         // Apps embedded
         routes.insert("demo_embedded".to_string(), RouteHandler::Static(LUNA_APP_DEMO_EMBEDDED));
+
+        // Agente: `agent` es el lanzador (spatial, con botón) y `agent_app` el
+        // puente que se monta como app aditiva para sobrevivir a la navegación.
+        routes.insert("agent".to_string(), RouteHandler::Static(LUNA_AGENT_LAUNCHER));
+        routes.insert("agent_app".to_string(), RouteHandler::Static(LUNA_AGENT_BRIDGE));
         Self { routes }
     }
 
@@ -767,6 +772,8 @@ fn generate_cache_stats(_path: &str) -> String {
 const LUNA_UX_DESKTOP: &str = include_str!("web/ux/ux_desktop.hsml");
 const LUNA_UX_VR: &str = include_str!("web/ux/ux_vr.hsml");
 const LUNA_APP_DEMO_EMBEDDED: &str = include_str!("web/apps/demo_embedded.hsml");
+const LUNA_AGENT_LAUNCHER: &str = include_str!("web/apps/agent_launcher.hsml");
+const LUNA_AGENT_BRIDGE: &str = include_str!("web/apps/agent_bridge.hsml");
 
 const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 <hsml>

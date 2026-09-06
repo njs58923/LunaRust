@@ -296,6 +296,34 @@ impl Default for FetchResults {
     }
 }
 
+/// Pedidos de captura de frame. Misma forma que FetchQueue: el worker encola
+/// (request_id, nombre) y el host responde por CaptureResults. La captura de
+/// Bevy tarda uno o dos frames, así que no puede ser síncrona.
+pub struct CaptureQueue {
+    pub requests: Shared<Vec<(i32, String)>>,
+    next_request_id: Shared<i32>,
+}
+impl Default for CaptureQueue {
+    fn default() -> Self {
+        Self {
+            requests: shared(Vec::new()),
+            next_request_id: shared(1),
+        }
+    }
+}
+
+/// Resultado de cada captura: Ok(ruta absoluta del PNG) o Err(motivo).
+pub struct CaptureResults {
+    pub results: Shared<HashMap<i32, std::result::Result<String, String>>>,
+}
+impl Default for CaptureResults {
+    fn default() -> Self {
+        Self {
+            results: shared(HashMap::new()),
+        }
+    }
+}
+
 pub struct NavigateQueue {
     pub queue: Shared<Vec<String>>,
 }
@@ -885,6 +913,39 @@ fn op_fetch_poll(state: &mut OpState, #[smi] request_id: i32) -> serde_json::Val
     }
 }
 
+// --- Capture ops ---
+// El host valida la cap CAPTURE_FRAME por space antes de ejecutar nada; acá
+// sólo se encola. `name` es un nombre de archivo, no una ruta: el host decide
+// el directorio.
+
+#[op2(fast)]
+fn op_capture_frame(state: &mut OpState, #[string] name: &str) -> i32 {
+    let queue = state.borrow::<CaptureQueue>();
+    let mut next_id = queue.next_request_id.borrow_mut();
+    let request_id = *next_id;
+    *next_id += 1;
+    queue
+        .requests
+        .borrow_mut()
+        .push((request_id, name.to_string()));
+    request_id
+}
+
+#[op2]
+#[serde]
+fn op_capture_poll(state: &mut OpState, #[smi] request_id: i32) -> serde_json::Value {
+    let results = state.borrow::<CaptureResults>();
+    let mut map = results.results.borrow_mut();
+    if let Some(result) = map.remove(&request_id) {
+        match result {
+            Ok(path) => serde_json::json!({"status": "ok", "path": path}),
+            Err(err) => serde_json::json!({"status": "error", "error": err}),
+        }
+    } else {
+        serde_json::json!({"status": "pending"})
+    }
+}
+
 // --- Navigate op ---
 
 #[op2(fast)]
@@ -1180,6 +1241,8 @@ pub struct Engine {
     // Fetch
     fetch_queue: Shared<Vec<(i32, String)>>,
     fetch_results: Shared<HashMap<i32, std::result::Result<String, String>>>,
+    capture_queue: Shared<Vec<(i32, String)>>,
+    capture_results: Shared<HashMap<i32, std::result::Result<String, String>>>,
 
     // Navigate
     navigate_queue: Shared<Vec<String>>,
@@ -1244,6 +1307,8 @@ impl Engine {
         let transform_snapshot = TransformSnapshot::default();
         let fetch_queue = FetchQueue::default();
         let fetch_results = FetchResults::default();
+        let capture_queue = CaptureQueue::default();
+        let capture_results = CaptureResults::default();
         let navigate_queue = NavigateQueue::default();
         let tab_action_queue = TabActionQueue::default();
         let viewer_pose_state = ViewerPoseState::default();
@@ -1315,6 +1380,13 @@ impl Engine {
         let fetch_results_for_state = FetchResults {
             results: fetch_results.results.clone(),
         };
+        let capture_queue_for_state = CaptureQueue {
+            requests: capture_queue.requests.clone(),
+            next_request_id: capture_queue.next_request_id.clone(),
+        };
+        let capture_results_for_state = CaptureResults {
+            results: capture_results.results.clone(),
+        };
         let navigate_queue_for_state = NavigateQueue {
             queue: navigate_queue.queue.clone(),
         };
@@ -1385,6 +1457,8 @@ impl Engine {
                 op_hsml_set_global_position::decl(),
                 op_fetch_request::decl(),
                 op_fetch_poll::decl(),
+                op_capture_frame::decl(),
+                op_capture_poll::decl(),
                 op_navigate::decl(),
                 op_tab_open::decl(),
                 op_tab_close::decl(),
@@ -1461,6 +1535,13 @@ impl Engine {
                 });
                 state.put::<FetchResults>(FetchResults {
                     results: fetch_results_for_state.results.clone(),
+                });
+                state.put::<CaptureQueue>(CaptureQueue {
+                    requests: capture_queue_for_state.requests.clone(),
+                    next_request_id: capture_queue_for_state.next_request_id.clone(),
+                });
+                state.put::<CaptureResults>(CaptureResults {
+                    results: capture_results_for_state.results.clone(),
                 });
                 state.put::<NavigateQueue>(NavigateQueue {
                     queue: navigate_queue_for_state.queue.clone(),
@@ -1546,6 +1627,8 @@ impl Engine {
             transform_snapshot_global_positions: transform_snapshot.global_positions,
             fetch_queue: fetch_queue.requests,
             fetch_results: fetch_results.results,
+            capture_queue: capture_queue.requests,
+            capture_results: capture_results.results,
             navigate_queue: navigate_queue.queue,
             tab_action_queue: tab_action_queue.queue,
             viewer_pose: viewer_pose_state.data,
@@ -1647,6 +1730,18 @@ impl Engine {
 
     pub fn drain_fetch_queue(&self) -> Vec<(i32, String)> {
         take_vec(&self.fetch_queue)
+    }
+
+    pub fn drain_capture_queue(&self) -> Vec<(i32, String)> {
+        take_vec(&self.capture_queue)
+    }
+
+    pub fn push_capture_result(
+        &self,
+        request_id: i32,
+        result: std::result::Result<String, String>,
+    ) {
+        self.capture_results.borrow_mut().insert(request_id, result);
     }
 
     pub fn drain_navigate_queue(&self) -> Vec<String> {
