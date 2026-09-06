@@ -742,6 +742,7 @@ pub fn rebuild_space_policies_system(
     mut log_panel: ResMut<crate::LogPanel>,
     mut history: ResMut<SpacePolicyHistory>,
 ) {
+    let _profile = crate::profiling::span("rebuild_space_policies_system");
     if !policies.dirty {
         return;
     }

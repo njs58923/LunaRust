@@ -1158,6 +1158,7 @@ fn refresh_dom_mirror_in_place(
     touched_nodes: &HashSet<u32>,
     removed_nodes: &HashSet<u32>,
 ) {
+    let _profile = crate::profiling::span("mirror_refresh");
     if force_rebuild || mirror.nodes.is_empty() {
         *mirror = build_dom_mirror_from_specs(specs_world, attached_node_ids, mirror.version);
         return;
@@ -1211,6 +1212,7 @@ fn build_local_space_snapshot_from_mirror(
     table: &mut SpaceHandleTable,
     mirror: &DomMirror,
 ) -> SpaceSnapshots {
+    let _profile = crate::profiling::span("snapshot_full");
     sync_space_handle_table(table, space_id, allowed);
 
     let mut local_attr_snap = HashMap::new();
@@ -1273,10 +1275,20 @@ fn build_local_space_patch_from_mirror(
     table: &mut SpaceHandleTable,
     mirror: &DomMirror,
 ) -> SpaceSnapshotPatch {
+    let _profile = crate::profiling::span("snapshot_patch");
     let mut patch = SpaceSnapshotPatch::default();
     patch
         .removed_locals
         .extend(table.pending_removed_locals.iter().copied());
+
+    // Resolve IDs before serializing any edges. The touched set is unordered:
+    // a parent may otherwise be serialized before its new children get IDs.
+    for &global_node_id in touched_globals {
+        let id = global_node_id as i32;
+        if allowed.contains(&id) && mirror.nodes.contains_key(&id) {
+            ensure_local_id(table, global_node_id);
+        }
+    }
 
     for &global_node_id in touched_globals {
         let global_node_id_i32 = global_node_id as i32;
@@ -1516,6 +1528,7 @@ pub fn js_auto_inject_resource_scripts_system(world: &mut World) {
 // ─── Systems ─────────────────────────────────────────────────────────────────
 
 pub fn js_update_snapshots_system(world: &mut World) {
+    let _profile = crate::profiling::span("js_update_snapshots_system");
     let snapshot_start = Instant::now();
     // Granting a resource can introduce a bootstrap script into a previously
     // static space, even when its DOM has not changed.
@@ -2009,6 +2022,7 @@ fn sync_snapshots_with_mirror(
 }
 
 pub fn js_eval_pending_scripts(world: &mut World) {
+    let _profile = crate::profiling::span("js_eval_pending_scripts");
     const MAX_SCRIPTS_PER_FRAME: usize = 2;
     const MAX_ENQUEUE_BUDGET_MS: f32 = 1.5;
 
@@ -2185,6 +2199,7 @@ fn bind_embedded_slot(
 }
 
 pub fn js_tick_system(world: &mut World) {
+    let _profile = crate::profiling::span("js_tick_system");
     let elapsed_ms = {
         let Some(time) = world.get_resource::<Time>() else {
             return;
@@ -3729,6 +3744,24 @@ mod tests {
         }
         rebuild_dom_mirror_space_subtrees(&mut mirror);
         mirror
+    }
+
+    #[test]
+    fn include_patch_allocates_all_ids_before_serializing_edges() {
+        let mirror = deletion_test_mirror(64);
+        let allowed = &mirror.space_subtrees[&0];
+        for _ in 0..32 {
+            let touched: HashSet<u32> = (0..=64).collect();
+            let mut table = SpaceHandleTable { next_local_id: 1, ..Default::default() };
+            table.global_to_local.insert(0, 0);
+            table.local_to_global.insert(0, 0);
+            let patch = build_local_space_patch_from_mirror(allowed, &touched, &mut table, &mirror);
+            assert_eq!(patch.children[&0].len(), 64);
+            for child in &patch.children[&0] {
+                assert_eq!(patch.parents[child], 0);
+                assert_eq!(patch.tag_updates[child], "box");
+            }
+        }
     }
 
     #[test]

@@ -1101,6 +1101,7 @@ pub fn process_delete_requests(
     mut space_policies: ResMut<crate::permissions::SpacePolicies>,
     mut mirror_dirty: ResMut<crate::js::DomMirrorDirty>,
 ) {
+    let _profile = crate::profiling::span("process_delete_requests");
     for ent_id in delete_requests.0.drain(..) {
         let sp_ent = world.0.entities().entity(ent_id);
         if !world.0.entities().is_alive(sp_ent) {
@@ -1222,6 +1223,7 @@ pub fn commit_pending_includes_system(
     bevy_parents: Query<&Parent>,
     mut space_policies: ResMut<crate::permissions::SpacePolicies>,
 ) {
+    let _profile = crate::profiling::span("commit_pending_includes_system");
     let pending: Vec<_> = pending_includes.0.drain(..).collect();
     if pending.is_empty() {
         return;
@@ -1566,6 +1568,7 @@ pub fn dom_sync_system(
     mut rounded_mesh_cache: Option<ResMut<crate::RoundedMeshCache>>,
     mut skybox: crate::SkyboxParams,
 ) {
+    let _profile = crate::profiling::span("dom_sync_system");
     let start_time = Instant::now();
     let mut dirty_node_ids = dirty_nodes.take_unique();
     if dirty_node_ids.is_empty() {
