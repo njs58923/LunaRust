@@ -48,6 +48,7 @@
       // kind:  'spatial' (default) | 'app' | 'app-embedded' (futuro)
       const BOOKMARKS = [
         { name: 'Home',     url: 'luna://home',           kind: 'spatial' },
+        { name: 'Ajustes',  url: 'luna://settings',       kind: 'app-embedded' },
         { name: 'Demos',    url: 'luna://demos',          kind: 'spatial' },
         { name: 'Demo App', url: 'luna://demo_embedded',  kind: 'app-embedded' },
         { name: 'About',    url: 'luna://about',          kind: 'app' },

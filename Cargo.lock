@@ -3449,6 +3449,7 @@ dependencies = [
  "bitflags 2.6.0",
  "fontdue",
  "futures-util",
+ "image",
  "js_runtime",
  "lazy_static",
  "openxr",

@@ -1,85 +1,53 @@
-# luna_mcp
+# MCP local de Luna
 
-Servidor MCP para manejar Luna desde un agente: abrir una URL, esperar y
-**capturar el frame real que renderiza el motor**.
-
-## Cómo está partido
-
-```
-Claude Code  ──stdio(MCP)──>  luna_mcp  ──WebSocket(2054)──>  luna://agent_app
-                                                                (dentro de Luna)
-```
-
-El que escucha es este proceso, no Luna: el runtime del navegador sólo sabe ser
-cliente WebSocket (`crates/luna/src/ws.rs` usa `connect_async`). El puente
-adentro de Luna se conecta hacia acá y ejecuta los comandos que le llegan.
-
-## Piezas en el motor
-
-| Qué | Dónde |
-|---|---|
-| Capacidad `CAPTURE_FRAME` (elevada) y bundle `capture_frame` | `crates/luna/src/permissions.rs` |
-| Ops `op_capture_frame` / `op_capture_poll` | `crates/js_runtime/src/lib.rs` |
-| API JS `dimention.captureFrame(nombre)` | `crates/js_runtime/runtime.js` |
-| Validación de la cap por space | `crates/luna/src/js.rs` |
-| Captura con Bevy y escritura del PNG | `crates/luna/src/capture.rs` |
-| Lanzador y puente | `crates/luna/src/web/apps/agent_launcher.hsml`, `agent_bridge.hsml` |
-| Grants de esas dos URLs | `crates/luna/src/web/internal/root_api.js` |
-
-`CAPTURE_FRAME` es elevada a propósito: leer la pantalla no es algo que un
-documento remoto pueda pedir sin consentimiento. Las únicas páginas que la
-reciben son `luna://agent_app`, y por una excepción explícita en `root_api.js`.
-
-Los PNG van a `%TEMP%\luna-captures\` (`std::env::temp_dir()`), no al repo.
+El adaptador habla MCP por stdio y escucha exclusivamente en `127.0.0.1:2054`.
+Luna se conecta desde el host Rust; no depende de una página, de permisos de los
+sitios ni de servicios externos. No inicia procesos por su cuenta.
 
 ## Uso
 
-1. Levantá el servidor MCP (lo hace el cliente por vos si lo registrás):
+1. Instala las dependencias una vez: `bun install` en este directorio.
+2. Configura tu cliente MCP con `bun run` y la ruta absoluta de `src/index.ts`.
+3. En Luna, abre **Home → Ajustes → Iniciar MCP local**. También está en **Config → Enable local MCP** en escritorio.
+4. Para desconectar, pulsa **Detener MCP** o desactiva la casilla. Arranca desactivado cada vez que abres Luna.
 
-   ```bash
-   bun run src/index.ts
-   ```
+Los controles de la página Ajustes funcionan también en VR y al montarla en un
+panel. Los alias antiguos `luna://agent` y `luna://agent_app` muestran Ajustes.
+Navegar o cambiar entre escritorio y VR no reinicia el puente.
 
-2. Registralo en Claude Code:
-
-   ```bash
-   claude mcp add luna -- bun run "G:/#Proyectos Activos/Unity/LunaExperiments/bevy_oxr/tools/luna_mcp/src/index.ts"
-   ```
-
-3. En Luna, andá a `luna://agent` y tocá **Iniciar agente**. Eso monta el puente
-   como app aditiva: sobrevive a los cambios de espacio, así que puede navegar
-   la escena sin matarse a sí mismo.
-
-El cubito del puente indica el estado: naranja conectando, verde conectado,
-rojo caído. Reintenta solo cada 2 s, así que el orden de arranque no importa.
+`LUNA_AGENT_PORT` cambia el puerto; usa el mismo valor en Luna y en el adaptador.
+`LUNA_AGENT_TIMEOUT` configura la espera del adaptador (30000 ms por defecto).
+El host limita cada respuesta a 25 segundos. La conexión se reintenta cada 2 segundos.
+El proceso nuevo reemplaza la conexión anterior; no hay reservas, historial ni
+seguimiento de sesiones. Un puerto ocupado se informa mediante las herramientas.
 
 ## Herramientas
 
-| Herramienta | Qué hace |
-|---|---|
-| `luna_status` | dice si el puente está conectado |
-| `luna_open` | abre una URL como espacio spatial (abrir uno cierra el anterior, así que también sirve de recarga) |
-| `luna_wait` | espera N ms dentro de Luna |
-| `luna_capture` | captura el frame y devuelve el PNG como imagen |
+- `luna_status`: consulta el estado actual del host: modo solicitado, modo efectivo,
+  estado XR, cámaras, espacios montados, navegación en cola e includes cargando o fallidos.
+- `luna_open({url})`: navega un espacio espacial y devuelve el `tabId` asignado por
+  el host, `accepted:true` y `loading:true`. Es confirmación de encolado, no de carga terminada.
+- `luna_camera({camera, position:[x,y,z], lookAt:[x,y,z]})`: pose absoluta en metros.
+- `luna_capture({camera})`: PNG real. `camera` admite `auto`, `desktop` y `spectator`.
+- `luna_wait({ms})`: espera entre 0 y 20000 ms; no garantiza que una página haya cargado.
 
-## Prueba sin Luna
+`auto` elige espectador en modo VR y escritorio en modo desktop. La cámara
+espectadora tiene pose independiente y captura a 1280×720; solo renderiza cuando
+se solicita una imagen. No modifica el rig ni el tracking del visor. La captura
+escritorio requiere su cámara activa y nunca cambia el modo automáticamente.
+Ejemplo para mirar un panel: `luna_camera({camera:"spectator",position:[0,1.6,1],lookAt:[0,1.6,-3]})`.
 
-```bash
-bun run test_e2e.ts
-```
+Las imágenes viajan como bytes PNG por WebSocket: el adaptador no lee rutas
+recibidas del navegador. El listener rechaza conexiones con Origin de páginas
+web. El acceso se limita a procesos locales; no es un servicio autenticado para
+redes o equipos compartidos.
 
-Levanta el server, le enchufa un puente falso y hace el ida y vuelta completo
-por stdio: `initialize`, `tools/list`, status con y sin puente, un comando que
-responde bien y otro que responde error.
+## Verificación
 
-## Lo que falta
+`bun run test` ejecuta pruebas de reconexión, timeout, validación y MCP stdio con
+un host simulado y puerto efímero. No ocupa el puerto de Luna. No prueba el render
+de GPU ni un visor real.
 
-- **`wait_ready` de verdad.** Hoy `luna_wait` es un sleep. El host ya sabe
-  cuándo terminó de cargar (`IncludeLoadStates`, `ScriptLoadStates`,
-  `PendingModelLoads`, `dirty_nodes`): exponer eso convierte la espera en
-  determinista.
-- **Mover la cámara.** `op_read_viewer_pose` es de sólo lectura. Mientras tanto
-  se encuadra moviendo el documento (`<meta position>`) o la pose del tab.
-- **Inspeccionar el DOM de la escena.** No sale gratis: cada space es su propio
-  isolate con su propia tabla de handles, así que el puente no ve el DOM del
-  documento que está mirando. Requiere una op nueva del lado del host.
+`bun run probe.ts` inicia un adaptador para diagnóstico, consulta el estado de
+Luna y sale. Úsalo cuando tu cliente MCP no esté usando el puerto; no arranca Luna
+ni activa MCP por ti.

@@ -3,6 +3,8 @@
 // El binario (main.rs) importa desde aquí con `use luna::*`.
 
 pub mod capture;
+pub mod agent;
+mod agent_capture;
 pub mod desktop_locomotion;
 pub mod dom;
 pub mod embedded;

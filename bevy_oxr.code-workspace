@@ -8,6 +8,9 @@
 		},
 		{
 			"path": "../server_expo"
+		},
+		{
+			"path": "../server_backrooms"
 		}
 	],
 	"settings": {}

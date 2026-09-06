@@ -84,6 +84,7 @@ fn main() {
     app.add_plugins(VrLocomotionPlugin);
     app.add_plugins(DesktopLocomotionPlugin);
     app.add_plugins(luna::capture::CapturePlugin);
+    app.add_plugins(luna::agent::AgentPlugin);
     app.add_systems(XrSessionCreated, spawn_controllers);
     app.insert_resource(RenderMode {
         is_vr: initial_render_mode,
@@ -428,7 +429,7 @@ fn update_fps_counter(time: Res<Time>, mut f: ResMut<FpsCounter>) {
 fn camera_keyboard_movement_system(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut query: Query<&mut Transform, With<Camera3d>>,
+    mut query: Query<&mut Transform, With<DesktopCamera>>,
 ) {
     let Ok(mut transform) = query.get_single_mut() else {
         return;

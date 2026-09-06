@@ -220,7 +220,7 @@ pub struct HostPoseMoveEvents(pub Vec<HostPoseMoveHit>);
 pub fn desktop_toque_raycast_system(
     mouse_button: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    camera_query: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::agent::SpectatorCamera>)>,
     // InheritedVisibility refleja la cadena Visibility::Inherited/Hidden/Visible
     // propagada por Bevy en PostUpdate. Si un ancestro está Hidden, todos los
     // descendientes (incluso con Visible explícito) leen `iv.get() == false`.

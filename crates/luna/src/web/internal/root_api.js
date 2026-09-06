@@ -133,18 +133,6 @@
     return registry.get(publicId) || null;
   }
 
-  // Las páginas del agente necesitan capacidades que ningún documento común
-  // recibe: `capture_frame` es lectura de pantalla. Vive acá y no suelto en
-  // mountSpace porque regrantMountedSpaces (que corre en cada cambio de modo)
-  // reasigna permisos por su cuenta y le sacaba los suyos al puente, dejándolo
-  // sin poder capturar después de pasar de VR a desktop.
-  function agentGrantsFor(url) {
-    const base = String(url || '').split('?')[0].replace(/\/+$/, '');
-    if (base === 'luna://agent') return ['navigate_self', 'manage_tabs'];
-    if (base === 'luna://agent_app') return ['navigate_self', 'manage_tabs', 'capture_frame'];
-    return null;
-  }
-
   function ensureInclude(entry) {
     if (entry.include) return entry.include;
     const include = root.createElement('include');
@@ -257,11 +245,6 @@
         }
       }
 
-      const agentGrants = agentGrantsFor(url);
-      if (agentGrants) {
-        grants = agentGrants;
-      }
-
       const initialVisible = options.visible !== false && kind !== 'app-embedded';
 
       const space = root.createElement('space');
@@ -369,10 +352,7 @@
         if (publicId === this._uxSpaceId) continue;
         if (!isDirectRootChild(entry.space)) continue;
         const include = ensureInclude(entry);
-        // El agente conserva los suyos: cambiar de modo no tiene por qué
-        // dejar al puente sin capturar.
-        const agentGrants = agentGrantsFor(include.getAttribute('src'));
-        include.setAttribute('resources', (agentGrants || grants).join(','));
+        include.setAttribute('resources', grants.join(','));
       }
 
       return true;

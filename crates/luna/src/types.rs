@@ -859,6 +859,7 @@ impl Default for DevtoolState {
 
 #[derive(SystemParam)]
 pub struct UiSystemParams<'w> {
+    pub agent: ResMut<'w, crate::agent::AgentControl>,
     pub entity_counter: Res<'w, EntityCounter>,
     pub fps_counter: Res<'w, FpsCounter>,
     pub perf_stats: Res<'w, PerformanceStats>,

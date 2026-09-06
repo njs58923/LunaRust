@@ -552,11 +552,17 @@
     // `name` es un nombre de archivo, no una ruta: el directorio lo decide el
     // host. Resuelve con la ruta absoluta escrita, ya cerrada en disco, así
     // que quien la reciba puede abrirla sin esperar nada más.
+    setMcpEnabled(enabled) {
+      core.ops.op_luna_mcp_enabled(Boolean(enabled));
+    }
+
     captureFrame(name) {
       return new Promise((resolve, reject) => {
         const requestId = core.ops.op_capture_frame(String(name || 'capture'));
+        const deadline = Date.now() + 30000;
 
         function poll() {
+          if (Date.now() >= deadline) { reject(new Error('captureFrame timed out')); return; }
           const result = core.ops.op_capture_poll(requestId);
           if (result.status === 'pending') {
             setTimeout(poll, 16);

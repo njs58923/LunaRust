@@ -3,7 +3,8 @@
   "module": "src/index.ts",
   "type": "module",
   "scripts": {
-    "start": "bun run src/index.ts"
+    "start": "bun run src/index.ts",
+    "test": "bun test ./src/bridge.test.ts ./test_e2e.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"

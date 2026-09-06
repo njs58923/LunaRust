@@ -25,6 +25,8 @@ use crate::LogPanel;
 #[derive(Debug, Clone)]
 pub struct CaptureRequest {
     pub space_id: u32,
+    pub runtime_id: u64,
+    pub deadline: std::time::Instant,
     pub request_id: i32,
     pub name: String,
 }
@@ -37,7 +39,9 @@ pub struct PendingFrameCaptures(pub Vec<CaptureRequest>);
 /// ECS. `Arc<Mutex<_>>` y no un canal porque un `Receiver` no es `Sync` y los
 /// recursos de Bevy tienen que serlo.
 #[derive(Resource, Clone, Default)]
-pub struct CaptureOutbox(pub Arc<Mutex<Vec<(u32, i32, Result<String, String>)>>>);
+pub struct CaptureOutbox(
+    pub Arc<Mutex<Vec<(u32, u64, std::time::Instant, i32, Result<String, String>)>>>,
+);
 
 /// Directorio donde quedan los PNG. Fuera del repo a propósito: son efímeros.
 pub fn capture_dir() -> PathBuf {
@@ -99,6 +103,8 @@ pub fn request_frame_captures_system(
             if let Ok(mut cola) = buzon.0.lock() {
                 cola.push((
                     req.space_id,
+                    req.runtime_id,
+                    req.deadline,
                     req.request_id,
                     Err("no hay ventana primaria para capturar".to_string()),
                 ));
@@ -113,6 +119,8 @@ pub fn request_frame_captures_system(
             if let Ok(mut cola) = buzon.0.lock() {
                 cola.push((
                     req.space_id,
+                    req.runtime_id,
+                    req.deadline,
                     req.request_id,
                     Err(format!("no se pudo crear {}: {err}", dir.display())),
                 ));
@@ -122,16 +130,28 @@ pub fn request_frame_captures_system(
     }
 
     for req in pendientes.0.drain(..) {
-        let ruta = dir.join(sanitize(&req.name));
+        if req.deadline <= std::time::Instant::now() {
+            continue;
+        }
+        static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let ruta = dir.join(format!(
+            "{}-{}-{}",
+            std::process::id(),
+            serial,
+            sanitize(&req.name)
+        ));
         let buzon_cb = buzon.0.clone();
         let space_id = req.space_id;
+        let runtime_id = req.runtime_id;
+        let deadline = req.deadline;
         let request_id = req.request_id;
         let ruta_cb = ruta.clone();
 
         let pedido = screenshots.take_screenshot(ventana, move |imagen| {
             let resultado = guardar_png(imagen, &ruta_cb);
             if let Ok(mut cola) = buzon_cb.lock() {
-                cola.push((space_id, request_id, resultado));
+                cola.push((space_id, runtime_id, deadline, request_id, resultado));
             }
         });
 
@@ -142,7 +162,13 @@ pub fn request_frame_captures_system(
             )),
             Err(err) => {
                 if let Ok(mut cola) = buzon.0.lock() {
-                    cola.push((space_id, request_id, Err(format!("{err:?}"))));
+                    cola.push((
+                        space_id,
+                        runtime_id,
+                        deadline,
+                        request_id,
+                        Err(format!("{err:?}")),
+                    ));
                 }
             }
         }
@@ -152,15 +178,22 @@ pub fn request_frame_captures_system(
 /// Devuelve los resultados al worker que pidió la captura.
 pub fn deliver_frame_captures_system(
     buzon: Res<CaptureOutbox>,
+    tables: Res<crate::SpaceHandleTables>,
     mut manager: NonSendMut<ScriptRuntimeManager>,
     mut log_panel: ResMut<LogPanel>,
 ) {
-    let listos: Vec<(u32, i32, Result<String, String>)> = match buzon.0.lock() {
-        Ok(mut cola) if !cola.is_empty() => cola.drain(..).collect(),
-        _ => return,
-    };
+    let listos: Vec<(u32, u64, std::time::Instant, i32, Result<String, String>)> =
+        match buzon.0.lock() {
+            Ok(mut cola) if !cola.is_empty() => cola.drain(..).collect(),
+            _ => return,
+        };
 
-    for (space_id, request_id, resultado) in listos {
+    for (space_id, runtime_id, deadline, request_id, resultado) in listos {
+        if deadline <= std::time::Instant::now()
+            || tables.by_space.get(&space_id).map(|t| t.runtime_id) != Some(runtime_id)
+        {
+            continue;
+        }
         if let Err(err) = &resultado {
             log_panel.push_warn(format!("[capture][space:{space_id}] falló: {err}"));
         }
@@ -169,11 +202,14 @@ pub fn deliver_frame_captures_system(
         };
         if worker
             .try_send(JsWorkerCommand::PushCaptureResults(vec![(
-                request_id, resultado,
+                request_id,
+                resultado.clone(),
             )]))
             .is_ok()
         {
             worker.needs_tick = true;
+        } else if let Ok(mut queue) = buzon.0.lock() {
+            queue.push((space_id, runtime_id, deadline, request_id, resultado));
         }
     }
 }

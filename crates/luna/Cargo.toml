@@ -26,6 +26,7 @@ anyhow = "1.0"
 reqwest = { version = "0.11", features = ["json"] }
 url = "2.3"
 base64 = "0.21"
+image = { version = "0.25", default-features = false, features = ["png"] }
 lazy_static = "1.4"
 fontdue = "0.9"
 quick-xml = "0.27"

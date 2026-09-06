@@ -1,225 +1,75 @@
-// Servidor MCP para Luna.
-//
-// Dos patas:
-//   1. Habla MCP por stdio con el cliente (Claude Code).
-//   2. Escucha WebSocket en 2054, que es donde se conecta el puente
-//      (`luna://agent_app`) corriendo dentro del navegador.
-//
-// El que escucha es este proceso y no Luna porque el runtime del navegador sólo
-// sabe ser cliente WebSocket (crates/luna/src/ws.rs usa connect_async). Todo lo
-// que hace este archivo es traducir una llamada de herramienta MCP en un
-// mensaje JSON para el puente, y esperar su respuesta.
-import { readFileSync } from "fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { Bridge, pngResult } from "./bridge.ts";
 
-const PUERTO = Number(process.env.LUNA_AGENT_PORT) || 2054;
-const TIMEOUT_MS = Number(process.env.LUNA_AGENT_TIMEOUT) || 30_000;
-
-// ── Puente ────────────────────────────────────────────────────────────────
-
-type Pendiente = {
-  resolve: (valor: any) => void;
-  reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-};
-
-let puente: any = null; // el socket del navegador, si está conectado
-let siguienteId = 1;
-const pendientes = new Map<number, Pendiente>();
-
-/** Manda un comando al puente y espera su respuesta. */
-function pedir(cmd: string, args: Record<string, unknown> = {}): Promise<any> {
-  if (!puente) {
-    return Promise.reject(
-      new Error(
-        "Luna no está conectada. Abrí luna://agent en el navegador y tocá 'Iniciar agente'.",
-      ),
-    );
-  }
-  const id = siguienteId++;
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pendientes.delete(id);
-      reject(new Error(`timeout de ${TIMEOUT_MS} ms esperando '${cmd}'`));
-    }, TIMEOUT_MS);
-    pendientes.set(id, { resolve, reject, timer });
-    puente.send(JSON.stringify({ id, cmd, args }));
-  });
-}
-
-// Si el puerto está ocupado (otra instancia, una sonda de test) el server no
-// puede levantar. Eso NO tiene que matar al proceso: el cliente MCP lo vería
-// como "servidor roto" en vez de como lo que es. Seguimos vivos y que
-// luna_status lo explique.
-let errorPuerto: string | null = null;
-
+const port = Number(process.env.LUNA_AGENT_PORT ?? 2054);
+if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid LUNA_AGENT_PORT");
+const timeout = Number(process.env.LUNA_AGENT_TIMEOUT ?? 30_000);
+if (!Number.isFinite(timeout) || timeout <= 0) throw new Error("Invalid LUNA_AGENT_TIMEOUT");
+const bridge = new Bridge(timeout);
+let listenError: string | null = null;
+let listener: ReturnType<typeof Bun.serve> | undefined;
 try {
-  Bun.serve({
-  port: PUERTO,
-  fetch(req, server) {
-    if (server.upgrade(req)) return;
-    return new Response("luna-mcp: este endpoint es sólo WebSocket", { status: 426 });
-  },
-  websocket: {
-    open(ws) {
-      // Sólo se maneja un puente a la vez. Si ya había uno, el nuevo lo pisa:
-      // avisamos, porque si no una segunda instancia de Luna (o una sonda de
-      // test) secuestra la sesión sin dejar rastro.
-      if (puente) {
-        console.error("[luna-mcp] OJO: ya había un puente conectado, lo reemplaza el nuevo");
-      }
-      puente = ws;
-      console.error(`[luna-mcp] puente conectado`);
+  listener = Bun.serve({
+    hostname: "127.0.0.1", port,
+    fetch(request, server) {
+      // Native clients only; browser pages send Origin.
+      if (request.headers.has("origin") || new URL(request.url).pathname !== "/") return new Response("Forbidden", { status: 403 });
+      if (server.upgrade(request, { data: undefined })) return;
+      return new Response("Luna MCP WebSocket endpoint", { status: 426 });
     },
-    close() {
-      puente = null;
-      // Cortamos lo que quedó esperando: mejor un error claro que un cuelgue.
-      for (const [id, p] of pendientes) {
-        clearTimeout(p.timer);
-        p.reject(new Error("el puente se desconectó"));
-        pendientes.delete(id);
-      }
-      console.error("[luna-mcp] puente desconectado");
+    websocket: {
+      maxPayloadLength: 24_000_000,
+      open(socket) { bridge.open(socket); },
+      close(socket) { bridge.close(socket); },
+      message(socket, raw) { bridge.message(socket, String(raw)); },
     },
-    message(_ws, raw) {
-      let msg: any;
-      try {
-        msg = JSON.parse(String(raw));
-      } catch {
-        return;
-      }
-      if (msg.hello) {
-        console.error(`[luna-mcp] hola de ${msg.hello} v${msg.version}: ${(msg.comandos || []).join(", ")}`);
-        return;
-      }
-      const p = pendientes.get(msg.id);
-      if (!p) return;
-      clearTimeout(p.timer);
-      pendientes.delete(msg.id);
-      if (msg.ok) p.resolve(msg.result);
-      else p.reject(new Error(msg.error || "error desconocido en el puente"));
-    },
-  },
   });
-  console.error(`[luna-mcp] escuchando ws://127.0.0.1:${PUERTO}`);
-} catch (err: any) {
-  errorPuerto = String(err?.message || err);
-  console.error(`[luna-mcp] no se pudo escuchar en ${PUERTO}: ${errorPuerto}`);
-}
+  console.error(`[luna-mcp] ws://127.0.0.1:${listener.port}`);
+} catch (error) { listenError = String(error); console.error(listenError); }
 
-// ── Herramientas MCP ──────────────────────────────────────────────────────
-
-const HERRAMIENTAS = [
-  {
-    name: "luna_status",
-    description:
-      "Dice si el puente de Luna está conectado. Útil para diagnosticar antes de intentar cualquier otra cosa.",
-    inputSchema: { type: "object", properties: {} },
-  },
-  {
-    name: "luna_open",
-    description:
-      "Abre una URL en Luna como espacio spatial. Abrir un spatial cierra el anterior, así que sirve igual para navegar y para recargar la escena actual.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "URL del documento HSML (http:// o luna://)" },
-      },
-      required: ["url"],
-    },
-  },
-  {
-    name: "luna_wait",
-    description:
-      "Espera dentro de Luna. Pensado para darle tiempo a que carguen los includes, los modelos y los scripts antes de capturar.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        ms: { type: "number", description: "milisegundos (máx 20000)" },
-      },
-      required: ["ms"],
-    },
-  },
-  {
-    name: "luna_capture",
-    description:
-      "Captura el frame que Luna está renderizando y devuelve la imagen. Es el render real del motor, no una aproximación.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "nombre del archivo, sin ruta" },
-      },
-    },
-  },
+const camera = { type: "string", enum: ["auto", "desktop", "spectator"], description: "auto: spectator in VR, desktop otherwise" };
+const vector = { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 };
+const tools = [
+  { name: "luna_status", description: "Current pages, requested/effective render mode, XR state and cameras. Queries Luna now.", inputSchema: { type: "object", properties: {} } },
+  { name: "luna_open", description: "Navigate the spatial page. Returns the host-assigned tab ID and loading:true once queued.", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
+  { name: "luna_camera", description: "Set position and lookAt in world coordinates (meters). Spectator is independent of the VR headset.", inputSchema: { type: "object", properties: { camera, position: vector, lookAt: vector }, required: ["position", "lookAt"] } },
+  { name: "luna_capture", description: "Capture a rendered PNG. Spectator works in VR. Desktop requires its camera to be active.", inputSchema: { type: "object", properties: { camera } } },
+  { name: "luna_wait", description: "Wait up to 20000 ms. Does not assert that loading has finished.", inputSchema: { type: "object", properties: { ms: { type: "integer", minimum: 0, maximum: 20000 } }, required: ["ms"] } },
 ];
-
-const server = new Server(
-  { name: "luna", version: "0.1.0" },
-  { capabilities: { tools: {} } },
-);
-
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: HERRAMIENTAS }));
-
-server.setRequestHandler(CallToolRequestSchema, async (peticion) => {
-  const { name, arguments: args = {} } = peticion.params as {
-    name: string;
-    arguments?: Record<string, any>;
-  };
-
+const server = new Server({ name: "luna", version: "0.2.0" }, { capabilities: { tools: {} } });
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+function text(value: unknown, isError = false) { return { content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }], isError }; }
+server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
+  const args = params.arguments ?? {};
   try {
-    switch (name) {
-      case "luna_status":
-        if (errorPuerto) {
-          return texto(
-            `no pude escuchar en ${PUERTO}: ${errorPuerto}. Probablemente haya otra instancia del servidor corriendo.`,
-            true,
-          );
-        }
-        return texto(
-          puente
-            ? "puente conectado"
-            : "puente desconectado — abrí luna://agent en Luna y tocá 'Iniciar agente'",
-        );
-
+    if (listenError) throw new Error(`Local listener unavailable: ${listenError}`);
+    const selected = args.camera ?? "auto";
+    if (!["auto", "desktop", "spectator"].includes(selected as string)) throw new Error("Invalid camera");
+    switch (params.name) {
+      case "luna_status": return text(bridge.connected ? await bridge.request("status") : { connected: false, message: "Inicia MCP local desde Ajustes de Luna." });
       case "luna_open": {
-        const r = await pedir("open", { url: args.url });
-        return texto(`abierto ${r.url} (tab ${r.tabId})`);
+        if (typeof args.url !== "string" || args.url.length > 8192 || !["luna:", "http:", "https:"].includes(new URL(args.url).protocol)) throw new Error("Expected luna://, http:// or https:// URL");
+        return text(await bridge.request("open", { url: args.url }));
       }
-
+      case "luna_camera": {
+        for (const key of ["position", "lookAt"]) {
+          const v = args[key];
+          if (!Array.isArray(v) || v.length !== 3 || !v.every(n => typeof n === "number" && Number.isFinite(n) && Math.abs(n) <= 1e6)) throw new Error(`Invalid ${key}`);
+        }
+        return text(await bridge.request("camera", { camera: selected, position: args.position, lookAt: args.lookAt }));
+      }
+      case "luna_capture": return pngResult(await bridge.request("capture", { camera: selected }));
       case "luna_wait": {
-        const r = await pedir("wait", { ms: args.ms });
-        return texto(`esperé ${r.waited} ms`);
+        const ms = args.ms;
+        if (typeof ms !== "number" || !Number.isInteger(ms) || ms < 0 || ms > 20000) throw new Error("ms must be an integer between 0 and 20000");
+        await new Promise(resolve => setTimeout(resolve, ms));
+        return text({ waited: ms });
       }
-
-      case "luna_capture": {
-        const r = await pedir("capture", { name: args.name });
-        // El puente resuelve recién cuando el PNG está cerrado en disco, así
-        // que acá se puede leer sin esperar nada más.
-        const png = readFileSync(r.path);
-        return {
-          content: [
-            { type: "text", text: `captura: ${r.path} (${png.length} bytes)` },
-            { type: "image", data: png.toString("base64"), mimeType: "image/png" },
-          ],
-        };
-      }
-
-      default:
-        return texto(`herramienta desconocida: ${name}`, true);
+      default: throw new Error(`Unknown tool: ${params.name}`);
     }
-  } catch (err: any) {
-    return texto(String(err?.message || err), true);
-  }
+  } catch (error) { return text(error instanceof Error ? error.message : String(error), true); }
 });
-
-function texto(t: string, esError = false) {
-  return { content: [{ type: "text", text: t }], isError: esError };
-}
-
+server.onclose = () => { listener?.stop(true); };
 await server.connect(new StdioServerTransport());
-console.error("[luna-mcp] listo (stdio)");

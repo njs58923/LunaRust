@@ -3026,11 +3026,14 @@ pub fn js_tick_system(world: &mut World) {
             .unwrap_or_default();
 
         if caps.contains(CapabilityBits::CAPTURE_FRAME) {
+            let runtime_id = world.resource::<SpaceHandleTables>().by_space.get(&space_id).map(|t|t.runtime_id).unwrap_or(0);
             if let Some(mut pendientes) =
                 world.get_resource_mut::<crate::capture::PendingFrameCaptures>()
             {
                 for (request_id, name) in requests {
                     pendientes.0.push(crate::capture::CaptureRequest {
+                        runtime_id,
+                        deadline: std::time::Instant::now() + std::time::Duration::from_secs(25),
                         space_id,
                         request_id,
                         name,
@@ -3212,6 +3215,17 @@ pub fn js_tick_system(world: &mut World) {
         for (space_id, actions) in tab_action_batches {
             for action in actions {
                 match action {
+                    js_runtime::TabAction::SetMcpEnabled { enabled } => {
+                        let allowed = world.get_resource::<ElemenetWorld>().is_some_and(|dom| {
+                            let entity = dom.0.entities().entity(space_id);
+                            crate::agent::is_settings_document(&crate::dom::find_node_base_url(&dom.0, entity, ""))
+                        });
+                        if allowed {
+                            if let Some(mut agent) = world.get_resource_mut::<crate::agent::AgentControl>() {
+                                agent.enabled = enabled;
+                            }
+                        }
+                    }
                     js_runtime::TabAction::Open { url, kind } => {
                         let caps = capabilities_by_space
                             .get(&space_id)
@@ -4201,6 +4215,7 @@ mod tests {
                 fetch_queue: Vec::new(),
                 navigate_queue: Vec::new(),
                 tab_action_queue: Vec::new(),
+                capture_queue: Vec::new(),
                 shell_outbox: Vec::new(),
                 ws_connect_queue: Vec::new(),
                 ws_send_queue: Vec::new(),

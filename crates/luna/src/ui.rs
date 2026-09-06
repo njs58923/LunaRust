@@ -18,7 +18,7 @@ pub fn ui_system(
     world: Res<crate::ElemenetWorld>,
     entity_map: Res<EntityMap>,
     mut commands: Commands,
-    mut camera_query: Query<&mut Transform, With<Camera3d>>,
+    mut camera_query: Query<&mut Transform, With<crate::DesktopCamera>>,
     dom_data: Res<VirtualDomData>,
     mut log_panel: ResMut<LogPanel>,
     mut ui_params: UiSystemParams,
@@ -517,6 +517,9 @@ pub fn ui_system(
             .id(egui::Id::new("config_window"))
             .show(contexts.ctx_mut(), |ui| {
                 let mut auto_load_home = ui_params.root_config.auto_load_home;
+                ui.checkbox(&mut ui_params.agent.enabled, "Enable local MCP");
+                ui.label(ui_params.agent.connection_label());
+                ui.separator();
                 if ui
                     .checkbox(&mut auto_load_home, "Auto-load home on startup")
                     .changed()
@@ -863,7 +866,7 @@ fn sync_mounted_spaces_from_dom(world: &SpecWorld, mounted_spaces: &mut [Mounted
     }
 }
 
-fn collect_mounted_space_snapshots(world: &SpecWorld) -> HashMap<u64, MountedSpaceEntry> {
+pub(crate) fn collect_mounted_space_snapshots(world: &SpecWorld) -> HashMap<u64, MountedSpaceEntry> {
     let hier = world.read_storage::<Hierarchy>();
     let tags = world.read_storage::<Tag>();
     let attrs = world.read_storage::<Attrs>();
@@ -1308,7 +1311,7 @@ fn show_element_tree(
     world: &SpecWorld,
     entity_map: &EntityMap,
     commands: &mut Commands,
-    camera_query: &mut Query<&mut Transform, With<Camera3d>>,
+    camera_query: &mut Query<&mut Transform, With<crate::DesktopCamera>>,
     dom_data: &VirtualDomData,
     attribute_updates: &mut ResMut<AttributeUpdates>,
     delete_requests: &mut ResMut<DeleteRequests>,
