@@ -10,9 +10,10 @@
     <script><![CDATA[
       const positions = new Float32Array([-0.5, -0.4, 0, 0.5, -0.4, 0, 0, 0.55, 0]);
       const colors = new Float32Array([0.2, 0.8, 0.4, 1, 0.2, 0.5, 1, 1, 1, 0.8, 0.2, 1]);
+      const root = hiperspace.dimention;
       const resource = MeshResource.create({ positions, colors });
-      document.getElementById('mesh_left').src = resource.src;
-      document.getElementById('mesh_right').src = resource.src;
+      root.getElementById('mesh_left').src = resource.src;
+      root.getElementById('mesh_right').src = resource.src;
       let running = false;
       let raf = null;
       function frame(time) {
@@ -21,7 +22,7 @@
         resource.update({ positions, colors });
         raf = requestAnimationFrame(frame);
       }
-      document.getElementById('toggle_mesh').addEventListener('toque', () => {
+      root.getElementById('toggle_mesh').addEventListener('toque', () => {
         running = !running;
         if (running) raf = requestAnimationFrame(frame);
         else if (raf !== null) cancelAnimationFrame(raf);
