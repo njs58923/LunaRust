@@ -1120,6 +1120,7 @@ fn mirror_node_from_specs(specs_world: &specs::World, node_id: u32) -> Option<Do
     })
 }
 
+#[cfg(test)]
 fn rebuild_dom_mirror_space_subtrees(mirror: &mut DomMirror) {
     mirror.space_subtrees.clear();
     for (&node_id, node) in &mirror.nodes {
@@ -1142,6 +1143,62 @@ fn rebuild_dom_mirror_space_subtrees(mirror: &mut DomMirror) {
         }
         mirror.space_subtrees.insert(node_id as u32, set);
     }
+}
+
+fn mirror_descendants(mirror: &DomMirror, roots: &HashSet<i32>) -> HashSet<i32> {
+    let mut result = HashSet::new();
+    let mut stack: Vec<_> = roots.iter().copied().collect();
+    while let Some(id) = stack.pop() {
+        if !result.insert(id) {
+            continue;
+        }
+        if let Some(node) = mirror.nodes.get(&id) {
+            stack.extend(&node.children);
+        }
+    }
+    result
+}
+
+fn update_space_membership(mirror: &mut DomMirror, affected: &HashSet<i32>, insert: bool) {
+    for &id in affected {
+        let mut cursor = id;
+        let mut visited = Vec::new();
+        while let Some(node) = mirror.nodes.get(&cursor) {
+            if visited.contains(&cursor) {
+                break;
+            }
+            visited.push(cursor);
+            if node.tag == "space" {
+                if insert {
+                    mirror
+                        .space_subtrees
+                        .entry(cursor as u32)
+                        .or_default()
+                        .insert(id);
+                } else if let Some(set) = mirror.space_subtrees.get_mut(&(cursor as u32)) {
+                    set.remove(&id);
+                }
+            }
+            cursor = node.parent;
+        }
+    }
+}
+
+// Includes usually append or remove one child from a large, stable sibling list.
+// Trim its common ends before allocating sets for the changed middle.
+fn changed_child_roots(old: &[i32], new: &[i32], roots: &mut HashSet<i32>) {
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let old = &old[prefix..];
+    let new = &new[prefix..];
+    let suffix = old
+        .iter()
+        .rev()
+        .zip(new.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let old: HashSet<_> = old[..old.len() - suffix].iter().copied().collect();
+    let new: HashSet<_> = new[..new.len() - suffix].iter().copied().collect();
+    roots.extend(old.symmetric_difference(&new).copied());
 }
 
 /// Aplica el delta (touched/removed) sobre `mirror` IN-PLACE.
@@ -1168,41 +1225,78 @@ fn refresh_dom_mirror_in_place(
         return;
     }
 
-    let mut changed = false;
-    for &node_id in removed_nodes {
-        let node_id_i32 = node_id as i32;
-        changed |= mirror.nodes.remove(&node_id_i32).is_some();
-    }
-    // Limpiar enlaces una vez por batch, no una vez por nodo eliminado:
-    // O(removed + nodes + edges) en vez de O(removed * (nodes + edges)).
-    if !removed_nodes.is_empty() {
-        for node in mirror.nodes.values_mut() {
-            let before = node.children.len();
-            node.children.retain(|child| !removed_nodes.contains(&(*child as u32)));
-            changed |= node.children.len() != before;
-        }
-    }
-
+    let mut removed: HashSet<i32> = removed_nodes.iter().map(|&id| id as i32).collect();
+    let mut updates = HashMap::new();
+    let mut roots = removed.clone();
     for &node_id in touched_nodes {
-        let node_id_i32 = node_id as i32;
-        if !attached_node_ids.contains(&node_id) {
-            changed |= mirror.nodes.remove(&node_id_i32).is_some();
-            continue;
-        }
-
-        if let Some(mut node) = mirror_node_from_specs(specs_world, node_id) {
+        let id = node_id as i32;
+        let node = attached_node_ids
+            .contains(&node_id)
+            .then(|| mirror_node_from_specs(specs_world, node_id))
+            .flatten();
+        if let Some(mut node) = node {
             node.children
                 .retain(|child| attached_node_ids.contains(&(*child as u32)));
-            mirror.nodes.insert(node_id_i32, node);
-            changed = true;
+            if let Some(old) = mirror.nodes.get(&id) {
+                if old.parent != node.parent || (old.tag == "space") != (node.tag == "space") {
+                    roots.insert(id);
+                }
+                if old.children != node.children {
+                    changed_child_roots(&old.children, &node.children, &mut roots);
+                }
+            } else {
+                roots.insert(id);
+            }
+            // A Specs slot may be removed and reused in the same batch.
+            updates.insert(id, node);
         } else {
-            changed |= mirror.nodes.remove(&node_id_i32).is_some();
+            removed.insert(id);
+            roots.insert(id);
         }
     }
 
+    let mut affected = mirror_descendants(mirror, &roots);
+    update_space_membership(mirror, &affected, false);
+
+    let mut parents = HashSet::new();
+    let mut unknown_removed = false;
+    for id in &removed {
+        if let Some(old) = mirror.nodes.get(id) {
+            parents.insert(old.parent);
+        } else {
+            unknown_removed = true;
+            for set in mirror.space_subtrees.values_mut() {
+                set.remove(id);
+            }
+        }
+    }
+    let mut changed = !updates.is_empty();
+    for id in &removed {
+        changed |= mirror.nodes.remove(id).is_some();
+    }
+    // Known deletions only change their parents. Preserve the repair fallback
+    // for a stale ID referenced by a node whose parent can no longer be found.
+    if unknown_removed {
+        parents.extend(mirror.nodes.keys().copied());
+    }
+    for parent in parents {
+        if let Some(node) = mirror.nodes.get_mut(&parent) {
+            let before = node.children.len();
+            node.children.retain(|child| !removed.contains(child));
+            changed |= before != node.children.len();
+        }
+    }
+    mirror.nodes.extend(updates);
+    affected.extend(mirror_descendants(mirror, &roots));
+    mirror.space_subtrees.retain(|id, _| {
+        mirror
+            .nodes
+            .get(&(*id as i32))
+            .is_some_and(|n| n.tag == "space")
+    });
+    update_space_membership(mirror, &affected, true);
     if changed {
         mirror.version = mirror.version.saturating_add(1);
-        rebuild_dom_mirror_space_subtrees(mirror);
     }
 }
 
@@ -3688,17 +3782,21 @@ mod tests {
             touched.insert(include.id());
             attached = after;
             let mut full = baseline.clone();
-            let mut delta = baseline;
-            let start = Instant::now();
+            let mut delta = baseline.clone();
+            let mut full_ms = 0.0;
+            let mut delta_ms = 0.0;
             for _ in 0..100 {
+                full = baseline.clone();
+                let start = Instant::now();
                 refresh_dom_mirror_in_place(&mut full, &world, &attached, true, &touched, &HashSet::new());
+                full_ms += start.elapsed().as_secs_f64() * 10.0;
             }
-            let full_ms = start.elapsed().as_secs_f64() * 10.0;
-            let start = Instant::now();
             for _ in 0..100 {
+                delta = baseline.clone();
+                let start = Instant::now();
                 refresh_dom_mirror_in_place(&mut delta, &world, &attached, false, &touched, &HashSet::new());
+                delta_ms += start.elapsed().as_secs_f64() * 10.0;
             }
-            let delta_ms = start.elapsed().as_secs_f64() * 10.0;
             assert_eq!(delta.nodes.len(), full.nodes.len());
             assert_eq!(delta.space_subtrees, full.space_subtrees);
             for (id, node) in &full.nodes {
@@ -3761,6 +3859,114 @@ mod tests {
                 assert_eq!(patch.parents[child], 0);
                 assert_eq!(patch.tag_updates[child], "box");
             }
+        }
+    }
+
+    #[test]
+    fn incremental_space_index_matches_full_rebuild_during_scroll_and_reparent() {
+        fn compare(
+            world: &specs::World,
+            mirror: &mut DomMirror,
+            touched: HashSet<u32>,
+            removed: HashSet<u32>,
+        ) {
+            let attached = world.entities().join().map(|e| e.id()).collect();
+            refresh_dom_mirror_in_place(mirror, world, &attached, false, &touched, &removed);
+            let full = build_dom_mirror_from_specs(world, &attached, 0);
+            assert_eq!(mirror.space_subtrees, full.space_subtrees);
+            assert_eq!(mirror.nodes.len(), full.nodes.len());
+            for (id, node) in full.nodes {
+                let actual = &mirror.nodes[&id];
+                assert_eq!(actual.parent, node.parent);
+                assert_eq!(actual.children, node.children);
+                assert_eq!(actual.attrs, node.attrs);
+                assert_eq!(actual.tag, node.tag);
+            }
+        }
+        let mut world = build_world();
+        let root = virtual_dom::parse_xml(
+            &mut world,
+            &format!("<space><space/><space/>{}</space>", "<box/>".repeat(256)),
+        )
+        .unwrap();
+        let children = world
+            .read_storage::<Hierarchy>()
+            .get(root)
+            .unwrap()
+            .children
+            .clone();
+        let (left, right) = (children[0], children[1]);
+        let attached = world.entities().join().map(|e| e.id()).collect();
+        let mut mirror = build_dom_mirror_from_specs(&world, &attached, 0);
+        for iteration in 0..32 {
+            let before: HashSet<u32> = world.entities().join().map(|e| e.id()).collect();
+            let chunk =
+                virtual_dom::parse_xml(&mut world, "<group><space><box/><box/></space></group>")
+                    .unwrap();
+            Hierarchy::add_child(&mut world, left, chunk);
+            let inserted: HashSet<u32> = world
+                .entities()
+                .join()
+                .map(|e| e.id())
+                .filter(|id| !before.contains(id))
+                .collect();
+            let mut touched = inserted.clone();
+            touched.insert(left.id());
+            compare(&world, &mut mirror, touched, HashSet::new());
+
+            world
+                .write_storage::<Hierarchy>()
+                .get_mut(left)
+                .unwrap()
+                .children
+                .retain(|e| *e != chunk);
+            Hierarchy::add_child(&mut world, right, chunk);
+            compare(
+                &world,
+                &mut mirror,
+                HashSet::from([left.id(), right.id(), chunk.id()]),
+                HashSet::new(),
+            );
+
+            world.write_storage::<Tag>().get_mut(chunk).unwrap().0 = "space".into();
+            compare(
+                &world,
+                &mut mirror,
+                HashSet::from([chunk.id()]),
+                HashSet::new(),
+            );
+            world
+                .write_storage::<Attrs>()
+                .get_mut(chunk)
+                .unwrap()
+                .0
+                .insert("test".into(), iteration.to_string());
+            compare(
+                &world,
+                &mut mirror,
+                HashSet::from([chunk.id()]),
+                HashSet::new(),
+            );
+            world.write_storage::<Tag>().get_mut(chunk).unwrap().0 = "group".into();
+            compare(
+                &world,
+                &mut mirror,
+                HashSet::from([chunk.id()]),
+                HashSet::new(),
+            );
+
+            world
+                .write_storage::<Hierarchy>()
+                .get_mut(right)
+                .unwrap()
+                .children
+                .retain(|e| *e != chunk);
+            for &id in &inserted {
+                let entity = world.entities().entity(id);
+                world.delete_entity(entity).unwrap();
+            }
+            world.maintain();
+            compare(&world, &mut mirror, HashSet::from([right.id()]), inserted);
         }
     }
 

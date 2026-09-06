@@ -752,7 +752,46 @@ pub fn rebuild_space_policies_system(
     let tags = world.0.read_storage::<Tag>();
     let attrs = world.0.read_storage::<Attrs>();
     let base_urls = world.0.read_storage::<BaseUrl>();
-    let attached_ids: HashSet<u32> = dom_data.nodes.keys().copied().collect();
+
+    // Only spaces and includes change inheritance. Build their ancestry directly
+    // instead of evaluating every static mesh in the scene on each chunk swap.
+    let relevant: HashSet<specs::Entity> = (&entities, &tags, &hierarchies)
+        .join()
+        .filter(|(ent, tag, _)| {
+            matches!(tag.0.as_str(), "space" | "include") && dom_data.nodes.contains_key(&ent.id())
+        })
+        .map(|(ent, _, _)| ent)
+        .collect();
+    let mut policy_children: HashMap<specs::Entity, Vec<specs::Entity>> = HashMap::new();
+    let mut roots = Vec::new();
+    for &ent in &relevant {
+        let mut parent = hierarchies.get(ent).and_then(|h| h.parent);
+        let mut visited = vec![ent];
+        let mut reachable = true;
+        while let Some(ancestor) = parent {
+            if !dom_data.nodes.contains_key(&ancestor.id()) || visited.contains(&ancestor) {
+                reachable = false;
+                break;
+            }
+            visited.push(ancestor);
+            let Some(hierarchy) = hierarchies.get(ancestor) else {
+                reachable = false;
+                break;
+            };
+            if relevant.contains(&ancestor) {
+                break;
+            }
+            parent = hierarchy.parent;
+        }
+        if !reachable {
+            continue;
+        }
+        if let Some(parent) = parent {
+            policy_children.entry(parent).or_default().push(ent);
+        } else {
+            roots.push(ent);
+        }
+    }
 
     fn walk(
         ent: specs::Entity,
@@ -760,7 +799,7 @@ pub fn rebuild_space_policies_system(
         inherited_native: NativeServiceBits,
         entry_caps: CapabilityBits,
         entry_native: NativeServiceBits,
-        attached_ids: &HashSet<u32>,
+        policy_children: &HashMap<specs::Entity, Vec<specs::Entity>>,
         fallback_url: &str,
         decisions: &PermissionDecisionStore,
         pending_prompts: &mut HashMap<(String, u64), HashSet<u32>>,
@@ -915,18 +954,15 @@ pub fn rebuild_space_policies_system(
             child_entry_native = NativeServiceBits::empty();
         }
 
-        if let Some(h) = hierarchies.get(ent) {
-            for &child in &h.children {
-                if !attached_ids.contains(&child.id()) {
-                    continue;
-                }
+        if let Some(children) = policy_children.get(&ent) {
+            for &child in children {
                 walk(
                     child,
                     child_caps,
                     child_native,
                     child_entry_caps,
                     child_entry_native,
-                    attached_ids,
+                    policy_children,
                     fallback_url,
                     decisions,
                     pending_prompts,
@@ -940,13 +976,6 @@ pub fn rebuild_space_policies_system(
         }
     }
 
-    let roots: Vec<_> = (&entities, &hierarchies)
-        .join()
-        .filter(|(ent, _)| attached_ids.contains(&ent.id()))
-        .filter(|(_, h)| h.parent.is_none())
-        .map(|(ent, _)| ent)
-        .collect();
-
     let mut next = HashMap::new();
     let mut pending_prompts = HashMap::new();
     for root in roots {
@@ -956,7 +985,7 @@ pub fn rebuild_space_policies_system(
             NativeServiceBits::empty(),
             CapabilityBits::empty(),
             NativeServiceBits::empty(),
-            &attached_ids,
+            &policy_children,
             &current_url.0,
             &decisions,
             &mut pending_prompts,
@@ -1111,6 +1140,57 @@ mod tests {
                     .then_some(ent.id())
             })
             .expect("space id attr not found")
+    }
+
+    #[test]
+    fn sparse_policy_walk_preserves_include_barriers_and_skips_detached_ancestors() {
+        let xml = format!(
+            r#"<hsml><space id="luna_root" system-space="root" resources="root">
+          <group id="container">{}
+            <space id="inherited" resources="navigate_self"/>
+            <include><group><space id="isolated" resources="navigate_self"/></group></include>
+            <include resources="navigate_self"><group><space id="granted" resources="navigate_self"/></group></include>
+          </group>
+        </space></hsml>"#,
+            "<box/>".repeat(4000)
+        );
+        let mut app = build_app_with_xml(&xml);
+        app.update();
+        let dom = app.world().resource::<ElemenetWorld>();
+        let inherited = find_space_id_by_attr_id(dom, "inherited");
+        let isolated = find_space_id_by_attr_id(dom, "isolated");
+        let granted = find_space_id_by_attr_id(dom, "granted");
+        let policies = app.world().resource::<SpacePolicies>();
+        assert!(policies.by_space[&inherited]
+            .effective_caps
+            .contains(CapabilityBits::NAVIGATE_SELF));
+        assert!(policies.by_space[&isolated].effective_caps.is_empty());
+        assert!(policies.by_space[&granted]
+            .effective_caps
+            .contains(CapabilityBits::NAVIGATE_SELF));
+        assert_eq!(policies.by_space.len(), 4);
+        let container = {
+            let entities = dom.0.entities();
+            let attrs = dom.0.read_storage::<Attrs>();
+            (&entities, &attrs)
+                .join()
+                .find(|(_, a)| a.0.get("id").is_some_and(|id| id == "container"))
+                .unwrap()
+                .0
+                .id()
+        };
+        // Attached child IDs do not make a subtree reachable through a detached
+        // ancestor. In particular, they must not become new policy roots.
+        app.world_mut()
+            .resource_mut::<crate::VirtualDomData>()
+            .nodes
+            .remove(&container);
+        app.world_mut().resource_mut::<SpacePolicies>().dirty = true;
+        app.update();
+        let policies = app.world().resource::<SpacePolicies>();
+        assert!(!policies.by_space.contains_key(&inherited));
+        assert!(!policies.by_space.contains_key(&isolated));
+        assert!(!policies.by_space.contains_key(&granted));
     }
 
     #[test]
