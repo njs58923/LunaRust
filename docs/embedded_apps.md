@@ -10,6 +10,45 @@ Implementación dividida en commits separados (ver sección "Roadmap" al final).
 
 ---
 
+## Implementación actual: ventanas con posición controlada por el host
+
+Esta sección sustituye las referencias históricas a posiciones mundiales
+copiadas por las apps y a la identificación por el primer mensaje recibido.
+
+- El host responde a `tabs.open` de una app embedded con `tabopened`, incluyendo
+  el ID asignado. Sólo ese mensaje identifica el focus pendiente. Las aperturas
+  sucesivas mientras se espera ese ID se serializan; la apertura reemplazada
+  se cierra cuando recibe su ID. La app se monta oculta hasta estar lista.
+- El shell envía `slot` con `coordinateSpace: "window-local"`, `anchorNodeId`
+  (ID local del marco), `revision`, `size` y posición/rotación locales cero.
+  El host valida que el emisor sea el shell, que el destino tenga `ux_embed`
+  y que el marco pertenezca al shell. Rechaza revisiones atrasadas.
+- `embedded::sync_embedded_windows` obtiene la transformación actual del marco
+  y sus ancestros DESPUÉS del DOM y ANTES de la propagación de Bevy. Calcula la
+  transformación local del contenido respecto a su padre real. No depende de
+  snapshots JS ni de que la app atienda otro mensaje para seguir a la ventana.
+- Marco y contenido conservan árboles de propiedad separados: reconstruir o
+  eliminar el chrome no destruye accidentalmente la app. Si falta el marco,
+  el contenido se oculta hasta que exista. Las referencias incluyen generaciones
+  SPECS y época de navegación para no reutilizar IDs de otra escena.
+- Las apps dibujan alrededor del origen local y usan `size` para su layout.
+  El host controla la transformación del space de contenido y su visibilidad;
+  las transformaciones de sus hijos siguen perteneciendo a la app.
+- Focus visible oculta bookmarks y taskbar. Minimizar conserva el mount y
+  restaura sus controles. Anchored sigue `!minimized && (always_on || menú activo)`.
+  Los botones identifican su ventana estable, sin retener índices de arrays.
+- El bus admite app → shell y shell → app. El API embedded conserva el último
+  slot para un listener registrado después de su recepción y detiene el polling
+  tras `close`.
+
+No se agrega clipping de geometría arbitraria ni drag en esta corrección.
+`size` es un contrato de layout: una app que dibuje deliberadamente fuera del
+volumen todavía necesita clipping futuro. Los tests cubren alineación, árbol
+con padres transformados, worker sin ticks, visibilidad, reemplazo de chrome,
+slots atrasados, identidad del focus y controles tras borrar otras ventanas.
+
+---
+
 ## Contexto y problema
 
 Phase 1 de tabs ya distingue:
@@ -228,14 +267,12 @@ shell.unmountTab(tabId)
 
 ## Coordenadas del slot
 
-- **Position**: world coords. Calculadas por el shell relativas a su propia
-  pose en el momento de asignar. Si el shell se mueve (toggle off → on en otra
-  pose), el shell envía un `slot` event actualizado a cada app focus/anchored
-  no-`always_on`. `always_on` mantiene su pose original (fija en world).
-- **Rotation**: quaternion. Apps focused respetan la rotation del shell;
-  anchored mantienen la suya hasta que el user las arrastre (fase 2).
-- **Size**: vec3 (ancho, alto, profundidad mínima usable). App puede pedir más
-  vía `requestSlot({ size })`; shell otorga el máximo que pueda dar.
+Para ventanas actuales (`coordinateSpace: "window-local"`), position y rotation
+son cero locales. `anchorNodeId` identifica el frame del shell, cuyo transform
+completo aplica el host al contenido. `size` expresa ancho, alto y profundidad
+en metros locales. La rotación usada por las APIs existentes es Euler XYZ en
+radianes, no quaternion. Las apps legacy pueden seguir interpretando mensajes
+sin `coordinateSpace`; el shell actual usa exclusivamente ventanas locales.
 
 ### Frame visual
 

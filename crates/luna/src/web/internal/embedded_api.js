@@ -26,6 +26,7 @@
   // El shell, al mountear la app, le pasa el tab_id como atributo del space:
   // data-luna-tab-id. La app puede leerlo de su propio root.
   const root = global.hiperspace && global.hiperspace.dimention;
+  if (root && root.embedded) return; // Reinjection must not start a second inbox consumer.
   let myTabId = 0;
   try {
     const t = root && root.getAttribute && root.getAttribute('data-luna-tab-id');
@@ -33,12 +34,20 @@
   } catch (_) {}
 
   // ── Event bus interno (solo para listeners locales de la app) ────────────
+  let lastSlot = null;
+  let closed = false;
   const listeners = new Map(); // eventType → Set<fn>
   function on(type, cb) {
     if (typeof cb !== 'function') return;
     const t = String(type || '').toLowerCase();
     if (!listeners.has(t)) listeners.set(t, new Set());
     listeners.get(t).add(cb);
+    if (t === 'slot' && lastSlot && !closed) {
+      const slot = lastSlot;
+      setTimeout(() => {
+        if (!closed && lastSlot === slot && listeners.get(t)?.has(cb)) cb(slot);
+      }, 0);
+    }
   }
   function off(type, cb) {
     const t = String(type || '').toLowerCase();
@@ -68,12 +77,15 @@
       }
       const evtType = String(parsed.type || '').toLowerCase();
       const evt = Object.assign({}, parsed, { fromTabId: Number(m.fromTabId || 0) });
+      if (evtType === 'slot') lastSlot = evt;
+      if (evtType === 'close') { closed = true; lastSlot = null; }
       emit(evtType, evt);
+      if (closed) break;
     }
   }
   function pollTick() {
     pollOnce();
-    setTimeout(pollTick, 16);
+    if (!closed) setTimeout(pollTick, 16);
   }
   pollTick();
 
@@ -92,7 +104,8 @@
 
     /// Pide al shell un slot para dibujar.
     /// opts: { minSize?: {x,y,z}, preferredSize?: {x,y,z}, title?: string }
-    /// Respuesta llega como event 'slot' con { position, rotation, size }.
+    /// 'slot' uses window-local coordinates for host-managed windows.
+    /// Draw around (0,0,0) within size; the host follows the frame entity.
     requestSlot(opts) {
       sendToShell('requestSlot', { opts: opts || {} });
     },

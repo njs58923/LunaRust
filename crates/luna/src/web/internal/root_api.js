@@ -210,7 +210,7 @@
         }
       }
 
-      const initialVisible = options.visible !== false;
+      const initialVisible = options.visible !== false && kind !== 'app-embedded';
 
       const space = root.createElement('space');
       const publicId = registerSpace(space, kind);
@@ -238,7 +238,7 @@
       if (Array.isArray(grants) && grants.length) {
         include.setAttribute('resources', grants.join(','));
       }
-      applySpaceOptions(entry, { ...options, url });
+      applySpaceOptions(entry, { ...options, url, visible: initialVisible });
       return publicId;
     },
 

@@ -250,9 +250,9 @@ fn main() {
     );
     app.add_systems(
         Update,
-        dom::dom_sync_system
-            .run_if(|d: Res<DirtyNodes>| !d.0.is_empty())
-            .in_set(LunaUpdatePhase::RenderSync),
+        (dom::dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
+            luna::embedded::sync_embedded_windows)
+            .chain().in_set(LunaUpdatePhase::RenderSync),
     );
 
     app.add_systems(

@@ -2045,6 +2045,73 @@ pub fn js_eval_pending_scripts(world: &mut World) {
     }
 }
 
+fn bind_embedded_slot(
+    world: &mut World,
+    sender: u32,
+    content_id: u32,
+    payload: &serde_json::Value,
+) -> bool {
+    let Some(local) = payload
+        .get("anchorNodeId")
+        .and_then(|v| v.as_i64())
+        .and_then(|v| i32::try_from(v).ok())
+    else {
+        return false;
+    };
+    let Some(revision) = payload.get("revision").and_then(|v| v.as_u64()) else {
+        return false;
+    };
+    let runtime_id = world
+        .get_resource::<SpaceHandleTables>()
+        .and_then(|tables| tables.by_space.get(&sender))
+        .map(|table| table.runtime_id)
+        .unwrap_or(0);
+    let Some(anchor_id) = world
+        .get_resource::<SpaceHandleTables>()
+        .and_then(|tables| resolve_global_id(tables, sender, local))
+    else {
+        return false;
+    };
+    let Some(specs) = world.get_resource::<ElemenetWorld>() else {
+        return false;
+    };
+    let entities = specs.0.entities();
+    let anchor = entities.entity(anchor_id);
+    let content = entities.entity(content_id);
+    if !entities.is_alive(anchor)
+        || !entities.is_alive(content)
+        || find_owner_space_id(&specs.0, anchor) != Some(sender)
+    {
+        return false;
+    }
+    drop(entities);
+    let epoch = world
+        .get_resource::<crate::NavigationEpoch>()
+        .map(|e| e.0)
+        .unwrap_or(0);
+    world.init_resource::<crate::embedded::EmbeddedWindows>();
+    let mut windows = world.resource_mut::<crate::embedded::EmbeddedWindows>();
+    if windows.0.get(&content_id).is_some_and(|old| {
+        old.epoch == epoch
+            && old.content == content
+            && old.runtime_id == runtime_id
+            && old.revision >= revision
+    }) {
+        return false;
+    }
+    windows.0.insert(
+        content_id,
+        crate::embedded::WindowBinding {
+            anchor,
+            content,
+            epoch,
+            revision,
+            runtime_id,
+        },
+    );
+    true
+}
+
 pub fn js_tick_system(world: &mut World) {
     let elapsed_ms = {
         let Some(time) = world.get_resource::<Time>() else {
@@ -3135,7 +3202,13 @@ pub fn js_tick_system(world: &mut World) {
                 .map(|n| n.0)
                 .unwrap_or(1);
             let mut mount_pushes: Vec<crate::SpaceMountRequest> = Vec::new();
-            for (_space_id, url, kind) in open_requests {
+            let mut opened = Vec::new();
+            for (space_id, url, kind) in open_requests {
+                if kind == "app-embedded" {
+                    opened.push((space_id, serde_json::json!({
+                        "type": "tabopened", "tabId": next_id_value, "url": url, "kind": kind,
+                    }).to_string()));
+                }
                 mount_pushes.push(crate::SpaceMountRequest {
                     tab_id: next_id_value,
                     url,
@@ -3148,6 +3221,15 @@ pub fn js_tick_system(world: &mut World) {
             }
             if let Some(mut mount_queue) = world.get_resource_mut::<crate::SpaceMountQueue>() {
                 mount_queue.0.extend(mount_pushes);
+            }
+            if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() {
+                for (space_id, payload) in opened {
+                    if let Some(worker) = manager.contexts.get_mut(&space_id) {
+                        if worker.try_send(JsWorkerCommand::PushShellMessages(vec![js_runtime::ShellMessage {
+                            target_tab_id: 0, payload,
+                        }])).is_ok() { worker.needs_tick = true; }
+                    }
+                }
             }
         }
 
@@ -3264,6 +3346,11 @@ pub fn js_tick_system(world: &mut World) {
             let sender_tab_id = sender_tab_ids.get(&sender_space_id).copied().unwrap_or(0);
 
             for msg in msgs {
+                if !is_shell && msg.target_tab_id != 0 {
+                    rejected.push(format!("[JS][space:{sender_space_id}] apps may only message the shell"));
+                    continue;
+                }
+
                 let target_space_id: Option<u32> = if msg.target_tab_id == 0 {
                     // Apps que mandan a tab_id=0 → shell. El shell vive en el
                     // inner space del HSML cargado por include — busca por attr.
@@ -3284,6 +3371,19 @@ pub fn js_tick_system(world: &mut World) {
                     ));
                     continue;
                 };
+
+                // Window placement is a host contract, accepted only from the
+                // trusted shell for embedded targets. Stale slots cannot rebind.
+                if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&msg.payload) {
+                    if payload.get("type").and_then(|v| v.as_str()) == Some("slot")
+                        && payload.get("coordinateSpace").and_then(|v| v.as_str()) == Some("window-local") {
+                        if !is_shell || !capabilities_by_space.get(&target_space_id)
+                            .copied().unwrap_or_default().contains(CapabilityBits::UX_EMBED)
+                            || !bind_embedded_slot(world, sender_space_id, target_space_id, &payload) {
+                            continue;
+                        }
+                    }
+                }
 
                 // En el inbox del destino, `target_tab_id` lo usamos como
                 // "fromTabId" — quien lo originó. Convención del bus.
@@ -4026,6 +4126,35 @@ mod tests {
             matches!(cmd_rx.try_recv(), Ok(JsWorkerCommand::Tick { .. })),
             "a click arriving during the previous tick must schedule a new pump"
         );
+    }
+
+    #[test]
+    fn embedded_binding_rejects_stale_slots_and_foreign_anchors() {
+        use specs::Builder;
+        let mut specs = build_world();
+        let shell = specs.create_entity().with(Tag("space".into())).with(Hierarchy::default()).build();
+        let app = specs.create_entity().with(Tag("space".into())).with(Hierarchy::default()).build();
+        let frame = specs.create_entity().with(Tag("group".into())).with(Hierarchy::default()).build();
+        Hierarchy::add_child(&mut specs, shell, frame);
+        let mut world = World::new();
+        world.insert_resource(ElemenetWorld(specs));
+        let mut tables = SpaceHandleTables::default();
+        let mut table = SpaceHandleTable::default();
+        table.runtime_id = 1;
+        table.local_to_global.insert(10, frame.id());
+        table.local_to_global.insert(11, app.id());
+        tables.by_space.insert(shell.id(), table);
+        world.insert_resource(tables);
+        let slot = serde_json::json!({"anchorNodeId":10,"revision":2});
+        assert!(bind_embedded_slot(&mut world, shell.id(), app.id(), &slot));
+        assert!(!bind_embedded_slot(&mut world, shell.id(), app.id(), &slot));
+        assert!(!bind_embedded_slot(&mut world, shell.id(), app.id(),
+            &serde_json::json!({"anchorNodeId":10,"revision":1})));
+        assert!(!bind_embedded_slot(&mut world, shell.id(), app.id(),
+            &serde_json::json!({"anchorNodeId":11,"revision":3})));
+        world.resource_mut::<SpaceHandleTables>().by_space.get_mut(&shell.id()).unwrap().runtime_id = 2;
+        assert!(bind_embedded_slot(&mut world, shell.id(), app.id(),
+            &serde_json::json!({"anchorNodeId":10,"revision":1})));
     }
 
     fn worker_eval(worker: &mut SpaceScriptWorker, code: String) {

@@ -161,7 +161,7 @@
       function shouldShowBookmarks() {
         // Bookmarks visibles si shell visible y no hay focus tomando la pantalla.
         if (!shellState.bookmarksVisible) return false;
-        if (shellState.focusApp && !shellState.focusApp.minimized) return false;
+        if (shellState.focusApp && !shellState.focusApp.minimized && shellState.focusApp.ready) return false;
         return true;
       }
 
@@ -173,6 +173,7 @@
       // hace que la bar quede visible para volver a marcadores desde una app.
       function shouldShowBottomBar() {
         if (!shellState.bookmarksVisible) return false;
+        if (shellState.focusApp && !shellState.focusApp.minimized && shellState.focusApp.ready) return false;
         const hasFocus = shellState.focusApp !== null;
         const hasAnchored = shellState.anchored.length > 0;
         return hasFocus || hasAnchored;
@@ -404,9 +405,10 @@
         if (shellState.focusApp) {
           slots.push({
             key: 'focus',
-            label: 'Focus',
+            label: shellState.focusApp.ready ? 'Focus' : 'Loading',
             color: shellState.focusApp.minimized ? '#90A4AE' : '#FFC107',
             onTap: onTapBarFocus,
+            closeOnTap: onTapFocusClose,
           });
         }
         for (let i = 0; i < shellState.anchored.length; i++) {
@@ -414,11 +416,11 @@
           const idx = i;
           const labelText = (a.title || 'App').slice(0, 6);
           slots.push({
-            key: 'anc:' + idx,
+            key: 'anc:' + a.tabId,
             label: labelText,
             color: a.minimized ? '#607D8B' : '#7E57C2',
-            onTap: () => onTapBarAnchored(idx),
-            closeOnTap: () => onTapBarAnchoredClose(idx),
+            onTap: () => onTapBarAnchored(shellState.anchored.indexOf(a)),
+            closeOnTap: () => onTapBarAnchoredClose(shellState.anchored.indexOf(a)),
           });
         }
 
@@ -467,16 +469,14 @@
       }
 
       function onTapBarFocus() {
-        if (!shellState.focusApp) return;
+        if (!shellState.focusApp || !shellState.focusApp.ready) return;
         shellState.focusApp.minimized = false;
         // bookmarksVisible queda true (sesión sigue activa). Las reglas de
         // visibilidad ocultan panel automáticamente porque focus !minimized.
         if (shellState.focusApp.tabId > 0) {
           if (dimention.tabs) dimention.tabs.setVisible(shellState.focusApp.tabId, true);
           sendMessageToApp(shellState.focusApp.tabId, 'focus');
-          // No re-enviamos slot — la app queda en la pose previa, alineada
-          // con el frame del shell. La pose sólo cambia cuando el shell se
-          // mueve (repositionShellAtViewer).
+          sendFocusSlotToApp();
         }
         applyVisibility();
       }
@@ -509,8 +509,16 @@
         // llegada del primer mensaje de la app que dispara buildFocusFrame.
         const showFocus = shellState.focusApp
           && !shellState.focusApp.minimized
-          && shellState.focusApp.tabId > 0;
+          && shellState.focusApp.tabId > 0 && shellState.focusApp.ready;
         if (focusZone) focusZone.setAttribute('visible', showFocus ? 'true' : 'false');
+        if (shellState.focusApp && shellState.focusApp.tabId > 0 && dimention.tabs) {
+          const entry = shellState.focusApp;
+          if (entry._lastVisible !== !!showFocus) {
+            dimention.tabs.setVisible(entry.tabId, !!showFocus);
+            sendMessageToApp(entry.tabId, showFocus ? 'resume' : 'suspend');
+            entry._lastVisible = !!showFocus;
+          }
+        }
 
         applyAnchoredVisibility();
       }
@@ -752,16 +760,26 @@
         };
       }
 
-      // Envía el slot pose actual a la app focused.
-      function sendFocusSlotToApp() {
-        if (!shellState.focusApp) return;
-        const slot = computeFocusSlotPose();
-        const payload = JSON.stringify({ type: 'slot',
-          position: slot.position,
-          rotation: slot.rotation,
-          size: slot.size,
+      // The host follows the actual frame entity every frame. Apps receive
+      // local coordinates; a busy app worker cannot leave content behind.
+      let nextSlotRevision = 0;
+      function sendWindowSlot(entry, frame, size) {
+        if (!entry || entry.tabId <= 0 || !frame) return;
+        const revision = ++nextSlotRevision;
+        entry.slotRevision = revision;
+        frame._onResolved((anchorNodeId) => {
+          if (entry.slotRevision !== revision ||
+              (shellState.focusApp !== entry && !shellState.anchored.includes(entry))) return;
+          sendMessageToApp(entry.tabId, 'slot', {
+            coordinateSpace: 'window-local', anchorNodeId, revision,
+            position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, size,
+          });
         });
-        Deno.core.ops.op_shell_send_message(BigInt(shellState.focusApp.tabId), payload);
+      }
+
+      function sendFocusSlotToApp() {
+        sendWindowSlot(shellState.focusApp, focusZone,
+          { x: FOCUS_SLOT_W, y: FOCUS_SLOT_H, z: FOCUS_SLOT_D });
       }
 
       function sendMessageToApp(tabId, type, extra) {
@@ -773,6 +791,14 @@
       function onTapFocusClose() {
         if (!shellState.focusApp) return;
         const tabId = shellState.focusApp.tabId;
+        if (tabId <= 0) {
+          shellState.focusApp.cancelled = true;
+          shellState.focusApp.supersededBy = null;
+          shellState.focusApp.minimized = true;
+          shellState.bookmarksVisible = true;
+          applyVisibility();
+          return;
+        }
         // Notificar a la app antes de unmount (oportunidad de cleanup).
         sendMessageToApp(tabId, 'close');
         // Unmount inmediato; la app pierde su isolate (worker shutdown).
@@ -929,14 +955,14 @@
         addBox({ x: bx, y: btnY, z: 0.012,
                  sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
                  color: '#EF4444', borderRadius: 0.02, touchable: true,
-                 onTap: () => onTapAnchoredClose(idx) });
+                 onTap: () => onTapAnchoredClose(shellState.anchored.indexOf(anc)) });
         addText({ x: bx, y: btnY, z: 0.020, value: 'X', size: 0.035 });
         // Minimize (gris)
         bx -= FOCUS_BTN_SIZE + FOCUS_BTN_GAP;
         addBox({ x: bx, y: btnY, z: 0.012,
                  sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
                  color: '#90A4AE', borderRadius: 0.02, touchable: true,
-                 onTap: () => onTapAnchoredMinimize(idx) });
+                 onTap: () => onTapAnchoredMinimize(shellState.anchored.indexOf(anc)) });
         addText({ x: bx, y: btnY, z: 0.020, value: '_', size: 0.045 });
         // Always_on (verde si on, gris si off) — color refrescado en updateAnchoredFrame.
         bx -= FOCUS_BTN_SIZE + FOCUS_BTN_GAP;
@@ -944,7 +970,7 @@
                  sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
                  color: anc.alwaysOn ? '#10B981' : '#455A64',
                  borderRadius: 0.02, touchable: true,
-                 onTap: () => onTapAnchoredAlwaysOn(idx) });
+                 onTap: () => onTapAnchoredAlwaysOn(shellState.anchored.indexOf(anc)) });
         addText({ x: bx, y: btnY, z: 0.020, value: '!', size: 0.035 });
 
         // Viewport silhouette.
@@ -977,13 +1003,9 @@
       function sendAnchoredSlotToApp(idx) {
         const a = shellState.anchored[idx];
         if (!a || a.tabId <= 0) return;
-        const payload = JSON.stringify({
-          type: 'slot',
-          position: a.position,
-          rotation: a.rotation,
-          size: { x: ANCHORED_SLOT_W, y: ANCHORED_SLOT_H, z: ANCHORED_SLOT_D },
-        });
-        Deno.core.ops.op_shell_send_message(BigInt(a.tabId), payload);
+        ensureAnchoredFrame(a, idx);
+        sendWindowSlot(a, a.frame && a.frame.group,
+          { x: ANCHORED_SLOT_W, y: ANCHORED_SLOT_H, z: ANCHORED_SLOT_D });
       }
 
       // ── Anchored titlebar handlers ────────────────────────────────────
@@ -1053,26 +1075,29 @@
       //   - Setea focusApp en ShellState.
       //   - Cuando la app pida 'requestSlot', shell le manda el slot y oculta bookmarks.
       function openEmbeddedApp(bm) {
+        shellState.bookmarksVisible = true;
         // El shell mantiene su pose actual (la que tenía cuando aparecieron
         // los bookmarks). NO re-leemos viewer pose acá: si el user movió la
         // cabeza entre abrir el menú y clickear la app, el shell se saltaría
         // visualmente — todo el menú parpadearía al moverse. El frame del
         // focus aparece exactamente sobre la posición del shell visible.
+        if (shellState.focusApp && shellState.focusApp.tabId === 0) {
+          shellState.focusApp.cancelled = true;
+          shellState.focusApp.supersededBy = bm;
+          return;
+        }
         if (shellState.focusApp) {
           sendMessageToApp(shellState.focusApp.tabId, 'close');
           if (dimention.tabs) dimention.tabs.close(shellState.focusApp.tabId);
           shellState.focusApp = null;
         }
 
-        // El tab_id real lo asigna el host. NO podemos saberlo desde acá sin
-        // un callback. Heurística: justo después del mount, el host le da el
-        // siguiente tabId secuencial. Mejor: cuando la app mande 'ready', leemos
-        // su tabId del fromTabId del mensaje y completamos focusApp.
-        // Por ahora marcamos focusApp con tabId=0 (pending) — cuando llegue
-        // ready, lo completamos.
+        // Identity arrives from the host's tabopened acknowledgement.
+        // App messages cannot identify or reveal a pending window.
         shellState.focusApp = {
-          tabId: 0,        // pending — completado en 'ready'
+          tabId: 0,        // pending until host acknowledgement
           minimized: false,
+          ready: false,
           title: bm.name,
           pendingUrl: bm.url,
         };
@@ -1115,27 +1140,31 @@
         if (!parsed || typeof parsed !== 'object') return;
         const type = String(parsed.type || '').toLowerCase();
 
-        // Si focusApp.tabId estaba pending (0) y la app manda algo, capturamos
-        // el tabId del primer mensaje que llegue de la app correcta.
-        if (shellState.focusApp && shellState.focusApp.tabId === 0 && fromTabId > 0
-            && (type === 'ready' || type === 'requestslot')
-            && !shellState.anchored.some(a => a.tabId === fromTabId)) {
-          shellState.focusApp.tabId = fromTabId;
-          // Construir frame con tabId temporalmente "pending" → applyVisibility
-          // mantiene focusZone oculto mientras los spawn commands se commitean.
-          // Tras un par de frames, marcamos tabId definitivo + slot a la app.
-          buildFocusFrame(shellState.focusApp.title || 'App');
+        // Only the host assigns identity. Never let an unrelated/late app
+        // claim a pending focus window just by sending its first message.
+        if (type === 'tabopened' && fromTabId === 0) {
+          const entry = shellState.focusApp;
+          const tabId = Number(parsed.tabId);
+          if (!entry || entry.tabId !== 0 || !(tabId > 0)) return;
+          entry.tabId = tabId;
+          if (entry.cancelled) {
+            const replacement = entry.supersededBy;
+            sendMessageToApp(tabId, 'close');
+            if (dimention.tabs) dimention.tabs.close(tabId);
+            shellState.focusApp = null;
+            if (replacement) openEmbeddedApp(replacement);
+            else applyVisibility();
+            return;
+          }
+          buildFocusFrame(entry.title || 'App');
+          applyVisibility();
+          return;
+        }
+        if (shellState.focusApp && shellState.focusApp.tabId === fromTabId
+            && (type === 'ready' || type === 'requestslot') && !shellState.focusApp.ready) {
+          shellState.focusApp.ready = true;
           sendFocusSlotToApp();
-          // Defer reveal del frame hasta que los spawn commits (boxes/text del
-          // titlebar) ya estén renderizados. Sin esto, applyVisibility hace
-          // visible focusZone antes de que los hijos tengan Transform Bevy
-          // sincronizado → parpadeo de frame vacío durante 1-3 frames.
-          const revealId = shellState.focusApp.tabId;
-          setTimeout(() => {
-            if (shellState.focusApp && shellState.focusApp.tabId === revealId) {
-              applyVisibility();
-            }
-          }, 50);
+          applyVisibility();
         }
 
         if (type === 'requestslot') {
@@ -1147,7 +1176,7 @@
             if (idx >= 0) sendAnchoredSlotToApp(idx);
           }
         } else if (type === 'ready') {
-          // No-op por ahora — el shell ya captura el tabId del primer mensaje.
+          // Readiness is handled above, after matching the host-assigned ID.
         } else if (type === 'closeself') {
           if (shellState.focusApp && shellState.focusApp.tabId === fromTabId) {
             onTapFocusClose();

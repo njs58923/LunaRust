@@ -70,26 +70,11 @@
         }
 
         e.on('slot', (slot) => {
-          console.log('[demo_embedded] slot received pos=',
-            slot.position && (slot.position.x + ',' + slot.position.y + ',' + slot.position.z));
-          if (slot.position) {
-            root.position = {
-              x: Number(slot.position.x || 0),
-              y: Number(slot.position.y || 0),
-              z: Number(slot.position.z || 0),
-            };
-            try {
-              const p = root.position;
-              console.log('[demo_embedded] root.position after set =',
-                p && (p.x + ',' + p.y + ',' + p.z));
-            } catch (_) {}
-          }
-          if (slot.rotation) {
-            root.rotation = {
-              x: Number(slot.rotation.x || 0),
-              y: Number(slot.rotation.y || 0),
-              z: Number(slot.rotation.z || 0),
-            };
+          // The host owns placement for window-local slots. Content stays local
+          // even when the shell moves while this worker is busy or suspended.
+          if (slot.coordinateSpace !== 'window-local') {
+            if (slot.position) root.position = slot.position;
+            if (slot.rotation) root.rotation = slot.rotation;
           }
           renderInSlot(slot.size);
         });

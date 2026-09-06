@@ -1781,7 +1781,7 @@ mod tests {
         let reposition = source.split_once("function repositionShellAtViewer()").unwrap().1
             .split_once("// ── Toggle shell").unwrap().0;
         let compute = source.split_once("function computeFocusSlotPose()").unwrap().1
-            .split_once("// Envía el slot pose").unwrap().0;
+            .split_once("// The host follows the actual frame").unwrap().0;
         let mut eng = Engine::new();
         eng.eval(&format!(r#"
             const panel = new HSMLElement(5);
@@ -1835,6 +1835,117 @@ mod tests {
         let positions = eng.drain_transform_position_updates();
         assert_eq!(positions.iter().filter(|(id, _)| *id == 0).last().unwrap().1.x, 2.0);
         assert!(positions.iter().filter(|(id, _)| *id >= 10).all(|(_, p)| p.x == 0.0));
+    }
+
+    #[test]
+    fn shell_lifecycle_uses_host_identity_and_stable_window_controls() {
+        let mut eng = Engine::new();
+        eng.eval(r#"
+            globalThis.__actions = [];
+            let nextNode = 100;
+            class UiNode {
+                constructor(tag) {
+                    this.tag = tag; this._nodeId = nextNode++; this.attrs = {};
+                    this.children = []; this.listeners = {};
+                    this.position = {x:0,y:0,z:0}; this.rotation = {x:0,y:0,z:0};
+                    this.scale = {x:1,y:1,z:1};
+                }
+                _onResolved(cb) { cb(this._nodeId); }
+                setAttribute(k,v) { this.attrs[k] = v; }
+                getAttribute(k) { return this.attrs[k]; }
+                appendChild(c) { this.children.push(c); c.parent = this; }
+                remove() { this.removed = true; }
+                addEventListener(k,fn) { (this.listeners[k] ||= []).push(fn); }
+                removeEventListener(k,fn) { this.listeners[k] = (this.listeners[k] || []).filter(f => f !== fn); }
+                fire(k) { for (const fn of this.listeners[k] || []) fn({}); }
+            }
+            const uiRoot = new UiNode('space');
+            const named = new Map();
+            uiRoot.getElementById = id => {
+                if (!named.has(id)) named.set(id, new UiNode('group'));
+                return named.get(id);
+            };
+            uiRoot.createElement = tag => new UiNode(tag);
+            uiRoot.readViewerPose = () => ({px:4,py:1.7,pz:-2,yaw:0.8});
+            uiRoot.tabs = {
+                open(url, options) { __actions.push(['open',url]); },
+                close(id) { __actions.push(['close',id]); },
+                setVisible(id, value) { __actions.push(['visible',id,value]); }
+            };
+            globalThis.__testRoot = uiRoot;
+        "#).unwrap();
+        let document = include_str!("web/ux/ux_vr.hsml");
+        let script = document.split_once("<script>").unwrap().1.split_once("</script>").unwrap().0
+            .replacen("const root = hiperspace.dimention;", "const root = globalThis.__testRoot; const dimention = root;", 1);
+        eng.eval(&format!(r#"(function() {{ {script}
+            globalThis.shell = {{ state:shellState, open:openEmbeddedApp, message:handleAppMessage,
+                anchor:onTapFocusAnchor, close:onTapFocusClose, minimize:onTapFocusMinimize,
+                restore:onTapBarFocus, toggle:toggleShell, reposition:repositionShellAtViewer,
+                barVisible:shouldShowBottomBar, apply:applyVisibility }};
+        }})();"#)).unwrap();
+        eng.eval(r#"
+            function check(ok, msg) { if (!ok) throw new Error(msg); }
+            function hostOpened(id) { shell.message({fromTabId:0,payload:JSON.stringify({type:'tabopened',tabId:id})}); }
+            function ready(id) { shell.message({fromTabId:id,payload:JSON.stringify({type:'ready'})}); }
+            shell.open({name:'A',url:'luna://demo_embedded'});
+            check(shell.barVisible(), 'loading window must retain a cancel control');
+            ready(999);
+            check(shell.state.focusApp.tabId === 0, 'foreign app claimed pending focus');
+            hostOpened(42);
+            check(!shell.state.focusApp.ready, 'window revealed before app readiness');
+            ready(42);
+            check(shell.state.focusApp.ready && !shell.barVisible(), 'focus must hide taskbar');
+            shell.minimize();
+            check(shell.barVisible(), 'minimized focus must retain restore control');
+            shell.restore();
+            shell.anchor();
+            const first = shell.state.anchored[0];
+            shell.open({name:'B',url:'luna://demo_embedded'}); hostOpened(43); ready(43); shell.anchor();
+            const second = shell.state.anchored[1];
+            const closeButton = second.frame.group.children.find(n => n.attrs.color === '#EF4444');
+            const firstClose = first.frame.group.children.find(n => n.attrs.color === '#EF4444');
+            firstClose.fire('toque');
+            check(shell.state.anchored.length === 1 && shell.state.anchored[0] === second, 'wrong anchor removed');
+            closeButton.fire('toque');
+            check(shell.state.anchored.length === 0, 'surviving titlebar retained stale array index');
+            check(__actions.some(a => a[0] === 'close' && a[1] === 43), 'remaining app not closed');
+            shell.open({name:'Slow',url:'luna://slow'});
+            shell.open({name:'Replacement',url:'luna://replacement'});
+            hostOpened(44);
+            check(__actions.some(a => a[0] === 'close' && a[1] === 44), 'superseded pending app leaked');
+            check(shell.state.focusApp.tabId === 0 && shell.state.focusApp.pendingUrl === 'luna://replacement', 'replacement lost');
+            hostOpened(45); ready(44);
+            check(!shell.state.focusApp.ready, 'late closed app revealed replacement');
+            ready(45);
+            shell.reposition();
+        "#).unwrap();
+        let slots: Vec<serde_json::Value> = eng.drain_shell_outbox().iter()
+            .filter_map(|m| serde_json::from_str::<serde_json::Value>(&m.payload).ok())
+            .filter(|p| p["type"] == "slot").collect();
+        assert!(!slots.is_empty());
+        for slot in slots {
+            assert_eq!(slot["coordinateSpace"], "window-local");
+            assert_eq!(slot["position"]["x"], 0);
+            assert!(slot["anchorNodeId"].as_i64().unwrap() >= 100);
+        }
+    }
+
+    #[test]
+    fn embedded_api_replays_initial_slot_and_reinjection_keeps_one_consumer() {
+        let mut eng = Engine::new();
+        eng.push_shell_messages(vec![js_runtime::ShellMessage {
+            target_tab_id: 0,
+            payload: r#"{"type":"slot","coordinateSpace":"window-local","revision":1,"size":{"x":1}}"#.into(),
+        }]);
+        eng.eval(SCRIPT_EMBEDDED_API).unwrap();
+        eng.eval(r#"
+            globalThis.receivedSlots = 0;
+            const firstApi = dimention.embedded;
+            firstApi.on('slot', slot => { if (slot.size.x !== 1) throw Error('wrong slot'); receivedSlots++; });
+        "#).unwrap();
+        eng.eval(SCRIPT_EMBEDDED_API).unwrap();
+        eng.fire_raf(0.0);
+        eng.eval("if (receivedSlots !== 1 || dimention.embedded !== firstApi) throw Error('lost slot or duplicate API');").unwrap();
     }
 
     fn fire_demo_script() -> String {
