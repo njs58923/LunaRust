@@ -10,6 +10,7 @@ pub mod desktop_locomotion;
 pub mod dom;
 pub mod embedded;
 pub mod io;
+pub mod models;
 pub mod js;
 pub mod permissions;
 pub mod render;

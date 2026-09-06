@@ -365,7 +365,7 @@ pub struct ScriptLoadStates(pub HashMap<u32, ScriptLoadState>);
 #[derive(Debug, Clone)]
 pub enum ModelLoadState {
     Requested { url: String },
-    Ready { url: String, asset_path: String },
+    Prepared { url: String, asset_path: String },
     Failed { url: String, error: String },
 }
 
@@ -373,7 +373,7 @@ pub enum ModelLoadState {
 pub struct ModelLoadStates(pub HashMap<u32, ModelLoadState>);
 
 #[derive(Resource, Default)]
-pub struct PendingModelLoads(pub HashMap<String, HashSet<u32>>);
+pub struct PendingModelLoads(pub HashMap<String, HashSet<u32>>, pub HashMap<String, u64>);
 
 impl PendingModelLoads {
     pub fn enqueue(&mut self, url: &str, node_id: u32) -> bool {
@@ -383,7 +383,15 @@ impl PendingModelLoads {
         should_spawn
     }
 
+    pub fn finish(&mut self, url: &str, request_id: u64) -> Vec<u32> {
+        if self.1.get(url) != Some(&request_id) { return Vec::new(); }
+        self.take_waiters(url)
+    }
+
+    pub fn clear(&mut self) { self.0.clear(); self.1.clear(); }
+
     pub fn take_waiters(&mut self, url: &str) -> Vec<u32> {
+        self.1.remove(url);
         self.0
             .remove(url)
             .map(|waiters| waiters.into_iter().collect())
@@ -395,6 +403,7 @@ impl PendingModelLoads {
             waiters.remove(&node_id);
             !waiters.is_empty()
         });
+        self.1.retain(|url, _| self.0.contains_key(url));
     }
 }
 
@@ -509,7 +518,7 @@ pub fn request_include_load(
     });
 }
 
-pub fn request_model_prepare(rt: &Runtime, io_service: &IoService, url: String) {
+pub fn request_model_prepare(rt: &Runtime, io_service: &IoService, url: String) -> u64 {
     let network_id =
         io_service.begin_request(NetworkRequestKind::Model, url.clone(), "model-cache");
     let tx = io_service.sender();
@@ -522,6 +531,7 @@ pub fn request_model_prepare(rt: &Runtime, io_service: &IoService, url: String) 
             result,
         }).await;
     });
+    network_id
 }
 
 pub fn request_skybox_prepare(
@@ -676,44 +686,47 @@ async fn copy_file_atomic(from: PathBuf, to: PathBuf) -> Result<(), String> {
     .map_err(|e| format!("Copy cache file failed: {e}"))
 }
 
+fn model_resource_filename(url: &str, bytes: &[u8]) -> String {
+    let path = url::Url::parse(url).ok().map(|u| u.path().to_string())
+        .unwrap_or_else(|| url.to_string());
+    let ext = std::path::Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or("bin");
+    let mut hash = blake3::Hasher::new();
+    hash.update(url.as_bytes());
+    hash.update(&[0]);
+    hash.update(bytes);
+    format!("model-{}.{}", hash.finalize().to_hex(), ext)
+}
+
 async fn prepare_model_asset(url: &str, client: &reqwest::Client) -> Result<String, String> {
     let (assets_dir, cache_dir) = resolve_assets_and_cache_dirs();
-    let filename = encode_url_to_filename(url);
-    let local_path = cache_dir.join(filename);
-
-    if !cache_dir.exists() {
-        std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Create cache dir failed: {e}"))?;
-    }
-
-    if url.starts_with("http://") || url.starts_with("https://") {
-        let bytes = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| format!("HTTP error: {e}"))?
-            .error_for_status()
-            .map_err(|e| format!("HTTP status error: {e}"))?
-            .bytes()
-            .await
-            .map_err(|e| format!("Read bytes error: {e}"))?
-            .to_vec();
-        write_bytes_atomic(local_path.clone(), bytes).await?;
+    let bytes = if url.starts_with("http://") || url.starts_with("https://") {
+        client.get(url).send().await.map_err(|e| format!("HTTP error: {e}"))?
+            .error_for_status().map_err(|e| format!("HTTP status error: {e}"))?
+            .bytes().await.map_err(|e| format!("Read bytes error: {e}"))?.to_vec()
     } else {
-        let from = PathBuf::from(url);
-        if !from.exists() {
-            return Err(format!("Local file not found: {url}"));
+        tokio::fs::read(url).await.map_err(|e| format!("Read model error: {e}"))?
+    };
+    // Immutable revisions prevent a late download from overwriting a newer asset.
+    // Equal URL/content pairs reuse the same Bevy asset handles.
+    let local_path = cache_dir.join(model_resource_filename(url, &bytes));
+    let write_path = local_path.clone();
+    task::spawn_blocking(move || -> Result<(), String> {
+        std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+        if !write_path.exists() {
+            static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let id = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let tmp = write_path.with_extension(format!("{}.{}.tmp", std::process::id(), id));
+            std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+            if let Err(error) = std::fs::rename(&tmp, &write_path) {
+                let _ = std::fs::remove_file(&tmp);
+                if !write_path.exists() { return Err(error.to_string()); }
+            }
         }
-        copy_file_atomic(from, local_path.clone()).await?;
-    }
-
+        Ok(())
+    }).await.map_err(|e| e.to_string())??;
     to_assets_relative(&local_path, &assets_dir)
         .map(|path| path.replace('\\', "/"))
-        .ok_or_else(|| {
-            format!(
-                "Cached model path is outside assets dir: {}",
-                local_path.display()
-            )
-        })
+        .ok_or_else(|| "Model cache path is outside assets dir".into())
 }
 
 async fn prepare_cached_image(url: String, client: reqwest::Client) -> Result<String, String> {
@@ -959,7 +972,10 @@ pub fn poll_io_results_system(
                 };
                 let detail = result.as_ref().err().cloned();
                 io_service.finish_request(network_id, status, detail);
-                let waiters = pending_model_loads.take_waiters(&url);
+                let waiters: Vec<_> = pending_model_loads.finish(&url, network_id).into_iter()
+                    .filter(|id| matches!(model_load_states.0.get(id),
+                        Some(ModelLoadState::Requested { url: requested }) if requested == &url))
+                    .collect();
                 if waiters.is_empty() {
                     continue;
                 }
@@ -969,7 +985,7 @@ pub fn poll_io_results_system(
                         Ok(asset_path) => {
                             model_load_states.0.insert(
                                 *node_id,
-                                ModelLoadState::Ready {
+                                ModelLoadState::Prepared {
                                     url: url.clone(),
                                     asset_path: asset_path.clone(),
                                 },
@@ -1111,5 +1127,33 @@ mod backpressure_tests {
             .lock()
             .unwrap()
             .contains_key(&space_id));
+    }
+}
+
+#[cfg(test)]
+mod model_resource_tests {
+    use super::*;
+    #[test]
+    fn obsolete_completion_cannot_consume_replacement_waiters() {
+        let mut pending = PendingModelLoads::default();
+        assert!(pending.enqueue("a", 7)); pending.1.insert("a".into(), 1);
+        pending.remove_node(7);
+        assert!(pending.enqueue("a", 7)); pending.1.insert("a".into(), 2);
+        assert!(pending.finish("a", 1).is_empty());
+        assert!(!pending.enqueue("a", 8));
+        let mut waiters = pending.finish("a", 2); waiters.sort();
+        assert_eq!(waiters, vec![7, 8]);
+        assert!(pending.finish("a", 2).is_empty());
+        assert!(pending.enqueue("b", 7)); pending.1.insert("b".into(), 3);
+        pending.clear();
+        assert!(pending.finish("b", 3).is_empty());
+    }
+    #[test]
+    fn content_revisions_are_immutable_and_query_does_not_break_extension() {
+        let url = "https://example.test/butterfly.glb?version=2";
+        let first = model_resource_filename(url, b"first");
+        assert!(first.ends_with(".glb"));
+        assert_eq!(first, model_resource_filename(url, b"first"));
+        assert_ne!(first, model_resource_filename(url, b"second"));
     }
 }

@@ -3447,6 +3447,7 @@ dependencies = [
  "bevy_mod_xr",
  "bevy_xr_utils",
  "bitflags 2.6.0",
+ "blake3",
  "fontdue",
  "futures-util",
  "image",

@@ -252,13 +252,6 @@ pub struct TransformOnlyDirtyNodes(pub HashSet<u32>);
 #[derive(Component)]
 pub struct Dirty;
 
-/// Asset path actualmente montado en una entidad Bevy de un `<model>`.
-/// Permite a `dom_sync_system` distinguir "el src cambió de verdad" (remontar
-/// la escena glTF) de "sólo cambió el transform" (update barato en-sitio),
-/// evitando respawnear la escena entera en cada frame durante animaciones.
-#[derive(Component)]
-pub struct MountedModel(pub String);
-
 #[derive(Resource, Default)]
 pub struct DeleteRequests(pub Vec<u32>);
 
@@ -908,9 +901,10 @@ pub struct AsyncDomParams<'w, 's> {
     pub transform_only_dirty: ResMut<'w, crate::TransformOnlyDirtyNodes>,
     pub pending_scripts: ResMut<'w, PendingScripts>,
     pub include_load_states: ResMut<'w, crate::IncludeLoadStates>,
-    /// Lectura del asset montado por entidad `<model>` (acceso disjunto del
+    /// Lectura de la instancia estable de cada `<model>` (acceso disjunto del
     /// `&mut Transform` de la query principal de `dom_sync_system`).
-    pub mounted_models: Query<'w, 's, &'static MountedModel>,
+    pub mounted_models: Query<'w, 's, &'static crate::models::ModelInstance>,
+    pub model_status_updates: ResMut<'w, AttributeUpdates>,
 }
 
 #[derive(SystemParam)]

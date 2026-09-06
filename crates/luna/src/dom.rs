@@ -457,7 +457,7 @@ pub fn commit_pending_document_load_system(
                             .push_info("[JS] All JS contexts cleared for committed navigation");
 
                         commit.script_load_states.0.clear();
-                        commit.pending_model_loads.0.clear();
+                        commit.pending_model_loads.clear();
                         commit.model_load_states.0.clear();
                         commit.skybox.clear_runtime();
                         commit.pending_includes.0.clear();
@@ -1423,12 +1423,13 @@ fn queue_model_prepare_if_needed(
     let should_request = !matches!(
         model_load_states.0.get(&node_id),
         Some(ModelLoadState::Requested { url })
-            | Some(ModelLoadState::Ready { url, .. })
+            | Some(ModelLoadState::Prepared { url, .. })
             | Some(ModelLoadState::Failed { url, .. })
             if *url == final_url
     );
 
     if should_request {
+        pending_model_loads.remove_node(node_id);
         model_load_states.0.insert(
             node_id,
             ModelLoadState::Requested {
@@ -1436,7 +1437,8 @@ fn queue_model_prepare_if_needed(
             },
         );
         if pending_model_loads.enqueue(final_url, node_id) {
-            request_model_prepare(&tokio_rt.0, io_service, final_url.to_string());
+            let request_id = request_model_prepare(&tokio_rt.0, io_service, final_url.to_string());
+            pending_model_loads.1.insert(final_url.to_string(), request_id);
             log_panel.push_info(format!("Queued async model prepare: {final_url}"));
         }
     }
@@ -1592,6 +1594,7 @@ pub fn dom_sync_system(
     let model_load_states = &mut async_dom.model_load_states;
     let transform_only_dirty = &mut async_dom.transform_only_dirty;
     let mounted_models = &async_dom.mounted_models;
+    let model_status_updates = &mut async_dom.model_status_updates;
 
     let tags = world.0.read_storage::<Tag>();
     let transforms = world.0.read_storage::<Transform2>();
@@ -1741,12 +1744,16 @@ pub fn dom_sync_system(
             //   2. Aplicar el cambio al asset/componente Bevy sin guard adicional.
             //   3. Agregar `continue` para no caer en el default de transform-only.
             if tag == "model" {
-                let resolved_asset_path = models
-                    .get(*node)
-                    .and_then(|model_data| model_data.src.as_ref())
-                    .and_then(|original_src| {
-                        resolve_node_relative_url(&world.0, *node, &current_url.0, original_src)
-                    })
+                let source = models.get(*node).and_then(|m| m.src.as_deref()).unwrap_or("");
+                let resolved_url = (!source.trim().is_empty())
+                    .then(|| resolve_node_relative_url(&world.0, *node, &current_url.0, source))
+                    .flatten();
+                if resolved_url.is_none() {
+                    pending_model_loads.remove_node(node_id);
+                    model_load_states.0.remove(&node_id);
+                }
+                let invalid_source = !source.trim().is_empty() && resolved_url.is_none();
+                let resolved_asset_path = resolved_url
                     .and_then(|final_url| {
                         queue_model_prepare_if_needed(
                             node_id,
@@ -1759,7 +1766,7 @@ pub fn dom_sync_system(
                         );
 
                         match model_load_states.0.get(&node_id) {
-                            Some(ModelLoadState::Ready { url, asset_path })
+                            Some(ModelLoadState::Prepared { url, asset_path })
                                 if *url == final_url =>
                             {
                                 Some(asset_path.clone())
@@ -1774,40 +1781,19 @@ pub fn dom_sync_system(
                         }
                     });
 
-                // Path actualmente montado en la entidad Bevy. `None` = placeholder
-                // (modelo aún no Ready, sin escena glTF montada).
-                let mounted_path = mounted_models.get(bevy_ent).ok().map(|m| m.0.as_str());
-
-                // Sólo remontar la escena glTF cuando el asset cambia de verdad:
-                //   - placeholder → real (mounted None, resolved Some)
-                //   - src cambió a otro modelo (paths distintos)
-                // Si el path no cambió, un dirty (transform/attr) NO debe respawnear
-                // la escena: bastaba un update barato en-sitio. Respawnear por frame
-                // era la causa raíz de la caída de FPS animando modelos + B0003.
-                let needs_remount = match (resolved_asset_path.as_deref(), mounted_path) {
-                    (Some(new_path), Some(cur)) => new_path != cur,
-                    (Some(_), None) => true,
-                    (None, _) => false,
+                let error = match model_load_states.0.get(&node_id) {
+                    Some(ModelLoadState::Failed { error, .. }) => Some(error.as_str()),
+                    _ if invalid_source => Some("Cannot resolve model source URL"),
+                    _ => None,
                 };
-
-                if needs_remount {
-                    let asset_path = resolved_asset_path.expect("needs_remount ⇒ Some");
-                    deferred_despawns.push((bevy_ent, node_id));
-                    entity_map.0.remove(&node_id);
-
-                    let new_ent = spawn_model_entity(
-                        &mut commands,
-                        &asset_server,
-                        transform_b,
-                        Some(asset_path.as_str()),
-                        &shared_resources,
-                    );
-                    set_parent(&mut commands, new_ent, parent_id, &entity_map);
-                    entity_map.0.insert(node_id, new_ent);
-                } else if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
-                    // Update barato: sólo transform en-sitio (cubre también el caso
-                    // transform-only, que antes nunca alcanzaba esta rama).
-                    *t = transform_b;
+                crate::models::set_source(&mut commands, &asset_server, bevy_ent, node_id,
+                    source, resolved_asset_path.as_deref(), error,
+                    mounted_models.get(bevy_ent).ok(), model_status_updates);
+                if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
+                    if *t != transform_b { *t = transform_b; }
+                }
+                if let Ok(mut visibility) = visibility_query.get_mut(bevy_ent) {
+                    *visibility = node_visibility(&attrs_storage, *node);
                 }
                 // IMPORTANTE:
                 // un <model> puede haber recibido position/scale antes de que el asset
@@ -2103,10 +2089,16 @@ pub fn dom_sync_system(
 
             let new_ent = match tag {
                 "model" => {
-                    let resolved_asset_path = models
-                        .get(*node)
-                        .and_then(|model_data| model_data.src.as_ref())
-                        .and_then(|original_src| resolve_remote_path(&current_url.0, original_src))
+                    let source = models.get(*node).and_then(|m| m.src.as_deref()).unwrap_or("");
+                    let resolved_url = (!source.trim().is_empty())
+                        .then(|| resolve_node_relative_url(&world.0, *node, &current_url.0, source))
+                        .flatten();
+                    if resolved_url.is_none() {
+                        pending_model_loads.remove_node(node_id);
+                        model_load_states.0.remove(&node_id);
+                    }
+                    let invalid_source = !source.trim().is_empty() && resolved_url.is_none();
+                    let resolved_asset_path = resolved_url
                         .and_then(|final_url| {
                             queue_model_prepare_if_needed(
                                 node_id,
@@ -2119,7 +2111,7 @@ pub fn dom_sync_system(
                             );
 
                             match model_load_states.0.get(&node_id) {
-                                Some(ModelLoadState::Ready { url, asset_path })
+                                Some(ModelLoadState::Prepared { url, asset_path })
                                     if *url == final_url =>
                                 {
                                     Some(asset_path.clone())
@@ -2136,13 +2128,19 @@ pub fn dom_sync_system(
                             }
                         });
 
-                    spawn_model_entity(
-                        &mut commands,
-                        &asset_server,
-                        transform_b,
-                        resolved_asset_path.as_deref(),
-                        &shared_resources,
-                    )
+                    let error = match model_load_states.0.get(&node_id) {
+                        Some(ModelLoadState::Failed { error, .. }) => Some(error.as_str()),
+                        _ if invalid_source => Some("Cannot resolve model source URL"),
+                        _ => None,
+                    };
+                    let entity = commands.spawn((SpatialBundle {
+                        transform: transform_b,
+                        visibility: node_visibility(&attrs_storage, *node),
+                        ..default()
+                    }, Dirty)).id();
+                    crate::models::set_source(&mut commands, &asset_server, entity, node_id,
+                        source, resolved_asset_path.as_deref(), error, None, model_status_updates);
+                    entity
                 }
                 "script" => {
                     queue_script_load_if_needed(
@@ -2516,43 +2514,6 @@ fn set_parent(
     commands.entity(new_ent).remove_parent();
 }
 
-fn spawn_model_entity(
-    commands: &mut Commands,
-    asset_server: &AssetServer,
-    transform_b: Transform,
-    asset_path: Option<&str>,
-    _shared_resources: &SharedResources,
-) -> Entity {
-    if let Some(asset_path) = asset_path {
-        let scene_handle = if asset_path.ends_with(".gltf") || asset_path.ends_with(".glb") {
-            asset_server.load(format!("{asset_path}#Scene0"))
-        } else {
-            asset_server.load(asset_path.to_string())
-        };
-        return commands
-            .spawn((
-                SceneBundle {
-                    scene: scene_handle,
-                    transform: transform_b,
-                    ..Default::default()
-                },
-                Dirty,
-                crate::MountedModel(asset_path.to_string()),
-            ))
-            .id();
-    }
-
-    commands
-        .spawn((
-            SpatialBundle {
-                transform: transform_b,
-                visibility: Visibility::Inherited,
-                ..Default::default()
-            },
-            Dirty,
-        ))
-        .id()
-}
 
 fn spawn_skybox_faces(
     asset_paths: &[String; 6],
