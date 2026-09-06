@@ -27,6 +27,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+  # Sala de exposición de assets 3D. El HSML se genera por request desde
+  # server_expo/public/models, así que agregar un .glb no requiere reiniciar.
+  expo-dev:
+    image: oven/bun:1
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_expo:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "2053:2053"
+    environment:
+      NODE_ENV: development
+      PORT: "2053"
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
 volumes:
   caddy_data:
   caddy_config:

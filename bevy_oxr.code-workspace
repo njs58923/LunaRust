@@ -5,6 +5,9 @@
 		},
 		{
 			"path": "../server_hsml"
+		},
+		{
+			"path": "../server_expo"
 		}
 	],
 	"settings": {}
