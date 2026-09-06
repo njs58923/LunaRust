@@ -237,7 +237,11 @@
       let grants = options.grants;
       if (!Array.isArray(grants) || !grants.length) {
         if (kind === 'spatial') {
-          grants = ['navigate_self', 'read_pose_stream', 'skybox'];
+          // read_camera_pose da la posición del visitante, no su mirada. Va
+          // por defecto porque read_pose_stream ya la entrega igual vía la
+          // pose de los mandos: negarla sólo rompía escritorio, donde no hay
+          // mandos, sin proteger nada.
+          grants = ['navigate_self', 'read_pose_stream', 'read_camera_pose', 'skybox'];
         } else if (kind === 'app') {
           grants = ['navigate_self'];
         } else if (kind === 'app-embedded') {
@@ -343,7 +347,10 @@
     },
 
     regrantMountedSpaces(mode) {
-      const grants = ['navigate_self', 'read_pose_stream'];
+      // Tiene que incluir read_camera_pose o cambiar de modo se lo saca a
+      // todo lo montado: justo el caso donde más falta hace, porque en
+      // escritorio es la única fuente de posición que hay.
+      const grants = ['navigate_self', 'read_pose_stream', 'read_camera_pose'];
 
       discoverDirectSpaces();
       cleanupRegistry();

@@ -95,37 +95,53 @@ pub fn update_desktop_viewer_pose(
     });
 }
 
-/// Propaga el snapshot global a cada worker JS según su cap READ_HMD_POSE.
-/// Workers sin cap reciben None (limpia cualquier stale data si la cap
-/// fue revocada).
+/// Propaga el snapshot global a cada worker JS, recortado según sus caps:
+///
+///   READ_HMD_POSE     → pose completa (posición + hacia dónde mira).
+///   READ_CAMERA_POSE  → sólo posición; la orientación va en cero.
+///   ninguna           → None (y limpia lo que hubiera, si la cap fue revocada).
+///
+/// El escalón del medio existe porque la posición ya se filtra igual con
+/// `read_pose_stream`: un `<posezone>` entrega la pose de los mandos, que
+/// ubican al jugador con medio metro de error. Lo que de verdad protege
+/// READ_HMD_POSE es la mirada.
 pub fn propagate_viewer_pose_to_workers(
     snapshot: Res<ViewerPoseGlobalSnapshot>,
     mut manager: NonSendMut<ScriptRuntimeManager>,
     space_policies: Res<SpacePolicies>,
 ) {
     for (space_id, worker) in manager.contexts.iter_mut() {
-        let allowed = space_has_capability(
+        let completa = space_has_capability(
             *space_id,
             CapabilityBits::READ_HMD_POSE,
             &space_policies,
         );
-        let data = if allowed {
+        let solo_posicion = !completa
+            && space_has_capability(
+                *space_id,
+                CapabilityBits::READ_CAMERA_POSE,
+                &space_policies,
+            );
+        let data = if completa || solo_posicion {
             snapshot.0.as_ref().map(|p| js_runtime::ViewerPoseData {
                 mode: p.mode.as_str().to_string(),
                 px: p.px,
                 py: p.py,
                 pz: p.pz,
-                forward_x: p.forward_x,
-                forward_y: p.forward_y,
-                forward_z: p.forward_z,
-                yaw: p.yaw,
-                pitch: p.pitch,
-                qx: p.qx,
-                qy: p.qy,
-                qz: p.qz,
-                qw: p.qw,
-                aspect: p.aspect,
-                fov_y_rad: p.fov_y_rad,
+                // Sin READ_HMD_POSE la orientación no se entrega. Va en cero y
+                // no con el valor real "por si acaso": un forward en cero es
+                // detectable desde JS, un valor stale no.
+                forward_x: if completa { p.forward_x } else { 0.0 },
+                forward_y: if completa { p.forward_y } else { 0.0 },
+                forward_z: if completa { p.forward_z } else { 0.0 },
+                yaw: if completa { p.yaw } else { 0.0 },
+                pitch: if completa { p.pitch } else { 0.0 },
+                qx: if completa { p.qx } else { 0.0 },
+                qy: if completa { p.qy } else { 0.0 },
+                qz: if completa { p.qz } else { 0.0 },
+                qw: if completa { p.qw } else { 1.0 },
+                aspect: if completa { p.aspect } else { 0.0 },
+                fov_y_rad: if completa { p.fov_y_rad } else { 0.0 },
             })
         } else {
             None

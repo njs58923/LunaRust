@@ -416,6 +416,22 @@ lazy_static! {
             },
         );
 
+        // Sólo la posición del visitante, sin hacia dónde mira. No es una
+        // capacidad menor de READ_HMD_POSE por comodidad: es que la posición
+        // ya se entrega con `read_pose_stream`, porque la pose de los mandos
+        // ubica al jugador con medio metro de error. Gatearla no protegía
+        // nada y sí rompía escritorio, donde no hay mandos. Lo que sigue
+        // detrás de `read_hmd_pose` es la mirada, que es el dato sensible de
+        // verdad y que ningún mando revela.
+        m.insert(
+            "read_camera_pose",
+            ResourceBundleDef {
+                capabilities: CapabilityBits::READ_CAMERA_POSE,
+                native_services: NativeServiceBits::empty(),
+                auto_scripts: &["luna://internal/viewer_pose_api.js"],
+            },
+        );
+
         m
     };
 }
