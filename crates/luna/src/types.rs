@@ -905,6 +905,7 @@ pub struct AsyncDomParams<'w, 's> {
     /// `&mut Transform` de la query principal de `dom_sync_system`).
     pub mounted_models: Query<'w, 's, &'static crate::models::ModelInstance>,
     pub model_status_updates: ResMut<'w, AttributeUpdates>,
+    pub model_animation_configs: Query<'w, 's, &'static crate::model_animation::ModelAnimationConfig>,
 }
 
 #[derive(SystemParam)]

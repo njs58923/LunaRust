@@ -11,6 +11,7 @@ pub mod dom;
 pub mod embedded;
 pub mod io;
 pub mod models;
+pub mod model_animation;
 pub mod js;
 pub mod permissions;
 pub mod render;

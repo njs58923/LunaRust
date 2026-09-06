@@ -127,6 +127,25 @@ pub fn set_source(
         status,
     };
     publish(&instance, updates);
+    // A replacement scene must bind its own players, even when controls did not change.
+    commands
+        .entity(entity)
+        .remove::<crate::model_animation::ModelPlayback>()
+        .remove::<crate::model_animation::WaitingClipCompletion>()
+        .insert(crate::model_animation::PendingModelAnimation);
+    for (key, value) in [("animation-clips", "[]"), ("animation-error", "")] {
+        updates.0.push((node_id, key.into(), value.into()));
+    }
+    updates.0.push((
+        node_id,
+        "animation-status".into(),
+        if source.trim().is_empty() {
+            "idle"
+        } else {
+            "loading"
+        }
+        .into(),
+    ));
     if content.is_some() {
         commands.entity(entity).insert(PendingModelInstance);
     } else {

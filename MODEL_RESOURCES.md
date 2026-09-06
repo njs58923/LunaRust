@@ -7,8 +7,8 @@ changes. Only the generated `ModelContent` child is replaced.
 `ModelResource` holds shared AssetServer handles for the scene and, for GLB/glTF,
 the parent Gltf asset. Equal prepared paths share assets, while each model has
 its own scene hierarchy. Dropping an instance releases its handles; other
-instances retain theirs. This foundation does not add clip playback or a
-procedural mesh API yet.
+instances retain theirs. Clip playback is implemented in stage 2 (see
+[GLB_ANIMATIONS.md](GLB_ANIMATIONS.md)); a procedural mesh API is not implemented yet.
 
 ## Loading lifecycle
 

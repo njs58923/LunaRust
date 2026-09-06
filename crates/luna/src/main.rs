@@ -254,6 +254,8 @@ fn main() {
         Update,
         (dom::dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
             luna::models::poll_model_instances,
+            luna::model_animation::sync_model_animations,
+            luna::model_animation::report_clip_completion,
             luna::embedded::sync_embedded_windows)
             .chain().in_set(LunaUpdatePhase::RenderSync),
     );

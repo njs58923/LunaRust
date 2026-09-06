@@ -1595,6 +1595,7 @@ pub fn dom_sync_system(
     let transform_only_dirty = &mut async_dom.transform_only_dirty;
     let mounted_models = &async_dom.mounted_models;
     let model_status_updates = &mut async_dom.model_status_updates;
+    let model_animation_configs = &async_dom.model_animation_configs;
 
     let tags = world.0.read_storage::<Tag>();
     let transforms = world.0.read_storage::<Transform2>();
@@ -1744,6 +1745,8 @@ pub fn dom_sync_system(
             //   2. Aplicar el cambio al asset/componente Bevy sin guard adicional.
             //   3. Agregar `continue` para no caer en el default de transform-only.
             if tag == "model" {
+                crate::model_animation::sync_config(&mut commands, bevy_ent,
+                    attrs_storage.get(*node).map(|a| &a.0), model_animation_configs.get(bevy_ent).ok());
                 let source = models.get(*node).and_then(|m| m.src.as_deref()).unwrap_or("");
                 let resolved_url = (!source.trim().is_empty())
                     .then(|| resolve_node_relative_url(&world.0, *node, &current_url.0, source))
@@ -2140,6 +2143,8 @@ pub fn dom_sync_system(
                     }, Dirty)).id();
                     crate::models::set_source(&mut commands, &asset_server, entity, node_id,
                         source, resolved_asset_path.as_deref(), error, None, model_status_updates);
+                    crate::model_animation::sync_config(&mut commands, entity,
+                        attrs_storage.get(*node).map(|a| &a.0), None);
                     entity
                 }
                 "script" => {
