@@ -11,6 +11,9 @@
 		},
 		{
 			"path": "../server_backrooms"
+		},
+		{
+			"path": "../server_stress"
 		}
 	],
 	"settings": {}

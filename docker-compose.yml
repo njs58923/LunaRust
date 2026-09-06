@@ -56,6 +56,21 @@ services:
       NODE_ENV: development
       PORT: "2055"
     command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+  # Banco de pruebas de carga: escenas que cargan un eje a la vez (figuras,
+  # includes, isolates animados, modelos, montaje) y una tabla de resultados
+  # que arma el propio cliente. Ver server_stress/README.md.
+  stress-dev:
+    image: oven/bun:1
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_stress:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "2056:2056"
+    environment:
+      NODE_ENV: development
+      PORT: "2056"
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
 volumes:
   caddy_data:
   caddy_config:
