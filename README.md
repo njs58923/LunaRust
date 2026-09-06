@@ -75,6 +75,13 @@ Las páginas internas del navegador (home, ajustes, demos, about, estadísticas 
 caché…) se sirven mediante un manejador de protocolo virtual `luna://`, sin
 servidor externo. El contenido remoto se carga por `http://`/`https://`.
 
+`luna://home` es el inicio predeterminado: un islote sencillo con suelo, rocas y
+un fondo de cielo estático. Su documento está en
+`crates/luna/src/web/home.hsml`; no requiere assets externos ni animación.
+Los accesos Explorar, Ajustes y Acerca de llevan a las páginas internas existentes.
+El entorno pertenece a la página y se retira al navegar a otro espacio. El suelo
+es visual por ahora, sin colisiones ni límites de locomoción.
+
 ### Runtime de JavaScript
 Cada espacio ejecuta su script en un contexto JS aislado. El runtime expone una API
 tipo DOM (crear/mover/eliminar elementos, leer/escribir atributos y transformaciones,

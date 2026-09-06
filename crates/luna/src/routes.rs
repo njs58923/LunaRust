@@ -113,29 +113,7 @@ const LUNA_ROOT: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   </space>
 </hsml>"##;
 
-const LUNA_HOME: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
-<hsml>
-  <head>
-    <name>Luna Home</name>
-    <meta type="position" x="0" y="0" z="0"/>
-    <meta type="scale" x="1" y="1" z="1"/>
-    <meta type="rotation" x="0" y="0" z="0"/>
-  </head>
-  <space resources="navigate_self">
-    <text x="0" y="1.5" z="-2" value="Luna Browser - Home" size="0.3" />
-    <text x="0" y="1.2" z="-2" value="Welcome to Luna 3D Browser" size="0.15" />
-
-    <box x="-0.8" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#4CAF50" id="btn_demos" touchable="true"/>
-    <text x="-0.8" y="0.6" z="-1.9" value="Demos" size="0.1" />
-
-    <box x="0" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#2196F3" id="btn_settings" touchable="true"/>
-    <text x="0" y="0.6" z="-1.9" value="Settings" size="0.1" />
-
-    <box x="0.8" y="0.6" z="-2" sx="0.4" sy="0.4" sz="0.1" color="#FF9800" id="btn_about" touchable="true"/>
-    <text x="0.8" y="0.6" z="-1.9" value="About" size="0.1" />
-    <script src="luna://internal/home_navigation.js" />
-  </space>
-</hsml>"##;
+const LUNA_HOME: &str = include_str!("web/home.hsml");
 
 const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 <hsml>
