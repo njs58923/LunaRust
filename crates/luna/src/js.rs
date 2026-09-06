@@ -492,6 +492,14 @@ fn spawn_space_worker_with_limits(
     space_id: u32,
     limits: WorkerExecutionLimits,
 ) -> std::result::Result<SpaceScriptWorker, String> {
+    spawn_space_worker_configured(space_id, limits, None)
+}
+
+fn spawn_space_worker_configured(
+    space_id: u32,
+    limits: WorkerExecutionLimits,
+    storage: Option<(std::path::PathBuf, String)>,
+) -> std::result::Result<SpaceScriptWorker, String> {
     let (cmd_tx, cmd_rx) = mpsc::sync_channel::<JsWorkerCommand>(JS_WORKER_COMMAND_CAPACITY);
     let (event_tx, event_rx) = mpsc::sync_channel::<JsWorkerEvent>(JS_WORKER_EVENT_CAPACITY);
     let termination = WorkerTermination::default();
@@ -507,6 +515,10 @@ fn spawn_space_worker_with_limits(
                     return;
                 }
             };
+
+            if let Some((path, url)) = storage {
+                ctx.engine.configure_local_storage(path, url);
+            }
 
             let execution_handle = ctx.engine.execution_handle();
             if let Ok(mut handle) = worker_termination.handle.lock() {
@@ -1635,6 +1647,16 @@ fn sync_snapshots_with_mirror(
     let requires_full_snapshot = requires_full_snapshot || desynced;
 
     let active_space_ids: HashSet<u32> = mirror.space_subtrees.keys().copied().collect();
+    let fallback_url = world.get_resource::<crate::CurrentUrl>()
+        .map(|u| u.0.as_str()).unwrap_or("");
+    let existing_manager = world.get_non_send_resource::<ScriptRuntimeManager>();
+    let document_urls: HashMap<u32, String> = active_space_ids.iter()
+        .filter(|id| !existing_manager.is_some_and(|m| m.contexts.contains_key(id)))
+        .map(|&id| {
+        (id, crate::dom::find_node_base_url(&specs_world.0,
+            specs_world.0.entities().entity(id), fallback_url))
+    }).collect();
+    let storage_path = crate::utils::folder::resolve_luna_state_dir().join("local-storage.sqlite3");
     let mut removed_contexts = Vec::new();
     let mut created_contexts = Vec::new();
     let mut errors = Vec::new();
@@ -1661,7 +1683,8 @@ fn sync_snapshots_with_mirror(
             if manager.contexts.contains_key(space_id) {
                 continue;
             }
-            match spawn_space_worker(*space_id) {
+            match spawn_space_worker_configured(*space_id, WorkerExecutionLimits::default(),
+                Some((storage_path.clone(), document_urls[space_id].clone()))) {
                 Ok(worker) => {
                     manager.contexts.insert(*space_id, worker);
                     created_contexts.push(*space_id);

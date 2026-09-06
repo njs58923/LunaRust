@@ -13,6 +13,7 @@ use deno_core::{op2, Extension, FastString, JsRuntime, OpState, RuntimeOptions};
 // Public modules
 pub mod cache;
 pub mod csp;
+pub mod storage;
 
 pub use cache::{CacheStats, CachedResponse, CachedScript, FetchCache, ScriptCache};
 pub use csp::{ContentSecurityPolicy, CorsValidation, CorsValidator};
@@ -1358,6 +1359,7 @@ impl Engine {
                 op_console_warn::decl(),
                 op_console_error::decl(),
                 op_now::decl(),
+                storage::op_local_storage::decl(),
                 op_set_timeout::decl(),
                 op_clear_timeout::decl(),
                 op_timers_poll::decl(),
@@ -1400,6 +1402,7 @@ impl Engine {
                 op_poll_touch_events::decl(),
             ])
             .state(move |state| {
+                state.put(storage::StorageContext::default());
                 state.put::<PerfState>(PerfState::default());
                 state.put::<Timers>(Timers {
                     ready: timers_for_state.ready.clone(),
@@ -1509,6 +1512,9 @@ impl Engine {
         rt.execute_script("<bootstrap>", FastString::Static(BOOTSTRAP_JS))
             .expect("bootstrap failed");
 
+        rt.execute_script("<storage>", FastString::Static(include_str!("../storage.js")))
+            .expect("storage bootstrap failed");
+
         eprintln!("[js_runtime] Injecting runtime.js...");
         rt.execute_script("<runtime>", FastString::Static(RUNTIME_JS))
             .expect("runtime.js failed");
@@ -1557,6 +1563,11 @@ impl Engine {
             csp: shared(ContentSecurityPolicy::permissive()),
             document_origin: shared(String::new()),
         }
+    }
+
+    /// Host-only document binding. Never derive this from the script URL.
+    pub fn configure_local_storage(&mut self, path: std::path::PathBuf, document_url: String) {
+        self.rt.op_state().borrow_mut().put(storage::StorageContext::new(path, document_url));
     }
 
     pub fn eval(&mut self, code: &str) -> AnyResult<()> {

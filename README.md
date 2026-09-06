@@ -90,6 +90,10 @@ jerarquía, `fetch`, timers, `requestAnimationFrame`) además de la API del nave
 `dimension.luna` para montar/desmontar espacios y cambiar de modo. La comunicación
 JS ↔ motor usa un patrón **queue/snapshot**: JS nunca bloquea al render y viceversa.
 
+Los documentos disponen de **localStorage persistente por origen**, compartido
+entre sus isolates, con la API habitual de Web Storage y eventos `storage`.
+Ver [LOCAL_STORAGE.md](LOCAL_STORAGE.md) para ejemplos, cuotas y separación de datos.
+
 ### Modos de render
 - **Escritorio** — ventana plana, navegación con teclado/ratón.
 - **VR** — inmersión completa vía OpenXR (Quest, etc.), con locomoción y mandos.
