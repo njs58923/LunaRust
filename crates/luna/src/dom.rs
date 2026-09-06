@@ -1107,6 +1107,7 @@ pub fn process_delete_requests(
             continue;
         }
 
+        mark_removed_subtree(&world.0, sp_ent, &mut mirror_dirty);
         let deleted = remove_dom_subtree(
             &mut world.0,
             sp_ent,
@@ -1131,8 +1132,6 @@ pub fn process_delete_requests(
             ent_id, deleted
         ));
         js_snapshot_state.dirty = true;
-        js_snapshot_state.mirror_force_rebuild = true;
-        mirror_dirty.force_rebuild();
         space_policies.dirty = true;
     }
 }
@@ -1198,9 +1197,19 @@ fn queue_include_load_if_needed(
     log_panel.push_info(format!("Include load queued: {final_url} (node {node_id})"));
 }
 
+fn mark_removed_subtree(world: &SpecWorld, root: SpecEntity, dirty: &mut crate::js::DomMirrorDirty) {
+    let mut removed = Vec::new();
+    collect_subtree_ids(world, root, &mut removed);
+    if let Some(parent) = world.read_storage::<Hierarchy>().get(root).and_then(|h| h.parent) {
+        dirty.touch(parent.id());
+    }
+    for id in removed { dirty.remove(id); }
+}
+
 pub fn commit_pending_includes_system(
     mut world: ResMut<ElemenetWorld>,
     mut pending_includes: ResMut<crate::PendingIncludes>,
+    mut mirror_dirty: ResMut<crate::js::DomMirrorDirty>,
     mut dom_data: ResMut<VirtualDomData>,
     mut dirty_nodes: ResMut<DirtyNodes>,
     mut log_panel: ResMut<LogPanel>,
@@ -1266,6 +1275,7 @@ pub fn commit_pending_includes_system(
                 };
                 let mut replaced_nodes = 0usize;
                 for previous_child in previous_children {
+                    mark_removed_subtree(&world.0, previous_child, &mut mirror_dirty);
                     replaced_nodes += remove_dom_subtree(
                         &mut world.0,
                         previous_child,
@@ -1296,10 +1306,11 @@ pub fn commit_pending_includes_system(
                 for &nid in &new_dirty {
                     let ent = world.0.entities().entity(nid);
                     dom_data.nodes.insert(nid, ent);
+                    mirror_dirty.touch(nid);
                 }
+                mirror_dirty.touch(parent_ent.id());
                 dirty_nodes.0.extend(new_dirty);
                 js_snapshot_state.dirty = true;
-                js_snapshot_state.mirror_force_rebuild = true;
                 space_policies.dirty = true;
 
                 include_load_states.0.insert(
@@ -2788,8 +2799,15 @@ mod tests {
             .to_string(),
         }]));
 
+        app.insert_resource(crate::js::DomMirrorDirty::default());
+        app.world_mut().resource_mut::<JsSnapshotState>().mirror_force_rebuild = false;
         app.add_systems(Update, commit_pending_includes_system);
         app.update();
+        assert!(!app.world().resource::<JsSnapshotState>().mirror_force_rebuild);
+        let delta = app.world().resource::<crate::js::DomMirrorDirty>();
+        assert!(!delta.force_rebuild);
+        assert!(delta.touched_nodes.contains(&outer_include.id()));
+
 
         let specs_world = &app.world().resource::<ElemenetWorld>().0;
         let entities = specs_world.entities();

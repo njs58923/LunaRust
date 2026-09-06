@@ -1517,11 +1517,19 @@ pub fn js_auto_inject_resource_scripts_system(world: &mut World) {
 
 pub fn js_update_snapshots_system(world: &mut World) {
     let snapshot_start = Instant::now();
+    // Granting a resource can introduce a bootstrap script into a previously
+    // static space, even when its DOM has not changed.
+    let policy_scripts_changed = world.get_resource::<SpacePolicies>().is_some_and(|policies| {
+        world.get_resource::<JsPolicyBridgeState>()
+            .and_then(|state| state.auto_scripts_generation)
+            .map(|(generation, _)| generation != policies.generation)
+            .unwrap_or(policies.generation > 0)
+    });
     let should_refresh = world
         .get_resource::<JsSnapshotState>()
         .map(|state| state.dirty)
         .unwrap_or(true);
-    if !should_refresh {
+    if !should_refresh && !policy_scripts_changed {
         // Idle: el system salió sin trabajo. Reset de stats para que el panel
         // no muestre valores stale del último frame con actividad.
         if let Some(mut perf) = world.get_resource_mut::<crate::PerformanceStats>() {
@@ -1567,6 +1575,7 @@ pub fn js_update_snapshots_system(world: &mut World) {
         .map(|mirror| (mirror.nodes.len(), mirror.space_subtrees.len()))
         .unwrap_or_default();
     if !mirror_has_pending_work
+        && !policy_scripts_changed
         && !mirror_rebuild_requested
         && worker_count > 0
         && worker_count == active_space_count
@@ -1613,6 +1622,23 @@ pub fn js_update_snapshots_system(world: &mut World) {
     });
 }
 
+fn scripted_space_ids(mirror: &DomMirror) -> HashSet<u32> {
+    let mut spaces = HashSet::new();
+    for node in mirror.nodes.values().filter(|node| node.tag == "script") {
+        let mut parent = node.parent;
+        // Only the nearest space owns execution, not every containing space.
+        for _ in 0..mirror.nodes.len() {
+            let Some(ancestor) = mirror.nodes.get(&parent) else { break; };
+            if ancestor.tag == "space" {
+                spaces.insert(parent as u32);
+                break;
+            }
+            parent = ancestor.parent;
+        }
+    }
+    spaces
+}
+
 fn sync_snapshots_with_mirror(
     world: &mut World,
     mirror: &mut DomMirror,
@@ -1655,7 +1681,20 @@ fn sync_snapshots_with_mirror(
     }
     let requires_full_snapshot = requires_full_snapshot || desynced;
 
-    let active_space_ids: HashSet<u32> = mirror.space_subtrees.keys().copied().collect();
+    let mut active_space_ids = scripted_space_ids(mirror);
+    if let Some(pending) = world.get_resource::<PendingScripts>() {
+        active_space_ids.extend(pending.0.iter().map(|(id, _, _)| *id));
+    }
+    if let Some(policies) = world.get_resource::<SpacePolicies>() {
+        active_space_ids.extend(policies.by_space.iter()
+            .filter(|(_, policy)| !policy.auto_scripts.is_empty()).map(|(&id, _)| id));
+    }
+    // Keep started runtimes alive: removing a script tag must not cancel its
+    // timers, event listeners or local state. Unmount still destroys them.
+    if let Some(manager) = world.get_non_send_resource::<ScriptRuntimeManager>() {
+        active_space_ids.extend(manager.contexts.keys().copied());
+    }
+    active_space_ids.retain(|id| mirror.space_subtrees.contains_key(id));
     let fallback_url = world.get_resource::<crate::CurrentUrl>()
         .map(|u| u.0.as_str()).unwrap_or("");
     let existing_manager = world.get_non_send_resource::<ScriptRuntimeManager>();
@@ -1738,6 +1777,7 @@ fn sync_snapshots_with_mirror(
     if !touched_mirror_nodes.is_empty() {
         if let Some(mut tables) = world.get_resource_mut::<SpaceHandleTables>() {
             for (space_id, allowed) in &mirror.space_subtrees {
+                if !active_space_ids.contains(space_id) { continue; }
                 let table = ensure_space_handle_table(&mut tables, *space_id);
                 for &g in touched_mirror_nodes {
                     if allowed.contains(&(g as i32)) {
@@ -3580,6 +3620,80 @@ mod tests {
     use bevy::prelude::{App, Time};
     use specs::WorldExt;
     use virtual_dom::dom::element::{build_world, Vec3 as DomVec3};
+
+    #[test]
+    fn static_includes_stay_dormant_and_script_insertion_wakes_only_its_owner() {
+        let mut specs = build_world();
+        let root = virtual_dom::parse_xml(&mut specs, "<space><space><box/></space><space><box/></space></space>").unwrap();
+        let owner = specs.read_storage::<Hierarchy>().get(root).unwrap().children[0];
+        let mut world = World::new();
+        let nodes = specs.entities().join().map(|e|(e.id(),e)).collect();
+        world.insert_resource(ElemenetWorld(specs));
+        world.insert_resource(VirtualDomData {nodes});
+        world.init_resource::<DomMirror>();
+        world.init_resource::<DomMirrorDirty>();
+        world.init_resource::<JsSnapshotState>();
+        world.init_resource::<SpaceHandleTables>();
+        world.insert_non_send_resource(ScriptRuntimeManager::default());
+        js_update_snapshots_system(&mut world);
+        assert!(world.non_send_resource::<ScriptRuntimeManager>().contexts.is_empty());
+        assert!(world.resource::<SpaceHandleTables>().by_space.is_empty());
+        let script = {
+            let mut specs = world.resource_mut::<ElemenetWorld>();
+            let script = virtual_dom::parse_xml(&mut specs.0, "<script>globalThis.awake = true;</script>").unwrap();
+            Hierarchy::add_child(&mut specs.0, owner, script);
+            script
+        };
+        world.resource_mut::<VirtualDomData>().nodes.insert(script.id(),script);
+        world.resource_mut::<DomMirrorDirty>().touch(script.id());
+        world.resource_mut::<DomMirrorDirty>().touch(owner.id());
+        world.resource_mut::<JsSnapshotState>().dirty = true;
+        js_update_snapshots_system(&mut world);
+        let manager = world.non_send_resource::<ScriptRuntimeManager>();
+        assert_eq!(manager.contexts.len(),1);
+        assert!(manager.contexts.contains_key(&owner.id()));
+        assert_eq!(world.resource::<SpaceHandleTables>().by_space.len(),1);
+    }
+
+    // Measures only the mirror phase; not GPU frame time or HTTP/parse latency.
+    #[test]
+    #[ignore = "manual include mirror benchmark"]
+    fn benchmark_include_mirror_delta() {
+        for background in [4_000, 14_000] {
+            let mut world = build_world();
+            let xml = format!("<space>{}<include src='chunk.hsml'/></space>", "<box color='#123456'/>".repeat(background));
+            let root = virtual_dom::parse_xml(&mut world, &xml).unwrap();
+            let include = *world.read_storage::<Hierarchy>().get(root).unwrap().children.last().unwrap();
+            let mut attached: HashSet<u32> = world.entities().join().map(|e|e.id()).collect();
+            let baseline = build_dom_mirror_from_specs(&world, &attached, 0);
+            let chunk = virtual_dom::parse_xml(&mut world, "<space><box/><box/><box/><box/><box/><box/><box/><box/></space>").unwrap();
+            Hierarchy::add_child(&mut world, include, chunk);
+            let after: HashSet<u32> = world.entities().join().map(|e|e.id()).collect();
+            let mut touched: HashSet<u32> = after.difference(&attached).copied().collect();
+            touched.insert(include.id());
+            attached = after;
+            let mut full = baseline.clone();
+            let mut delta = baseline;
+            let start = Instant::now();
+            for _ in 0..100 {
+                refresh_dom_mirror_in_place(&mut full, &world, &attached, true, &touched, &HashSet::new());
+            }
+            let full_ms = start.elapsed().as_secs_f64() * 10.0;
+            let start = Instant::now();
+            for _ in 0..100 {
+                refresh_dom_mirror_in_place(&mut delta, &world, &attached, false, &touched, &HashSet::new());
+            }
+            let delta_ms = start.elapsed().as_secs_f64() * 10.0;
+            assert_eq!(delta.nodes.len(), full.nodes.len());
+            assert_eq!(delta.space_subtrees, full.space_subtrees);
+            for (id, node) in &full.nodes {
+                assert_eq!(delta.nodes[id].attrs, node.attrs);
+                assert_eq!(delta.nodes[id].children, node.children);
+                assert_eq!(delta.nodes[id].parent, node.parent);
+            }
+            eprintln!("include mirror background={background}: full={full_ms:.3}ms delta={delta_ms:.3}ms ratio={:.2}x",full_ms/delta_ms);
+        }
+    }
 
     fn deletion_test_mirror(count: i32) -> DomMirror {
         let mut mirror = DomMirror::default();
