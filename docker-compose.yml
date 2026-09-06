@@ -71,6 +71,21 @@ services:
       NODE_ENV: development
       PORT: "2056"
     command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+  # Bestiario nocturno: la isla de la home de noche, con cinco criaturas en
+  # pedestales. Demo de animación dentro del .glb y de malla dinámica
+  # (el cielo estrellado). Ver server_noche/README.md.
+  noche-dev:
+    image: oven/bun:1
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_noche:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "2057:2057"
+    environment:
+      NODE_ENV: development
+      PORT: "2057"
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
 volumes:
   caddy_data:
   caddy_config:

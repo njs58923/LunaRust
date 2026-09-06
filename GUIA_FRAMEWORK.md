@@ -51,6 +51,28 @@ listener no recibe nada. Ver `home.hsml`, que lo pone en todos sus botones.
 **El `<text>` se centra en `x` y también en `y`.** La guía sólo habla del ancho;
 la coordenada que le des es el centro de la caja, no su esquina ni su línea base.
 
+**El `<text>` es de una sola cara**, al revés que los `plane`, que sí son de
+doble cara. Se ve desde su **+z local**: girado 180° desaparece, sin error y sin
+warning. Si el cartel está dentro de un `<group>` rotado —un pedestal encarado
+al visitante, por ejemplo— hay que orientar el grupo pensando en el +z del
+texto, no en el -z de "hacia adelante".
+
+**Los triángulos de una malla dinámica también son de una sola cara**, y el
+orden de los vértices decide cuál. Una bóveda de estrellas armada con la normal
+hacia afuera se ve vacía desde adentro: hay que emitir los vértices en orden
+inverso. No hay aviso; simplemente no se dibuja nada.
+
+**Un `<model>` con animación no la reproduce solo.** Hace falta declarar
+`animation-clip`: `select_clip` (`model_animation.rs`) devuelve `None` cuando el
+atributo está vacío, así que el modelo se queda quieto por más que
+`animation-state` valga `"playing"`, que es el default. No hay error ni warning
+— el .glb trae sus clips y no pasa nada. Ver la tabla de atributos de `model`.
+
+**`el.scale` reemplaza el tamaño del nodo, no lo multiplica.** Asignarle `0.94`
+a una caja declarada `sx="0.19" sy="0.24" sz="0.19"` la convierte en un cubo de
+94 cm, no la achica un 6%. Si querés un pulso sobre el tamaño declarado, tenés
+que guardarte las dimensiones originales en el script y multiplicarlas vos.
+
 ---
 
 ## 1. Modelo mental
@@ -144,7 +166,7 @@ Las unidades son metros y el suelo está en `y = 0`. Altura de ojos ≈ `1.6`.
 |---|---|
 | `box`, `sphere`, `cylinder`, `plane` | `color="#RRGGBB"`, `touchable`, `border-radius` (sólo `box` y `plane`) |
 | `text` | `value` (default `"Text"`), `size` (default `0.1`), `color` (default blanco) |
-| `model` | `src` (glTF/GLB, relativo o absoluto), `rigidbody`, `collider` |
+| `model` | `src` (glTF/GLB, relativo o absoluto), `rigidbody`, `collider`, y los de animación (abajo) |
 | `skybox` | `src` = **patrón con `$1`** (ver abajo) |
 | `include` | `src`, `resources` |
 | `space` | `resources`, `system-space` |
@@ -154,6 +176,37 @@ La forma de colisión sale del tag: `box`→caja, `plane`→plano, `sphere`/`cyl
 
 El ancho del `text` se calcula como `size * nChars * 0.6`; es una aproximación
 monoespaciada, no layout real. Para centrar, colocá el texto en el mismo `x` que su fondo.
+
+### Animación de un `<model>`
+
+Los clips que trae el `.glb` se controlan por atributos (`model_animation.rs`).
+**Sin `animation-clip` no se reproduce nada**: es el único que no tiene default
+útil.
+
+| Atributo | Default | Qué hace |
+|---|---|---|
+| `animation-clip` | *(vacío = no anima)* | nombre del clip, o su índice (`"0"` es el primero) |
+| `animation-state` | `playing` | `playing`, `paused` o `stopped` |
+| `animation-loop` | `true` | `true`/`1` o `false`/`0` |
+| `animation-speed` | `1` | multiplicador, no negativo |
+| `animation-time` | — | busca un instante del clip, en segundos |
+| `animation-restart` | — | cambiar su valor reinicia el clip desde cero |
+
+El motor **escribe de vuelta** tres atributos sobre el nodo, que se pueden leer
+desde JS con `getAttribute`:
+
+| Atributo | Qué trae |
+|---|---|
+| `animation-clips` | JSON con el catálogo de clips del modelo: nombres y duraciones |
+| `animation-status` | `idle`, `playing`, `paused`, `stopped` o `error` |
+| `animation-error` | el motivo, cuando `animation-status` es `error` |
+
+`animation-clips` es la forma de averiguar cómo se llaman los clips de un
+modelo ajeno sin abrirlo en Blender.
+
+```xml
+<model src="bicho.glb" animation-clip="0" animation-loop="true"/>
+```
 
 ### Skybox
 
