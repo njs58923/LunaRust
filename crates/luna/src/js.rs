@@ -116,6 +116,7 @@ impl DomMirrorDirty {
 }
 
 pub struct JsTickData {
+    pub mesh_commands: (u64, Vec<js_runtime::mesh::MeshCommand>),
     pub needs_continuous_ticks: bool,
     pub logs: Vec<(String, String)>,
     pub attr_updates: Vec<(i32, String, String)>,
@@ -434,7 +435,7 @@ pub struct ScriptRuntimeManager {
     /// Cambia únicamente cuando se agrega o quita un isolate. Los bridges de
     /// políticas lo usan junto con `SpacePolicies::generation` para evitar
     /// recorrer todos los spaces en cada frame.
-    context_generation: u64,
+    pub(crate) context_generation: u64,
 }
 
 #[derive(Resource, Default)]
@@ -662,6 +663,7 @@ fn spawn_space_worker_configured(
                             break;
                         }
                         let tick_data = JsTickData {
+                            mesh_commands: ctx.engine.drain_mesh_commands(),
                             needs_continuous_ticks: ctx.engine.needs_continuous_ticks(),
                             logs: ctx.engine.drain_logs(),
                             attr_updates: ctx.engine.drain_attr_updates(),
@@ -2293,6 +2295,7 @@ fn bind_embedded_slot(
 }
 
 pub fn js_tick_system(world: &mut World) {
+    crate::dynamic_mesh::cleanup_contexts(world);
     let _profile = crate::profiling::span("js_tick_system");
     let elapsed_ms = {
         let Some(time) = world.get_resource::<Time>() else {
@@ -2473,6 +2476,7 @@ pub fn js_tick_system(world: &mut World) {
     let capabilities_by_space = space_capabilities_snapshot(world);
 
     for (space_id, data) in tick_batches {
+        crate::dynamic_mesh::apply_commands(world, space_id, data.mesh_commands.0, data.mesh_commands.1);
         if !data.logs.is_empty() {
             logs_by_context.push((space_id, data.logs));
         }
@@ -4556,6 +4560,7 @@ mod tests {
         ));
         event_tx
             .send(JsWorkerEvent::TickData(JsTickData {
+                mesh_commands: (0, Vec::new()),
                 needs_continuous_ticks: false,
                 logs: Vec::new(),
                 attr_updates: Vec::new(),

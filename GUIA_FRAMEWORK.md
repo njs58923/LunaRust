@@ -16,6 +16,43 @@ Fuentes de verdad:
 
 ---
 
+## 0. Advertencias — leer esto primero
+
+Verificadas contra el motor construyendo tres páginas remotas completas
+(exposición de assets, backrooms procedurales, banco de pruebas de carga). Las
+tres primeras estaban **mal documentadas acá**; el resto faltaba.
+
+**Los `resources` van separados por COMA.** `parse_resource_tokens` hace
+`split(',')` a secas. Con espacios queda un único token que no matchea ningún
+bundle, el documento se queda **sin capacidades y nadie avisa**. Esta guía los
+mostraba separados por espacios; ya está corregido abajo, pero si copiaste un
+ejemplo viejo, revisalo. Un día entero de creer que `readViewerPose` estaba roto.
+
+**`<meta type="position">` no hace nada.** Aparece en todos los documentos,
+incluidos los internos, pero ningún código del motor lo lee. Para mover un
+documento al montarlo, envolvé el contenido en un `<group>` con transform.
+
+**`fetch` no le llega a una página remota.** La capacidad `fetch_text` existe en
+`permissions.rs`, pero el shell le concede a una página `spatial` sólo
+`navigate_self`, `read_pose_stream`, `read_camera_pose` y `skybox`
+(`web/internal/root_api.js`), y las capacidades efectivas se intersecan con eso.
+Pedirla en `resources` no alcanza. Para traer datos de tu propio server, hoy el
+único camino es `<include>`, que lo resuelve el motor.
+
+**`<include>` no emite `load` ni `error`.** No hay forma de saber desde el
+documento si un sub-documento terminó de montarse o falló. Si tu código marca
+algo como "montado" al crear el nodo, un fallo lo deja registrado como presente
+para siempre.
+
+**`touchable` no tiene default permisivo.** `node_touchable()` devuelve `false`
+cuando el atributo falta: sin `touchable="true"` explícito, un nodo con `id` y
+listener no recibe nada. Ver `home.hsml`, que lo pone en todos sus botones.
+
+**El `<text>` se centra en `x` y también en `y`.** La guía sólo habla del ancho;
+la coordenada que le des es el centro de la caja, no su esquina ni su línea base.
+
+---
+
 ## 1. Modelo mental
 
 Un **documento HSML** describe una escena 3D. Sus `<script>` la hacen interactiva.
@@ -48,15 +85,16 @@ aplican al resolverse. Sólo los *getters* devuelven valores cacheados hasta ent
     <meta type="scale"    x="1" y="1" z="1"/>
   </head>
 
-  <space resources="navigate_self fetch_text skybox">
+  <space resources="navigate_self,skybox">
     <!-- contenido -->
     <script src="app.js"/>
   </space>
 </hsml>
 ```
 
-- `<head>` no se renderiza. `<name>` es el título; los `<meta type="...">` fijan la
-  transformación inicial del documento al montarse.
+- `<head>` no se renderiza. `<name>` es el título. Los `<meta type="...">` son
+  **decorativos**: ningún código del motor los lee, pese a lo que decía esta guía.
+  Para mover el documento, usá un `<group>` con transform alrededor del contenido.
 - `<space>` es la raíz visible y **donde se declaran los permisos** (`resources`).
 - `<script src="...">` se resuelve relativo a la URL del documento; también acepta
   `luna://internal/*.js`. Corre en el isolate del espacio.
@@ -136,7 +174,8 @@ sin el permiso el nodo se monta vacío y se loguea un warning.
 
 ## 4. Permisos (`resources`)
 
-`<space resources="a b c">` declara qué capacidades pide el documento. Bundles
+`<space resources="a,b,c">` declara qué capacidades pide el documento.
+**Separadas por coma, sin espacios**: ver la advertencia 1 arriba. Bundles
 reales (`permissions.rs`), los que un documento normal puede pedir:
 
 | Bundle | Habilita |
@@ -146,9 +185,17 @@ reales (`permissions.rs`), los que un documento normal puede pedir:
 | `fetch_text` | `fetch()` de texto |
 | `skybox` | montar `<skybox>` |
 | `read_pose_stream` | eventos `posemove` de `<posezone>` |
-| `read_hmd_pose` | inyecta `dimention.readViewerPose()` |
+| `read_hmd_pose` | `dimention.readViewerPose()` con pose completa (posición + hacia dónde mira) |
+| `read_camera_pose` | `dimention.readViewerPose()` **sólo con posición**; la orientación viene en cero. Anda en escritorio y en VR |
+| `capture_frame` | `dimention.captureFrame(nombre)` → PNG del frame. Elevado |
 | `desktop_camera_control` | control de cámara en escritorio |
 | `vr_locomotion` | locomoción con mandos |
+
+> **Ojo con esta tabla**: lista lo que un documento *puede pedir*, no lo que va a
+> *recibir*. Lo efectivo es la intersección con lo que el shell concede según el
+> tipo de página. Una `spatial` remota hoy recibe `navigate_self`,
+> `read_pose_stream`, `read_camera_pose` y `skybox`; `fetch_text` no está en esa
+> lista por más que se pida.
 
 Elevados — **sólo** para páginas nativas o apps montadas por el shell trusted; un
 origen remoto que los pida dispara UX de consentimiento o simplemente no los recibe:
@@ -161,6 +208,7 @@ Algunos bundles auto-inyectan su script:
 | Bundle | Script inyectado | API que aparece |
 |---|---|---|
 | `root` | `luna://internal/root_api.js` | `dimension.luna.*` |
+| `read_camera_pose` | `luna://internal/viewer_pose_api.js` | `dimention.readViewerPose()` (sin orientación) |
 | `manage_tabs` | `luna://internal/tabs_api.js` | `dimention.tabs.*` |
 | `ux_embed` | `luna://internal/embedded_api.js` | `dimention.embedded.*` |
 | `read_hmd_pose` | `luna://internal/viewer_pose_api.js` | `dimention.readViewerPose()` |
@@ -269,7 +317,7 @@ btn.addEventListener('toque', (e) => {
 setTimeout / setInterval / clearTimeout / clearInterval
 requestAnimationFrame / cancelAnimationFrame
 console.log / warn / error
-await fetch(url)                 // sujeto a CSP + caché HTTP (ETag, Last-Modified, max-age)
+await fetch(url)                 // requiere fetch_text, que una página spatial remota NO recibe
 localStorage                     // persistente por origen, sin permiso
 new WebSocket('ws://...')        // onopen/onmessage/onerror/onclose, polling cada 16 ms
 location.href = '...'            // navegar (requiere navigate_self / navigate_global)
@@ -316,10 +364,11 @@ Dos archivos servidos desde `http://localhost:2052/`.
 <hsml>
   <head>
     <name>Demo Luna</name>
-    <meta type="position" x="0" y="0" z="0"/>
   </head>
 
-  <space resources="navigate_self fetch_text read_hmd_pose">
+  <!-- Coma, no espacio. Y sólo lo que una página remota recibe de verdad:
+       fetch_text no se concede, y de la pose llega read_camera_pose. -->
+  <space resources="navigate_self,read_camera_pose">
     <group id="panel" z="-3">
       <text y="2.0" value="Demo Luna" size="0.28" color="#344C49"/>
       <text id="contador" y="1.72" value="toques: 0" size="0.09" color="#4E6560"/>
@@ -414,15 +463,26 @@ function frame() {
 }
 requestAnimationFrame(frame);
 
-// --- Pose del usuario (read_hmd_pose) ------------------------------------
+// --- Pose del usuario (read_camera_pose) ---------------------------------
+// Con read_camera_pose llega la posición y la orientación en cero; con
+// read_hmd_pose vendría completa, pero una página remota no la recibe.
 const pose = root.readViewerPose && root.readViewerPose();
-if (pose) console.log('modo:', pose.mode, 'yaw:', pose.yaw.toFixed(2));
+if (pose) console.log('modo:', pose.mode, 'en', pose.px.toFixed(2), pose.pz.toFixed(2));
 
 // --- Red -----------------------------------------------------------------
+// OJO: esto falla en una página spatial remota. fetch necesita fetch_text y el
+// shell no se lo concede (ver advertencia 3). Queda como referencia para
+// páginas nativas o apps montadas por el shell.
 fetch('http://localhost:2052/data.json')
   .then(r => r.json())
   .then(d => console.log('datos', d))
   .catch(e => console.warn('fetch falló', e));
+
+// Lo que sí funciona desde un origen remoto: que el motor traiga el documento.
+// Los <include> los resuelve el motor, no el JS, así que no piden permiso.
+const inc = root.createElement('include');
+inc.setAttribute('src', 'http://localhost:2052/pedazo.hsml?q=1');
+root.getElementById('panel').appendChild(inc);
 ```
 
 ### Probarlo
@@ -472,6 +532,25 @@ el borde JS↔Rust.
 **`include` no hereda permisos.** Si tu sub-documento necesita `fetch_text`, el
 `<include>` tiene que declararlo, y el padre ya debe tenerlo.
 
+**Cada `<include>` es un space, o sea un isolate de JS.** No es sólo geometría:
+son una petición, un parseo, una frontera de permisos y un worker. No hay acceso
+al DOM entre spaces, así que padre e hijo no se ven; el único canal es lo que el
+padre le inyecte por la URL. Medido, ese costo fijo domina el streaming por
+chunks: agrupar varios chunks en un documento fue lo que movió los FPS, no
+reducir geometría. Ver [`docs/costo_de_montaje.md`](docs/costo_de_montaje.md).
+
+**`border-radius` existe en `box` y `plane`, y regenera la malla.** Vale
+recordarlo porque sin él un panel con esquinas redondeadas hay que armarlo con
+dos cajas cruzadas y cuatro cilindros girados, que es lo que uno termina
+haciendo si no sabe que está.
+
+**Los `plane` son de doble cara.** No hace falta duplicarlos ni girarlos para
+verlos desde atrás.
+
+**`setTransformBatch` toma 7 floats por nodo**: `[nodeId, px,py,pz, rx,ry,rz, …]`,
+en coordenadas **locales**. La escala **no** va en el batch: para eso está el
+proxy `el.scale`, que sí cruza el borde una vez por acceso.
+
 ---
 
 ## 8. Dónde seguir
@@ -485,3 +564,7 @@ el borde JS↔Rust.
 - [`../NATIVE_ENVIRONMENT.md`](../NATIVE_ENVIRONMENT.md) — el islote compartido de las páginas nativas.
 - [`embedded_apps.md`](embedded_apps.md) — protocolo de apps `app-embedded`.
 - [`CACHE_CSP_IMPLEMENTATION.md`](CACHE_CSP_IMPLEMENTATION.md) — caché HTTP y CSP.
+- [`docs/costo_de_montaje.md`](docs/costo_de_montaje.md) — qué cuesta montar
+  documentos, medido en el motor, y el banco de pruebas que lo mide.
+- [`docs/deuda_tecnica/deudas_de_plataforma.md`](docs/deuda_tecnica/deudas_de_plataforma.md)
+  — lo que falta en la plataforma, visto desde una página remota.

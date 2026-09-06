@@ -447,6 +447,7 @@ pub fn commit_pending_document_load_system(
                             crate::js::stop_space_worker(worker);
                         }
                         manager.contexts.clear();
+                        manager.context_generation = manager.context_generation.wrapping_add(1);
                         if let Some(ws_service) = commit.ws_service.as_deref() {
                             ws_service.close_all();
                         }
@@ -1596,6 +1597,7 @@ pub fn dom_sync_system(
     let mounted_models = &async_dom.mounted_models;
     let model_status_updates = &mut async_dom.model_status_updates;
     let model_animation_configs = &async_dom.model_animation_configs;
+    let dynamic_meshes = &async_dom.dynamic_meshes;
 
     let tags = world.0.read_storage::<Tag>();
     let transforms = world.0.read_storage::<Transform2>();
@@ -1748,7 +1750,7 @@ pub fn dom_sync_system(
                 crate::model_animation::sync_config(&mut commands, bevy_ent,
                     attrs_storage.get(*node).map(|a| &a.0), model_animation_configs.get(bevy_ent).ok());
                 let source = models.get(*node).and_then(|m| m.src.as_deref()).unwrap_or("");
-                let resolved_url = (!source.trim().is_empty())
+                let resolved_url = (!source.trim().is_empty() && !source.starts_with("mesh:"))
                     .then(|| resolve_node_relative_url(&world.0, *node, &current_url.0, source))
                     .flatten();
                 if resolved_url.is_none() {
@@ -1789,9 +1791,13 @@ pub fn dom_sync_system(
                     _ if invalid_source => Some("Cannot resolve model source URL"),
                     _ => None,
                 };
-                crate::models::set_source(&mut commands, &asset_server, bevy_ent, node_id,
+                if source.starts_with("mesh:") {
+                    let resource = dynamic_meshes.as_ref().and_then(|r| r.get(source, crate::js::find_owner_space_id(&world.0, *node)));
+                    crate::models::set_generated_source(&mut commands, &asset_server, bevy_ent, node_id,
+                        source, resource, mounted_models.get(bevy_ent).ok(), model_status_updates);
+                } else { crate::models::set_source(&mut commands, &asset_server, bevy_ent, node_id,
                     source, resolved_asset_path.as_deref(), error,
-                    mounted_models.get(bevy_ent).ok(), model_status_updates);
+                    mounted_models.get(bevy_ent).ok(), model_status_updates); }
                 if let Ok((_, mut t, _, _)) = query.get_mut(bevy_ent) {
                     if *t != transform_b { *t = transform_b; }
                 }
@@ -2093,7 +2099,7 @@ pub fn dom_sync_system(
             let new_ent = match tag {
                 "model" => {
                     let source = models.get(*node).and_then(|m| m.src.as_deref()).unwrap_or("");
-                    let resolved_url = (!source.trim().is_empty())
+                    let resolved_url = (!source.trim().is_empty() && !source.starts_with("mesh:"))
                         .then(|| resolve_node_relative_url(&world.0, *node, &current_url.0, source))
                         .flatten();
                     if resolved_url.is_none() {
@@ -2141,8 +2147,12 @@ pub fn dom_sync_system(
                         visibility: node_visibility(&attrs_storage, *node),
                         ..default()
                     }, Dirty)).id();
-                    crate::models::set_source(&mut commands, &asset_server, entity, node_id,
-                        source, resolved_asset_path.as_deref(), error, None, model_status_updates);
+                    if source.starts_with("mesh:") {
+                        let resource = dynamic_meshes.as_ref().and_then(|r| r.get(source, crate::js::find_owner_space_id(&world.0, *node)));
+                        crate::models::set_generated_source(&mut commands, &asset_server, entity, node_id,
+                            source, resource, None, model_status_updates);
+                    } else { crate::models::set_source(&mut commands, &asset_server, entity, node_id,
+                        source, resolved_asset_path.as_deref(), error, None, model_status_updates); }
                     crate::model_animation::sync_config(&mut commands, entity,
                         attrs_storage.get(*node).map(|a| &a.0), None);
                     entity

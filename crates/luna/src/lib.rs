@@ -12,6 +12,7 @@ pub mod embedded;
 pub mod io;
 pub mod models;
 pub mod model_animation;
+pub mod dynamic_mesh;
 pub mod js;
 pub mod permissions;
 pub mod render;

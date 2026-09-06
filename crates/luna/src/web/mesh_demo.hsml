@@ -1,0 +1,31 @@
+<hsml>
+  <head><name>Mallas dinámicas</name></head>
+  <space>
+    <text x="0" y="2.3" z="-3" value="Una malla, dos instancias" size="0.12" />
+    <text x="0" y="2.05" z="-3" value="Toca para deformar o pausar" size="0.07" />
+    <model id="mesh_left" x="-0.8" y="1.2" z="-3" />
+    <model id="mesh_right" x="0.8" y="1.2" z="-3" />
+    <box id="toggle_mesh" x="0" y="0.5" z="-2.5" sx="1.5" sy="0.25" sz="0.08" color="#298b64" touchable="true" />
+    <text x="0" y="0.52" z="-2.44" value="Animar / pausar" size="0.08" />
+    <script><![CDATA[
+      const positions = new Float32Array([-0.5, -0.4, 0, 0.5, -0.4, 0, 0, 0.55, 0]);
+      const colors = new Float32Array([0.2, 0.8, 0.4, 1, 0.2, 0.5, 1, 1, 1, 0.8, 0.2, 1]);
+      const resource = MeshResource.create({ positions, colors });
+      document.getElementById('mesh_left').src = resource.src;
+      document.getElementById('mesh_right').src = resource.src;
+      let running = false;
+      let raf = null;
+      function frame(time) {
+        if (!running) return;
+        positions[7] = 0.55 + Math.sin(time * 0.003) * 0.3;
+        resource.update({ positions, colors });
+        raf = requestAnimationFrame(frame);
+      }
+      document.getElementById('toggle_mesh').addEventListener('toque', () => {
+        running = !running;
+        if (running) raf = requestAnimationFrame(frame);
+        else if (raf !== null) cancelAnimationFrame(raf);
+      });
+    ]]></script>
+  </space>
+</hsml>

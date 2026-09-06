@@ -906,6 +906,7 @@ pub struct AsyncDomParams<'w, 's> {
     pub mounted_models: Query<'w, 's, &'static crate::models::ModelInstance>,
     pub model_status_updates: ResMut<'w, AttributeUpdates>,
     pub model_animation_configs: Query<'w, 's, &'static crate::model_animation::ModelAnimationConfig>,
+    pub dynamic_meshes: Option<Res<'w, crate::dynamic_mesh::DynamicMeshes>>,
 }
 
 #[derive(SystemParam)]

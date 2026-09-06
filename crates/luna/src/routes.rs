@@ -24,6 +24,7 @@ impl VirtualRoutes {
         routes.insert("environment".to_string(), RouteHandler::Static(include_str!("web/environment.hsml")));
         routes.insert("demos".to_string(), RouteHandler::Static(LUNA_DEMOS));
         routes.insert("scale_demo".to_string(), RouteHandler::Static(LUNA_SCALE_DEMO));
+        routes.insert("mesh_demo".to_string(), RouteHandler::Static(include_str!("web/mesh_demo.hsml")));
         routes.insert("fire_demo".to_string(), RouteHandler::Static(LUNA_FIRE_DEMO));
         routes.insert("target_demo".to_string(), RouteHandler::Static(LUNA_TARGET_DEMO));
         routes.insert("range_demo".to_string(), RouteHandler::Static(LUNA_RANGE_DEMO));

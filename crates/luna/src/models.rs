@@ -82,6 +82,49 @@ pub fn set_source(
     previous: Option<&ModelInstance>,
     updates: &mut AttributeUpdates,
 ) {
+    set_source_impl(
+        commands, server, entity, node_id, source, path, error, previous, updates, None,
+    );
+}
+
+pub fn set_generated_source(
+    commands: &mut Commands,
+    server: &AssetServer,
+    entity: Entity,
+    node_id: u32,
+    source: &str,
+    resource: Option<&ModelResource>,
+    previous: Option<&ModelInstance>,
+    updates: &mut AttributeUpdates,
+) {
+    set_source_impl(
+        commands,
+        server,
+        entity,
+        node_id,
+        source,
+        resource.map(|r| r.asset_path.as_str()),
+        resource
+            .is_none()
+            .then_some("Unknown or inaccessible mesh resource"),
+        previous,
+        updates,
+        resource.cloned(),
+    );
+}
+
+fn set_source_impl(
+    commands: &mut Commands,
+    server: &AssetServer,
+    entity: Entity,
+    node_id: u32,
+    source: &str,
+    path: Option<&str>,
+    error: Option<&str>,
+    previous: Option<&ModelInstance>,
+    updates: &mut AttributeUpdates,
+    generated: Option<ModelResource>,
+) {
     if let Some(old) = previous {
         if old.source == source
             && old.resource.as_ref().map(|r| r.asset_path.as_str()) == path
@@ -94,7 +137,7 @@ pub fn set_source(
         }
     }
     let generation = previous.map_or(1, |old| old.generation.wrapping_add(1));
-    let resource = path.map(|p| ModelResource::load(server, p));
+    let resource = generated.or_else(|| path.map(|p| ModelResource::load(server, p)));
     let content = resource.as_ref().map(|resource| {
         let child = commands
             .spawn((

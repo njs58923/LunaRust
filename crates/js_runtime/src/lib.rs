@@ -14,6 +14,7 @@ use deno_core::{op2, Extension, FastString, JsRuntime, OpState, RuntimeOptions};
 pub mod cache;
 pub mod csp;
 pub mod storage;
+pub mod mesh;
 
 pub use cache::{CacheStats, CachedResponse, CachedScript, FetchCache, ScriptCache};
 pub use csp::{ContentSecurityPolicy, CorsValidation, CorsValidator};
@@ -1440,6 +1441,7 @@ impl Engine {
                 op_console_error::decl(),
                 op_now::decl(),
                 storage::op_local_storage::decl(),
+                mesh::op_mesh_resource::decl(),
                 op_set_timeout::decl(),
                 op_clear_timeout::decl(),
                 op_timers_poll::decl(),
@@ -1502,6 +1504,7 @@ impl Engine {
                 state.put::<AttrUpdates>(AttrUpdates {
                     updates: attr_updates_for_state.updates.clone(),
                 });
+                state.put(mesh::MeshQueue::default());
                 state.put::<AttrSnapshot>(AttrSnapshot {
                     data: attr_snapshot_for_state.data.clone(),
                 });
@@ -1608,6 +1611,8 @@ impl Engine {
         eprintln!("[js_runtime] Injecting runtime.js...");
         rt.execute_script("<runtime>", FastString::Static(RUNTIME_JS))
             .expect("runtime.js failed");
+        rt.execute_script("<mesh>", FastString::Static(include_str!("../mesh.js")))
+            .expect("mesh bootstrap failed");
 
         eprintln!("[js_runtime] Engine created successfully");
 
@@ -1707,6 +1712,9 @@ impl Engine {
 
     pub fn drain_attr_updates(&self) -> Vec<(i32, String, String)> {
         take_vec(&self.attr_updates)
+    }
+    pub fn drain_mesh_commands(&mut self) -> (u64, Vec<mesh::MeshCommand>) {
+        self.rt.op_state().borrow_mut().borrow_mut::<mesh::MeshQueue>().drain()
     }
 
     pub fn drain_element_creation_queue(&self) -> Vec<(i32, String)> {
