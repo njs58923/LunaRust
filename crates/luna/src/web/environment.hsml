@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head><name>Luna Environment</name></head>
+  <space>
+    <!-- Shared native environment; mounted once by the root shell. -->
+    <group id="home_sky">
+      <plane z="-500" sx="1000" sy="1000" color="#B7CCD2" touchable="false"/>
+      <plane z="500" sx="1000" sy="1000" color="#B7CCD2" touchable="false"/>
+      <plane x="-500" ry="1.5707963" sx="1000" sy="1000" color="#B7CCD2" touchable="false"/>
+      <plane x="500" ry="1.5707963" sx="1000" sy="1000" color="#B7CCD2" touchable="false"/>
+      <plane y="500" rx="1.5707963" sx="1000" sy="1000" color="#B7CCD2" touchable="false"/>
+      <plane y="-500" rx="1.5707963" sx="1000" sy="1000" color="#B7CCD2" touchable="false"/>
+      <sphere x="-32" y="27" z="-80" sx="9" sy="9" sz="9" color="#FFF0CF" touchable="false"/>
+    </group>
+
+    <!-- Ground surface at y=0, under both the tracked origin and desktop spawn.
+         This is visual terrain; it does not add a physics/collision system. -->
+    <group id="home_island">
+      <cylinder y="-0.18" sx="20" sy="0.36" sz="18" color="#82947A" touchable="false"/>
+      <cylinder y="-0.60" sx="19.7" sy="0.50" sz="17.7" color="#6C7566" touchable="false"/>
+      <cylinder x="0.2" y="-1.2" sx="17.8" sy="0.75" sz="15.9" color="#59635D" touchable="false"/>
+      <cylinder x="0.5" y="-1.95" sx="14.8" sy="0.80" sz="13.2" color="#485550" touchable="false"/>
+      <cylinder x="0.8" y="-2.7" sx="10.4" sy="0.80" sz="9.4" color="#3E4B48" touchable="false"/>
+      <cylinder x="1.0" y="-3.35" sx="5.8" sy="0.60" sz="5.2" color="#35433F" touchable="false"/>
+
+      <box x="-5.6" y="0.34" z="-2.8" ry="0.4" rz="0.12" sx="1.35" sy="0.85" sz="1.1" color="#ADB3A1" touchable="false"/>
+      <box x="-4.6" y="0.16" z="-2.5" ry="-0.3" sx="0.65" sy="0.40" sz="0.7" color="#949E8C" touchable="false"/>
+      <box x="5.8" y="0.24" z="1.4" ry="0.7" rz="-0.15" sx="1.1" sy="0.65" sz="0.9" color="#A2AB99" touchable="false"/>
+
+      <group x="-3.8" z="-4.8">
+        <plane x="-0.08" y="0.16" rz="0.25" sx="0.07" sy="0.34" color="#556D49" touchable="false"/>
+        <plane y="0.22" ry="0.6" sx="0.08" sy="0.44" color="#647D50" touchable="false"/>
+        <plane x="0.1" y="0.14" rz="-0.35" sx="0.07" sy="0.30" color="#718857" touchable="false"/>
+      </group>
+      <group x="4.6" z="-3.5" ry="1.0">
+        <plane x="-0.08" y="0.16" rz="0.25" sx="0.07" sy="0.34" color="#556D49" touchable="false"/>
+        <plane y="0.22" ry="0.6" sx="0.08" sy="0.44" color="#647D50" touchable="false"/>
+        <plane x="0.1" y="0.14" rz="-0.35" sx="0.07" sy="0.30" color="#718857" touchable="false"/>
+      </group>
+    </group>
+
+  </space>
+</hsml>

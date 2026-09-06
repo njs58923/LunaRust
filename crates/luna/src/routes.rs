@@ -21,6 +21,7 @@ impl VirtualRoutes {
         // Registrar rutas estáticas
         routes.insert("root".to_string(), RouteHandler::Static(LUNA_ROOT));
         routes.insert("home".to_string(), RouteHandler::Static(LUNA_HOME));
+        routes.insert("environment".to_string(), RouteHandler::Static(include_str!("web/environment.hsml")));
         routes.insert("demos".to_string(), RouteHandler::Static(LUNA_DEMOS));
         routes.insert("scale_demo".to_string(), RouteHandler::Static(LUNA_SCALE_DEMO));
         routes.insert("fire_demo".to_string(), RouteHandler::Static(LUNA_FIRE_DEMO));
@@ -125,8 +126,8 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   </head>
   <space resources="navigate_self">
 
-    <plane x="0" y="-3" z="0" rx="-1.5708" sx="40" sy="40" sz="1" color="#080D12" id="menu_ground" />
 
+    <group y="1.1">
     <plane x="0" y="0.6" z="-3.15" sx="3.0" sy="2.6" sz="1" color="#0D1B2A" id="menu_panel" />
 
     <text x="0" y="1.65" z="-3.0" value="Demos" size="0.26" color="#64B5F6" />
@@ -156,6 +157,8 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <text x="0.78" y="-0.45" z="-2.94" value="SETTINGS" size="0.085" color="#FFFFFF" />
 
     <text x="0" y="-0.78" z="-3.0" value="" size="0.075" id="menu_status" color="#B0BEC5" />
+
+    </group>
 
     <script>
       const root = hiperspace.dimention;
@@ -200,7 +203,6 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
          ═══════════════════════════════════════════════════════════════════════ -->
 
     <!-- Ground extending 80m radius -->
-    <plane x="0" y="-3" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#080D12" id="demo_ground" />
 
     <!-- ═══════════════════════════════════════════════════════════════════════
          SCALE RING — 8 anchors, each at a different distance and direction.
@@ -208,6 +210,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
          All appear roughly the same angular size from the origin.
          ═══════════════════════════════════════════════════════════════════════ -->
 
+    <group id="demo_ground">
     <!--  4 m  straight ahead  — tiny orange cube (0.4 m) -->
     <box x="0"      y="0.20" z="-4"     sx="0.40" sy="0.40" sz="0.40" color="#FF6F00" id="scale_4m" />
     <text x="0"      y="0.50" z="-4"     value="4 m · 0.4 m" size="0.050" color="#FFD54F" />
@@ -240,10 +243,12 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <box x="-24.75" y="1.75" z="-24.75" sx="3.50" sy="3.50" sz="3.50" color="#DD2C00" id="scale_35m" />
     <text x="-24.75" y="3.55" z="-24.75" value="35 m · 3.5 m" size="0.438" color="#FFAB40" />
 
+    </group>
     <!-- ═══════════════════════════════════════════════════════════════════════
          CONTROL PANEL  (at z = -3.1, eye level)
          ═══════════════════════════════════════════════════════════════════════ -->
 
+    <group id="demo_controls" y="1.4" sx="0.75" sy="0.65">
     <plane x="0" y="0.20" z="-3.15" sx="5.10" sy="3.40" sz="1" color="#0D1B2A" id="demo_panel" />
 
     <text x="0" y="1.68" z="-3.0" value="Luna Scale Demo" size="0.22" color="#64B5F6" />
@@ -281,7 +286,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <text x="0.00" y="0.16" z="-2.94" value="Move Panel" size="0.07" />
 
     <box x="0.00" y="-0.13" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#1976D2" id="demo_toggle_floor" />
-    <text x="0.00" y="-0.13" z="-2.94" value="Toggle Floor" size="0.07" />
+    <text x="0.00" y="-0.13" z="-2.94" value="Toggle Guides" size="0.07" />
 
     <box x="0.00" y="-0.42" z="-3.0" sx="0.62" sy="0.20" sz="0.05" color="#E53935" id="demo_clear" />
     <text x="0.00" y="-0.42" z="-2.94" value="Clear All" size="0.07" />
@@ -305,6 +310,8 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <!-- Bottom navigation row -->
     <box x="0.00" y="-1.42" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
     <text x="0.00" y="-1.42" z="-2.94" value="DEMOS" size="0.085" color="#FFFFFF" />
+
+    </group>
 
     <script>
     const root = hiperspace.dimention;
@@ -397,7 +404,8 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       const bz = -Math.cos(angle) * dist;
       const off = nextId * 0.38;
 
-      const groundY = scale * 0.5;
+      // Conservative bounds keep tilted primitives above the common y=0 floor.
+      const groundY = scale * (tag === 'plane' ? 1.42 : tag === 'sphere' ? 0.5 : 1.1);
       const lift = Math.random() < 0.4
         ? 0
         : Math.random() * (1.0 + dist * 0.25);
@@ -435,7 +443,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       applyTransformDirect(el, bx, by, bz, rx, ry, rz);
 
       root.appendChild(el);
-      dynamicNodes.push({ el, bx, by, bz, off });
+      dynamicNodes.push({ el, bx, by, bz, off, groundY });
 
     }
 
@@ -473,7 +481,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
         applyTransformDirect(
           item.el,
           item.bx,
-          item.by + Math.sin(t * 1.4 + off) * (item.by * 0.25),
+          Math.max(item.groundY, item.by + Math.sin(t * 1.4 + off) * (item.by * 0.25)),
           item.bz,
           Math.sin(t * 0.5 + off) * 0.12,
           t * 0.9 + off,
@@ -513,7 +521,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       if (!floor) return;
       floorVisible = !floorVisible;
       floor.setAttribute('visible', floorVisible ? 'true' : 'false');
-      setStatus(floorVisible ? 'floor visible' : 'floor hidden');
+      setStatus(floorVisible ? 'guides visible' : 'guides hidden');
     }
 
     function queryTest() {
@@ -537,7 +545,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
         const scale = dist * 0.1;
         const nx = Math.sin(angle) * dist;
         const nz = -Math.cos(angle) * dist;
-        const ny = scale * 0.5 + ring * 1.5;
+        const ny = Math.max(item.groundY, scale * 0.5 + ring * 1.5);
 
         item.bx = nx;
         item.by = ny;
@@ -591,28 +599,29 @@ const LUNA_SETTINGS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
   <space resources="navigate_self">
-  <text x="0" y="3.5" z="-5" value="Luna Settings" size="0.4" />
-  <text x="0" y="3" z="-5" value="Browser Configuration" size="0.18" />
+  <plane y="1.6" z="-3.58" sx="5.2" sy="2.6" color="#304B43" touchable="false"/>
+  <text x="0.000" y="2.550" z="-3.5" value="Luna Settings" size="0.240" />
+  <text x="0.000" y="2.317" z="-3.5" value="Browser Configuration" size="0.108" />
 
-  <text x="-3" y="2.2" z="-5" value="Appearance" size="0.15" color="#4CAF50" />
-  <text x="-3" y="1.8" z="-5" value="- Theme: Default" size="0.1" />
-  <text x="-3" y="1.5" z="-5" value="- Font Size: Medium" size="0.1" />
+  <text x="-1.950" y="1.945" z="-3.5" value="Appearance" size="0.090" color="#4CAF50" />
+  <text x="-1.950" y="1.759" z="-3.5" value="- Theme: Default" size="0.060" />
+  <text x="-1.950" y="1.620" z="-3.5" value="- Font Size: Medium" size="0.060" />
 
-  <text x="0" y="2.2" z="-5" value="Performance" size="0.15" color="#2196F3" />
-  <text x="0" y="1.8" z="-5" value="- Render Quality: High" size="0.1" />
-  <text x="0" y="1.5" z="-5" value="- Cache Enabled: Yes" size="0.1" />
+  <text x="0.000" y="1.945" z="-3.5" value="Performance" size="0.090" color="#2196F3" />
+  <text x="0.000" y="1.759" z="-3.5" value="- Render Quality: High" size="0.060" />
+  <text x="0.000" y="1.620" z="-3.5" value="- Cache Enabled: Yes" size="0.060" />
 
-  <text x="3" y="2.2" z="-5" value="Network" size="0.15" color="#FF9800" />
-  <text x="3" y="1.8" z="-5" value="- Proxy: None" size="0.1" />
-  <text x="3" y="1.5" z="-5" value="- Timeout: 30s" size="0.1" />
+  <text x="1.950" y="1.945" z="-3.5" value="Network" size="0.090" color="#FF9800" />
+  <text x="1.950" y="1.759" z="-3.5" value="- Proxy: None" size="0.060" />
+  <text x="1.950" y="1.620" z="-3.5" value="- Timeout: 30s" size="0.060" />
 
-  <box x="-1.5" y="0" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#9C27B0" id="btn_cache" touchable="true"/>
-  <text x="-1.5" y="0" z="-3.95" value="Cache Stats" size="0.1" />
+  <box x="-0.975" y="0.922" z="-3.5" sx="1.2" sy="0.3" sz="0.05" color="#9C27B0" id="btn_cache" touchable="true"/>
+  <text x="-0.975" y="0.922" z="-3.45" value="Cache Stats" size="0.060" />
 
-  <box x="1.5" y="0" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
-  <text x="1.5" y="0" z="-3.95" value="Back to Home" size="0.1" />
+  <box x="0.975" y="0.922" z="-3.5" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
+  <text x="0.975" y="0.922" z="-3.45" value="Back to Home" size="0.060" />
 
-  <text x="0" y="-0.8" z="-5" value="Note: Settings UI is read-only" size="0.09" color="#999999" />
+  <text x="0.000" y="0.550" z="-3.5" value="Note: Settings UI is read-only" size="0.054" color="#B8CCC0" />
 
   <script>
     const btnHome = hiperspace.dimention.getElementById('btn_home');
@@ -635,23 +644,24 @@ const LUNA_ABOUT: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
   <space resources="navigate_self">
-  <text x="0" y="3.5" z="-5" value="About Luna Browser" size="0.4" />
-  <text x="0" y="2.9" z="-5" value="Spatial 3D Web Browser" size="0.18" />
+  <plane y="1.6" z="-3.58" sx="5.2" sy="2.6" color="#304B43" touchable="false"/>
+  <text x="0.000" y="2.550" z="-3.5" value="About Luna Browser" size="0.240" />
+  <text x="0.000" y="2.310" z="-3.5" value="Spatial 3D Web Browser" size="0.108" />
 
-  <text x="0" y="2.3" z="-5" value="Version: 0.1.0-alpha" size="0.14" />
-  <text x="0" y="2" z="-5" value="Built with Bevy 0.14 + OpenXR" size="0.12" />
+  <text x="0.000" y="2.070" z="-3.5" value="Version: 0.1.0-alpha" size="0.084" />
+  <text x="0.000" y="1.950" z="-3.5" value="Built with Bevy 0.14 + OpenXR" size="0.072" />
 
-  <text x="0" y="1.4" z="-5" value="Features:" size="0.15" color="#4CAF50" />
-  <text x="0" y="1.1" z="-5" value="- HSML (Spatial HTML) Parsing" size="0.1" />
-  <text x="0" y="0.8" z="-5" value="- JavaScript Runtime (V8 via deno_core)" size="0.1" />
-  <text x="0" y="0.5" z="-5" value="- Virtual Protocol Handler (luna://)" size="0.1" />
-  <text x="0" y="0.2" z="-5" value="- HTTP Caching System" size="0.1" />
-  <text x="0" y="-0.1" z="-5" value="- DevTools with Console" size="0.1" />
+  <text x="0.000" y="1.710" z="-3.5" value="Features:" size="0.090" color="#4CAF50" />
+  <text x="0.000" y="1.590" z="-3.5" value="- HSML (Spatial HTML) Parsing" size="0.060" />
+  <text x="0.000" y="1.470" z="-3.5" value="- JavaScript Runtime (V8 via deno_core)" size="0.060" />
+  <text x="0.000" y="1.350" z="-3.5" value="- Virtual Protocol Handler (luna://)" size="0.060" />
+  <text x="0.000" y="1.230" z="-3.5" value="- HTTP Caching System" size="0.060" />
+  <text x="0.000" y="1.110" z="-3.5" value="- DevTools with Console" size="0.060" />
 
-  <text x="0" y="-0.7" z="-5" value="Project: Luna Browser by Sam" size="0.11" color="#2196F3" />
+  <text x="0.000" y="0.870" z="-3.5" value="Project: Luna Browser by Sam" size="0.066" color="#2196F3" />
 
-  <box x="0" y="-1.5" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
-  <text x="0" y="-1.5" z="-3.95" value="Back to Home" size="0.1" />
+  <box x="0.000" y="0.550" z="-3.5" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
+  <text x="0.000" y="0.550" z="-3.45" value="Back to Home" size="0.060" />
 
   <script>
     const btnHome = hiperspace.dimention.getElementById('btn_home');
@@ -671,25 +681,26 @@ const LUNA_404: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
   <space resources="navigate_self">
-  <text x="0" y="3" z="-5" value="404 - Page Not Found" size="0.35" color="#F44336" />
-  <text x="0" y="2.5" z="-5" value="The requested luna:// page does not exist" size="0.15" />
+  <plane y="1.6" z="-3.58" sx="5.2" sy="2.6" color="#304B43" touchable="false"/>
+  <text x="0.000" y="2.550" z="-3.5" value="404 - Page Not Found" size="0.210" color="#F44336" />
+  <text x="0.000" y="2.337" z="-3.5" value="The requested luna:// page does not exist" size="0.090" />
 
-  <text x="0" y="1.9" z="-5" value="Available Pages:" size="0.16" color="#4CAF50" />
-  <text x="0" y="1.55" z="-5" value="- luna://home" size="0.11" />
-  <text x="0" y="1.30" z="-5" value="- luna://demos" size="0.11" />
-  <text x="0" y="1.05" z="-5" value="- luna://settings" size="0.11" />
-  <text x="0" y="0.80" z="-5" value="- luna://about" size="0.11" />
-  <text x="0" y="0.55" z="-5" value="- luna://cache-stats" size="0.11" />
-  <text x="0" y="0.30" z="-5" value="- luna://scale_demo" size="0.11" />
-  <text x="0" y="0.05" z="-5" value="- luna://fire_demo" size="0.11" />
-  <text x="0" y="-0.20" z="-5" value="- luna://target_demo" size="0.11" />
-  <text x="0" y="-0.45" z="-5" value="- luna://range_demo" size="0.11" />
+  <text x="0.000" y="2.082" z="-3.5" value="Available Pages:" size="0.096" color="#4CAF50" />
+  <text x="0.000" y="1.933" z="-3.5" value="- luna://home" size="0.066" />
+  <text x="0.000" y="1.827" z="-3.5" value="- luna://demos" size="0.066" />
+  <text x="0.000" y="1.720" z="-3.5" value="- luna://settings" size="0.066" />
+  <text x="0.000" y="1.614" z="-3.5" value="- luna://about" size="0.066" />
+  <text x="0.000" y="1.507" z="-3.5" value="- luna://cache-stats" size="0.066" />
+  <text x="0.000" y="1.401" z="-3.5" value="- luna://scale_demo" size="0.066" />
+  <text x="0.000" y="1.295" z="-3.5" value="- luna://fire_demo" size="0.066" />
+  <text x="0.000" y="1.188" z="-3.5" value="- luna://target_demo" size="0.066" />
+  <text x="0.000" y="1.082" z="-3.5" value="- luna://range_demo" size="0.066" />
 
-  <box x="-0.7" y="-1.7" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
-  <text x="-0.7" y="-1.7" z="-3.95" value="Go Home" size="0.1" />
+  <box x="-0.455" y="0.550" z="-3.5" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
+  <text x="-0.455" y="0.550" z="-3.45" value="Go Home" size="0.060" />
 
-  <box x="0.7" y="-1.7" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
-  <text x="0.7" y="-1.7" z="-3.95" value="Go to Demos" size="0.1" />
+  <box x="0.455" y="0.550" z="-3.5" sx="1.2" sy="0.3" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
+  <text x="0.455" y="0.550" z="-3.45" value="Go to Demos" size="0.060" />
 
   <script>
     const btnHome = hiperspace.dimention.getElementById('btn_home');
@@ -726,18 +737,19 @@ fn generate_cache_stats(_path: &str) -> String {
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
   <space resources="navigate_self">
-  <text x="0" y="3.5" z="-5" value="HTTP Cache Statistics" size="0.35" />
-  <text x="0" y="2.9" z="-5" value="Real-time cache monitoring" size="0.16" />
+  <plane y="1.6" z="-3.58" sx="5.2" sy="2.6" color="#304B43" touchable="false"/>
+  <text x="0.000" y="2.550" z="-3.5" value="HTTP Cache Statistics" size="0.210" />
+  <text x="0.000" y="2.250" z="-3.5" value="Real-time cache monitoring" size="0.096" />
 
-  <text x="0" y="2.3" z="-5" value="Cache Entries: [Placeholder]" size="0.13" />
-  <text x="0" y="2" z="-5" value="Total Size: [Placeholder]" size="0.13" />
-  <text x="0" y="1.7" z="-5" value="Hit Rate: [Placeholder]" size="0.13" />
+  <text x="0.000" y="1.950" z="-3.5" value="Cache Entries: [Placeholder]" size="0.078" />
+  <text x="0.000" y="1.800" z="-3.5" value="Total Size: [Placeholder]" size="0.078" />
+  <text x="0.000" y="1.650" z="-3.5" value="Hit Rate: [Placeholder]" size="0.078" />
 
-  <text x="0" y="1" z="-5" value="Note: Dynamic stats require runtime integration" size="0.11" color="#FFC107" />
-  <text x="0" y="0.7" z="-5" value="Future: Pass cache resource to generate_cache_stats()" size="0.09" />
+  <text x="0.000" y="1.300" z="-3.5" value="Note: Dynamic stats require runtime integration" size="0.066" color="#FFC107" />
+  <text x="0.000" y="1.150" z="-3.5" value="Future: Pass cache resource to generate_cache_stats()" size="0.054" />
 
-  <box x="0" y="-0.5" z="-4" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_back" touchable="true"/>
-  <text x="0" y="-0.5" z="-3.95" value="Back to Settings" size="0.1" />
+  <box x="0.000" y="0.550" z="-3.5" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_back" touchable="true"/>
+  <text x="0.000" y="0.550" z="-3.45" value="Back to Settings" size="0.060" />
 
   <script>
     const btn = hiperspace.dimention.getElementById('btn_back');
@@ -770,9 +782,9 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <posezone id="gun_zone" x="0" y="1.0" z="0" sx="40" sy="12" sz="40" visible="false" />
 
     <!-- Ground -->
-    <plane x="0" y="-3" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#080D12" id="ground" />
 
     <!-- Control Panel (side-mounted left to clear forward firing arc) -->
+    <group y="1.15" sy="0.8">
     <plane x="-2.5" y="0.50" z="-3.15" sx="2.50" sy="2.40" sz="1" color="#1a1a2e" id="control_panel" />
 
     <text x="-2.5" y="1.20" z="-3.0" value="Fire Bullet Demo" size="0.20" color="#FF6B6B" />
@@ -793,6 +805,8 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <!-- Cross-demo nav row -->
     <box x="-2.5" y="-0.55" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
     <text x="-2.5" y="-0.55" z="-2.94" value="DEMOS" size="0.085" color="#FFFFFF" />
+
+    </group>
 
     <script>
     const root = hiperspace.dimention;
@@ -946,7 +960,7 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
         // Remove if out of bounds
         if (Math.abs(b.x) > b.maxDistance ||
             Math.abs(b.z) > b.maxDistance ||
-            b.y < -5) {
+            b.y < BULLET_SIZE * 0.5) {
           b.el.remove();
           bullets.splice(i, 1);
           continue;
@@ -1007,8 +1021,8 @@ const LUNA_TARGET_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <space resources="navigate_self,read_pose_stream">
     <posezone id="gun_zone" x="0" y="1.0" z="0" sx="40" sy="12" sz="40" visible="false" />
 
-    <plane x="0" y="-3" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#080D12" id="ground" />
 
+    <group y="1.15" sy="0.8">
     <plane x="-2.5" y="0.50" z="-3.15" sx="2.50" sy="2.40" sz="1" color="#1a1a2e" id="control_panel" />
 
     <text x="-2.5" y="1.20" z="-3.0" value="Target Practice" size="0.20" color="#FF1744" />
@@ -1027,6 +1041,8 @@ const LUNA_TARGET_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <!-- Cross-demo nav row -->
     <box x="-2.5" y="-0.55" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
     <text x="-2.5" y="-0.55" z="-2.94" value="DEMOS" size="0.085" color="#FFFFFF" />
+
+    </group>
 
     <script>
     const root = hiperspace.dimention;
@@ -1230,7 +1246,7 @@ const LUNA_TARGET_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
       for (let i = 0; i < targets.length; i++) {
         const tg = targets[i];
         tg.x = tg.bx + Math.sin(t * tg.freqX + tg.phase) * tg.ampX;
-        tg.y = tg.by + Math.sin(t * tg.freqY + tg.phase) * tg.ampY;
+        tg.y = Math.max(TARGET_RADIUS, tg.by + Math.sin(t * tg.freqY + tg.phase) * tg.ampY);
         tg.z = tg.bz + Math.cos(t * tg.freqZ + tg.phase) * tg.ampZ;
         if (tg.el) tg.el.position = { x: tg.x, y: tg.y, z: tg.z };
       }
@@ -1244,7 +1260,7 @@ const LUNA_TARGET_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
         if (Math.abs(b.x) > BULLET_MAX_DISTANCE ||
             Math.abs(b.z) > BULLET_MAX_DISTANCE ||
-            b.y < -5) {
+            b.y < BULLET_SIZE * 0.5) {
           if (b.el) b.el.remove();
           bullets.splice(i, 1);
           continue;
@@ -1304,14 +1320,11 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <space resources="navigate_self,read_pose_stream">
     <posezone id="gun_zone" x="0" y="1.0" z="0" sx="40" sy="12" sz="40" visible="false" />
 
-    <plane x="0" y="-3" z="0" rx="-1.5708" sx="80" sy="80" sz="1" color="#080D12" id="ground" />
 
     <!-- Range walls / lane markers -->
-    <plane x="-6" y="0" z="-15" ry="1.5708" sx="30" sy="6" sz="1" color="#1a1a2e" id="lane_left" />
-    <plane x="6" y="0" z="-15" ry="-1.5708" sx="30" sy="6" sz="1" color="#1a1a2e" id="lane_right" />
-    <plane x="0" y="0" z="-30" sx="14" sy="6" sz="1" color="#161628" id="lane_back" />
 
     <!-- Control panel (side-mounted left, clear of forward shooting axis) -->
+    <group y="1.15" sy="0.8">
     <plane x="-3.5" y="0.50" z="-3.15" sx="2.80" sy="2.40" sz="1" color="#0d1b2a" id="control_panel" />
 
     <text x="-3.5" y="1.30" z="-3.0" value="Shooting Range" size="0.20" color="#D50000" />
@@ -1340,6 +1353,8 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <!-- Cross-demo nav row -->
     <box x="-3.5" y="-0.70" z="-3.0" sx="0.62" sy="0.22" sz="0.05" color="#7E57C2" id="btn_demos" touchable="true"/>
     <text x="-3.5" y="-0.70" z="-2.94" value="DEMOS" size="0.085" color="#FFFFFF" />
+
+    </group>
 
     <script>
     const root = hiperspace.dimention;
@@ -1642,7 +1657,7 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
           const tg = targets[i];
           tg.px = tg.x; tg.py = tg.y; tg.pz = tg.z;
           tg.x = tg.bx + Math.sin(tSub * tg.freqX + tg.phase) * tg.ampX;
-          tg.y = tg.by + Math.sin(tSub * tg.freqY + tg.phase) * tg.ampY;
+          tg.y = Math.max(tg.radius, tg.by + Math.sin(tSub * tg.freqY + tg.phase) * tg.ampY);
           tg.z = tg.bz + Math.cos(tSub * tg.freqZ + tg.phase) * tg.ampZ;
         }
 
@@ -1661,7 +1676,7 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
           const b = bullets[i];
           if (Math.abs(b.x) > BULLET_MAX_DIST ||
               Math.abs(b.z) > BULLET_MAX_DIST ||
-              b.y < -5) {
+              b.y < BULLET_SIZE * 0.5) {
             if (b.el) b.el.remove();
             bullets.splice(i, 1);
           }
@@ -1731,6 +1746,67 @@ mod tests {
     use super::*;
     use js_runtime::Engine;
     use std::collections::HashMap;
+
+    #[test]
+    fn native_environment_survives_navigation_and_shell_changes() {
+        let mut eng = Engine::new();
+        eng.eval(r#"
+            let nextNode = 1;
+            const frames = [];
+            globalThis.requestAnimationFrame = fn => frames.push(fn);
+            class NativeNode {
+                constructor(tag) {
+                    this.nodeId = nextNode++; this.tagName = tag;
+                    this.children = []; this.parent = null; this.attrs = {};
+                    this.position = {x:0,y:0,z:0};
+                    this.rotation = {x:0,y:0,z:0}; this.scale = {x:1,y:1,z:1};
+                }
+                setAttribute(k,v) { this.attrs[k] = String(v); }
+                getAttribute(k) { return this.attrs[k] || ''; }
+                appendChild(n) { this.children.push(n); n.parent = this; }
+                remove() {
+                    if (this.parent) this.parent.children = this.parent.children.filter(n => n !== this);
+                    this.parent = null;
+                }
+                createElement(tag) { return new NativeNode(tag); }
+            }
+            globalThis.__nativeTestRoot = new NativeNode('space');
+            function frame() { const batch = frames.splice(0); batch.forEach(fn => fn()); }
+            function check(ok,msg) { if (!ok) throw new Error(msg); }
+        "#).unwrap();
+        eng.eval(&SCRIPT_ROOT_API.replace(
+            "global.hiperspace && global.hiperspace.dimention", "global.__nativeTestRoot",
+        )).unwrap();
+        eng.eval(r#"
+            const api = dimension.luna;
+            const home = api.mountSpace('luna://home'); frame();
+            const root = __nativeTestRoot;
+            const env = root.children.find(n => n.id === 'luna_native_environment');
+            check(env && env.getAttribute('visible') === 'true', 'home has no environment');
+            const include = env.children[0];
+            check(include.getAttribute('src') === 'luna://environment', 'wrong environment route');
+            api.mountSpace('luna://about'); frame();
+            check(root.children.includes(env) && env.children[0] === include, 'environment was remounted');
+            api.switchMode('vr'); frame();
+            check(api.listMountedSpaces().some(n => n.url === 'luna://about'), 'mode switch closed page');
+            check(env.getAttribute('visible') === 'true', 'mode switch hid environment');
+            const about = root.children.find(n => n.tagName === 'space' &&
+                n.children.some(c => c.getAttribute('src') === 'luna://about'));
+            about.children[0].setAttribute('src','https://example.test/'); frame();
+            check(env.getAttribute('visible') === 'false', 'self-navigation leaked environment externally');
+            about.children[0].setAttribute('src','luna://scale_demo'); frame();
+            check(env.getAttribute('visible') === 'true', 'self-navigation did not restore environment');
+            const external = api.mountSpace('https://example.test/');
+            api.mountSpace('luna://settings', {kind:'app-embedded'}); frame();
+            check(env.getAttribute('visible') === 'false', 'embedded app overrode external scene');
+            api.unmountSpace(external); frame();
+            check(env.getAttribute('visible') === 'false', 'empty browser retained environment');
+            api.mountSpace('luna://home'); frame();
+            check(root.children.filter(n => n.id === 'luna_native_environment').length === 1,
+                'duplicate environment');
+            check(env.children[0] === include, 'cached environment replaced');
+        "#).unwrap();
+    }
 
     #[test]
     fn scale_demo_spawn_batch_has_distinct_initial_positions_without_animation() {

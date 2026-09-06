@@ -15,6 +15,41 @@
   const dimension = global.dimension || (global.dimension = {});
   const registry = new Map();
   let nextPublicId = 1;
+  const nativePages = new Set([
+    'home', 'demos', 'settings', 'about', 'cache-stats', 'error/404',
+    'scale_demo', 'fire_demo', 'target_demo', 'range_demo',
+  ].map(path => 'luna://' + path));
+  let environment = null;
+  let environmentVisible = false;
+
+  // A root-owned sibling, never a tab or a child of the current document.
+  // Read the include's current URL: self-navigation does not call mountSpace.
+  function syncNativeEnvironment() {
+    let visible = false;
+    for (const [id, entry] of registry) {
+      if (id === dimension.luna._uxSpaceId || entry.kind !== 'spatial') continue;
+      if (!isDirectRootChild(entry.space)) continue;
+      if (entry.space.getAttribute('visible') === 'false') continue;
+      const include = entry.include || findPrimaryInclude(entry.space);
+      if (include && nativePages.has(include.getAttribute('src'))) {
+        visible = true;
+        break;
+      }
+    }
+    if (visible && !environment) {
+      environment = root.createElement('group');
+      environment.id = 'luna_native_environment';
+      environment.setAttribute('visible', 'false');
+      root.appendChild(environment);
+      const include = root.createElement('include');
+      include.setAttribute('src', 'luna://environment');
+      environment.appendChild(include);
+    }
+    if (environment && visible !== environmentVisible) {
+      environment.setAttribute('visible', visible ? 'true' : 'false');
+      environmentVisible = visible;
+    }
+  }
 
   function normalizeTag(tagName) {
     return String(tagName || '').toLowerCase();
@@ -180,7 +215,7 @@
         kind = options.kind;
       }
 
-      if (kind === 'spatial') {
+      if (kind === 'spatial' && !options.systemShell) {
         // Cerrar todas las spatial existentes ANTES de crear la nueva, para
         // evitar que la nueva entre transitoria al barrido si fuera ya child.
         const toUnmount = [];
@@ -363,6 +398,15 @@
 
   // Auto-mount desktop UX on startup
   dimension.luna.switchMode('desktop');
+
+  // Poll only the small tab registry, not the page DOM. No writes while stable.
+  // Keeping the same loaded include also preserves the environment across
+  // native navigation and desktop/VR shell changes, without touching the viewer.
+  function maintainEnvironment() {
+    syncNativeEnvironment();
+    requestAnimationFrame(maintainEnvironment);
+  }
+  requestAnimationFrame(maintainEnvironment);
 
   console.log('[luna://root] dimension.luna ready');
 })(globalThis);
