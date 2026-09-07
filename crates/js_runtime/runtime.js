@@ -711,6 +711,10 @@
 
   global.fetch = function(url, options) {
     return new Promise((resolve, reject) => {
+      if (options && (Object.keys(options).some(key => key !== 'method') ||
+          (options.method !== undefined && String(options.method).toUpperCase() !== 'GET'))) {
+        throw new TypeError('Luna fetch_text supports GET only; request options other than method are not implemented');
+      }
       const requestId = core.ops.op_fetch_request(String(url));
 
       function poll() {

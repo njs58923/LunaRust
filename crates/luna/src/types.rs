@@ -21,6 +21,10 @@ pub enum LogLevel {
 
 #[derive(Debug, Clone)]
 pub struct LogEntry {
+    pub sequence: u64,
+    pub timestamp_ms: u64,
+    pub tab_id: Option<u64>,
+    pub runtime_id: Option<u64>,
     pub level: LogLevel,
     pub message: String,
     pub space_id: Option<u32>,
@@ -29,17 +33,23 @@ pub struct LogEntry {
 impl LogEntry {
     pub fn new(level: LogLevel, message: impl Into<String>) -> Self {
         Self {
+            sequence: Self::next_sequence(),
+            timestamp_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
+            tab_id: None,
+            runtime_id: None,
             level,
             message: message.into(),
             space_id: None,
         }
     }
     pub fn with_space(level: LogLevel, message: impl Into<String>, space_id: u32) -> Self {
-        Self {
-            level,
-            message: message.into(),
-            space_id: Some(space_id),
-        }
+        let mut entry = Self::new(level, message);
+        entry.space_id = Some(space_id);
+        entry
+    }
+    fn next_sequence() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -59,18 +69,24 @@ impl LogPanel {
         self.push(LogLevel::Info, msg);
     }
     pub fn push(&mut self, level: LogLevel, msg: impl Into<String>) {
-        const MAX_LOGS: usize = 300;
-        if self.logs.len() >= MAX_LOGS {
-            self.logs.remove(0);
-        }
-        self.logs.push(LogEntry::new(level, msg));
+        self.push_entry(LogEntry::new(level, msg));
     }
     pub fn push_for_space(&mut self, level: LogLevel, msg: impl Into<String>, space_id: u32) {
-        const MAX_LOGS: usize = 300;
-        if self.logs.len() >= MAX_LOGS {
-            self.logs.remove(0);
+        self.push_entry(LogEntry::with_space(level, msg, space_id));
+    }
+    pub fn push_entry(&mut self, mut entry: LogEntry) {
+        // Limit both a noisy producer and total memory, including giant console strings.
+        if entry.message.len() > 4096 {
+            let mut end = 4096;
+            while !entry.message.is_char_boundary(end) { end -= 1; }
+            entry.message.truncate(end);
+            entry.message.push_str(" [truncated]");
         }
-        self.logs.push(LogEntry::with_space(level, msg, space_id));
+        if self.logs.iter().filter(|e| e.space_id == entry.space_id).count() >= 300 {
+            if let Some(i) = self.logs.iter().position(|e| e.space_id == entry.space_id) { self.logs.remove(i); }
+        }
+        if self.logs.len() >= 3000 { self.logs.remove(0); }
+        self.logs.push(entry);
     }
     pub fn clear(&mut self) {
         self.logs.clear();

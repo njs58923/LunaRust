@@ -741,6 +741,7 @@ pub fn rebuild_space_policies_system(
     mut policies: ResMut<SpacePolicies>,
     mut log_panel: ResMut<crate::LogPanel>,
     mut history: ResMut<SpacePolicyHistory>,
+    mut diagnostic_cache: Local<HashSet<(specs::Entity, String)>>,
 ) {
     let _profile = crate::profiling::span("rebuild_space_policies_system");
     if !policies.dirty {
@@ -752,6 +753,7 @@ pub fn rebuild_space_policies_system(
     let tags = world.0.read_storage::<Tag>();
     let attrs = world.0.read_storage::<Attrs>();
     let base_urls = world.0.read_storage::<BaseUrl>();
+    diagnostic_cache.retain(|(node, _)| entities.is_alive(*node));
 
     // Only spaces and includes change inheritance. Build their ancestry directly
     // instead of evaluating every static mesh in the scene on each chunk swap.
@@ -765,6 +767,14 @@ pub fn rebuild_space_policies_system(
     let mut policy_children: HashMap<specs::Entity, Vec<specs::Entity>> = HashMap::new();
     let mut roots = Vec::new();
     for &ent in &relevant {
+        if let Some(raw) = attrs.get(ent).and_then(|a| a.0.get("resources")) {
+            for token in parse_resource_tokens(raw) {
+                if !RESOURCE_BUNDLES.contains_key(token.as_str()) && diagnostic_cache.insert((ent, format!("resource:{token}"))) {
+                    log_panel.push_for_space(crate::LogLevel::Warn,
+                        format!("[diagnostic] Unknown resource '{token}'. Separate resource names with commas."), ent.id());
+                }
+            }
+        }
         let mut parent = hierarchies.get(ent).and_then(|h| h.parent);
         let mut visited = vec![ent];
         let mut reachable = true;
@@ -879,7 +889,7 @@ pub fn rebuild_space_policies_system(
                 approved_elevated,
             );
 
-            let effective_caps = if root_space {
+            let mut effective_caps = if root_space {
                 if requested_caps.is_empty() {
                     CapabilityBits::all()
                 } else {
@@ -897,6 +907,10 @@ pub fn rebuild_space_policies_system(
             } else {
                 requested_caps & inherited_caps
             };
+            // Network reads remain opt-in even when an entry grant has defaults.
+            if !root_space && !requested_caps_raw.contains(CapabilityBits::FETCH_TEXT) {
+                effective_caps.remove(CapabilityBits::FETCH_TEXT);
+            }
             let effective_native = if root_space {
                 requested_native
             } else if !entry_native.is_empty() {
@@ -1006,6 +1020,13 @@ pub fn rebuild_space_policies_system(
 
     // Log changes and save snapshots
     for (space_id, policy) in policies.by_space.iter() {
+        let denied = policy.requested_caps & !policy.effective_caps;
+        let node = entities.entity(*space_id);
+        let denied_message = format!("denied:{}", denied.bits());
+        if !denied.is_empty() && diagnostic_cache.insert((node, denied_message)) {
+            log_panel.push_for_space(crate::LogLevel::Warn,
+                format!("[diagnostic] Requested capabilities not granted: {}", describe_capability_bits(denied)), *space_id);
+        }
         let snapshot = SpacePolicySnapshotEntry {
             generation: policies.generation,
             space_id: *space_id,
@@ -1126,6 +1147,32 @@ mod tests {
         });
         app.add_systems(Update, rebuild_space_policies_system);
         app
+    }
+
+    #[test]
+    fn diagnostics_report_bad_resources_and_denials_without_repeat_spam() {
+        let mut app = build_app_with_xml("<hsml><space resources='fetch_text,unknown_bundle'><include resources='read_camera_pose fetch_text'/></space></hsml>");
+        app.update();
+        let messages: Vec<_> = app.world().resource::<crate::LogPanel>().logs.iter().filter(|e| e.message.contains("[diagnostic]")).map(|e| e.message.clone()).collect();
+        assert!(messages.iter().any(|m| m.contains("unknown_bundle")));
+        assert!(messages.iter().any(|m| m.contains("Separate resource names")));
+        assert!(messages.iter().any(|m| m.contains("not granted")));
+        app.world_mut().resource_mut::<SpacePolicies>().dirty = true;
+        app.update();
+        assert_eq!(app.world().resource::<crate::LogPanel>().logs.iter().filter(|e|e.message.contains("[diagnostic]")).count(), messages.len());
+    }
+
+    #[test]
+    fn fetch_needs_both_delegation_and_explicit_request() {
+        let mut app = build_app_with_xml("<hsml><space system-space='root' resources='fetch_text'><include resources='fetch_text'><space id='asked' resources='fetch_text'/><space id='silent'/></include><include><space id='blocked' resources='fetch_text'/></include></space></hsml>");
+        app.update();
+        let doc = app.world().resource::<crate::ElemenetWorld>();
+        let attrs = doc.0.read_storage::<Attrs>();
+        let policies = app.world().resource::<SpacePolicies>();
+        for (id, expected) in [("asked", true), ("silent", false), ("blocked", false)] {
+            let (node, _) = (&doc.0.entities(), &attrs).join().find(|(_, a)| a.0.get("id").is_some_and(|s|s == id)).unwrap();
+            assert_eq!(policies.by_space[&node.id()].effective_caps.contains(CapabilityBits::FETCH_TEXT), expected, "{id}");
+        }
     }
 
     fn find_space_id_by_attr_id(world: &crate::ElemenetWorld, attr_id: &str) -> u32 {

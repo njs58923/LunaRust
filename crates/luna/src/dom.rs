@@ -1267,6 +1267,9 @@ pub fn commit_pending_includes_system(
 
         match parse_xml(&mut world.0, &inc.xml) {
             Ok(child_root) => {
+                for warning in crate::diagnostics::document_warnings(&inc.xml) {
+                    log_panel.push_warn(format!("[diagnostic] {}: {}", inc.url, warning));
+                }
                 set_node_base_url(&mut world.0, child_root, &inc.url);
 
                 let previous_children = {

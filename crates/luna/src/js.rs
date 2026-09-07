@@ -2529,6 +2529,11 @@ pub fn js_tick_system(world: &mut World) {
 
     let dom_structure_changed = !creation_batches.is_empty() || !hierarchy_batches.is_empty();
     let dom_removals_changed = !remove_batches.is_empty();
+    let log_contexts: HashMap<_, _> = logs_by_context.iter().map(|(space_id, _)| {
+        let tab = world.get_resource::<ElemenetWorld>().and_then(|w| crate::ui::find_tab_id_for_space(&w.0, *space_id));
+        let runtime = world.get_resource::<SpaceHandleTables>().and_then(|t| t.by_space.get(space_id)).map(|t| t.runtime_id);
+        (*space_id, (tab, runtime))
+    }).collect();
 
     {
         let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() else {
@@ -2541,11 +2546,9 @@ pub fn js_tick_system(world: &mut World) {
                     "error" => LogLevel::Error,
                     _ => LogLevel::Info,
                 };
-                log_panel.push_for_space(
-                    log_level,
-                    format!("[JS][space:{}] {}", space_id, msg),
-                    space_id,
-                );
+                let mut entry = crate::LogEntry::with_space(log_level, msg, space_id);
+                (entry.tab_id, entry.runtime_id) = log_contexts[&space_id];
+                log_panel.push_entry(entry);
             }
         }
     }
@@ -3119,6 +3122,12 @@ pub fn js_tick_system(world: &mut World) {
             .map(|caps| caps.contains(CapabilityBits::FETCH_TEXT))
             .unwrap_or(false);
         if !can_fetch {
+            let failures = fetch_queue.iter().map(|(id, _)| (*id, Err("Permission denied: fetch_text was not granted".into()))).collect();
+            if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() {
+                if let Some(worker) = manager.contexts.get_mut(&space_id) {
+                    if worker.try_send(JsWorkerCommand::PushFetchResults(failures)).is_ok() { worker.needs_tick = true; }
+                }
+            }
             if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
                 for (_, url) in &fetch_queue {
                     log_panel.push_warn(format!(
@@ -3130,6 +3139,12 @@ pub fn js_tick_system(world: &mut World) {
             continue;
         }
 
+        let fetch_base = {
+            let doc = world.resource::<ElemenetWorld>();
+            crate::dom::find_node_base_url(&doc.0, doc.0.entities().entity(space_id), &world.resource::<crate::CurrentUrl>().0)
+        };
+        let native_fetch = world.resource::<crate::SpacePolicies>().by_space.get(&space_id)
+            .is_some_and(|p| p.origin.starts_with("luna:"));
         let Some(tokio_rt) = world.get_resource::<crate::TokioRuntime>() else {
             return;
         };
@@ -3138,8 +3153,13 @@ pub fn js_tick_system(world: &mut World) {
         };
         let mut rejected = Vec::new();
         for (request_id, url) in &fetch_queue {
+            let resolved = if native_fetch { Ok(url.clone()) } else { crate::io::same_origin_url(&fetch_base, url) };
+            let resolved = match resolved {
+                Ok(url) => url,
+                Err(error) => { rejected.push((*request_id, Err(error))); continue; }
+            };
             if let Err(error) =
-                request_fetch_text(&tokio_rt.0, &io_service, space_id, *request_id, url.clone())
+                request_fetch_text(&tokio_rt.0, &io_service, space_id, *request_id, resolved, (!native_fetch).then(|| fetch_base.clone()))
             {
                 rejected.push((*request_id, Err(error)));
             }
@@ -3158,7 +3178,7 @@ pub fn js_tick_system(world: &mut World) {
             }
             if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
                 log_panel.push_warn(format!(
-                    "[JS][space:{space_id}] rejected {rejected_count} fetch request(s): backpressure limit"
+                    "[JS][space:{space_id}] rejected {rejected_count} fetch request(s); errors returned to caller"
                 ));
             }
         }

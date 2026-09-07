@@ -68,6 +68,20 @@ atributo está vacío, así que el modelo se queda quieto por más que
 `animation-state` valga `"playing"`, que es el default. No hay error ni warning
 — el .glb trae sus clips y no pasa nada. Ver la tabla de atributos de `model`.
 
+**Las texturas del `.glb` no se aplican.** Del material sólo entra el color
+base: un modelo texturizado se dibuja **gris liso**, sin error y sin warning.
+Para un asset low-poly que usa la textura como paleta, la salida es hornearla a
+materiales planos antes de exportar —una muestra por cara, cuantizada, un
+material por color—; para una textura de verdad no hay salida hoy.
+
+**Ojo con lo que el exportador de glTF escribe en el nodo.** Si el objeto tiene
+padre, transformaciones delta o animación importada del FBX, esa transformación
+viaja en el nodo del `.glb` y el modelo aparece corrido —metros— respecto de la
+posición que le da el documento. La animación es la peor de las tres: el
+depsgraph la evalúa y pisa la transformación que uno le asigna al objeto. La
+comprobación que sirve es sobre el archivo, no sobre la escena de origen: todo
+nodo con traslación cero y escala uno.
+
 **`el.scale` reemplaza el tamaño del nodo, no lo multiplica.** Asignarle `0.94`
 a una caja declarada `sx="0.19" sy="0.24" sz="0.19"` la convierte en un cubo de
 94 cm, no la achica un 6%. Si querés un pulso sobre el tamaño declarado, tenés

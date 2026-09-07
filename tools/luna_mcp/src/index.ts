@@ -32,6 +32,7 @@ try {
 const camera = { type: "string", enum: ["auto", "desktop", "spectator"], description: "auto: spectator in VR, desktop otherwise" };
 const vector = { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 };
 const tools = [
+  { name: "luna_logs", description: "Read retained host/page logs; optional tab, space, level and Rust regex filters. First request returns latest N, after pages forward using nextCursor. Read-only.", inputSchema: { type: "object", properties: { limit: { type: "integer", minimum: 1, maximum: 300 }, after: { type: "integer", minimum: 0 }, tabId: { type: "integer", minimum: 0 }, spaceId: { type: "integer", minimum: 0 }, level: { type: "string", enum: ["info", "warn", "error"] }, pattern: { type: "string", maxLength: 512 } } } },
   { name: "luna_status", description: "Current pages, requested/effective render mode, XR state and cameras. Queries Luna now.", inputSchema: { type: "object", properties: {} } },
   { name: "luna_open", description: "Navigate the spatial page. Returns the host-assigned tab ID and loading:true once queued.", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
   { name: "luna_camera", description: "Set position and lookAt in world coordinates (meters). Spectator is independent of the VR headset.", inputSchema: { type: "object", properties: { camera, position: vector, lookAt: vector }, required: ["position", "lookAt"] } },
@@ -48,6 +49,15 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
     const selected = args.camera ?? "auto";
     if (!["auto", "desktop", "spectator"].includes(selected as string)) throw new Error("Invalid camera");
     switch (params.name) {
+      case "luna_logs": {
+        for (const key of ["limit", "after", "tabId", "spaceId"]) {
+          if (args[key] !== undefined && (!Number.isSafeInteger(args[key]) || Number(args[key]) < 0)) throw new Error(`Invalid ${key}`);
+        }
+        if (args.limit !== undefined && (Number(args.limit) < 1 || Number(args.limit) > 300)) throw new Error("Invalid limit");
+        if (args.level !== undefined && !["info", "warn", "error"].includes(String(args.level))) throw new Error("Invalid level");
+        if (args.pattern !== undefined && (typeof args.pattern !== "string" || args.pattern.length > 512)) throw new Error("Invalid pattern");
+        return text(await bridge.request("logs", args));
+      }
       case "luna_status": return text(bridge.connected ? await bridge.request("status") : { connected: false, message: "Inicia MCP local desde Ajustes de Luna." });
       case "luna_open": {
         if (typeof args.url !== "string" || args.url.length > 8192 || !["luna:", "http:", "https:"].includes(new URL(args.url).protocol)) throw new Error("Expected luna://, http:// or https:// URL");

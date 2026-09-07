@@ -128,6 +128,7 @@ pub struct IoService {
     result_tx: mpsc::Sender<IoResult>,
     result_rx: Mutex<mpsc::Receiver<IoResult>>,
     http_client: reqwest::Client,
+    fetch_client: reqwest::Client,
     network_tracker: Mutex<NetworkTracker>,
     pending_fetch_results: Mutex<HashMap<u32, VecDeque<(i32, Result<String, String>)>>>,
     fetch_tasks: Mutex<HashMap<u32, HashMap<u64, Option<tokio::task::AbortHandle>>>>,
@@ -149,6 +150,9 @@ impl Default for IoService {
             result_tx,
             result_rx: Mutex::new(result_rx),
             http_client,
+            fetch_client: reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(20)).connect_timeout(Duration::from_secs(10))
+                .user_agent("Luna/0.1").build().expect("fetch HTTP client"),
             network_tracker: Mutex::new(NetworkTracker::default()),
             pending_fetch_results: Mutex::new(HashMap::new()),
             fetch_tasks: Mutex::new(HashMap::new()),
@@ -424,6 +428,7 @@ pub fn request_fetch_text(
     space_id: u32,
     request_id: i32,
     url: String,
+    origin: Option<String>,
 ) -> Result<(), String> {
     let network_id = io_service.begin_request(
         NetworkRequestKind::Fetch,
@@ -442,9 +447,11 @@ pub fn request_fetch_text(
         ));
     }
     let tx = io_service.sender();
-    let client = io_service.http_client();
+    let client = if origin.is_some() { io_service.fetch_client.clone() } else { io_service.http_client() };
     let task = rt.spawn(async move {
-        let result = load_text_resource(&url, &client).await;
+        let result = if let Some(origin) = origin {
+            load_same_origin_text(&url, &origin, &client).await
+        } else { load_text_resource(&url, &client).await };
         let _ = tx.send(IoResult::FetchCompleted {
             network_id,
             space_id,
@@ -554,6 +561,84 @@ pub fn request_skybox_prepare(
     });
 }
 
+pub(crate) fn same_origin_url(base: &str, requested: &str) -> Result<String, String> {
+    let base = url::Url::parse(base).map_err(|_| "Invalid document URL")?;
+    let target = base.join(requested).map_err(|_| "Invalid fetch URL")?;
+    if !matches!(base.scheme(), "http" | "https") || !matches!(target.scheme(), "http" | "https")
+        || target.origin() != base.origin() || !target.username().is_empty() || target.password().is_some() {
+        return Err("fetch_text only allows the document's HTTP(S) origin".into());
+    }
+    Ok(target.to_string())
+}
+
+#[cfg(test)]
+mod same_origin_tests {
+    use super::*;
+    #[test]
+    fn resolves_relative_urls_and_rejects_origin_changes() {
+        let base = "https://example.test:443/app/index.hsml";
+        assert_eq!(same_origin_url(base, "api?q=1").unwrap(), "https://example.test/app/api?q=1");
+        for target in ["http://example.test/", "https://example.test:444/", "//evil.test/", "file:///secret", "luna://settings", "https://user:pass@example.test/"] {
+            assert!(same_origin_url(base, target).is_err(), "{target}");
+        }
+    }
+    #[test]
+    fn follows_local_redirects_but_never_sends_cross_origin_redirect() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let foreign = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        foreign.set_nonblocking(true).unwrap();
+        let target = format!("http://{}/secret", foreign.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for response in [
+                "HTTP/1.1 302 Found\r\nLocation: /ok\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".to_string(),
+                format!("HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+                "HTTP/1.1 200 OK\r\nContent-Length: 99999999\r\nConnection: close\r\n\r\n".to_string(),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut buf = [0; 4096]; let _ = stream.read(&mut buf);
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        Runtime::new().unwrap().block_on(async {
+            let client = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(5)).build().unwrap();
+            assert_eq!(load_same_origin_text(&url, &url, &client).await.unwrap(), "ok");
+            assert!(load_same_origin_text(&url, &url, &client).await.unwrap_err().contains("origin"));
+            assert!(load_same_origin_text(&url, &url, &client).await.unwrap_err().contains("8 MiB"));
+        });
+        assert_eq!(foreign.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        server.join().unwrap();
+    }
+}
+
+async fn load_same_origin_text(url: &str, origin: &str, client: &reqwest::Client) -> Result<String, String> {
+    let mut current = same_origin_url(origin, url)?;
+    for _ in 0..=5 {
+        let mut response = client.get(&current).send().await.map_err(|e| e.to_string())?;
+        if response.status().is_redirection() {
+            let location = response.headers().get(reqwest::header::LOCATION).ok_or("Redirect without Location")?
+                .to_str().map_err(|_| "Invalid redirect Location")?;
+            current = same_origin_url(&current, location)?;
+            // Validate against the original origin on every hop, before sending.
+            same_origin_url(origin, &current)?;
+            continue;
+        }
+        response = response.error_for_status().map_err(|e| e.to_string())?;
+        const MAX_BODY: usize = 8 * 1024 * 1024;
+        if response.content_length().is_some_and(|n| n > MAX_BODY as u64) { return Err("fetch response exceeds 8 MiB".into()); }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+            if bytes.len() + chunk.len() > MAX_BODY { return Err("fetch response exceeds 8 MiB".into()); }
+            bytes.extend_from_slice(&chunk);
+        }
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    Err("Too many fetch redirects".into())
+}
+
 async fn load_text_resource(url: &str, client: &reqwest::Client) -> Result<String, String> {
     if crate::routes::VirtualRoutes::is_virtual_url(url) {
         return VIRTUAL_ROUTES
@@ -618,6 +703,7 @@ async fn load_document_bundle(
     let mut visited = HashSet::from([url.to_string()]);
 
     while let Some((base_url, xml)) = queue.pop_front() {
+        bundle.warnings.extend(crate::diagnostics::document_warnings(&xml).into_iter().map(|m| format!("[diagnostic] {base_url}: {m}")));
         let include_sources = extract_include_sources(&xml)?;
 
         for src in include_sources {

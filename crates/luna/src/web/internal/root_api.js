@@ -235,13 +235,13 @@
 
       // Default grants por kind si el caller no especificó.
       let grants = options.grants;
-      if (!Array.isArray(grants) || !grants.length) {
+      if (!Array.isArray(grants)) {
         if (kind === 'spatial') {
           // read_camera_pose da la posición del visitante, no su mirada. Va
           // por defecto porque read_pose_stream ya la entrega igual vía la
           // pose de los mandos: negarla sólo rompía escritorio, donde no hay
           // mandos, sin proteger nada.
-          grants = ['navigate_self', 'read_pose_stream', 'read_camera_pose', 'skybox'];
+          grants = ['navigate_self', 'read_pose_stream', 'read_camera_pose', 'skybox', 'fetch_text'];
         } else if (kind === 'app') {
           grants = ['navigate_self'];
         } else if (kind === 'app-embedded') {

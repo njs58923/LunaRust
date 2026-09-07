@@ -25,6 +25,15 @@ struct Request {
 enum Command {
     #[serde(rename = "status")]
     Status {},
+    #[serde(rename = "logs")]
+    Logs {
+        #[serde(default)] limit: Option<usize>,
+        #[serde(default)] after: Option<u64>,
+        #[serde(default, rename = "tabId")] tab_id: Option<u64>,
+        #[serde(default, rename = "spaceId")] space_id: Option<u32>,
+        #[serde(default)] level: Option<String>,
+        #[serde(default)] pattern: Option<String>,
+    },
     #[serde(rename = "open")]
     Open { url: String },
     #[serde(rename = "capture")]
@@ -196,6 +205,8 @@ fn agent_system(world: &mut World) {
         let vr = world.resource::<RenderMode>().is_vr;
         let result = match request.command {
             Command::Status {} => Ok(status(world)),
+            Command::Logs { limit, after, tab_id, space_id, level, pattern } =>
+                query_logs(world.resource::<crate::LogPanel>(), limit.unwrap_or(100), after, tab_id, space_id, level.as_deref(), pattern.as_deref()),
             Command::Open { url } => open(world, url),
             Command::Camera {
                 camera,
@@ -208,6 +219,52 @@ fn agent_system(world: &mut World) {
             }
         };
         let _ = request.reply.send(result);
+    }
+}
+
+fn query_logs(panel: &crate::LogPanel, limit: usize, after: Option<u64>, tab: Option<u64>, space: Option<u32>, level: Option<&str>, pattern: Option<&str>) -> Result<Value, String> {
+    if !(1..=300).contains(&limit) { return Err("limit must be between 1 and 300".into()); }
+    if level.is_some_and(|l| !matches!(l, "info" | "warn" | "error")) { return Err("Invalid log level".into()); }
+    let regex = pattern.map(|p| {
+        if p.len() > 512 { return Err("pattern exceeds 512 bytes".to_string()); }
+        regex::RegexBuilder::new(p).size_limit(1_000_000).dfa_size_limit(1_000_000).build().map_err(|e| e.to_string())
+    }).transpose()?;
+    let label = |l| match l { crate::LogLevel::Info => "info", crate::LogLevel::Warn => "warn", crate::LogLevel::Error => "error" };
+    let matches: Vec<_> = panel.logs.iter().filter(|e|
+        after.is_none_or(|n| e.sequence > n) && tab.is_none_or(|id| e.tab_id == Some(id))
+        && space.is_none_or(|id| e.space_id == Some(id)) && level.is_none_or(|l| label(e.level) == l)
+        && regex.as_ref().is_none_or(|r| r.is_match(&e.message))).collect();
+    // Tail for the first request; ordered pagination when a cursor is supplied.
+    let start = if after.is_some() { 0 } else { matches.len().saturating_sub(limit) };
+    let selected: Vec<_> = matches.iter().skip(start).take(limit).collect();
+    let next = selected.last().map(|e| e.sequence).or(after).unwrap_or(0);
+    let entries: Vec<_> = selected.iter().map(|e| json!({"sequence":e.sequence,"timestampMs":e.timestamp_ms,
+        "tabId":e.tab_id,"spaceId":e.space_id,"runtimeId":e.runtime_id,"level":label(e.level),"message":e.message})).collect();
+    Ok(json!({"entries":entries,"nextCursor":next,"hasMore":after.is_some() && matches.len() > limit,
+        "retention":"up to 300 per space, 3000 total; messages up to 4096 bytes",
+        "oldestAvailable":panel.logs.first().map(|e|e.sequence)}))
+}
+
+#[cfg(test)]
+mod log_query_tests {
+    use super::*;
+    #[test]
+    fn filters_pages_and_preserves_other_producers() {
+        let mut panel = crate::LogPanel::default();
+        let mut entry = crate::LogEntry::with_space(crate::LogLevel::Warn, "target warning", 7);
+        entry.tab_id = Some(42); entry.runtime_id = Some(3);
+        panel.push_entry(entry);
+        for n in 0..400 { panel.push_for_space(crate::LogLevel::Info, format!("noisy {n}"), 8); }
+        assert_eq!(panel.logs.len(), 301);
+        let found = query_logs(&panel, 10, None, Some(42), None, Some("warn"), Some("target.*")).unwrap();
+        assert_eq!(found["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(found["entries"][0]["runtimeId"], 3);
+        let first = query_logs(&panel, 2, Some(0), None, Some(8), None, None).unwrap();
+        let next = query_logs(&panel, 2, first["nextCursor"].as_u64(), None, Some(8), None, None).unwrap();
+        assert!(next["entries"][0]["sequence"].as_u64() > first["nextCursor"].as_u64());
+        assert_eq!(first["hasMore"], true);
+        assert!(query_logs(&panel, 301, None, None, None, None, None).is_err());
+        assert!(query_logs(&panel, 1, None, None, None, None, Some("[")).is_err());
     }
 }
 

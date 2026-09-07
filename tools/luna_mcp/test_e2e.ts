@@ -17,7 +17,8 @@ test("stdio tools, live status, camera, PNG, validation and reconnect", async ()
     await client.connect(transport);
     const url = await endpoint;
     expect((await fetch(url.replace("ws:","http:"), {headers:{Origin:"https://example.org"}})).status).toBe(403);
-    const tools = await client.listTools(); expect(tools.tools).toHaveLength(5);
+    const tools = await client.listTools(); expect(tools.tools).toHaveLength(6);
+    expect(tools.tools.some(t => t.name === 'luna_logs')).toBe(true);
     const connect = () => new Promise<WebSocket>((resolve,reject) => {
       const ws = new WebSocket(url); ws.onopen = () => resolve(ws); ws.onerror = reject;
       ws.onmessage = event => {
@@ -31,6 +32,10 @@ test("stdio tools, live status, camera, PNG, validation and reconnect", async ()
     });
     host = await connect();
     const status = await client.callTool({name:"luna_status"});
+    const logs = await client.callTool({name:"luna_logs", arguments:{tabId:42, limit:10, pattern:"warn.*", after:5}});
+    expect(logs.isError).toBe(false);
+    expect(JSON.stringify(logs)).toContain("warn.*");
+    expect((await client.callTool({name:"luna_logs", arguments:{limit:301}})).isError).toBe(true);
     expect(JSON.stringify(status)).toContain("Running");
     const open = await client.callTool({name:"luna_open",arguments:{url:"luna://home"}});
     expect(JSON.stringify(open)).toContain("42"); expect(JSON.stringify(open)).toContain("loading");

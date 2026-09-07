@@ -11,6 +11,7 @@ pub mod dom;
 pub mod embedded;
 pub mod io;
 pub mod models;
+pub mod diagnostics;
 pub mod model_animation;
 pub mod dynamic_mesh;
 pub mod js;
