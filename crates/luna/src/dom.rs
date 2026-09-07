@@ -2100,6 +2100,10 @@ pub fn dom_sync_system(
             }
 
             let new_ent = match tag {
+                "spawn" => commands.spawn((SpatialBundle {
+                    transform: transform_b,
+                    ..default()
+                }, Dirty, crate::player_spawn::SpawnMarker(*node))).id(),
                 "model" => {
                     let source = models.get(*node).and_then(|m| m.src.as_deref()).unwrap_or("");
                     let resolved_url = (!source.trim().is_empty() && !source.starts_with("mesh:"))

@@ -23,6 +23,7 @@ pub mod routes;
 pub mod system_input;
 pub mod touch;
 pub mod viewer_pose;
+pub mod player_spawn;
 pub mod types;
 pub mod ui;
 pub mod utils;

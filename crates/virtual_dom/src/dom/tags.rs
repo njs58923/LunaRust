@@ -16,6 +16,7 @@ lazy_static! {
         m.insert("include", vec![ElementType::Node, ElementType::Element, ElementType::HSMLElement]);
         m.insert("space", vec![ElementType::Node, ElementType::Element, ElementType::HSMLElement]);
         m.insert("posezone", vec![ElementType::Node, ElementType::Element]);
+        m.insert("spawn", vec![ElementType::Node, ElementType::Element]);
         m.insert("model", vec![ElementType::Node, ElementType::Element, ElementType::HSMLElement]);
         // `group` es el tag nativo HSML para agrupación. `div` se mantiene como
         // alias por compatibilidad con costumbre de navegador.

@@ -83,6 +83,7 @@ fn main() {
     app.add_systems(OxrSendActionBindings, suggest_action_bindings);
     app.add_plugins(VrLocomotionPlugin);
     app.add_plugins(DesktopLocomotionPlugin);
+    app.add_plugins(luna::player_spawn::PlayerSpawnPlugin);
     app.add_plugins(luna::capture::CapturePlugin);
     app.add_plugins(luna::agent::AgentPlugin);
     app.add_systems(XrSessionCreated, spawn_controllers);

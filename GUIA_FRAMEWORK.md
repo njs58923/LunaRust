@@ -241,6 +241,7 @@ De `tags.rs`, la lista completa:
 | `model` | malla glTF/GLB |
 | `skybox` | cubemap de fondo (requiere permiso) |
 | `posezone` | volumen invisible que emite eventos `posemove` de manos/mandos |
+| `spawn` | punto invisible de aparición del visitante; requiere `resources="spawn"` |
 | `image` | **parsea pero hoy no renderiza** — cae al caso estructural |
 
 > `runtime.js` define además `HSMLButtonElement` y `HSMLVideoElement`, pero los tags
@@ -341,6 +342,7 @@ reales (`permissions.rs`), los que un documento normal puede pedir:
 | `navigate_global` | navegar el shell entero |
 | `fetch_text` | `fetch()` de texto |
 | `skybox` | montar `<skybox>` |
+| `spawn` | aplicar una aparición por carga del documento espacial principal |
 | `read_pose_stream` | eventos `posemove` de `<posezone>` |
 | `read_hmd_pose` | `dimention.readViewerPose()` con pose completa (posición + hacia dónde mira) |
 | `read_camera_pose` | `dimention.readViewerPose()` **sólo con posición**; la orientación viene en cero. Anda en escritorio y en VR |
@@ -351,8 +353,9 @@ reales (`permissions.rs`), los que un documento normal puede pedir:
 > **Ojo con esta tabla**: lista lo que un documento *puede pedir*, no lo que va a
 > *recibir*. Lo efectivo es la intersección con lo que el shell concede según el
 > tipo de página. Una `spatial` remota hoy recibe `navigate_self`,
-> `read_pose_stream`, `read_camera_pose` y `skybox`; `fetch_text` no está en esa
-> lista por más que se pida.
+> `read_pose_stream`, `read_camera_pose`, `skybox`, `fetch_text` y `spawn` como
+> concesiones predeterminadas. `fetch_text` y `spawn` requieren además una
+> solicitud explícita del documento. El shell puede limitar esas concesiones.
 
 Elevados — **sólo** para páginas nativas o apps montadas por el shell trusted; un
 origen remoto que los pida dispara UX de consentimiento o simplemente no los recibe:
@@ -371,6 +374,11 @@ Algunos bundles auto-inyectan su script:
 | `read_hmd_pose` | `luna://internal/viewer_pose_api.js` | `dimention.readViewerPose()` |
 
 ### Herencia por `include`
+
+`spawn` tiene una restricción adicional: sólo se usan marcadores del documento
+principal de un montaje `spatial` visible. Los includes anidados, los espacios
+anidados y las apps no pueden definir la aparición, aunque tengan el permiso
+o compartan origen. Ver [Puntos de aparición](SPAWN.md).
 
 Un `<include>` **no propaga permisos** por defecto: el contenido hijo arranca con
 capacidades vacías. Si el `include` declara `resources`, eso genera un *entry grant*

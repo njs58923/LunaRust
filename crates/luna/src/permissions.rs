@@ -38,6 +38,7 @@ bitflags! {
         /// Capturar el frame renderizado a un archivo. Es lectura de pantalla:
         /// va elevada para que un origen remoto no pueda pedirla sin consenso.
         const CAPTURE_FRAME        = 1 << 18;
+        const SPAWN                = 1 << 19;
     }
 }
 
@@ -368,6 +369,12 @@ lazy_static! {
             },
         );
 
+        m.insert("spawn", ResourceBundleDef {
+            capabilities: CapabilityBits::SPAWN,
+            native_services: NativeServiceBits::empty(),
+            auto_scripts: &[],
+        });
+
         m.insert(
             "read_system_input",
             ResourceBundleDef {
@@ -496,6 +503,7 @@ pub fn capability_labels(bits: CapabilityBits) -> Vec<&'static str> {
         ("DEVTOOLS_READ", CapabilityBits::DEVTOOLS_READ),
         ("DEVTOOLS_WRITE", CapabilityBits::DEVTOOLS_WRITE),
         ("SKYBOX", CapabilityBits::SKYBOX),
+        ("SPAWN", CapabilityBits::SPAWN),
         ("READ_SYSTEM_INPUT", CapabilityBits::READ_SYSTEM_INPUT),
         ("UX_EMBED", CapabilityBits::UX_EMBED),
         ("CAPTURE_FRAME", CapabilityBits::CAPTURE_FRAME),
@@ -910,6 +918,9 @@ pub fn rebuild_space_policies_system(
             // Network reads remain opt-in even when an entry grant has defaults.
             if !root_space && !requested_caps_raw.contains(CapabilityBits::FETCH_TEXT) {
                 effective_caps.remove(CapabilityBits::FETCH_TEXT);
+            }
+            if !root_space && !requested_caps_raw.contains(CapabilityBits::SPAWN) {
+                effective_caps.remove(CapabilityBits::SPAWN);
             }
             let effective_native = if root_space {
                 requested_native
