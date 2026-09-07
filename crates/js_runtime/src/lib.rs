@@ -14,6 +14,8 @@ use deno_core::{op2, Extension, FastString, JsRuntime, OpState, RuntimeOptions};
 pub mod cache;
 pub mod csp;
 pub mod storage;
+mod location;
+use deno_core::Op;
 pub mod mesh;
 
 pub use cache::{CacheStats, CachedResponse, CachedScript, FetchCache, ScriptCache};
@@ -1441,6 +1443,10 @@ impl Engine {
                 op_console_error::decl(),
                 op_now::decl(),
                 storage::op_local_storage::decl(),
+                location::op_document_location::DECL,
+                location::op_url_parse::DECL,
+                location::op_query_parse::DECL,
+                location::op_query_encode::DECL,
                 mesh::op_mesh_resource::decl(),
                 op_set_timeout::decl(),
                 op_clear_timeout::decl(),
@@ -1489,6 +1495,7 @@ impl Engine {
             .state(move |state| {
                 state.put(storage::StorageContext::default());
                 state.put::<PerfState>(PerfState::default());
+                state.put(location::DocumentLocation("about:blank".into()));
                 state.put::<Timers>(Timers {
                     ready: timers_for_state.ready.clone(),
                     cancelled: timers_for_state.cancelled.clone(),
@@ -1609,6 +1616,8 @@ impl Engine {
             .expect("storage bootstrap failed");
 
         eprintln!("[js_runtime] Injecting runtime.js...");
+        rt.execute_script("<location>", FastString::Static(include_str!("../location.js")))
+            .expect("location bootstrap failed");
         rt.execute_script("<runtime>", FastString::Static(RUNTIME_JS))
             .expect("runtime.js failed");
         rt.execute_script("<mesh>", FastString::Static(include_str!("../mesh.js")))
@@ -1663,6 +1672,11 @@ impl Engine {
     }
 
     /// Host-only document binding. Never derive this from the script URL.
+    pub fn configure_document_location(&mut self, document_url: String) {
+        self.rt.op_state().borrow_mut().put(location::DocumentLocation(document_url));
+    }
+
+    /// Host-only storage binding, independent from script-visible location.
     pub fn configure_local_storage(&mut self, path: std::path::PathBuf, document_url: String) {
         self.rt.op_state().borrow_mut().put(storage::StorageContext::new(path, document_url));
     }

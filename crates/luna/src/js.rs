@@ -521,6 +521,7 @@ fn spawn_space_worker_configured(
             };
 
             if let Some((path, url)) = storage {
+                ctx.engine.configure_document_location(url.clone());
                 ctx.engine.configure_local_storage(path, url);
             }
 
@@ -1464,6 +1465,21 @@ enum NavigationPlan {
     SelfNav { include_id: u32, url: String },
     GlobalNav { url: String },
     Blocked { url: String, reason: String },
+}
+
+fn prepare_include_reload(world: &mut World, include_id: u32, url: &str) {
+    // A committed same-URL navigation reloads; an identical in-flight load
+    // stays coalesced so its response cannot race a redundant request.
+    let reload = world.get_resource::<crate::IncludeLoadStates>()
+        .is_some_and(|states| matches!(states.0.get(&include_id),
+            Some(crate::IncludeLoadState::Loaded { url: loaded }) if loaded == url));
+    if reload {
+        world.resource_mut::<crate::IncludeLoadStates>().0.remove(&include_id);
+        world.resource_mut::<crate::DirtyNodes>().0.push(include_id);
+        if let Some(mut transform_only) = world.get_resource_mut::<crate::TransformOnlyDirtyNodes>() {
+            transform_only.0.remove(&include_id);
+        }
+    }
 }
 
 fn plan_navigation_for_space(
@@ -3354,6 +3370,7 @@ pub fn js_tick_system(world: &mut World) {
 
         match plan {
             NavigationPlan::SelfNav { include_id, url } => {
+                prepare_include_reload(world, include_id, &url);
                 if let Some(mut attribute_updates) = world.get_resource_mut::<AttributeUpdates>() {
                     attribute_updates
                         .0
@@ -3749,6 +3766,28 @@ pub fn js_tick_system(world: &mut World) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn same_url_navigation_reloads_committed_include_without_restarting_inflight() {
+        let mut world = bevy::prelude::World::new();
+        world.insert_resource(crate::IncludeLoadStates::default());
+        world.insert_resource(crate::DirtyNodes::default());
+        world.insert_resource(crate::TransformOnlyDirtyNodes::default());
+        let url = "https://example.test/door?uuid=one#arrival";
+        world.resource_mut::<crate::IncludeLoadStates>().0.insert(7,
+            crate::IncludeLoadState::Loaded { url: url.into() });
+        world.resource_mut::<crate::TransformOnlyDirtyNodes>().0.insert(7);
+        super::prepare_include_reload(&mut world, 7, url);
+        assert!(!world.resource::<crate::IncludeLoadStates>().0.contains_key(&7));
+        assert_eq!(world.resource::<crate::DirtyNodes>().0, vec![7]);
+        assert!(!world.resource::<crate::TransformOnlyDirtyNodes>().0.contains(&7));
+
+        world.resource_mut::<crate::DirtyNodes>().0.clear();
+        world.resource_mut::<crate::IncludeLoadStates>().0.insert(7,
+            crate::IncludeLoadState::Loading { url: url.into() });
+        super::prepare_include_reload(&mut world, 7, url);
+        assert!(world.resource::<crate::IncludeLoadStates>().0.contains_key(&7));
+        assert!(world.resource::<crate::DirtyNodes>().0.is_empty());
+    }
     use super::*;
     use bevy::prelude::{App, Time};
     use specs::WorldExt;

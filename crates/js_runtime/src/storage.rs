@@ -239,7 +239,8 @@ mod tests {
             try { s.setItem('number','x'.repeat(5*1024*1024)); } catch(e) { quota=e.name==='QuotaExceededError'; }
             check(quota && s.number === '42', 'atomic quota failure');
             s.clear(); s.setItem('saved', JSON.stringify({theme:'green'}));
-            globalThis.location = {origin:'https://other.test',href:'https://other.test/'};
+            globalThis._lunaCurrentUrl = 'https://other.test/';
+            globalThis.location = 'https://other.test/';
             check(s.saved === '{"theme":"green"}', 'mutable JS origin changed storage');
         "#).unwrap();
         drop(engine);

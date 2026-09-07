@@ -389,6 +389,12 @@ para el documento hijo, siempre intersecado con lo que el padre ya tenía
 
 ## 5. La API JavaScript
 
+`location` expone la URL del documento de cada isolate, con `search`, `hash`,
+`pathname`, `origin` y navegación. Para leer parámetros:
+`new URLSearchParams(location.search).get('uuid')`.
+También está disponible `new URL(ruta, location.href)`.
+Ver [Location y parámetros](LOCATION.md) para includes, permisos y límites.
+
 ### Raíz
 
 ```js

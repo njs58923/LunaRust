@@ -694,16 +694,6 @@
   // Location API
   // ---------------------------------------------------------------------------
 
-  class Location {
-    get href() {
-      return global._lunaCurrentUrl || '';
-    }
-
-    set href(url) {
-      core.ops.op_navigate(String(url));
-      global._lunaCurrentUrl = String(url);
-    }
-  }
 
   // ---------------------------------------------------------------------------
   // Fetch API
@@ -749,7 +739,7 @@
       this._dimention = value || null;
       __luna_set_global_dimention(this._dimention);
     },
-    location: new Location(),
+    location: global.location,
     open: (url) => {
       console.warn('hiperspace.open() not yet implemented');
     },
@@ -763,9 +753,7 @@
         this.open = dimension.open;
       }
 
-      if (dimension && dimension.location) {
-        global._lunaCurrentUrl = dimension.location;
-      }
+      // Document URL is bound by the host, never by a script or script URL.
 
       // _CreateHSMLElement is not needed (we create via ops)
       // _SetDimention sets the root element
@@ -887,7 +875,6 @@
   global.HSMLModelElement = HSMLModelElement;
   global.HSMLButtonElement = HSMLButtonElement;
   global.HSMLVideoElement = HSMLVideoElement;
-  global.Location = Location;
 
   // Auto-initialize with default root (node_id=0)
   // Bevy will call setHiperSpace if needed
