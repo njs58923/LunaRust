@@ -22,10 +22,9 @@ la respuesta tiene un límite de 8 MiB. Se conservan los límites de concurrenci
 y timeouts del servicio IO. Los servicios nativos de origen luna conservan su
 camino previo; esto no concede capacidades adicionales a páginas remotas.
 
-Es la API de lectura `fetch_text`: GET, `text()` y `json()`. No implementa POST,
-headers, cuerpo, AbortSignal, cookies ni la semántica completa de Response.
-Las opciones no soportadas fallan explícitamente. La fachada mantiene `status:200`
-para éxitos y rechaza errores HTTP; no debe usarse para inspeccionar códigos HTTP.
+`fetch_text` permite GET/HEAD. La ampliación `fetch_http` permite métodos de
+escritura, cuerpo y cabeceras. Ambos devuelven estados HTTP reales: 4xx/5xx
+resuelven con `ok: false`. Ver [Fetch HTTP](FETCH_HTTP.md) para contrato y límites.
 
 ## Logs MCP
 

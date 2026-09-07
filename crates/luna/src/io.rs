@@ -31,7 +31,7 @@ pub enum IoResult {
         network_id: u64,
         space_id: u32,
         request_id: i32,
-        result: Result<String, String>,
+        result: Result<js_runtime::FetchResponse, String>,
     },
     ScriptLoaded {
         network_id: u64,
@@ -130,7 +130,7 @@ pub struct IoService {
     http_client: reqwest::Client,
     fetch_client: reqwest::Client,
     network_tracker: Mutex<NetworkTracker>,
-    pending_fetch_results: Mutex<HashMap<u32, VecDeque<(i32, Result<String, String>)>>>,
+    pending_fetch_results: Mutex<HashMap<u32, VecDeque<(i32, Result<js_runtime::FetchResponse, String>)>>>,
     fetch_tasks: Mutex<HashMap<u32, HashMap<u64, Option<tokio::task::AbortHandle>>>>,
 }
 
@@ -282,7 +282,7 @@ impl IoService {
     fn defer_fetch_results(
         &self,
         space_id: u32,
-        results: Vec<(i32, Result<String, String>)>,
+        results: Vec<(i32, Result<js_runtime::FetchResponse, String>)>,
     ) {
         let Ok(mut pending) = self.pending_fetch_results.lock() else {
             return;
@@ -427,12 +427,12 @@ pub fn request_fetch_text(
     io_service: &IoService,
     space_id: u32,
     request_id: i32,
-    url: String,
+    request: js_runtime::FetchRequest,
     origin: Option<String>,
 ) -> Result<(), String> {
     let network_id = io_service.begin_request(
         NetworkRequestKind::Fetch,
-        url.clone(),
+        request.url.clone(),
         format!("space:{space_id}"),
     );
     if !io_service.reserve_fetch_task(space_id, network_id) {
@@ -447,11 +447,11 @@ pub fn request_fetch_text(
         ));
     }
     let tx = io_service.sender();
-    let client = if origin.is_some() { io_service.fetch_client.clone() } else { io_service.http_client() };
+    let client = io_service.fetch_client.clone();
     let task = rt.spawn(async move {
-        let result = if let Some(origin) = origin {
-            load_same_origin_text(&url, &origin, &client).await
-        } else { load_text_resource(&url, &client).await };
+        let result = tokio::time::timeout(Duration::from_secs(30),
+            crate::http_fetch::execute(request, origin, &client)).await
+            .unwrap_or_else(|_| Err("Fetch timed out".into()));
         let _ = tx.send(IoResult::FetchCompleted {
             network_id,
             space_id,
@@ -614,29 +614,11 @@ mod same_origin_tests {
     }
 }
 
+#[cfg(test)]
 async fn load_same_origin_text(url: &str, origin: &str, client: &reqwest::Client) -> Result<String, String> {
-    let mut current = same_origin_url(origin, url)?;
-    for _ in 0..=5 {
-        let mut response = client.get(&current).send().await.map_err(|e| e.to_string())?;
-        if response.status().is_redirection() {
-            let location = response.headers().get(reqwest::header::LOCATION).ok_or("Redirect without Location")?
-                .to_str().map_err(|_| "Invalid redirect Location")?;
-            current = same_origin_url(&current, location)?;
-            // Validate against the original origin on every hop, before sending.
-            same_origin_url(origin, &current)?;
-            continue;
-        }
-        response = response.error_for_status().map_err(|e| e.to_string())?;
-        const MAX_BODY: usize = 8 * 1024 * 1024;
-        if response.content_length().is_some_and(|n| n > MAX_BODY as u64) { return Err("fetch response exceeds 8 MiB".into()); }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
-            if bytes.len() + chunk.len() > MAX_BODY { return Err("fetch response exceeds 8 MiB".into()); }
-            bytes.extend_from_slice(&chunk);
-        }
-        return Ok(String::from_utf8_lossy(&bytes).into_owned());
-    }
-    Err("Too many fetch redirects".into())
+    crate::http_fetch::execute(js_runtime::FetchRequest { url:url.into(), method:"GET".into(),
+        headers:vec![], body:None, redirect:"follow".into() }, Some(origin.into()), client)
+        .await.map(|response| response.body)
 }
 
 async fn load_text_resource(url: &str, client: &reqwest::Client) -> Result<String, String> {
@@ -980,12 +962,15 @@ pub fn poll_io_results_system(
                 result,
             } => {
                 io_service.finish_fetch_task(space_id, network_id);
-                let status = if result.is_ok() {
+                let status = if result.as_ref().is_ok_and(|response| response.status < 400) {
                     NetworkRequestStatus::Ok
                 } else {
                     NetworkRequestStatus::Error
                 };
-                let detail = result.as_ref().err().cloned();
+                let detail = Some(match &result {
+                    Ok(response) => format!("HTTP {} {}", response.status, response.status_text),
+                    Err(error) => error.clone(),
+                });
                 io_service.finish_request(network_id, status, detail);
                 if let Some(worker) = manager.contexts.get_mut(&space_id) {
                     match worker.cmd_tx.try_send(JsWorkerCommand::PushFetchResults(vec![(
@@ -1198,7 +1183,7 @@ mod backpressure_tests {
         let space_id = 17;
 
         for request_id in 0..(IoService::PENDING_FETCH_RESULTS_PER_SPACE as i32 + 20) {
-            service.defer_fetch_results(space_id, vec![(request_id, Ok("ok".to_string()))]);
+            service.defer_fetch_results(space_id, vec![(request_id, Ok(js_runtime::FetchResponse { body: "ok".into(), ..Default::default() }))]);
         }
 
         let pending = service.pending_fetch_results.lock().unwrap();

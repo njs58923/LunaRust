@@ -32,12 +32,9 @@ ejemplo viejo, revisalo. Un día entero de creer que `readViewerPose` estaba rot
 incluidos los internos, pero ningún código del motor lo lee. Para mover un
 documento al montarlo, envolvé el contenido en un `<group>` con transform.
 
-**`fetch` no le llega a una página remota.** La capacidad `fetch_text` existe en
-`permissions.rs`, pero el shell le concede a una página `spatial` sólo
-`navigate_self`, `read_pose_stream`, `read_camera_pose` y `skybox`
-(`web/internal/root_api.js`), y las capacidades efectivas se intersecan con eso.
-Pedirla en `resources` no alcanza. Para traer datos de tu propio server, hoy el
-único camino es `<include>`, que lo resuelve el motor.
+**`fetch` requiere permiso y respeta el mismo origen.** Pedí `fetch_text` para
+GET/HEAD o `fetch_http` para métodos de escritura. El shell los ofrece a páginas
+espaciales; los includes necesitan delegación explícita. Ver [Fetch HTTP](FETCH_HTTP.md).
 
 **`<include>` no emite `load` ni `error`.** No hay forma de saber desde el
 documento si un sub-documento terminó de montarse o falló. Si tu código marca
@@ -340,7 +337,8 @@ reales (`permissions.rs`), los que un documento normal puede pedir:
 |---|---|
 | `navigate_self` | cambiar la URL del propio espacio (`location.href`) |
 | `navigate_global` | navegar el shell entero |
-| `fetch_text` | `fetch()` de texto |
+| `fetch_text` | `fetch()` GET/HEAD con respuestas HTTP reales |
+| `fetch_http` | `fetch()` con métodos, cabeceras y cuerpo de texto/JSON/formulario |
 | `skybox` | montar `<skybox>` |
 | `spawn` | aplicar una aparición por carga del documento espacial principal |
 | `read_pose_stream` | eventos `posemove` de `<posezone>` |
@@ -353,8 +351,8 @@ reales (`permissions.rs`), los que un documento normal puede pedir:
 > **Ojo con esta tabla**: lista lo que un documento *puede pedir*, no lo que va a
 > *recibir*. Lo efectivo es la intersección con lo que el shell concede según el
 > tipo de página. Una `spatial` remota hoy recibe `navigate_self`,
-> `read_pose_stream`, `read_camera_pose`, `skybox`, `fetch_text` y `spawn` como
-> concesiones predeterminadas. `fetch_text` y `spawn` requieren además una
+> `read_pose_stream`, `read_camera_pose`, `skybox`, `fetch_text`, `fetch_http` y `spawn` como
+> concesiones predeterminadas. Los dos permisos fetch y `spawn` requieren además una
 > solicitud explícita del documento. El shell puede limitar esas concesiones.
 
 Elevados — **sólo** para páginas nativas o apps montadas por el shell trusted; un
@@ -488,7 +486,7 @@ btn.addEventListener('toque', (e) => {
 setTimeout / setInterval / clearTimeout / clearInterval
 requestAnimationFrame / cancelAnimationFrame
 console.log / warn / error
-await fetch(url)                 // requiere fetch_text, que una página spatial remota NO recibe
+await fetch(url)                 // requiere fetch_text (lectura) o fetch_http, mismo origen
 localStorage                     // persistente por origen, sin permiso
 new WebSocket('ws://...')        // onopen/onmessage/onerror/onclose, polling cada 16 ms
 location.href = '...'            // navegar (requiere navigate_self / navigate_global)
@@ -537,9 +535,8 @@ Dos archivos servidos desde `http://localhost:2052/`.
     <name>Demo Luna</name>
   </head>
 
-  <!-- Coma, no espacio. Y sólo lo que una página remota recibe de verdad:
-       fetch_text no se concede, y de la pose llega read_camera_pose. -->
-  <space resources="navigate_self,read_camera_pose">
+  <!-- Coma, no espacio. fetch_text habilita lectura del propio origen. -->
+  <space resources="navigate_self,read_camera_pose,fetch_text">
     <group id="panel" z="-3">
       <text y="2.0" value="Demo Luna" size="0.28" color="#344C49"/>
       <text id="contador" y="1.72" value="toques: 0" size="0.09" color="#4E6560"/>
@@ -641,10 +638,8 @@ const pose = root.readViewerPose && root.readViewerPose();
 if (pose) console.log('modo:', pose.mode, 'en', pose.px.toFixed(2), pose.pz.toFixed(2));
 
 // --- Red -----------------------------------------------------------------
-// OJO: esto falla en una página spatial remota. fetch necesita fetch_text y el
-// shell no se lo concede (ver advertencia 3). Queda como referencia para
-// páginas nativas o apps montadas por el shell.
-fetch('http://localhost:2052/data.json')
+// Lectura del propio servidor; requiere fetch_text en el space.
+fetch('./data.json')
   .then(r => r.json())
   .then(d => console.log('datos', d))
   .catch(e => console.warn('fetch falló', e));

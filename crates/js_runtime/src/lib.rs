@@ -15,6 +15,8 @@ pub mod cache;
 pub mod csp;
 pub mod storage;
 mod location;
+pub mod fetch;
+pub use fetch::{FetchRequest, FetchResponse};
 use deno_core::Op;
 pub mod mesh;
 
@@ -276,7 +278,7 @@ impl Default for TagSnapshot {
 }
 
 pub struct FetchQueue {
-    pub requests: Shared<Vec<(i32, String)>>,
+    pub requests: Shared<Vec<(i32, FetchRequest)>>,
     next_request_id: Shared<i32>,
 }
 impl Default for FetchQueue {
@@ -289,7 +291,7 @@ impl Default for FetchQueue {
 }
 
 pub struct FetchResults {
-    pub results: Shared<HashMap<i32, std::result::Result<String, String>>>,
+    pub results: Shared<HashMap<i32, std::result::Result<FetchResponse, String>>>,
 }
 impl Default for FetchResults {
     fn default() -> Self {
@@ -890,8 +892,9 @@ fn op_hsml_set_transform_batch(state: &mut OpState, #[serde] updates: Vec<f64>) 
 
 // --- Fetch ops ---
 
-#[op2(fast)]
-fn op_fetch_request(state: &mut OpState, #[string] url: &str) -> i32 {
+#[op2]
+#[smi]
+fn op_fetch_request(state: &mut OpState, #[serde] request: FetchRequest) -> i32 {
     let queue = state.borrow::<FetchQueue>();
     let mut next_id = queue.next_request_id.borrow_mut();
     let request_id = *next_id;
@@ -899,7 +902,7 @@ fn op_fetch_request(state: &mut OpState, #[string] url: &str) -> i32 {
     queue
         .requests
         .borrow_mut()
-        .push((request_id, url.to_string()));
+        .push((request_id, request));
     request_id
 }
 
@@ -910,7 +913,7 @@ fn op_fetch_poll(state: &mut OpState, #[smi] request_id: i32) -> serde_json::Val
     let mut map = results.results.borrow_mut();
     if let Some(result) = map.remove(&request_id) {
         match result {
-            Ok(text) => serde_json::json!({"status": "ok", "text": text}),
+            Ok(response) => serde_json::json!({"status": "ok", "response": response}),
             Err(err) => serde_json::json!({"status": "error", "error": err}),
         }
     } else {
@@ -1250,8 +1253,8 @@ pub struct Engine {
     transform_snapshot_global_positions: Shared<HashMap<i32, Vec3>>,
 
     // Fetch
-    fetch_queue: Shared<Vec<(i32, String)>>,
-    fetch_results: Shared<HashMap<i32, std::result::Result<String, String>>>,
+    fetch_queue: Shared<Vec<(i32, FetchRequest)>>,
+    fetch_results: Shared<HashMap<i32, std::result::Result<FetchResponse, String>>>,
     capture_queue: Shared<Vec<(i32, String)>>,
     capture_results: Shared<HashMap<i32, std::result::Result<String, String>>>,
 
@@ -1622,6 +1625,8 @@ impl Engine {
             .expect("runtime.js failed");
         rt.execute_script("<mesh>", FastString::Static(include_str!("../mesh.js")))
             .expect("mesh bootstrap failed");
+        rt.execute_script("<fetch>", FastString::Static(include_str!("../fetch.js")))
+            .expect("fetch bootstrap failed");
 
         eprintln!("[js_runtime] Engine created successfully");
 
@@ -1759,7 +1764,7 @@ impl Engine {
         take_vec(&self.transform_update_global_positions)
     }
 
-    pub fn drain_fetch_queue(&self) -> Vec<(i32, String)> {
+    pub fn drain_fetch_queue(&self) -> Vec<(i32, FetchRequest)> {
         take_vec(&self.fetch_queue)
     }
 
@@ -1895,7 +1900,7 @@ impl Engine {
     pub fn push_fetch_result(
         &self,
         request_id: i32,
-        result: std::result::Result<String, String>,
+        result: std::result::Result<FetchResponse, String>,
     ) {
         self.fetch_results.borrow_mut().insert(request_id, result);
     }

@@ -241,7 +241,7 @@
           // por defecto porque read_pose_stream ya la entrega igual vía la
           // pose de los mandos: negarla sólo rompía escritorio, donde no hay
           // mandos, sin proteger nada.
-          grants = ['navigate_self', 'read_pose_stream', 'read_camera_pose', 'skybox', 'fetch_text', 'spawn'];
+          grants = ['navigate_self', 'read_pose_stream', 'read_camera_pose', 'skybox', 'fetch_text', 'fetch_http', 'spawn'];
         } else if (kind === 'app') {
           grants = ['navigate_self'];
         } else if (kind === 'app-embedded') {

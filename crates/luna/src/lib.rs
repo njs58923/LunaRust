@@ -12,6 +12,7 @@ pub mod desktop_locomotion;
 pub mod dom;
 pub mod embedded;
 pub mod io;
+mod http_fetch;
 pub mod models;
 pub mod diagnostics;
 pub mod model_animation;

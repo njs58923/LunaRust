@@ -126,7 +126,7 @@ pub struct JsTickData {
     pub creation_queue: Vec<(i32, String)>,
     pub hierarchy_queue: Vec<(i32, i32)>,
     pub remove_queue: Vec<i32>,
-    pub fetch_queue: Vec<(i32, String)>,
+    pub fetch_queue: Vec<(i32, js_runtime::FetchRequest)>,
     pub capture_queue: Vec<(i32, String)>,
     pub navigate_queue: Vec<String>,
     pub tab_action_queue: Vec<js_runtime::TabAction>,
@@ -174,7 +174,7 @@ pub enum JsWorkerCommand {
         elapsed_ms: f64,
     },
     PushElementCreationResults(Vec<(i32, i32)>),
-    PushFetchResults(Vec<(i32, std::result::Result<String, String>)>),
+    PushFetchResults(Vec<(i32, std::result::Result<js_runtime::FetchResponse, String>)>),
     /// Resultado de una captura de frame: Ok(ruta del PNG) o Err(motivo).
     PushCaptureResults(Vec<(i32, std::result::Result<String, String>)>),
     PushWsEvents(Vec<WsWorkerEvent>),
@@ -3135,20 +3135,20 @@ pub fn js_tick_system(world: &mut World) {
     for (space_id, fetch_queue) in fetch_batches {
         let can_fetch = capabilities_by_space
             .get(&space_id)
-            .map(|caps| caps.contains(CapabilityBits::FETCH_TEXT))
+            .map(|caps| caps.intersects(CapabilityBits::FETCH_TEXT | CapabilityBits::FETCH_HTTP))
             .unwrap_or(false);
         if !can_fetch {
-            let failures = fetch_queue.iter().map(|(id, _)| (*id, Err("Permission denied: fetch_text was not granted".into()))).collect();
+            let failures = fetch_queue.iter().map(|(id, _)| (*id, Err("Permission denied: fetch_text / fetch_http was not granted".into()))).collect();
             if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() {
                 if let Some(worker) = manager.contexts.get_mut(&space_id) {
                     if worker.try_send(JsWorkerCommand::PushFetchResults(failures)).is_ok() { worker.needs_tick = true; }
                 }
             }
             if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
-                for (_, url) in &fetch_queue {
+                for (_, request) in &fetch_queue {
                     log_panel.push_warn(format!(
                         "[JS][space:{}] blocked fetch (missing fetch_text): {}",
-                        space_id, url
+                        space_id, request.url
                     ));
                 }
             }
@@ -3168,14 +3168,21 @@ pub fn js_tick_system(world: &mut World) {
             return;
         };
         let mut rejected = Vec::new();
-        for (request_id, url) in &fetch_queue {
-            let resolved = if native_fetch { Ok(url.clone()) } else { crate::io::same_origin_url(&fetch_base, url) };
+        for (request_id, request) in &fetch_queue {
+            if !matches!(request.method.as_str(), "GET" | "HEAD") && !capabilities_by_space.get(&space_id)
+                .is_some_and(|caps| caps.contains(CapabilityBits::FETCH_HTTP)) {
+                rejected.push((*request_id, Err("Permission denied: method requires fetch_http".into())));
+                continue;
+            }
+            let resolved = if native_fetch { Ok(request.url.clone()) } else { crate::io::same_origin_url(&fetch_base, &request.url) };
             let resolved = match resolved {
                 Ok(url) => url,
                 Err(error) => { rejected.push((*request_id, Err(error))); continue; }
             };
+            let mut request = request.clone();
+            request.url = resolved;
             if let Err(error) =
-                request_fetch_text(&tokio_rt.0, &io_service, space_id, *request_id, resolved, (!native_fetch).then(|| fetch_base.clone()))
+                request_fetch_text(&tokio_rt.0, &io_service, space_id, *request_id, request, (!native_fetch).then(|| fetch_base.clone()))
             {
                 rejected.push((*request_id, Err(error)));
             }
@@ -3199,8 +3206,8 @@ pub fn js_tick_system(world: &mut World) {
             }
         }
         if let Some(mut log_panel) = world.get_resource_mut::<LogPanel>() {
-            for (_, url) in &fetch_queue {
-                log_panel.push_info(format!("[JS][space:{}] fetch queued: {}", space_id, url));
+            for (_, request) in &fetch_queue {
+                log_panel.push_info(format!("[JS][space:{}] fetch queued: {} {}", space_id, request.method, request.url));
             }
         }
     }

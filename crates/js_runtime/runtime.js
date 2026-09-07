@@ -699,32 +699,7 @@
   // Fetch API
   // ---------------------------------------------------------------------------
 
-  global.fetch = function(url, options) {
-    return new Promise((resolve, reject) => {
-      if (options && (Object.keys(options).some(key => key !== 'method') ||
-          (options.method !== undefined && String(options.method).toUpperCase() !== 'GET'))) {
-        throw new TypeError('Luna fetch_text supports GET only; request options other than method are not implemented');
-      }
-      const requestId = core.ops.op_fetch_request(String(url));
-
-      function poll() {
-        const result = core.ops.op_fetch_poll(requestId);
-        if (result.status === 'pending') {
-          setTimeout(poll, 10);
-        } else if (result.status === 'ok') {
-          resolve({
-            ok: true,
-            status: 200,
-            text: () => Promise.resolve(result.text),
-            json: () => Promise.resolve(JSON.parse(result.text)),
-          });
-        } else {
-          reject(new Error(result.error));
-        }
-      }
-      poll();
-    });
-  };
+  // fetch and Headers are installed by fetch.js after the runtime bootstrap.
 
   // ---------------------------------------------------------------------------
   // hiperspace API (Unity compatibility layer)

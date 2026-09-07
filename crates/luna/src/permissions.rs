@@ -39,6 +39,7 @@ bitflags! {
         /// va elevada para que un origen remoto no pueda pedirla sin consenso.
         const CAPTURE_FRAME        = 1 << 18;
         const SPAWN                = 1 << 19;
+        const FETCH_HTTP           = 1 << 20;
     }
 }
 
@@ -374,6 +375,11 @@ lazy_static! {
             native_services: NativeServiceBits::empty(),
             auto_scripts: &[],
         });
+        m.insert("fetch_http", ResourceBundleDef {
+            capabilities: CapabilityBits::FETCH_HTTP,
+            native_services: NativeServiceBits::empty(),
+            auto_scripts: &[],
+        });
 
         m.insert(
             "read_system_input",
@@ -504,6 +510,7 @@ pub fn capability_labels(bits: CapabilityBits) -> Vec<&'static str> {
         ("DEVTOOLS_WRITE", CapabilityBits::DEVTOOLS_WRITE),
         ("SKYBOX", CapabilityBits::SKYBOX),
         ("SPAWN", CapabilityBits::SPAWN),
+        ("FETCH_HTTP", CapabilityBits::FETCH_HTTP),
         ("READ_SYSTEM_INPUT", CapabilityBits::READ_SYSTEM_INPUT),
         ("UX_EMBED", CapabilityBits::UX_EMBED),
         ("CAPTURE_FRAME", CapabilityBits::CAPTURE_FRAME),
@@ -919,6 +926,9 @@ pub fn rebuild_space_policies_system(
             if !root_space && !requested_caps_raw.contains(CapabilityBits::FETCH_TEXT) {
                 effective_caps.remove(CapabilityBits::FETCH_TEXT);
             }
+            if !root_space && !requested_caps_raw.contains(CapabilityBits::FETCH_HTTP) {
+                effective_caps.remove(CapabilityBits::FETCH_HTTP);
+            }
             if !root_space && !requested_caps_raw.contains(CapabilityBits::SPAWN) {
                 effective_caps.remove(CapabilityBits::SPAWN);
             }
@@ -1175,14 +1185,16 @@ mod tests {
 
     #[test]
     fn fetch_needs_both_delegation_and_explicit_request() {
-        let mut app = build_app_with_xml("<hsml><space system-space='root' resources='fetch_text'><include resources='fetch_text'><space id='asked' resources='fetch_text'/><space id='silent'/></include><include><space id='blocked' resources='fetch_text'/></include></space></hsml>");
+        for (bundle, capability) in [("fetch_text", CapabilityBits::FETCH_TEXT), ("fetch_http", CapabilityBits::FETCH_HTTP)] {
+        let mut app = build_app_with_xml(&format!("<hsml><space system-space='root' resources='{bundle}'><include resources='{bundle}'><space id='asked' resources='{bundle}'/><space id='silent'/></include><include><space id='blocked' resources='{bundle}'/></include></space></hsml>"));
         app.update();
         let doc = app.world().resource::<crate::ElemenetWorld>();
         let attrs = doc.0.read_storage::<Attrs>();
         let policies = app.world().resource::<SpacePolicies>();
         for (id, expected) in [("asked", true), ("silent", false), ("blocked", false)] {
             let (node, _) = (&doc.0.entities(), &attrs).join().find(|(_, a)| a.0.get("id").is_some_and(|s|s == id)).unwrap();
-            assert_eq!(policies.by_space[&node.id()].effective_caps.contains(CapabilityBits::FETCH_TEXT), expected, "{id}");
+            assert_eq!(policies.by_space[&node.id()].effective_caps.contains(capability), expected, "{bundle}/{id}");
+        }
         }
     }
 
