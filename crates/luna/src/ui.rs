@@ -29,6 +29,7 @@ pub fn ui_system(
     mut active_space: ResMut<ActiveSpaceIndex>,
     mut global_devtool: ResMut<GlobalDevtoolVisible>,
 ) {
+    let _profile = crate::profiling::span("ui_system");
     let mut pending_unmounts: Vec<usize> = Vec::new();
     let prev_active = active_space.0;
     let prev_active_url = active_space
@@ -37,7 +38,7 @@ pub fn ui_system(
         .map(|entry| entry.url.clone());
 
     if ui_params.dom_mirror.is_changed() {
-        sync_mounted_spaces_from_dom(&world.0, &mut space_params.mounted_spaces.0);
+        sync_mounted_spaces_from_mirror(&ui_params.dom_mirror, &mut space_params.mounted_spaces.0);
     }
 
     if let (Some(idx), Some(prev_url)) = (active_space.0, prev_active_url) {
@@ -848,6 +849,25 @@ fn find_root_managed_spaces(world: &SpecWorld) -> Vec<SpecEntity> {
     result
 }
 
+/// Read only root/tab/include metadata from the existing mirror. Animated nodes
+/// update this mirror too, but must not trigger a scan of the entire Specs world.
+fn sync_mounted_spaces_from_mirror(mirror: &crate::js::DomMirror, mounted: &mut [MountedSpaceEntry]) {
+    let root = mirror.space_subtrees.keys().filter_map(|id| mirror.nodes.get(&(*id as i32)))
+        .find(|node| node.attrs.get("id").is_some_and(|id| id == "luna_root"));
+    let Some(root) = root else { return; };
+    for child in &root.children {
+        let Some(tab) = mirror.nodes.get(child).filter(|n| n.tag == "space" && n.attrs.contains_key("managed-by")) else { continue; };
+        let Some(tab_id) = tab.attrs.get("data-luna-tab-id").and_then(|id| id.parse::<u64>().ok()) else { continue; };
+        let Some(entry) = mounted.iter_mut().find(|e| e.tab_id == tab_id) else { continue; };
+        let url = tab.children.iter().filter_map(|id| mirror.nodes.get(id)).find(|n| n.tag == "include")
+            .and_then(|n| n.attrs.get("src")).map(String::as_str).unwrap_or("");
+        let title = tab.attrs.get("title").filter(|t| !t.trim().is_empty()).map(String::as_str).unwrap_or(url);
+        if entry.url != url { entry.url = url.into(); }
+        if entry.title != title { entry.title = title.into(); }
+    }
+}
+
+#[cfg(test)]
 fn sync_mounted_spaces_from_dom(world: &SpecWorld, mounted_spaces: &mut [MountedSpaceEntry]) {
     let dom_spaces = collect_mounted_space_snapshots(world);
 
@@ -1151,6 +1171,30 @@ mod tests {
 
         assert_eq!(mounted[0].url, "luna://updated");
         assert_eq!(mounted[0].title, "luna://updated");
+    }
+
+    #[test]
+    fn mirror_tab_sync_ignores_geometry_and_tracks_navigation_and_titles() {
+        use crate::js::{DomMirror, DomMirrorNode};
+        let mut mirror = DomMirror::default();
+        let node = |tag: &str, attrs: &[(&str, &str)], children: Vec<i32>| DomMirrorNode {
+            tag: tag.into(), attrs: attrs.iter().map(|(k,v)| (k.to_string(),v.to_string())).collect(), children,
+            position: Default::default(), rotation: Default::default(), scale: Default::default(), parent: -1,
+        };
+        mirror.nodes.insert(1, node("space", &[("id","luna_root")], vec![2]));
+        mirror.nodes.insert(2, node("space", &[("managed-by","dimension.luna"),("data-luna-tab-id","11")], vec![3]));
+        mirror.nodes.insert(3, node("include", &[("src","luna://updated")], vec![]));
+        mirror.space_subtrees.insert(1, Default::default());
+        mirror.space_subtrees.insert(2, Default::default());
+        for id in 4..10_004 { mirror.nodes.insert(id, node("model", &[], vec![])); }
+        let mut tabs = vec![mounted_entry(11, "luna://old"), mounted_entry(12, "luna://other")];
+        sync_mounted_spaces_from_mirror(&mirror, &mut tabs);
+        assert_eq!(tabs[0].url, "luna://updated");
+        assert_eq!(tabs[0].title, "luna://updated");
+        mirror.nodes.get_mut(&2).unwrap().attrs.insert("title".into(), "New title".into());
+        sync_mounted_spaces_from_mirror(&mirror, &mut tabs);
+        assert_eq!(tabs[0].title, "New title");
+        assert_eq!(tabs[1].url, "luna://other");
     }
 
     #[test]

@@ -14,14 +14,14 @@ use bevy::{
         Render, RenderApp, RenderSet,
     },
 };
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
 #[derive(Resource)]
 struct Target(Handle<Image>);
 #[derive(Resource, Default, Clone, ExtractResource)]
-struct Readback(Arc<Mutex<Option<(Handle<Image>, Reply)>>>);
+struct Readback(Arc<Mutex<Option<(Handle<Image>, Reply)>>>, Arc<AtomicUsize>);
 
 fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     let mut image = Image::new_fill(
@@ -129,7 +129,8 @@ fn idle_camera(
         pending.take();
     }
     for mut camera in &mut cameras {
-        camera.is_active = pending.is_some();
+        let active = pending.is_some();
+        if camera.is_active != active { camera.is_active = active; }
     }
 }
 
@@ -140,7 +141,9 @@ fn readback_frame(
     queue: Res<RenderQueue>,
 ) {
     // Poll without waiting on the GPU: a VR frame must never block for automation.
-    device.poll(Maintain::Poll);
+    if readback.1.load(Ordering::Relaxed) != 0 {
+        device.poll(Maintain::Poll);
+    }
     let mut pending = readback.0.lock().unwrap();
     let Some((handle, reply)) = pending.as_ref() else {
         return;
@@ -180,7 +183,10 @@ fn readback_frame(
     );
     queue.submit([encoder.finish()]);
     let mapped = buffer.clone();
+    let in_flight = readback.1.clone();
+    in_flight.fetch_add(1, Ordering::Relaxed);
     buffer.slice(..).map_async(MapMode::Read, move |result| {
+        in_flight.fetch_sub(1, Ordering::Relaxed);
         if let Err(error) = result {
             let _ = reply.send(Err(error.to_string()));
             return;
@@ -209,6 +215,21 @@ fn readback_frame(
 }
 
 pub struct AgentCapturePlugin;
+#[cfg(test)]
+mod idle_tests {
+    use super::*;
+    #[test]
+    fn idle_spectator_does_not_mark_camera_changed() {
+        let mut app = App::new();
+        app.init_resource::<AgentControl>().init_resource::<Readback>().add_systems(Update, idle_camera);
+        let camera = app.world_mut().spawn((Camera { is_active:false, ..default() }, SpectatorCamera)).id();
+        app.update(); app.world_mut().clear_trackers(); app.update();
+        assert_eq!(app.world_mut().query_filtered::<Entity, Changed<Camera>>().iter(app.world()).count(), 0);
+        app.world_mut().get_mut::<Camera>(camera).unwrap().is_active = true;
+        app.update();
+        assert!(!app.world().get::<Camera>(camera).unwrap().is_active);
+    }
+}
 impl Plugin for AgentCapturePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Readback>()

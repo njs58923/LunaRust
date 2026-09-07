@@ -62,6 +62,62 @@ orden de los vértices decide cuál. Una bóveda de estrellas armada con la norm
 hacia afuera se ve vacía desde adentro: hay que emitir los vértices en orden
 inverso. No hay aviso; simplemente no se dibuja nada.
 
+**Hay 128 mallas dinámicas por sesión, y no se devuelven solas.** `MAX_RESOURCES`
+en `crates/js_runtime/src/mesh.rs` es 128, y el contador **no baja al cambiar de
+espacio**: los `MeshResource` de una página que ya no está siguen contando. Una
+sesión que navegue veinte veces a escenas con mallas llega al tope, y a partir de
+ahí **todo** `MeshResource.create` falla con `Mesh resource/queue limit reached`
+—incluso en una página recién abierta— hasta reiniciar Luna. Hay `dispose()` en
+la API, pero no hay evento de descarga desde el que llamarlo. Ver
+`docs/deuda_tecnica/deudas_de_plataforma.md`.
+
+**Los colores de una malla dinámica tienen que estar en [0, 1].** El motor
+valida el buffer y `MeshResource.create` tira `Vertex colors must be in [0, 1]`.
+No hay HDR ni sobreexposición: pasarse de 1 para "aclarar" no aclara, falla, y
+si eso pasa dentro de un `requestAnimationFrame` que reintenta, el log se llena
+de miles de líneas iguales. El contraste hay que ponerlo del otro lado — el
+color del fondo.
+
+**Un `cylinder` visto desde adentro no se dibuja.** Las caras miran para afuera,
+como en cualquier malla cerrada. Sirve para una isla o un tronco, no para una
+banda de horizonte alrededor del visitante. Lo único que se encara hacia adentro
+sin trabajo es un `plane`, que sí es de doble cara.
+
+**Pero sus tapas sí se ven, y son enormes.** El corolario del punto anterior, que
+cuesta caro encontrar porque no da error: un `cylinder` chato y ancho puesto de
+techo —un riel, un anillo, un aro— tapa todo lo que haya arriba con su **cara de
+abajo**, que es un disco del diámetro completo. Un anillo hay que armarlo con
+piezas, no achatando un cilindro. (Salió en `/observatorio.hsml`: un riel de 23 m
+de diámetro y 22 cm de alto borraba la cúpula entera y el cielo con ella.)
+
+**Un error de sintaxis en el script del cliente no sale por ningún lado.** No hay
+excepción, no hay warning, no hay entrada de log. El espacio carga, el HSML se
+monta, y el script sencillamente no corre — ni siquiera el `console.log` de
+arranque. Desde afuera es indistinguible de un script que corre y no encuentra sus
+nodos. La verificación barata, antes de abrir nada:
+
+```
+bun build public/<escena>.js --outfile /dev/null
+```
+
+**Resolver miles de nodos por `getElementById` en un solo frame mata el script.**
+Sin error, sin log y sin nada: el espacio monta, la escena se ve, y el script
+simplemente no arranca — el mismo síntoma que un error de sintaxis, con otra
+causa. Medido en este motor, buscando ids de un pozo grande:
+
+| ids en una tanda | resultado |
+|---:|---|
+| 2 016 | anda |
+| 2 560 | **el script no arranca** |
+| 3 072, repartidos de a 400 por frame | anda |
+| 6 400, repartidos de a 400 por frame | no arranca (otra pared, más arriba) |
+
+La cura es repartir la resolución en varios frames: el `preparar()` que ya
+devuelve `false` hasta estar listo lleva un cursor y resuelve un puñado por
+vuelta. Cuesta medio segundo de arranque que nadie ve. Está hecho así en
+`server_noche/public/circuito.js` y `telar.js`; el resto de las escenas resuelve
+de una porque tiene pocos nodos, y está bien.
+
 **Un `<model>` con animación no la reproduce solo.** Hace falta declarar
 `animation-clip`: `select_clip` (`model_animation.rs`) devuelve `None` cuando el
 atributo está vacío, así que el modelo se queda quieto por más que
@@ -74,6 +130,22 @@ Para un asset low-poly que usa la textura como paleta, la salida es hornearla a
 materiales planos antes de exportar —una muestra por cara, cuantizada, un
 material por color—; para una textura de verdad no hay salida hoy.
 
+**Pero el `COLOR_0` del glTF sí funciona.** Un `.glb` con colores por vértice y
+un material blanco se dibuja con esos colores, y eso cambia el precio de las
+cosas: hornear una textura a materiales planos cuesta **una primitiva por
+color** —una pieza de 67 colores son 67 primitivas por copia—, y hornearla a
+color por vértice cuesta **una**. Es además más fiel, porque el color no se
+cuantiza a una paleta: se muestrea, y la resolución que se pierde es la de la
+malla. En Blender hay que enchufar un nodo *Color Attribute* al *Base Color*
+del material: si el árbol de nodos no lo usa, el exportador **no escribe el
+atributo** y sólo avisa con un warning en consola.
+
+**No hay canal alfa.** Un material con transparencia se dibuja opaco. Todo pack
+que resuelva follaje, rejas o vidrios con cards recortadas por alfa se ve como
+rectángulos. Lo único que se puede hacer es tallar la silueta en la geometría:
+grilla sobre la textura, tirar la celda cuyo alfa no llega al umbral, y quedarse
+con el resto. Geometría a cambio de transparencia.
+
 **Ojo con lo que el exportador de glTF escribe en el nodo.** Si el objeto tiene
 padre, transformaciones delta o animación importada del FBX, esa transformación
 viaja en el nodo del `.glb` y el modelo aparece corrido —metros— respecto de la
@@ -81,6 +153,24 @@ posición que le da el documento. La animación es la peor de las tres: el
 depsgraph la evalúa y pisa la transformación que uno le asigna al objeto. La
 comprobación que sirve es sobre el archivo, no sobre la escena de origen: todo
 nodo con traslación cero y escala uno.
+
+**`setAttribute` funciona en caliente, y `getAttribute` no lo ve.** Se puede
+cambiar en vivo el `value` y el `size` de un `<text>`, el `color` de cualquier
+primitiva y hasta el `sx` de una caja: el cambio llega al motor y se dibuja. Lo
+que no se actualiza es la lectura — `getAttribute` sigue devolviendo lo que
+decía el HSML, así que el estado hay que guardarlo en el script. Verificado con
+un banco chico: `value:ok color:ok size:ok sx:ok`, `getAttribute` devolvió el
+valor viejo.
+
+**`setTransformBatch` escribe la transformación local completa.** Cada entrada es
+`nodeId, x, y, z, rx, ry, rz` y **las siete cosas se aplican**: mandar cero en la
+posición porque «esa no cambia» no la deja como estaba, la manda al origen. Si
+sólo se quiere rotar, hay que repetir la posición en cada entrada.
+
+**No hay `visible` ni `display`.** Para esconder un nodo desde el script hay que
+achicarlo con `scale`, y conviene un valor chico pero **distinto de cero** (0.0001
+sirve): una matriz de escala nula es singular y no todas las etapas del pipeline
+la tratan igual.
 
 **`el.scale` reemplaza el tamaño del nodo, no lo multiplica.** Asignarle `0.94`
 a una caja declarada `sx="0.19" sy="0.24" sz="0.19"` la convierte en un cubo de

@@ -374,13 +374,8 @@ fn setup(
         ..default()
     });
 
-    commands.spawn(Camera2dBundle {
-        camera: Camera {
-            order: 1,
-            ..default()
-        },
-        ..default()
-    });
+    // bevy_egui renders a window pass after CameraDriver; it needs no 2D camera.
+    // An extra active camera also runs mesh visibility over every GLB primitive.
     // commands.spawn(PointLightBundle {
     //     transform: Transform::from_xyz(3.0, 8.0, 3.0),
     //     ..default()
