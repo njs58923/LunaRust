@@ -88,13 +88,13 @@ mod tests {
     fn unsupported_fetch_options_reject_without_network_request() {
         let mut engine = js_runtime::Engine::new();
         engine
-            .eval("fetch('/api', {method:'POST'}).catch(e => console.log(e.message));")
+            .eval("fetch('/api', {cache:'no-store'}).catch(e => console.log(e.message));")
             .unwrap();
         engine.fire_raf(0.0);
         assert!(engine.drain_fetch_queue().is_empty());
         assert!(engine
             .drain_logs()
             .iter()
-            .any(|(_, m)| m.contains("GET only")));
+            .any(|(_, m)| m.contains("Unsupported fetch option: cache")));
     }
 }

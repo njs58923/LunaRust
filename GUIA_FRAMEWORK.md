@@ -97,6 +97,103 @@ nodos. La verificación barata, antes de abrir nada:
 bun build public/<escena>.js --outfile /dev/null
 ```
 
+**`navigate_global` existe en el motor pero no se concede.** El planificador
+(`plan_navigation_for_space`, `js.rs`) es explícito:
+
+```rust
+if caps.contains(NAVIGATE_SELF) {
+    if let Some(inc) = find_nearest_ancestor_include(space) { return SelfNav { inc, url }; }
+}
+if caps.contains(NAVIGATE_GLOBAL) { return GlobalNav { url }; }
+Blocked
+```
+
+O sea que un espacio con `navigate_global` **y sin** `navigate_self` navegaría el
+shell entero aunque esté dentro de un include. Lo que lo hace inalcanzable hoy es
+la lista de grants por defecto en `web/internal/root_api.js`:
+
+```js
+// kind === 'spatial'
+grants = ['navigate_self', 'read_pose_stream', 'read_camera_pose', 'skybox',
+          'fetch_text', 'fetch_http', 'spawn'];
+```
+
+`navigate_global` no está, y los grants de un `<include>` se intersecan con los
+del padre, así que ningún hijo puede tenerlo si el mundo no lo tiene. Agregarlo a
+esa lista es una línea, pero es una decisión de seguridad: le da a cualquier
+documento remoto la capacidad de navegar el shell. La propuesta de un tercer
+destino más angosto —reemplazar el mundo sin tocar el shell— está en
+[`NAVIGATE_WORLD.md`](NAVIGATE_WORLD.md).
+
+Vale notar también que **el mundo mismo es un include**: `mountSpace` monta el
+documento raíz dentro de un `<include>`, y por eso `navigate_self` en una escena
+se siente como "navegar el mundo". Una puerta anidada tiene su propio include más
+cerca, y `find_nearest_ancestor_include` encuentra ése.
+
+**Un `<include>` no puede navegar el mundo: se navega a sí mismo.** Es la
+consecuencia práctica de "en una puerta anidada, `navigate_self` sigue navegando
+esa puerta" (`LOCATION.md`), y desde afuera se ve así: al tocar el vano, la escena
+de destino **se carga adentro del marco** y el mundo de alrededor sigue estando.
+`navigate_world` todavía no existe.
+
+Pero un componente sí es posible, porque las dos piezas que hacen falta funcionan
+—las dos verificadas en Luna, no deducidas:
+
+| | |
+|---|---|
+| dos `<include>` del mismo archivo son **dos isolates con dos URLs** | sí |
+| el hijo lee sus parámetros con `location.search` | sí |
+| el documento **padre** ve los nodos del include por `getElementById` | sí |
+| el padre puede **escribirles atributos** | sí |
+| el hijo puede cambiarse su propio `id` con `setAttribute` | sí |
+| el padre puede **escuchar un `toque`** en un nodo del include | **no** |
+
+La última es la que manda, y no es obvia. `dispatch_toque_events_to_js`
+(`touch.rs`) resuelve el destinatario con `find_owner_space_id`, que sube hasta el
+`<space>` **más cercano** — el del propio include. El evento se despacha
+únicamente a ese isolate, así que un listener puesto desde el padre sobre un nodo
+del hijo **no se entera nunca**. Se puede pintar a través del borde; escuchar, no.
+
+**`getElementsByClass` anda**, y es la forma de pintar muchos nodos de un
+componente sin ponerle un id a cada uno: se les pone `class` en el HSML y el
+script los recorre. Verificado con 24 nodos por documento en
+`server_noche/public/puerta.js`.
+
+El reparto que sí funciona: **el componente dibuja, y el nodo tocable lo declara
+el padre**, encima del marco del include. Está implementado así en
+`server_noche/public/puerta.hsml` + `src/atrio.ts`: un único documento para las
+veintiocho puertas del atrio, y veintiocho vanos tocables en el documento del
+atrio.
+
+Lo que **no** funciona, probado: la escala de un `<group>` **no** se aplica al
+contenido de un `<include>`. La idea de meter el mundo de destino encogido adentro
+del marco, como maqueta viva, no sale por ese camino — el sub-mundo se dibuja a su
+propia escala.
+
+**El `ry` de un `<spawn>` gira al revés que el de un objeto.** Medido con
+`luna_status`: el forward del visitante es **`(-sin ry, 0, -cos ry)`**. Para que
+mire a un punto `P` parado en `S`:
+
+```
+ry = atan2(Sx - Px, Sz - Pz)      // mirar a P desde S
+ry = atan2(Sx, Sz)                // mirar al origen
+```
+
+No es el `atan2(-x, -z)` que se usa en todo `server_noche` para orientar arcos y
+paneles: ése apunta el **contenido** de un grupo (que mira a su +Z local) hacia el
+centro, y da justo lo contrario. Las dos fórmulas conviven en el mismo archivo y
+se confunden solas; conviene escribir cuál es cuál al lado de cada una.
+
+**Un `<spawn>` no inclina el visor**, sólo lo gira en horizontal. Consecuencia
+práctica al componer la llegada: lo que esté por debajo del nivel de los ojos
+—una mesa, un yunque, un tablero— hay que **mirarlo de cerca o desde bastante
+lejos**, porque a media distancia queda debajo del encuadre. Con los ojos a 1,70 m
+y una superficie a 0,95 m, la caída es de 23° a dos metros y de 13° a cuatro.
+
+**Y la trampa boba, que picó dos veces:** no poner el spawn detrás del propio
+cartel de la escena. Un panel de 3,7 m de ancho a medio metro de la cara es una
+pantalla negra, y desde afuera parece que el espacio no cargó.
+
 **Resolver miles de nodos por `getElementById` en un solo frame mata el script.**
 Sin error, sin log y sin nada: el espacio monta, la escena se ve, y el script
 simplemente no arranca — el mismo síntoma que un error de sintaxis, con otra
@@ -114,6 +211,14 @@ devuelve `false` hasta estar listo lleva un cursor y resuelve un puñado por
 vuelta. Cuesta medio segundo de arranque que nadie ve. Está hecho así en
 `server_noche/public/circuito.js` y `telar.js`; el resto de las escenas resuelve
 de una porque tiene pocos nodos, y está bien.
+
+**Pero la cura de fondo es no buscar.** Este techo sólo aparece si uno declara los
+nodos en el HSML y después los busca por id. Con `createElement` uno se queda con
+la referencia y no llama a `getElementById` ni una vez, y el problema desaparece
+en vez de mitigarse. Medido: 800 `createElement` + `appendChild` cuestan **0 ms**
+de script y quedan resueltos **15 ms** después. Declarar un "pozo" de nodos
+escondidos para irlos sacando es un patrón que **no hace falta** — y que, además,
+es el que crea este techo.
 
 **Un `<model>` con animación no la reproduce solo.** Hace falta declarar
 `animation-clip`: `select_clip` (`model_animation.rs`) devuelve `None` cuando el
