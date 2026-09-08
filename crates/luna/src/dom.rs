@@ -2488,6 +2488,11 @@ pub fn dom_sync_system(
         let mut next_dirty: Vec<u32> = Vec::new();
 
         for (old_ent, root_node_id) in &deferred_despawns {
+            // A subtree may already have been removed by navigation. Do not
+            // clear descendants of a reused Specs ID or enqueue a dead entity.
+            if commands.get_entity(*old_ent).is_none() {
+                continue;
+            }
             let root_spec = entities.entity(*root_node_id);
             if !entities.is_alive(root_spec) {
                 continue;

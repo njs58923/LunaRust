@@ -3081,6 +3081,13 @@ pub fn js_tick_system(world: &mut World) {
                 world.entity_mut(bevy_ent).despawn_recursive();
             }
         }
+        // JS removal also drives root.unmountSpace(). Forget skybox ownership
+        // and pending waiters before Specs reuses these numeric node IDs.
+        if let Some(mut skybox) = world.get_resource_mut::<crate::SkyboxEntity>() {
+            for &nid in &all_removed_ids {
+                skybox.clear_node(nid);
+            }
+        }
         // Clean up async node state (scripts, models)
         {
             let mut script_loads = world.resource_mut::<crate::ScriptLoadStates>();
@@ -5263,6 +5270,58 @@ mod tests {
             }
             _ => panic!("touched node should send patch, not full snapshot"),
         }
+    }
+
+    #[test]
+    fn removing_skybox_through_js_clears_active_owner_and_pending_preparation() {
+        let (mut app, space_id, child_id, _, _) = snapshot_test_app_with_child();
+        app.init_resource::<crate::EntityMap>();
+        app.init_resource::<crate::ScriptLoadStates>();
+        app.init_resource::<crate::PendingModelLoads>();
+        app.init_resource::<crate::ModelLoadStates>();
+        app.init_resource::<crate::SkyboxEntity>();
+        let bevy_entity = app.world_mut().spawn_empty().id();
+        app.world_mut().resource_mut::<crate::EntityMap>().0.insert(child_id, bevy_entity);
+        {
+            let mut sky = app.world_mut().resource_mut::<crate::SkyboxEntity>();
+            sky.active = Some((child_id, bevy_entity));
+            sky.nodes.insert(child_id, crate::SkyboxNodeState {
+                key: "old-sky".into(), status: crate::SkyboxLoadStatus::Requested, mounted: None,
+            });
+            sky.enqueue("old-sky", child_id);
+            sky.enqueue("other-sky", 9000);
+        }
+        let (worker, _commands, events) = fake_worker(false);
+        app.world_mut().non_send_resource_mut::<ScriptRuntimeManager>().contexts.insert(space_id, worker);
+        js_update_snapshots_system(app.world_mut());
+        let local = app.world().resource::<SpaceHandleTables>().by_space[&space_id].global_to_local[&child_id];
+        events.send(JsWorkerEvent::TickData(JsTickData {
+                mesh_commands: (0, Vec::new()),
+                needs_continuous_ticks: false,
+                logs: Vec::new(),
+                attr_updates: Vec::new(),
+                pos_updates: Vec::new(),
+                rot_updates: Vec::new(),
+                scale_updates: Vec::new(),
+                creation_queue: Vec::new(),
+                hierarchy_queue: Vec::new(),
+                remove_queue: vec![local],
+                fetch_queue: Vec::new(),
+                navigate_queue: Vec::new(),
+                tab_action_queue: Vec::new(),
+                capture_queue: Vec::new(),
+                shell_outbox: Vec::new(),
+                ws_connect_queue: Vec::new(),
+                ws_send_queue: Vec::new(),
+                ws_close_queue: Vec::new(),
+            })).unwrap();
+        js_tick_system(app.world_mut());
+        let sky = app.world().resource::<crate::SkyboxEntity>();
+        assert!(sky.active.is_none());
+        assert!(!sky.nodes.contains_key(&child_id));
+        assert!(!sky.pending.contains_key("old-sky"));
+        assert!(sky.pending.contains_key("other-sky"));
+        assert!(app.world().get_entity(bevy_entity).is_none());
     }
 
     #[test]
