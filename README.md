@@ -160,6 +160,9 @@ Con cargo directamente:
 # Escritorio
 cargo run -p luna
 
+# Activar MCP local desde el arranque (sin cambiar la preferencia guardada)
+cargo run -p luna -- --mcp
+
 # Modo AR (passthrough)
 cargo run -p luna -- --ar
 
@@ -169,6 +172,12 @@ cargo run -p luna --release
 # Iteración rápida (compila más rápido, ~90% del rendimiento)
 cargo run -p luna --profile release-fast
 ```
+
+En `luna://settings`, «MCP al iniciar» guarda la preferencia de arranque
+(`mcp_auto_start` en la configuración de Luna; desactivada por defecto).
+En la ventana Config de escritorio también aparece; pulsar Guardar configuración
+para persistirla. `luna.exe --mcp` fuerza la activación al arrancar, y se puede
+detener desde Ajustes durante la sesión. La opción no inicia el adaptador MCP externo.
 
 O con los atajos de `package.json`:
 

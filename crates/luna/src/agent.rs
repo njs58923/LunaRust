@@ -405,6 +405,7 @@ impl Plugin for AgentPlugin {
 
 fn settings_status(
     control: Res<AgentControl>,
+    config: Res<crate::RootConfig>,
     time: Res<Time>,
     mut last: Local<f64>,
     dom: Res<crate::ElemenetWorld>,
@@ -425,6 +426,9 @@ fn settings_status(
             continue;
         }
         let code = format!("{{ const node = hiperspace.dimention.getElementById('mcp_status'); if (node && node.getAttribute('value') !== {label}) node.setAttribute('value', {label}); }}");
+        let enabled = config.mcp_auto_start;
+        let startup_label = if enabled { "MCP al iniciar: SI" } else { "MCP al iniciar: NO" };
+        let code = format!("{code} {{ const root = hiperspace.dimention; const button = root.getElementById('mcp_auto_start'); const label = root.getElementById('mcp_auto_start_label'); if (button && button.getAttribute('data-enabled') !== '{enabled}') button.setAttribute('data-enabled', '{enabled}'); if (label && label.getAttribute('value') !== '{startup_label}') label.setAttribute('value', '{startup_label}'); }}");
         if worker
             .try_send(crate::js::JsWorkerCommand::EvalScript {
                 url: "eval://settings/mcp".into(),

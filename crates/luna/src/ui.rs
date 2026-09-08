@@ -520,6 +520,7 @@ pub fn ui_system(
                 let mut auto_load_home = ui_params.root_config.auto_load_home;
                 ui.checkbox(&mut ui_params.agent.enabled, "Enable local MCP");
                 ui.label(ui_params.agent.connection_label());
+                ui.checkbox(&mut ui_params.root_config.mcp_auto_start, "Start MCP automatically (save config)");
                 ui.separator();
                 if ui
                     .checkbox(&mut auto_load_home, "Auto-load home on startup")

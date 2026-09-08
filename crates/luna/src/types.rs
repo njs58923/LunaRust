@@ -169,6 +169,8 @@ pub enum PreferredRenderMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Resource)]
 pub struct RootConfig {
+    #[serde(default)]
+    pub mcp_auto_start: bool,
     pub auto_load_home: bool,
     pub home_url: String,
     pub preferred_render_mode: PreferredRenderMode,
@@ -177,6 +179,7 @@ pub struct RootConfig {
 impl Default for RootConfig {
     fn default() -> Self {
         Self {
+            mcp_auto_start: false,
             auto_load_home: true,
             home_url: "luna://home".to_string(),
             preferred_render_mode: PreferredRenderMode::Desktop,
@@ -185,6 +188,10 @@ impl Default for RootConfig {
 }
 
 impl RootConfig {
+    pub fn mcp_enabled_on_startup(&self, force_mcp: bool) -> bool {
+        force_mcp || self.mcp_auto_start
+    }
+
     pub fn path() -> PathBuf {
         crate::utils::folder::resolve_root_config_path()
     }
@@ -215,6 +222,30 @@ impl RootConfig {
             .map_err(|e| format!("Serialize root config failed: {e}"))?;
         fs::write(&path, json).map_err(|e| format!("Write root config failed: {e}"))?;
         Ok(path)
+    }
+}
+
+#[cfg(test)]
+mod mcp_startup_tests {
+    use super::*;
+
+    #[test]
+    fn mcp_startup_migrates_old_config_and_cli_does_not_change_preference() {
+        let mut config: RootConfig = serde_json::from_str(r#"{
+            "auto_load_home": false,
+            "home_url": "https://example.test/world",
+            "preferred_render_mode": "Desktop"
+        }"#).unwrap();
+        assert!(!config.auto_load_home);
+        assert_eq!(config.home_url, "https://example.test/world");
+        assert!(!config.mcp_auto_start);
+        assert!(!config.mcp_enabled_on_startup(false));
+        assert!(config.mcp_enabled_on_startup(true));
+        assert!(!config.mcp_auto_start);
+        config.mcp_auto_start = true;
+        let restored: RootConfig = serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert!(restored.mcp_enabled_on_startup(false));
+        assert!(restored.mcp_enabled_on_startup(true));
     }
 }
 

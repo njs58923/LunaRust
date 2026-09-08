@@ -635,6 +635,10 @@
     // `name` es un nombre de archivo, no una ruta: el directorio lo decide el
     // host. Resuelve con la ruta absoluta escrita, ya cerrada en disco, así
     // que quien la reciba puede abrirla sin esperar nada más.
+    setMcpAutoStart(enabled) {
+      core.ops.op_luna_mcp_auto_start(Boolean(enabled));
+    }
+
     setMcpEnabled(enabled) {
       core.ops.op_luna_mcp_enabled(Boolean(enabled));
     }

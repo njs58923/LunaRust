@@ -86,6 +86,8 @@ fn main() {
     app.add_plugins(luna::player_spawn::PlayerSpawnPlugin);
     app.add_plugins(luna::capture::CapturePlugin);
     app.add_plugins(luna::agent::AgentPlugin);
+    app.world_mut().resource_mut::<luna::agent::AgentControl>().enabled =
+        root_config.mcp_enabled_on_startup(args.iter().any(|arg| arg == "--mcp"));
     app.add_plugins(luna::surface::SurfacePlugin);
     app.add_systems(XrSessionCreated, spawn_controllers);
     app.insert_resource(RenderMode {

@@ -633,6 +633,8 @@ const LUNA_SETTINGS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <text x="-0.975" y="1.28" z="-3.45" value="Iniciar MCP local" size="0.06"/>
   <box id="mcp_stop" x="0.975" y="1.28" z="-3.5" sx="1.2" sy="0.24" sz="0.05" color="#714B45" touchable="true"/>
   <text x="0.975" y="1.28" z="-3.45" value="Detener MCP" size="0.06"/>
+  <box id="mcp_auto_start" x="0" y="0.25" z="-3.5" sx="3.0" sy="0.24" sz="0.05" color="#405E55" touchable="true"/>
+  <text id="mcp_auto_start_label" x="0" y="0.25" z="-3.45" value="MCP al iniciar: cargando..." size="0.06"/>
   <text id="mcp_status" x="0" y="0.550" z="-3.5" value="MCP local" size="0.054" color="#B8CCC0"/>
 
   </group>
@@ -646,6 +648,11 @@ const LUNA_SETTINGS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     const root = hiperspace.dimention;
     const start = root.getElementById('mcp_start');
     const stop = root.getElementById('mcp_stop');
+    const autoStart = root.getElementById('mcp_auto_start');
+    if (autoStart) autoStart.addEventListener('toque', () => {
+      const current = autoStart.getAttribute('data-enabled');
+      if (current === 'true' || current === 'false') root.setMcpAutoStart(current !== 'true');
+    });
     if (start) start.addEventListener('toque', () => root.setMcpEnabled(true));
     if (stop) stop.addEventListener('toque', () => root.setMcpEnabled(false));
     // One Settings document for spatial Home and the menu's window-local panel.

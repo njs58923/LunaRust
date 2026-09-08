@@ -346,6 +346,7 @@ impl Default for NavigateQueue {
 pub enum TabAction {
     /// Host-only settings action; the host verifies the source document.
     SetMcpEnabled { enabled: bool },
+    SetMcpAutoStart { enabled: bool },
     /// Abre nueva tab cargando url. `kind` opaco — JS shell aplica policy.
     Open { url: String, kind: String },
     /// Cierra tab por su tab_id.
@@ -928,6 +929,12 @@ fn op_luna_mcp_enabled(state: &mut OpState, enabled: bool) {
     state.borrow::<TabActionQueue>().queue.borrow_mut()
         .push(TabAction::SetMcpEnabled { enabled });
 }
+#[op2(fast)]
+fn op_luna_mcp_auto_start(state: &mut OpState, enabled: bool) {
+    state.borrow::<TabActionQueue>().queue.borrow_mut()
+        .push(TabAction::SetMcpAutoStart { enabled });
+}
+
 // El host valida la cap CAPTURE_FRAME por space antes de ejecutar nada; acá
 // sólo se encola. `name` es un nombre de archivo, no una ruta: el host decide
 // el directorio.
@@ -1478,6 +1485,7 @@ impl Engine {
                 op_fetch_poll::decl(),
                 op_capture_frame::decl(),
                 op_luna_mcp_enabled::decl(),
+                op_luna_mcp_auto_start::decl(),
                 op_capture_poll::decl(),
                 op_navigate::decl(),
                 op_tab_open::decl(),

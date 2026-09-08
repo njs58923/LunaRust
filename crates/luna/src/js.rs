@@ -3434,6 +3434,24 @@ pub fn js_tick_system(world: &mut World) {
                             }
                         }
                     }
+                    js_runtime::TabAction::SetMcpAutoStart { enabled } => {
+                        let allowed = world.get_resource::<ElemenetWorld>().is_some_and(|dom| {
+                            let entity = dom.0.entities().entity(space_id);
+                            crate::agent::is_settings_document(&crate::dom::find_node_base_url(&dom.0, entity, ""))
+                        });
+                        if allowed {
+                            let result = world.get_resource_mut::<crate::RootConfig>().map(|mut config| {
+                                let mut updated = config.clone();
+                                updated.mcp_auto_start = enabled;
+                                updated.save().map(|_| { *config = updated; })
+                            });
+                            if let Some(Err(error)) = result {
+                                if let Some(mut log) = world.get_resource_mut::<LogPanel>() {
+                                    log.push_warn(format!("[MCP] Could not save startup preference: {error}"));
+                                }
+                            }
+                        }
+                    }
                     js_runtime::TabAction::Open { url, kind } => {
                         let caps = capabilities_by_space
                             .get(&space_id)
