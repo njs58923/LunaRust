@@ -126,8 +126,9 @@
       function computePositions(count) {
         if (count < 1) return [];
         if (count > POSITIONS_TABLE.length) {
-          console.warn('[ux_vr]', count, 'bookmarks >', POSITIONS_TABLE.length, '— layout truncado');
-          count = POSITIONS_TABLE.length;
+          const columns = Math.ceil(Math.sqrt(count));
+          const rows = Math.ceil(count / columns);
+          return Array.from({length: count}, (_, i) => [(i % columns - (columns - 1) / 2) * 0.36, ((rows - 1) / 2 - Math.floor(i / columns)) * 0.40]);
         }
         const raw = POSITIONS_TABLE[count - 1].map(([x, y]) => [x / POS_DIV, y / POS_DIV]);
         let cx = 0, cy = 0;
@@ -212,6 +213,11 @@
           box.setAttribute('name', 'app-' + bm.name);
           box.setAttribute('border-radius', BORDER_R);
           box.setAttribute('color', color);
+          // One shared 32-slot atlas; the icon is composed on the box itself.
+          box.setAttribute('texture', 'luna://icons/menu.png');
+          box.setAttribute('texture-region', [(i % 8) / 8, Math.floor(i / 8) / 4, 1 / 8, 1 / 4].join(','));
+          box.setAttribute('texture-face', 'front');
+          box.setAttribute('texture-fit', 'contain');
           box.setAttribute('touchable', 'true');
           box.position = { x: px, y: py, z: Z };
           box.scale = { x: 0.001, y: 0.001, z: 0.001 };

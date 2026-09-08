@@ -881,6 +881,7 @@ pub struct UiSystemParams<'w> {
 
 #[derive(SystemParam)]
 pub struct TextRenderParams<'w> {
+    pub surfaces: Option<ResMut<'w, crate::surface::SurfaceQueue>>,
     pub materials: ResMut<'w, Assets<StandardMaterial>>,
     pub images: ResMut<'w, Assets<Image>>,
     pub text_material_cache: ResMut<'w, TextMaterialCache>,

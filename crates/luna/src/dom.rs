@@ -1698,7 +1698,17 @@ pub fn dom_sync_system(
 
         // `&str` prestado del storage (vivo todo el loop): evita clonar el tag
         // String por nodo/frame — 10k allocs+frees/frame con cubos animados.
-        let tag = tags.get(*node).map(|t| t.0.as_str()).unwrap_or("");
+        let source_tag = tags.get(*node).map(|t| t.0.as_str()).unwrap_or("");
+        // Image is a textured instance of the shared plane, not an extra child.
+        let tag = if source_tag == "image" { "plane" } else { source_tag };
+        if matches!(source_tag, "image" | "box" | "plane" | "sphere" | "cylinder" | "model") {
+            if let Some(queue) = text_render.surfaces.as_deref_mut() {
+                let empty = HashMap::new();
+                let attrs = attrs_storage.get(*node).map(|a| &a.0).unwrap_or(&empty);
+                let desc = crate::surface::SurfaceDesc::parse(source_tag, attrs, |src| resolve_node_relative_url(&world.0, *node, &current_url.0, src));
+                queue.0.push((*node, desc));
+            }
+        }
         let hierarchy = hierarchies.get(*node);
         // `Hierarchy.parent` ahora es `Option<Entity>` (con gen) — evita el
         // bug histórico de reciclaje de slots specs.
@@ -2080,6 +2090,8 @@ pub fn dom_sync_system(
                     *t = transform_b;
                     if let Some(mut material_handle) = maybe_material {
                         *material_handle = material;
+                    } else {
+                        commands.entity(bevy_ent).insert(material);
                     }
                 }
                 continue;

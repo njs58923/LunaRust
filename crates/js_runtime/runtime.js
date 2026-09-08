@@ -581,6 +581,54 @@
   // HSMLModelElement (3D model)
   // ---------------------------------------------------------------------------
 
+  class HSMLImageElement extends HSMLElement {
+    get src() { return this.getAttribute('src') || ''; }
+    set src(value) { this.setAttribute('src', value); }
+    get complete() { return ['ready', 'error', 'empty'].includes(this.getAttribute('image-status')) && this.getAttribute('image-request-source') === this.src && this.getAttribute('image-request-revision') === (this.getAttribute('texture-revision') || ''); }
+    get naturalWidth() { return Number(this.getAttribute('image-width')) || 0; }
+    get naturalHeight() { return Number(this.getAttribute('image-height')) || 0; }
+    get error() { return this.getAttribute('image-error') || ''; }
+    get onload() { return this._eventHandlers.onload || null; }
+    set onload(fn) { this._eventHandlers.onload = fn; this._watchImage(); }
+    get onerror() { return this._eventHandlers.onerror || null; }
+    set onerror(fn) { this._eventHandlers.onerror = fn; this._watchImage(); }
+    setAttribute(name, value) {
+      super.setAttribute(name, value);
+      if (name === 'src') this._expectedImageSource = String(value);
+      if (name === 'texture-revision') this._expectedImageRevision = String(value);
+      if (name === 'src' || name === 'texture-revision') { this._imageResult = null; this._watchImage(); }
+    }
+    addEventListener(type, listener) {
+      super.addEventListener(type, listener);
+      if (type === 'load' || type === 'error') this._watchImage();
+    }
+    remove() { this._imageRemoved = true; super.remove(); }
+    _watchImage() {
+      if (this._imageWatching || this._imageRemoved) return;
+      this._imageWatching = true;
+      const poll = () => {
+        if (this._imageRemoved) { this._imageWatching = false; return; }
+        const tag = this.nodeId >= 0 ? core.ops.op_hsml_get_tag(this.nodeId) : '';
+        if (tag) this._imageSeen = true;
+        if (!tag && this._imageSeen) { this._imageWatching = false; return; }
+        const src = this.src;
+        const status = this.getAttribute('image-status');
+        const revision = this.getAttribute('texture-revision') || '';
+        if (src && (this._expectedImageSource == null || this._expectedImageSource === src) && (this._expectedImageRevision == null || this._expectedImageRevision === revision) && this.complete && (status === 'ready' || status === 'error')) {
+          this._imageWatching = false;
+          const result = src + '\n' + (this.getAttribute('texture-revision') || '') + '\n' + status;
+          if (result !== this._imageResult) {
+            this._imageResult = result;
+            this.dispatchEvent({ type: status === 'ready' ? 'load' : 'error', message: this.error });
+          }
+        } else if (src || this.nodeId < 0 || (this._expectedImageSource && this._expectedImageSource !== src)) {
+          setTimeout(poll, 64);
+        } else { this._imageWatching = false; }
+      };
+      setTimeout(poll, 0);
+    }
+  }
+
   class HSMLModelElement extends HSMLElement {
     constructor(nodeId) {
       super(nodeId);
@@ -664,6 +712,11 @@
     let el;
 
     switch (tag.toUpperCase()) {
+      case 'IMAGE': {
+        el = new HSMLImageElement(nodeId);
+        el._setTagHint('IMAGE');
+        break;
+      }
       case 'MODEL': {
         el = new HSMLModelElement(nodeId);
         el._setTagHint('MODEL');
@@ -848,6 +901,7 @@
   global.HSMLElement = HSMLElement;
   global.HSMLRootElement = HSMLRootElement;
   global.HSMLModelElement = HSMLModelElement;
+  global.HSMLImageElement = HSMLImageElement;
   global.HSMLButtonElement = HSMLButtonElement;
   global.HSMLVideoElement = HSMLVideoElement;
 

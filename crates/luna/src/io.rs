@@ -65,6 +65,7 @@ pub enum NetworkRequestKind {
     Model,
     Skybox,
     Include,
+    Image,
 }
 
 impl NetworkRequestKind {
@@ -76,6 +77,7 @@ impl NetworkRequestKind {
             Self::Model => "model",
             Self::Skybox => "skybox",
             Self::Include => "include",
+            Self::Image => "image",
         }
     }
 }

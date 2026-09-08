@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head><name>Imágenes, materiales y atlas</name></head>
+  <space resources="spawn,navigate_self">
+    <spawn id="entrada" default="true" z="5"/>
+    <text y="2.65" value="IMÁGENES / MATERIALES" size="0.2"/>
+    <text y="2.35" value="Una textura compartida; cada instancia elige su región" size="0.075"/>
+    <box id="tile_a" x="-1.1" y="1.65" sx="0.7" sy="0.7" sz="0.14" border-radius="0.12" color="#23557C" texture="luna://icons/menu.png" texture-region="0,0,0.125,0.25" texture-face="front" texture-fit="contain" touchable="true"/>
+    <box id="tile_b" y="1.65" sx="0.7" sy="0.7" sz="0.14" border-radius="0.12" color="#356F58" texture="luna://icons/menu.png" texture-region="0.125,0,0.125,0.25" texture-face="front" texture-fit="contain"/>
+    <box id="tile_c" x="1.1" y="1.65" sx="0.7" sy="0.7" sz="0.14" border-radius="0.12" color="#865528" texture="luna://icons/menu.png" texture-region="0.25,0,0.125,0.25" texture-face="front" texture-fit="contain"/>
+    <text y="1.07" value="Tocá el primer botón: cambia su icono, no los otros" size="0.065"/>
+    <image id="photo" y="0.45" sx="2.8" sy="0.6" src="luna://icons/menu.png" fit="contain"/>
+    <text id="status" y="-0.02" value="Cargando imagen…" size="0.06"/>
+    <model id="generated" x="2.35" y="1.65" material-unlit="true" texture="luna://icons/menu.png" texture-region="0.375,0,0.125,0.25" texture-fit="contain"/>
+    <script>
+      const root=hiperspace.dimention;
+      let ready=false, icon=0;
+      function start() {
+        if(ready) return;
+        const first=root.getElementById('tile_a'), image=root.getElementById('photo'), model=root.getElementById('generated');
+        if(!first || !image || !model) { requestAnimationFrame(start);return; }
+        ready=true;
+        first.addEventListener('toque',()=>{icon=(icon+1)%9;first.setAttribute('texture-region',[(icon%8)/8,Math.floor(icon/8)/4,0.125,0.25].join(','));});
+        image.onload=()=>root.getElementById('status').setAttribute('value','Imagen lista: '+image.naturalWidth+' × '+image.naturalHeight);
+        image.onerror=()=>root.getElementById('status').setAttribute('value',image.error);
+        const mesh=MeshResource.create({positions:[-0.35,-0.35,0, 0.35,-0.35,0, 0.35,0.35,0, -0.35,0.35,0],indices:[0,1,2,0,2,3],uvs:[0,1,1,1,1,0,0,0]});
+        model.src=mesh.src;
+      }
+      requestAnimationFrame(start);
+    </script>
+  </space>
+</hsml>

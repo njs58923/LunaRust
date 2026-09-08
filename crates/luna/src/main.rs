@@ -86,6 +86,7 @@ fn main() {
     app.add_plugins(luna::player_spawn::PlayerSpawnPlugin);
     app.add_plugins(luna::capture::CapturePlugin);
     app.add_plugins(luna::agent::AgentPlugin);
+    app.add_plugins(luna::surface::SurfacePlugin);
     app.add_systems(XrSessionCreated, spawn_controllers);
     app.insert_resource(RenderMode {
         is_vr: initial_render_mode,
@@ -255,6 +256,7 @@ fn main() {
         Update,
         (dom::dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
             luna::models::poll_model_instances,
+            luna::surface::sync_surfaces,
             luna::model_animation::sync_model_animations,
             luna::model_animation::report_clip_completion,
             luna::embedded::sync_embedded_windows)

@@ -17,6 +17,7 @@ pub mod models;
 pub mod diagnostics;
 pub mod model_animation;
 pub mod dynamic_mesh;
+pub mod surface;
 pub mod js;
 pub mod permissions;
 pub mod render;
