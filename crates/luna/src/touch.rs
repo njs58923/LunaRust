@@ -217,6 +217,43 @@ pub struct HostPoseMoveHit {
 pub struct HostPoseMoveEvents(pub Vec<HostPoseMoveHit>);
 
 
+/// Latest targets are consumed each frame, so disabled input clears hover too.
+#[derive(Resource, Default)]
+pub struct HostHoverTargets(pub [Option<u32>; 3]);
+
+pub fn dispatch_hover_events_to_js(
+    mut targets: ResMut<HostHoverTargets>,
+    world: Res<ElemenetWorld>,
+    tables: Res<SpaceHandleTables>,
+    mut manager: NonSendMut<ScriptRuntimeManager>,
+    mut sent: Local<HashMap<u32, [Option<i32>; 3]>>,
+    mut generation: Local<u64>,
+) {
+    let contexts_changed = *generation != manager.context_generation;
+    *generation = manager.context_generation;
+    let mut desired: HashMap<u32, [Option<i32>; 3]> = HashMap::new();
+    for (pointer, target) in std::mem::take(&mut targets.0).into_iter().enumerate() {
+        let Some(id) = target else { continue };
+        let entity = world.0.entities().entity(id);
+        if !world.0.entities().is_alive(entity) { continue; }
+        let Some(owner) = find_owner_space_id(&world.0, entity) else { continue };
+        let Some(local) = tables.by_space.get(&owner).and_then(|t| t.global_to_local.get(&id)) else { continue };
+        desired.entry(owner).or_default()[pointer] = Some(*local);
+    }
+    // At most three active spaces, plus spaces needing a leave/retry.
+    let spaces: std::collections::HashSet<_> = desired.keys().chain(sent.keys()).copied().collect();
+    for space in spaces {
+        let Some(worker) = manager.contexts.get_mut(&space) else { sent.remove(&space); continue };
+        let next = desired.get(&space).copied().unwrap_or_default();
+        if !contexts_changed && sent.get(&space).copied().unwrap_or_default() == next { continue; }
+        // Retry unchanged targets if the worker queue was full. Never lose a leave.
+        if worker.try_send(JsWorkerCommand::SetHoverTargets(next)).is_ok() {
+            if next == [None; 3] { sent.remove(&space); } else { sent.insert(space, next); }
+            worker.needs_tick = true;
+        }
+    }
+}
+
 pub fn desktop_toque_raycast_system(
     mouse_button: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -227,15 +264,15 @@ pub fn desktop_toque_raycast_system(
     // Filtramos acá para que un panel oculto no reciba clicks de sus hijos.
     toqueable_query: Query<(&GlobalTransform, &Toqueable, &InheritedVisibility, Option<&HitShape>)>,
     mut toque_hits: ResMut<HostToqueHits>,
+    mut hover: ResMut<HostHoverTargets>,
     mut log_panel: ResMut<LogPanel>,
     shooter: Option<Res<crate::desktop_locomotion::DesktopShooterActive>>,
 ) {
-    if !mouse_button.just_pressed(MouseButton::Left) {
-        return;
-    }
+    hover.0[0] = None;
     let Ok(window) = windows.get_single() else {
         return;
     };
+    if !window.focused { return; }
     let shooter_active = shooter.map(|s| s.0).unwrap_or(false);
     let cursor_pos = if shooter_active {
         // Shooter mode: raycast from center of window
@@ -277,6 +314,8 @@ pub fn desktop_toque_raycast_system(
         }
     }
 
+    hover.0[0] = closest.map(|(_, id, _)| id);
+    if !mouse_button.just_pressed(MouseButton::Left) { return; }
     if let Some((_, node_id, hit_point)) = closest {
         toque_hits.0.push(HostToqueHit {
             node_id,
@@ -306,6 +345,7 @@ pub fn vr_toque_raycast_system(
     // Ver doc en desktop_toque_raycast_system para el filtro de InheritedVisibility.
     toqueable_query: Query<(&GlobalTransform, &Toqueable, &InheritedVisibility, Option<&HitShape>)>,
     mut toque_hits: ResMut<HostToqueHits>,
+    mut hover: ResMut<HostHoverTargets>,
     mut log_panel: ResMut<LogPanel>,
     mut last_trigger: Local<bool>,
 ) {
@@ -314,13 +354,12 @@ pub fn vr_toque_raycast_system(
         return;
     };
 
+    if !state.is_active { *last_trigger = false; return; }
     let pressed = state.current_state > 0.8;
     let just_pressed = pressed && !*last_trigger;
     *last_trigger = pressed;
 
-    if !just_pressed {
-        return;
-    }
+
 
     let controller_tf = match controller_query.get_single() {
         Ok(tf) => tf,
@@ -358,6 +397,8 @@ pub fn vr_toque_raycast_system(
         }
     }
 
+    hover.0[2] = closest.map(|(_, id, _)| id);
+    if !just_pressed { return; }
     if let Some((_, node_id, hit_point)) = closest {
         toque_hits.0.push(HostToqueHit {
             node_id,
@@ -372,6 +413,30 @@ pub fn vr_toque_raycast_system(
         ));
     }
 }
+/// Secondary VR ray shares the same hit rules as the primary controller.
+pub fn vr_left_hover_raycast_system(
+    actions: Res<crate::vr_locomotion::LunaLocomotionActions>,
+    session: Res<bevy_mod_openxr::session::OxrSession>,
+    controller: Query<&Transform, With<bevy_xr_utils::tracking_utils::XrTrackedLeftGrip>>,
+    root: Query<&Transform, (With<bevy_mod_xr::session::XrTrackingRoot>, Without<bevy_xr_utils::tracking_utils::XrTrackedLeftGrip>)>,
+    shapes: Query<(&GlobalTransform, &Toqueable, &InheritedVisibility, Option<&HitShape>)>,
+    mut hover: ResMut<HostHoverTargets>,
+) {
+    if !actions.left_trigger.state(&session, openxr::Path::NULL).map(|state| state.is_active).unwrap_or(false) { return; }
+    let (Ok(controller), Ok(root)) = (controller.get_single(), root.get_single()) else { return };
+    let (origin, rotation) = compose_tracking_pose(root, controller);
+    let direction = controller_ui_ray_direction(rotation);
+    if direction == Vec3::ZERO { return; }
+    let mut nearest = 20.0;
+    for (transform, target, visible, shape) in &shapes {
+        if !visible.get() { continue; }
+        let (scale, rotation, position) = transform.to_scale_rotation_translation();
+        if let Some((distance, _)) = intersect_shape(origin, direction, position, rotation, scale, shape.copied().unwrap_or(HitShape::Sphere)) {
+            if distance < nearest { nearest = distance; hover.0[1] = Some(target.0); }
+        }
+    }
+}
+
 fn push_pose_events_for_hand(
     hand: &str,
     root_tf: &Transform,

@@ -572,6 +572,8 @@ Eventos que emite el host:
 | Evento | Cuándo | Campos extra |
 |---|---|---|
 | `toque` | click de mouse (escritorio) o trigger derecho (VR) sobre un nodo `touchable` | `x`, `y`, `z` = punto de impacto en world space |
+| `pointerenter`, `pointerleave` | entrada/salida del cursor o rayos VR; no burbujean | `target`, `currentTarget`, `relatedTarget`, `pointerId`, `pointerType`, `hand` |
+| `pointerover`, `pointerout` | cambio de objetivo; burbujean dentro del isolate | mismos campos |
 | `posemove` | mano/mando dentro de un `<posezone>` (requiere `read_pose_stream`) | `hand`, `px py pz`, `dx dy dz`, `trigger`, `grip`, `qx qy qz qw` |
 
 `toque` es *el* click en Luna. No existe `click` nativo: `el.click()` sólo despacha
@@ -584,6 +586,11 @@ btn.addEventListener('toque', (e) => {
   location.href = 'luna://home';
 });
 ```
+
+Hover admite también `mouseenter`, `mouseleave`, `mouseover` y `mouseout` para
+mouse y mando derecho, propiedades `onpointerenter`, etc., y `matches(':hover')`.
+Para ambos mandos usar `pointer*`. Requiere `touchable="true"` en el objetivo.
+Ver [semántica y ejemplo de hover](HOVER.md). No incorpora un motor CSS.
 
 ### Web APIs disponibles
 

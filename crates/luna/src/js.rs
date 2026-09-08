@@ -179,6 +179,7 @@ pub enum JsWorkerCommand {
     PushCaptureResults(Vec<(i32, std::result::Result<String, String>)>),
     PushWsEvents(Vec<WsWorkerEvent>),
     PushDomToqueEvents(Vec<(i32, f32, f32, f32)>),
+    SetHoverTargets([Option<i32>; 3]),
     PushPoseMoveEvents(Vec<PoseMoveEventData>),
     PushToqueRawEvents(Vec<(i32, f32, f32, f32)>),
     /// (action, source) pairs — broadcast a spaces con READ_SYSTEM_INPUT.
@@ -296,6 +297,10 @@ impl SpaceScriptWorker {
                 .pending_commands
                 .iter()
                 .rposition(|queued| matches!(queued, JsWorkerCommand::SetCapabilities(_))),
+            JsWorkerCommand::SetHoverTargets(_) => self
+                .pending_commands
+                .iter()
+                .rposition(|queued| matches!(queued, JsWorkerCommand::SetHoverTargets(_))),
             JsWorkerCommand::SetViewerPose(_) => self
                 .pending_commands
                 .iter()
@@ -710,6 +715,12 @@ fn spawn_space_worker_configured(
                                     ctx.engine.push_ws_message(conn_id, data);
                                 }
                             }
+                        }
+                    }
+                    JsWorkerCommand::SetHoverTargets(targets) => {
+                        // Data only: callbacks run in the guarded worker tick, never here.
+                        for (pointer, target) in targets.into_iter().enumerate() {
+                            ctx.engine.push_dom_event("__luna_hover", target.unwrap_or(-1), Some(pointer as f32), None, None);
                         }
                     }
                     JsWorkerCommand::PushDomToqueEvents(events) => {

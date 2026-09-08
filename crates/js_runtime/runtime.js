@@ -29,7 +29,19 @@
     const root = global.hiperspace && global.hiperspace.dimention;
     if (!root) return;
 
+    // Coalesce host pointer snapshots before dispatching ordinary input events.
+    let hoverChanged = false;
     for (const evt of events) {
+      if (evt.type !== '__luna_hover') continue;
+      const pointer = evt.x;
+      if (!Number.isInteger(pointer) || pointer < 0 || pointer > 2) continue;
+      if (!global.__luna_pending_hover_targets) global.__luna_pending_hover_targets = [null, null, null];
+      global.__luna_pending_hover_targets[pointer] = evt.nodeId < 0 ? null : evt.nodeId;
+      hoverChanged = true;
+    }
+    if (hoverChanged) global.__luna_set_hover_targets(global.__luna_pending_hover_targets);
+    for (const evt of events) {
+      if (evt.type === '__luna_hover') continue;
       const target = _findNodeById(root, evt.nodeId);
       if (!target) continue;
 
@@ -42,6 +54,60 @@
         normalized[key] = value;
       }
       target.dispatchEvent(normalized);
+    }
+  };
+
+  // Host snapshots contain only local handles. Paths stop at this isolate's root.
+  const hoverPaths = [[], [], []];
+  function hoverPath(id) {
+    if (id == null || !core.ops.op_hsml_get_tag(id)) return [];
+    const root = global.hiperspace && global.hiperspace.dimention;
+    const path = [], seen = new Set();
+    for (let node = _wrapElement(id); node && !seen.has(node.nodeId); node = node.parent) {
+      seen.add(node.nodeId);
+      if (root && node.nodeId === root.nodeId) { path.push(root); return path; }
+      path.push(node);
+    }
+    return []; // Detached or foreign node.
+  }
+  function hoverEvent(type, path, relatedTarget, pointer, bubbles) {
+    if (!path.length) return;
+    const evt = {
+      type, target: path[0], relatedTarget, bubbles, cancelable: false,
+      pointerId: pointer + 1, pointerType: pointer === 0 ? 'mouse' : 'xr',
+      isPrimary: pointer !== 1, hand: pointer === 0 ? null : pointer === 1 ? 'left' : 'right',
+      defaultPrevented: false,
+      preventDefault() {},
+      stopPropagation() { this._stopped = true; },
+      stopImmediatePropagation() { this._stopped = this._immediateStopped = true; },
+    };
+    for (const node of bubbles ? path : path.slice(0, 1)) {
+      node.dispatchEvent(evt);
+      if (evt._stopped) break;
+    }
+    evt.currentTarget = null;
+  }
+  global.__luna_set_hover_targets = function(targets) {
+    const next = targets.map(hoverPath);
+    const previous = hoverPaths.slice();
+    // Update all pointers before callbacks: :hover remains true if another ray is over it.
+    next.forEach((path, i) => { hoverPaths[i] = path; });
+    for (let pointer = 0; pointer < 3; pointer++) {
+      const oldPath = previous[pointer], newPath = next[pointer];
+      if (oldPath.length === newPath.length && oldPath.every((n, i) => n === newPath[i])) continue;
+      const oldTarget = oldPath[0] || null, newTarget = newPath[0] || null;
+      const emit = (suffix, path, related, bubbles) => {
+        hoverEvent('pointer' + suffix, path, related, pointer, bubbles);
+        if (pointer !== 1) hoverEvent('mouse' + suffix, path, related, pointer, bubbles);
+      };
+      if (oldTarget !== newTarget) emit('out', oldPath, newTarget, true);
+      for (const node of oldPath) {
+        if (!newPath.includes(node)) emit('leave', [node], newTarget, false);
+      }
+      if (oldTarget !== newTarget) emit('over', newPath, oldTarget, true);
+      for (const node of [...newPath].reverse()) {
+        if (!oldPath.includes(node)) emit('enter', [node], oldTarget, false);
+      }
     }
   };
 
@@ -440,6 +506,7 @@
       const listeners = this._eventListeners.get(eventType);
       if (listeners && listeners.length > 0) {
         for (const listener of [...listeners]) {
+          if (evt._immediateStopped) break;
           try {
             listener.call(this, evt);
           } catch (e) {
@@ -449,7 +516,7 @@
       }
 
       const propHandler = this._eventHandlers[`on${eventType}`];
-      if (typeof propHandler === 'function') {
+      if (!evt._immediateStopped && typeof propHandler === 'function') {
         try {
           propHandler.call(this, evt);
         } catch (e) {
@@ -470,6 +537,14 @@
 
     set onclick(handler) {
       this._eventHandlers.onclick = (typeof handler === 'function') ? handler : null;
+    }
+
+    // This runtime has no stylesheet engine; :hover is a queryable pseudo-class.
+    matches(selector) {
+      if (String(selector).trim() === ':hover') {
+        return hoverPaths.some(path => path.includes(this));
+      }
+      throw new Error('matches currently supports only :hover');
     }
 
     // --- Query methods ---
@@ -896,6 +971,15 @@
   // ---------------------------------------------------------------------------
   // Global exports
   // ---------------------------------------------------------------------------
+
+  for (const type of ['pointerenter', 'pointerleave', 'pointerover', 'pointerout',
+                       'mouseenter', 'mouseleave', 'mouseover', 'mouseout']) {
+    Object.defineProperty(HSMLElement.prototype, 'on' + type, {
+      configurable: true,
+      get() { return this._eventHandlers['on' + type] || null; },
+      set(fn) { this._eventHandlers['on' + type] = typeof fn === 'function' ? fn : null; },
+    });
+  }
 
   global.WebSocket = WebSocket;
   global.HSMLElement = HSMLElement;

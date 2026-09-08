@@ -221,6 +221,12 @@
           box.setAttribute('touchable', 'true');
           box.position = { x: px, y: py, z: Z };
           box.scale = { x: 0.001, y: 0.001, z: 0.001 };
+          const hoverColor = color.replace(/[0-9a-f]{2}/gi, channel =>
+            Math.round(parseInt(channel, 16) * 0.8 + 255 * 0.2).toString(16).padStart(2, '0'));
+          box.addEventListener('pointerenter', () => box.setAttribute('color', hoverColor));
+          box.addEventListener('pointerleave', () => {
+            if (!box.matches(':hover')) box.setAttribute('color', color);
+          });
           box.addEventListener('toque', () => openBookmark(bm));
           panel.appendChild(box);
 

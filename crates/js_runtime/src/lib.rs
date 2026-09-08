@@ -2165,6 +2165,9 @@ const BOOTSTRAP_JS: &str = r#"
       }
     }
 
+    if (typeof global.__luna_set_hover_targets === 'function' && global.__luna_pending_hover_targets) {
+      try { global.__luna_set_hover_targets(global.__luna_pending_hover_targets); } catch (e) { console.error(e); }
+    }
     if (typeof global.__luna_dispatch_dom_events === 'function') {
       const domEvents = core.ops.op_poll_dom_events();
       if (domEvents && domEvents.length > 0) {

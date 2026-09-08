@@ -142,6 +142,7 @@ fn main() {
     app.insert_resource(PendingModelLoads::default());
     app.insert_resource(ModelLoadStates::default());
     app.insert_resource(touch::HostToqueHits::default());
+    app.init_resource::<touch::HostHoverTargets>();
     app.insert_resource(touch::HostPoseMoveEvents::default());
     app.insert_resource(luna::system_input::HostSystemInputEvents::default());
     app.insert_resource(luna::viewer_pose::ViewerPoseGlobalSnapshot::default());
@@ -320,6 +321,7 @@ fn main() {
     app.add_systems(
         Update,
         touch::vr_toque_raycast_system
+            .run_if(|rm: Res<RenderMode>| rm.is_vr)
             .run_if(bevy_mod_openxr::openxr_session_running)
             .run_if(resource_exists::<luna::vr_locomotion::LunaLocomotionActions>),
     );
@@ -329,6 +331,15 @@ fn main() {
             .run_if(bevy_mod_openxr::openxr_session_running)
             .run_if(resource_exists::<luna::vr_locomotion::LunaLocomotionActions>),
     );
+    app.add_systems(Update, touch::vr_left_hover_raycast_system
+        .run_if(resource_exists::<luna::vr_locomotion::LunaLocomotionActions>)
+        .run_if(bevy_mod_openxr::openxr_session_running)
+        .run_if(|rm: Res<RenderMode>| rm.is_vr));
+    app.add_systems(Update, touch::dispatch_hover_events_to_js
+        .after(touch::desktop_toque_raycast_system)
+        .after(touch::vr_toque_raycast_system)
+        .after(touch::vr_left_hover_raycast_system)
+        .before(touch::dispatch_toque_events_to_js));
     app.add_systems(Update, touch::dispatch_toque_events_to_js);
     app.add_systems(Update, touch::dispatch_posemove_events_to_js.run_if(|e: Res<touch::HostPoseMoveEvents>| !e.0.is_empty()));
     app.add_systems(
