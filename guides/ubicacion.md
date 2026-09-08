@@ -72,3 +72,7 @@ sigue usando su propia identidad `luna://internal` para almacenamiento.
 sincronización de URL/searchParams, identidad por isolate y navegación pendiente.
 La suite de Luna cubre invalidar una carga completada para recargarla sin reiniciar
 una petición idéntica todavía en vuelo.
+
+---
+
+Volver al [índice de guías](index.md).

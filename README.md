@@ -15,6 +15,10 @@ scripting con el motor de render.
 > Luna añade encima la capa de navegador espacial (HSML, runtime JS, espacios,
 > permisos, locomoción, devtools).
 
+> **¿Vas a escribir documentos para Luna?** Empezá por
+> **[guides/index.md](guides/index.md)**, y sobre todo por
+> [guides/trampas.md](guides/trampas.md), que es lo que falla en silencio.
+
 ---
 
 ## ¿Por qué un "navegador espacial"?
@@ -81,7 +85,7 @@ Acerca de. Las páginas internas comparten el islote de `luna://environment`
 El root monta una sola instancia del entorno, fuera de las pestañas; la conserva
 entre páginas nativas y la oculta para contenido externo. Los paneles y demos
 usan el mismo origen y suelo en y=0. El suelo es visual por ahora, sin colisiones
-ni límites de locomoción. Ver `NATIVE_ENVIRONMENT.md`.
+ni límites de locomoción. Ver `guides/entorno.md`.
 
 ### Runtime de JavaScript
 Cada espacio ejecuta su script en un contexto JS aislado. El runtime expone una API
@@ -92,16 +96,16 @@ JS ↔ motor usa un patrón **queue/snapshot**: JS nunca bloquea al render y vic
 
 Los documentos disponen de **localStorage persistente por origen**, compartido
 entre sus isolates, con la API habitual de Web Storage y eventos `storage`.
-Ver [LOCAL_STORAGE.md](LOCAL_STORAGE.md) para ejemplos, cuotas y separación de datos.
+Ver [almacenamiento](guides/almacenamiento.md) para ejemplos, cuotas y separación de datos.
 
 Las primitivas aceptan **texturas** —con recorte por región para atlas, ajuste,
 relleno y control de alfa— y el tag `<image>` expone la API de carga de
 `HTMLImageElement` (`naturalWidth`, `onload`, `onerror`).
-Ver [SUPERFICIES.md](SUPERFICIES.md).
+Ver [superficies](guides/superficies.md).
 
 Los nodos `touchable` reciben **hover** con semántica de HTML —`pointerenter`,
 `pointerleave`, `pointerover`, `pointerout` y `matches(':hover')`— con el cursor
-en escritorio y con los rayos de los mandos en VR. Ver [HOVER.md](HOVER.md).
+en escritorio y con los rayos de los mandos en VR. Ver [eventos](guides/eventos.md).
 
 ### Modos de render
 - **Escritorio** — ventana plana, navegación con teclado/ratón.
@@ -258,6 +262,18 @@ y devtools) funciona; áreas como WebXR, apps embebidas y aislamiento multi-cont
 siguen evolucionando. Las APIs pueden cambiar.
 
 ---
+
+## Documentación
+
+| Dónde | Qué |
+|---|---|
+| **[guides/](guides/index.md)** | cómo **usar** la plataforma: escribir documentos, permisos, API JS, eventos, texturas, mallas |
+| [guides/trampas.md](guides/trampas.md) | lo que falla en silencio — la página más útil de todas |
+| [guides/disenos/](guides/disenos/) | propuestas y notas de diseño, no referencia de lo que existe |
+| [docs/](docs/) | análisis, mediciones y estado de implementación |
+| [docs/deuda_tecnica/](docs/deuda_tecnica/) | lo que se sabe que está mal y todavía no se arregló |
+| `CORE_PERFORMANCE.md`, `ENGINE_DENSITY_OPTIMIZATION.md`, `PLATFORM_DIAGNOSTICS_FETCH.md` | trabajo sobre el motor, no sobre su uso |
+
 
 ## Licencia
 

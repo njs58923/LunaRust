@@ -81,3 +81,7 @@ Los datos son compartidos también entre procesos, pero las notificaciones
 sessionStorage ni IndexedDB.
 
 Referencia de la API: [HTML Standard — Web Storage](https://html.spec.whatwg.org/multipage/webstorage.html).
+
+---
+
+Volver al [índice de guías](index.md).

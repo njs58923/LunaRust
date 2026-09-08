@@ -1,4 +1,43 @@
-# Hover en HSML
+# Eventos: toque, hover y pose
+
+Todo lo que el motor le manda al script cuando alguien apunta, toca o mueve una
+mano. El requisito es siempre el mismo: **`touchable="true"` en el objetivo**.
+
+---
+
+## Los que emite el host
+
+`addEventListener(type, fn)` / `removeEventListener` / `dispatchEvent(evt)`.
+Los tipos se normalizan a minúsculas. También hay handlers `onX` por propiedad.
+
+Eventos que emite el host:
+
+| Evento | Cuándo | Campos extra |
+|---|---|---|
+| `toque` | click de mouse (escritorio) o trigger derecho (VR) sobre un nodo `touchable` | `x`, `y`, `z` = punto de impacto en world space |
+| `pointerenter`, `pointerleave` | entrada/salida del cursor o rayos VR; no burbujean | `target`, `currentTarget`, `relatedTarget`, `pointerId`, `pointerType`, `hand` |
+| `pointerover`, `pointerout` | cambio de objetivo; burbujean dentro del isolate | mismos campos |
+| `posemove` | mano/mando dentro de un `<posezone>` (requiere `read_pose_stream`) | `hand`, `px py pz`, `dx dy dz`, `trigger`, `grip`, `qx qy qz qw` |
+
+`toque` es *el* click en Luna. No existe `click` nativo: `el.click()` sólo despacha
+un evento sintético `click` a tus propios listeners.
+
+```js
+const btn = root.getElementById('btn');
+btn.addEventListener('toque', (e) => {
+  console.log('impacto en', e.x, e.y, e.z);
+  location.href = 'luna://home';
+});
+```
+
+Hover admite también `mouseenter`, `mouseleave`, `mouseover` y `mouseout` para
+mouse y mando derecho, propiedades `onpointerenter`, etc., y `matches(':hover')`.
+Para ambos mandos usar `pointer*`. Requiere `touchable="true"` en el objetivo.
+Ver [semántica y ejemplo de hover](eventos.md). No incorpora un motor CSS.
+
+---
+
+## Hover, en detalle
 
 Los nodos con `touchable="true"` reciben hover sin pulsar ningún botón: con el
 cursor en escritorio, con el centro de la vista en modo shooter y con los rayos
@@ -49,3 +88,7 @@ Ocultar o quitar el objetivo, salir de la ventana o desactivar el modo de entrad
 libera el hover en la siguiente actualización de input y del worker. La
 jerarquía se vuelve a comprobar en el worker para contemplar movimientos o
 eliminaciones del DOM aunque el puntero permanezca quieto.
+
+---
+
+Volver al [índice de guías](index.md).

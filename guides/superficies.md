@@ -202,3 +202,7 @@ image.onload  = () => status.setAttribute('value',
                   'Imagen lista: ' + image.naturalWidth + ' × ' + image.naturalHeight);
 image.onerror = () => status.setAttribute('value', image.error);
 ```
+
+---
+
+Volver al [índice de guías](index.md).

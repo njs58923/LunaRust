@@ -24,7 +24,7 @@ camino previo; esto no concede capacidades adicionales a páginas remotas.
 
 `fetch_text` permite GET/HEAD. La ampliación `fetch_http` permite métodos de
 escritura, cuerpo y cabeceras. Ambos devuelven estados HTTP reales: 4xx/5xx
-resuelven con `ok: false`. Ver [Fetch HTTP](FETCH_HTTP.md) para contrato y límites.
+resuelven con `ok: false`. Ver [Fetch HTTP](guides/red.md) para contrato y límites.
 
 ## Logs MCP
 

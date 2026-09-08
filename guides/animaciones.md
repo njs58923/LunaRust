@@ -90,3 +90,7 @@ La regresión en `model_animation.rs` genera un GLB mínimo y usa el cargador re
 SceneSpawner y AnimationPlugin sin ventana: verifica movimiento, pausa, seek,
 parada, velocidad, repetición, finalización, reinicio, aislamiento de instancias,
 compartición de recursos y reemplazo de `src`.
+
+---
+
+Volver al [índice de guías](index.md).

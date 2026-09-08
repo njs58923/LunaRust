@@ -222,7 +222,7 @@ estado.
 El ciclo es de tres. Cuando escribí esto creía que **hover no existía en el
 motor**, y de ahí que todo pase por el click. Existe —`feat(input): add HTML-like
 hover`, con `pointerenter`/`pointerleave` sobre cualquier nodo `touchable`, ver
-[HOVER.md](HOVER.md)— así que la gota podría además **encenderse al apuntar**,
+[HOVER.md](../eventos.md)— así que la gota podría además **encenderse al apuntar**,
 antes de que nadie toque nada. El ciclo de tres estados no cambia; le sobra un
 estado previo:
 

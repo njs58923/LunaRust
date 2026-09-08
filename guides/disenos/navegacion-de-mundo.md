@@ -120,7 +120,7 @@ cueva  →  location.href = new URLSearchParams(location.search).get('volver') |
 Anda —**medido**: entrar por `#entry=desde_cueva` deja la cámara en
 `(10.09, 1.70, 8.04)`, que es el arco de la cueva, mirando al centro— pero es
 userland puro: las veintiocho escenas tuvieron que ponerse de acuerdo en el nombre
-del parámetro. Es exactamente lo que `LOCATION.md` lista como pendiente bajo
+del parámetro. Es exactamente lo que `../ubicacion.md` lista como pendiente bajo
 «exportación de spawns y retorno».
 
 Propuesta: que el destino lo lea de un objeto del runtime y no parseando query.
@@ -146,7 +146,7 @@ que hay que conservar.
 
 Dos filos, y el segundo es una decisión de política, no de implementación.
 
-**1. Remount vs. swap.** `SPAWN.md` dice que la aparición se aplica *una vez por
+**1. Remount vs. swap.** `../llegada.md` dice que la aparición se aplica *una vez por
 instancia del documento*, y que «ocultar/mostrar un documento ya utilizado no
 repite su aparición». Si `navigate_world` se implementa como **cambiar el `src`
 del include raíz** en vez de un remount limpio, volver a un mundo ya visitado
@@ -156,7 +156,7 @@ Es el bug que yo predeciría de esta feature. Si va por swap, `entry` tiene que
 forzar la re-aplicación explícitamente: es una orden, no una preferencia.
 
 **2. Moverse dentro del mismo mundo es el teleport que `spawn` se negó a dar.**
-`SPAWN.md` es explícito: «no requiere un diálogo de consentimiento: es una
+`../llegada.md` es explícito: «no requiere un diálogo de consentimiento: es una
 capacidad limitada a la llegada a ese mundo, **no una API general para
 teletransportar al usuario**». Y: «un cambio de fragmento tampoco constituye por
 sí solo una orden de teletransporte».

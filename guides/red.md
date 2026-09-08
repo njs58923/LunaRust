@@ -72,3 +72,7 @@ El origen nativo conserva GET/HEAD de rutas `luna://`; no se habilita escritura
 sobre esas rutas. Sus peticiones HTTP también verifican el origen en redirects.
 
 Esto no implementa el servicio de puertas ni la bóveda de credenciales.
+
+---
+
+Volver al [índice de guías](index.md).

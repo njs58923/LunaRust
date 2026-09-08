@@ -1,4 +1,11 @@
-# Model resources and instances — stage 1
+# Modelos: recursos e instancias
+
+Cómo el motor carga y comparte un `<model src="...">`. Para la **geometría
+generada desde el script** —`MeshResource`, que es otra cosa— ver
+[trampas.md](trampas.md#advertencias), donde están sus límites y sus trampas.
+
+---
+
 
 Each HSML `<model src="...">` owns a stable Bevy entity (`ModelInstance`). Its
 transform, visibility, document identity and authored children survive source
@@ -8,7 +15,7 @@ changes. Only the generated `ModelContent` child is replaced.
 the parent Gltf asset. Equal prepared paths share assets, while each model has
 its own scene hierarchy. Dropping an instance releases its handles; other
 instances retain theirs. Clip playback is implemented in stage 2 (see
-[GLB_ANIMATIONS.md](GLB_ANIMATIONS.md)); a procedural mesh API is not implemented yet.
+[GLB_ANIMATIONS.md](animaciones.md)); a procedural mesh API is not implemented yet.
 
 ## Loading lifecycle
 
@@ -45,3 +52,7 @@ unchanged; this stage adds no eviction policy or external glTF dependency resolv
 Regression coverage lives in `models.rs` and `io.rs`: stable roots and authored
 children, asset sharing with distinct instances, current-generation readiness,
 cancelled/replaced requests, and immutable content revisions.
+
+---
+
+Volver al [índice de guías](index.md).

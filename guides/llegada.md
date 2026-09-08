@@ -63,3 +63,7 @@ una orden de teletransporte: el spawn sigue siendo único por carga.
 exclusión de apps/includes, prioridad del default, aplicación única, navegación
 pendiente, visibilidad y matemáticas de transformación y altura VR. La prueba
 física con visor sigue siendo necesaria para validar la experiencia real.
+
+---
+
+Volver al [índice de guías](index.md).

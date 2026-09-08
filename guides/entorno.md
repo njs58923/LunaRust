@@ -36,3 +36,7 @@ Solo escribe visibilidad cuando cambia entre contenido nativo y externo.
 Las pruebas del root API cubren reutilización, navegación mediante include,
 cambio de shell, salida a una página externa y apps embedded sobre contenido
 externo.
+
+---
+
+Volver al [índice de guías](index.md).
