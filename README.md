@@ -94,6 +94,15 @@ Los documentos disponen de **localStorage persistente por origen**, compartido
 entre sus isolates, con la API habitual de Web Storage y eventos `storage`.
 Ver [LOCAL_STORAGE.md](LOCAL_STORAGE.md) para ejemplos, cuotas y separación de datos.
 
+Las primitivas aceptan **texturas** —con recorte por región para atlas, ajuste,
+relleno y control de alfa— y el tag `<image>` expone la API de carga de
+`HTMLImageElement` (`naturalWidth`, `onload`, `onerror`).
+Ver [SUPERFICIES.md](SUPERFICIES.md).
+
+Los nodos `touchable` reciben **hover** con semántica de HTML —`pointerenter`,
+`pointerleave`, `pointerover`, `pointerout` y `matches(':hover')`— con el cursor
+en escritorio y con los rayos de los mandos en VR. Ver [HOVER.md](HOVER.md).
+
 ### Modos de render
 - **Escritorio** — ventana plana, navegación con teclado/ratón.
 - **VR** — inmersión completa vía OpenXR (Quest, etc.), con locomoción y mandos.

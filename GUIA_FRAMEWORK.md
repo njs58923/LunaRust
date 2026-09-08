@@ -68,6 +68,25 @@ ahí **todo** `MeshResource.create` falla con `Mesh resource/queue limit reached
 la API, pero no hay evento de descarga desde el que llamarlo. Ver
 `docs/deuda_tecnica/deudas_de_plataforma.md`.
 
+**Los colores de una malla dinámica se entregan en espacio lineal.** No en sRGB.
+Pasar el 0,11 de un `#1C1C26` tal cual da un gris lavanda: el pipeline lo
+convierte a sRGB al escribir y lo sube a 0,37. Con el material iluminado el error
+se disimula —la luz ambiente lo baja de vuelta, por casualidad— y sólo se nota al
+prender `material-unlit`, que es justo lo que quiere una interfaz. La conversión
+es `c ≤ 0.04045 ? c/12.92 : ((c+0.055)/1.055)^2.4`.
+
+**`MeshResource.update` manda los cinco buffers, siempre.** Los que uno no pasa
+viajan **vacíos, no "sin cambios"**, y del lado de Rust un `indices` vacío
+significa *índices implícitos* —0,1,2, 3,4,5…—, así que la malla se rearma como
+tiras de triángulos entre vértices consecutivos: en pantalla, un erizo de púas.
+Mandar sólo lo que cambió es la optimización obvia y está mal.
+
+**Los arrays de una malla tienen que ser tipados y planos.** `mesh.js` acepta
+arrays comunes y hace `new Float32Array(valor)`, que sobre un array de ternas da
+`NaN` en cada posición. El mensaje que sale es
+`Mesh attributes must be finite and bounded`, y es literal: el `NaN` lo fabricó
+la conversión.
+
 **Los colores de una malla dinámica tienen que estar en [0, 1].** El motor
 valida el buffer y `MeshResource.create` tira `Vertex colors must be in [0, 1]`.
 No hay HDR ni sobreexposición: pasarse de 1 para "aclarar" no aclara, falla, y
@@ -344,7 +363,7 @@ De `tags.rs`, la lista completa:
 | `skybox` | cubemap de fondo (requiere permiso) |
 | `posezone` | volumen invisible que emite eventos `posemove` de manos/mandos |
 | `spawn` | punto invisible de aparición del visitante; requiere `resources="spawn"` |
-| `image` | **parsea pero hoy no renderiza** — cae al caso estructural |
+| `image` | plano texturado; `src`, `fit`, `naturalWidth`, `onload`. Ver [SUPERFICIES.md](SUPERFICIES.md) |
 
 > `runtime.js` define además `HSMLButtonElement` y `HSMLVideoElement`, pero los tags
 > `button` y `video` no existen en `tags.rs` ni en `dom.rs`: son vestigios de la capa
@@ -371,15 +390,39 @@ Las unidades son metros y el suelo está en `y = 0`. Altura de ojos ≈ `1.6`.
 
 | Tag | Atributos |
 |---|---|
-| `box`, `sphere`, `cylinder`, `plane` | `color="#RRGGBB"`, `touchable`, `border-radius` (sólo `box` y `plane`) |
+| `box`, `sphere`, `cylinder`, `plane` | `color="#RRGGBB"`, `touchable`, `border-radius` (sólo `box` y `plane`), y los de textura (abajo) |
+| `image` | `src`, `fit`, `color` (tiñe), `material-alpha`; expone `naturalWidth`/`naturalHeight`/`onload`/`onerror` |
 | `text` | `value` (default `"Text"`), `size` (default `0.1`), `color` (default blanco) |
 | `model` | `src` (glTF/GLB, relativo o absoluto), `rigidbody`, `collider`, y los de animación (abajo) |
 | `skybox` | `src` = **patrón con `$1`** (ver abajo) |
 | `include` | `src`, `resources` |
 | `space` | `resources`, `system-space` |
 
-`touchable` acepta `true`, `1`, `yes`, `on`. Sin él, el nodo no recibe `toque`.
+`touchable` acepta `true`, `1`, `yes`, `on`. Sin él, el nodo no recibe `toque`
+**ni hover**.
 La forma de colisión sale del tag: `box`→caja, `plane`→plano, `sphere`/`cylinder`→esfera.
+
+### Textura sobre una primitiva
+
+`box`, `plane`, `sphere`, `cylinder` y `model` aceptan una textura encima del
+color. Resumen; el detalle está en **[SUPERFICIES.md](SUPERFICIES.md)**.
+
+| Atributo | Valores | Default |
+|---|---|---|
+| `texture` | URL (absoluta, relativa o `luna://`) | — |
+| `texture-region` | `x,y,w,h` normalizados — **es el atlas** | `0,0,1,1` |
+| `texture-face` | `front` \| `all` | `all` |
+| `texture-fit` | `contain` \| `cover` \| `stretch` | `stretch` |
+| `texture-padding` | `[0, 0.5)`; con `p` la textura ocupa `1 − 2p` | `0` |
+| `texture-revision` | cadena; rehace el pedido sin cambiar la URL | vacío |
+| `material-unlit` | `true` \| `false` | — |
+| `material-alpha` | `opaque` \| `mask` \| `blend` | — |
+
+**`texture-face="front"` no es sólo "una cara": cambia el modo de composición.**
+Prende el modo *overlay*, donde el shader hace
+`mix(color_del_nodo, texel, texel.a)` — o sea que **el color del dibujo lo pone
+la textura y `color` es el fondo**. Con un PNG negro sobre un botón azul el icono
+sale negro. En un `<image>`, que va por *multiply*, es al revés: `color` tiñe.
 
 El ancho del `text` se calcula como `size * nChars * 0.6`; es una aproximación
 monoespaciada, no layout real. Para centrar, colocá el texto en el mismo `x` que su fondo.
@@ -822,8 +865,35 @@ recordarlo porque sin él un panel con esquinas redondeadas hay que armarlo con
 dos cajas cruzadas y cuatro cilindros girados, que es lo que uno termina
 haciendo si no sabe que está.
 
+**Pero significa dos cosas distintas según la etiqueta, y falla en silencio.**
+
+```rust
+// box   — dom.rs:229    [ (r/sx).min(0.499), (r/sy).min(0.499), (r/sz).min(0.499) ]
+//         → METROS del mundo, divididos por la escala de cada eje
+// plane — shapes.rs:741 let r = radius.clamp(0.0, 0.499); let h = 0.5 - r;
+//         → FRACCIÓN del lado, sobre un cuadrado unitario, sin mirar la escala
+```
+
+Pasarle metros a un `plane` no da error: da esquinas casi rectas. Sólo se nota
+al intentar un círculo, que en `plane` es `0.5` y en `box` sería la mitad del
+lado en metros.
+
+Y en un `box` **el radio es uno solo para los tres ejes**, así que una tarjeta
+fina no puede tener esquinas grandes: el radio choca contra el espesor y la caja
+se vuelve una esfera. Es exactamente lo que le pasa hoy al menú de VR, que usa
+una caja de 0,22 con radio 0,2 —`rounded_box_radii(0.2, (0.22,0.22,0.025))` da
+`[0.499, 0.499, 0.499]`, los tres ejes saturados—. Para una tarjeta con esquinas
+grandes, `plane`. Ver [MENU_VR_LAYOUT.md](MENU_VR_LAYOUT.md).
+
 **Los `plane` son de doble cara.** No hace falta duplicarlos ni girarlos para
 verlos desde atrás.
+
+**El orden de los `<script src>` no está garantizado.** Se cargan en asíncrono y
+no hay `defer`, ni `type="module"`, ni promesa de orden. Con una biblioteca y su
+usuario como dos etiquetas separadas, el usuario puede evaluarse primero y morir
+con `ReferenceError`, mientras la biblioteca se evalúa bien tres milisegundos
+después. Está medido. Las dos salidas: concatenar del lado del servidor, o que
+cada script espere en un `requestAnimationFrame` a que aparezca lo que necesita.
 
 **`setTransformBatch` toma 7 floats por nodo**: `[nodeId, px,py,pz, rx,ry,rz, …]`,
 en coordenadas **locales**. La escala **no** va en el batch: para eso está el
