@@ -29,19 +29,23 @@
     const root = global.hiperspace && global.hiperspace.dimention;
     if (!root) return;
 
-    // Coalesce host pointer snapshots before dispatching ordinary input events.
+    // Only coalesce adjacent snapshots: never move hover across a click.
     let hoverChanged = false;
+    const flushHover = () => {
+      if (!hoverChanged) return;
+      hoverChanged = false;
+      global.__luna_set_hover_targets(global.__luna_pending_hover_targets);
+    };
     for (const evt of events) {
-      if (evt.type !== '__luna_hover') continue;
-      const pointer = evt.x;
-      if (!Number.isInteger(pointer) || pointer < 0 || pointer > 2) continue;
-      if (!global.__luna_pending_hover_targets) global.__luna_pending_hover_targets = [null, null, null];
-      global.__luna_pending_hover_targets[pointer] = evt.nodeId < 0 ? null : evt.nodeId;
-      hoverChanged = true;
-    }
-    if (hoverChanged) global.__luna_set_hover_targets(global.__luna_pending_hover_targets);
-    for (const evt of events) {
-      if (evt.type === '__luna_hover') continue;
+      if (evt.type === '__luna_hover') {
+        const pointer = evt.x;
+        if (!Number.isInteger(pointer) || pointer < 0 || pointer > 2) continue;
+        if (!global.__luna_pending_hover_targets) global.__luna_pending_hover_targets = [null, null, null];
+        global.__luna_pending_hover_targets[pointer] = evt.nodeId < 0 ? null : evt.nodeId;
+        hoverChanged = true;
+        continue;
+      }
+      flushHover();
       const target = _findNodeById(root, evt.nodeId);
       if (!target) continue;
 
@@ -55,6 +59,7 @@
       }
       target.dispatchEvent(normalized);
     }
+    flushHover();
   };
 
   // Host snapshots contain only local handles. Paths stop at this isolate's root.

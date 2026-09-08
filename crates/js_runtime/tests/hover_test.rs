@@ -2,6 +2,30 @@ use anyhow::Result;
 use js_runtime::Engine;
 
 #[test]
+fn queued_hover_changes_do_not_overtake_earlier_clicks() -> Result<()> {
+    let mut engine = Engine::new();
+    engine.update_tag_snapshot([(0, "space".into()), (1, "box".into()), (2, "box".into())].into_iter().collect());
+    engine.update_hierarchy_snapshot([(1, 0), (2, 0)].into_iter().collect(), [(0, vec![1, 2])].into_iter().collect());
+    engine.eval(r#"
+        const [a, b] = hiperspace.dimention.children;
+        const received = [];
+        a.addEventListener('toque', () => received.push([a.matches(':hover'), b.matches(':hover')]));
+        b.addEventListener('toque', () => received.push([a.matches(':hover'), b.matches(':hover')]));
+    "#)?;
+    engine.push_dom_event("__luna_hover", 1, Some(0.0), None, None);
+    engine.push_dom_toque_event(1, 0.0, 0.0, 0.0);
+    engine.push_dom_event("__luna_hover", 2, Some(0.0), None, None);
+    engine.push_dom_toque_event(2, 0.0, 0.0, 0.0);
+    engine.push_dom_event("__luna_hover", -1, Some(0.0), None, None);
+    engine.fire_raf(16.0);
+    engine.eval(r#"
+        if (JSON.stringify(received) !== '[[true,false],[false,true]]') throw Error('later hover overtook click');
+        if (a.matches(':hover') || b.matches(':hover')) throw Error('trailing hover was lost');
+    "#)?;
+    Ok(())
+}
+
+#[test]
 fn hover_host_snapshot_is_applied_before_click_in_the_worker_tick() -> Result<()> {
     let mut engine = Engine::new();
     engine.update_tag_snapshot([(0, "space".into()), (1, "box".into())].into_iter().collect());
