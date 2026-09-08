@@ -14,13 +14,16 @@
      return global.dimention;
    }
 
-  function _findNodeById(el, targetId) {
-    if (!el) return null;
-    if (el.nodeId === targetId) return el;
-    const children = el.children || [];
-    for (const child of children) {
-      const found = _findNodeById(child, targetId);
-      if (found) return found;
+  function _findEventTarget(root, targetId) {
+    if (!root) return null;
+    if (root.nodeId === targetId) return root;
+    if (!core.ops.op_hsml_get_tag(targetId)) return null;
+    // Validate membership without enumerating siblings or wrapping the whole tree.
+    // Cached elements alone are insufficient: they may have been detached.
+    const seen = new Set();
+    for (let id = targetId; id >= 0 && !seen.has(id); id = core.ops.op_hsml_get_parent(id)) {
+      if (id === root.nodeId) return _wrapElement(targetId);
+      seen.add(id);
     }
     return null;
   }
@@ -46,7 +49,7 @@
         continue;
       }
       flushHover();
-      const target = _findNodeById(root, evt.nodeId);
+      const target = _findEventTarget(root, evt.nodeId);
       if (!target) continue;
 
       const normalized = {
