@@ -82,7 +82,7 @@ chrome controls (close, minimize, anchor) y la app sólo dibuja contenido.
    focus, la anterior se **cierra** (unmount). Para preservar: el user debe
    anchored primero.
 2. **N anchored** sin límite (la UX puede saturarse, pero no hay cap por ahora).
-3. Si `focus.visible == true` → bookmarks y bottom bar ocultos (foco absoluto).
+3. Si `focus.visible == true` → bookmarks ocultos; la bottom bar sigue visible mientras el menú esté activo, para cambiar de app o volver a los marcadores.
 4. Spatial swap **no afecta** apps embedded (apps son extensiones del usuario).
 5. Anchored son **siempre interactivas** mientras estén visibles.
 
@@ -113,7 +113,7 @@ bottom_bar.visible = bookmarks_visible
 
 - Sin nada open → solo bookmarks limpios, bar oculta.
 - Algo open + bookmarks visibles → bar visible.
-- Bookmarks ocultos (focus activo o menu off) → bar oculta.
+- Una app en foco oculta los bookmarks, pero conserva la barra. Apagar el menú oculta la barra.
 
 ---
 

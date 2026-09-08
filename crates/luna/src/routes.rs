@@ -605,7 +605,6 @@ const LUNA_SETTINGS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   </head>
   <space resources="navigate_self,ux_embed">
   <group id="settings_content">
-  <plane y="1.6" z="-3.58" sx="5.2" sy="2.6" color="#304B43" touchable="false"/>
   <text x="0.000" y="2.550" z="-3.5" value="Luna Settings" size="0.240" />
   <text x="0.000" y="2.317" z="-3.5" value="Browser Configuration" size="0.108" />
 
@@ -1985,10 +1984,13 @@ mod tests {
             hostOpened(42);
             check(!shell.state.focusApp.ready, 'window revealed before app readiness');
             ready(42);
-            check(shell.state.focusApp.ready && !shell.barVisible(), 'focus must hide taskbar');
+            check(shell.state.focusApp.ready && shell.barVisible(), 'ready focus must retain taskbar');
+            check(__testRoot.getElementById('ux_vr_bottom_bar').attrs.visible === 'true', 'focused taskbar not rendered');
+            check(__testRoot.getElementById('ux_vr_panel').attrs.visible === 'false', 'focus must still hide bookmarks');
             shell.minimize();
             check(shell.barVisible(), 'minimized focus must retain restore control');
             shell.restore();
+            check(shell.barVisible(), 'restored focus must retain taskbar');
             shell.anchor();
             const first = shell.state.anchored[0];
             shell.open({name:'B',url:'luna://demo_embedded'}); hostOpened(43); ready(43); shell.anchor();

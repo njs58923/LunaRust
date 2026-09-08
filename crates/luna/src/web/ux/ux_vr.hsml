@@ -174,7 +174,6 @@
       // hace que la bar quede visible para volver a marcadores desde una app.
       function shouldShowBottomBar() {
         if (!shellState.bookmarksVisible) return false;
-        if (shellState.focusApp && !shellState.focusApp.minimized && shellState.focusApp.ready) return false;
         const hasFocus = shellState.focusApp !== null;
         const hasAnchored = shellState.anchored.length > 0;
         return hasFocus || hasAnchored;
