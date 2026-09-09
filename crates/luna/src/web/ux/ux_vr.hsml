@@ -2,58 +2,62 @@
 <hsml>
   <head>
     <name>UX VR</name>
+    <meta type="position" x="0" y="0" z="0"/>
+    <meta type="scale" x="1" y="1" z="1"/>
+    <meta type="rotation" x="0" y="0" z="0"/>
   </head>
 
   <!-- Controller de VR.
-       No dibuja ni decide nada: arma los contenedores, carga el shell desde
+       No dibuja ni decide nada: declara los contenedores, carga el shell desde
        `luna://internal/shell_app.js` y le pasa por callbacks todo lo que sale
-       hacia el motor. Las mil trescientas líneas que vivían acá —la máquina de
-       estados de pestañas, slots y ventanas fijadas, más su interfaz— están en
-       ese módulo, que también puede montar el controller de escritorio.
+       hacia el motor. Las mil quinientas líneas que vivían acá —la interfaz y la
+       máquina de estados de pestañas, slots y ventanas fijadas— están en ese
+       módulo, sin un cambio de comportamiento.
 
-       Lo único propio de este archivo es lo que de verdad es propio de VR: qué
-       marcadores hay, a qué distancia se planta el menú y que el botón menu del
-       mando lo abre. -->
+       Lo que queda es lo único que de verdad es de este controller: qué
+       marcadores hay y que el botón menu del mando abre el shell. -->
   <space id="ux_vr" resources="vr_locomotion,read_system_input,manage_tabs,read_hmd_pose">
-    <!-- Los cuatro contenedores. La visibilidad de cada uno la deriva el shell
-         de su estado; acá sólo se declara el arranque. -->
-    <group id="ux_vr_panel" visible="false"/>
-    <group id="ux_vr_bottom_bar" visible="false"/>
+    <group id="ux_vr_panel" visible="false">
+      <!-- El fondo del panel es UNA malla y no un <plane>: el panel se apoya en
+           un cilindro de 1,5 m y un plano de 1,3 m de ancho se hunde 14 cm en el
+           medio respecto de los iconos, que sí siguen el arco. -->
+      <model id="ux_vr_panel_bg"/>
+    </group>
+
+    <group id="ux_vr_bottom_bar" visible="false">
+      <!-- Las tres pastillas de la barra, también en una sola malla. Va aparte
+           de la del panel porque la barra se ve cuando el panel no. -->
+      <model id="ux_vr_bar_bg"/>
+    </group>
+
     <group id="ux_vr_focus_zone" visible="false"/>
+
     <!-- La zona de fijadas queda siempre visible: son sus hijos, uno por
          ventana, los que deciden. -->
     <group id="ux_vr_anchored_zone" visible="true"/>
 
-    <script src="luna://internal/shell_ui.js"/>
     <script src="luna://internal/shell_app.js"/>
     <script>
       // ── Marcadores ───────────────────────────────────────────────────────
       // TODO(persistence): mover a storage cuando exista API.
       // kind: 'spatial' (default) | 'app' | 'app-embedded'
       const BOOKMARKS = [
-        { name: 'Inicio',    url: 'luna://home',          kind: 'spatial',      glyph: 'home' },
-        { name: 'Ajustes',   url: 'luna://settings',      kind: 'app-embedded', glyph: 'settings' },
-        { name: 'Demos',     url: 'luna://demos',         kind: 'spatial',      glyph: 'demos' },
-        { name: 'Demo App',  url: 'luna://demo_embedded', kind: 'app-embedded', glyph: 'app' },
-        { name: 'Acerca de', url: 'luna://about',         kind: 'app',          glyph: 'about' },
-        { name: 'Scale',     url: 'luna://scale_demo',    kind: 'spatial',      glyph: 'scale' },
-        { name: 'Fire',      url: 'luna://fire_demo',     kind: 'spatial',      glyph: 'fire' },
-        { name: 'Target',    url: 'luna://target_demo',   kind: 'spatial',      glyph: 'target' },
-        { name: 'Range',     url: 'luna://range_demo',    kind: 'spatial',      glyph: 'range' },
+        { name: 'Inicio',    url: 'luna://home',          kind: 'spatial' },
+        { name: 'Ajustes',   url: 'luna://settings',      kind: 'app-embedded' },
+        { name: 'Demos',     url: 'luna://demos',         kind: 'spatial' },
+        { name: 'Demo App',  url: 'luna://demo_embedded', kind: 'app-embedded' },
+        { name: 'Acerca de', url: 'luna://about',         kind: 'app' },
+        { name: 'Scale',     url: 'luna://scale_demo',    kind: 'spatial' },
+        { name: 'Fire',      url: 'luna://fire_demo',     kind: 'spatial' },
+        { name: 'Target',    url: 'luna://target_demo',   kind: 'spatial' },
+        { name: 'Range',     url: 'luna://range_demo',    kind: 'spatial' },
       ];
 
-      // En VR el campo visual es ancho y el menú se mira girando la cabeza, así
-      // que puede estar cerca. En escritorio, que es una ventana, el mismo menú
-      // a esta distancia no entra en el cuadro.
-      const DISTANCIA = 2.0;
-
-      let shell = null;
-
-      // Los dos scripts externos llegan asincrónicos y el motor no garantiza el
-      // orden. Esperar a que los dos existan es más barato que ordenarlos, y
-      // falla ruidoso si alguno no llegó.
+      // El script externo llega asincrónico y el motor no garantiza que este
+      // corra después. Esperar a que `ShellApp` exista es más barato que ordenar
+      // la carga, y falla ruidoso si el módulo no llegó.
       (function esperar(intentos) {
-        if (!globalThis.ShellUI || !globalThis.ShellApp) {
+        if (!globalThis.ShellApp) {
           if (intentos > 200) { console.warn('[ux_vr] el shell no llegó'); return; }
           setTimeout(() => esperar(intentos + 1), 16);
           return;
@@ -64,32 +68,20 @@
       function armar() {
         const root = hiperspace.dimention;
 
-        shell = globalThis.ShellApp.mount({
+        const shell = globalThis.ShellApp.mount({
           root: root,
           panel: root.getElementById('ux_vr_panel'),
           bottomBar: root.getElementById('ux_vr_bottom_bar'),
           focusZone: root.getElementById('ux_vr_focus_zone'),
           anchoredZone: root.getElementById('ux_vr_anchored_zone'),
+          panelBg: root.getElementById('ux_vr_panel_bg'),
+          barBg: root.getElementById('ux_vr_bar_bg'),
           bookmarks: BOOKMARKS,
-          distance: DISTANCIA,
-          title: 'Aplicaciones',
-
-          rail: [
-            { glyph: 'search', onTap: () => console.log('[ux_vr] buscar (pendiente)') },
-            { glyph: 'add',    onTap: () => console.log('[ux_vr] agregar (pendiente)') },
-            { glyph: 'edit',   onTap: () => console.log('[ux_vr] editar (pendiente)') },
-          ],
-
-          statusButtons: [
-            { glyph: 'user', onTap: () => console.log('[ux_vr] usuario (pendiente)') },
-            { glyph: 'home', onTap: () => shell && shell.openBookmark(BOOKMARKS[0]) },
-            { glyph: 'bell', onTap: () => console.log('[ux_vr] avisos (pendiente)') },
-          ],
 
           // ── Todo lo que sale hacia el motor entra por acá ────────────────
           // El módulo no conoce `dimention` ni los ops del runtime: recibe
-          // funciones. Eso es lo que le permite correr igual en un controller
-          // que no tenga las mismas capacidades concedidas.
+          // funciones. Eso es lo que le permite montarse en un controller que no
+          // tenga concedidas las mismas capacidades.
           tabs: {
             open: (url, opts) => dimention.tabs.open(url, opts),
             close: (id) => dimention.tabs.close(id),
