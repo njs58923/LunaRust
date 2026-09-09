@@ -16,7 +16,7 @@ fn validate(request: &FetchRequest) -> Result<(Method, HeaderMap), String> {
     {
         return Err("Forbidden HTTP method".into());
     }
-    if request.body.is_some() && (method == Method::GET || method == Method::HEAD) {
+    if (request.body.is_some() || request.body_bytes.is_some()) && (method == Method::GET || method == Method::HEAD) {
         return Err("GET/HEAD cannot have a body".into());
     }
     if request
@@ -26,6 +26,7 @@ fn validate(request: &FetchRequest) -> Result<(Method, HeaderMap), String> {
     {
         return Err("Fetch request exceeds 1 MiB".into());
     }
+    if request.body_bytes.as_ref().is_some_and(|b| b.len() > MAX_REQUEST) { return Err("Fetch request exceeds 1 MiB".into()); }
     if !matches!(request.redirect.as_str(), "follow" | "error") {
         return Err("Unsupported redirect mode".into());
     }
@@ -98,9 +99,9 @@ pub(crate) async fn execute(
             }
             .into(),
             body: if method == Method::HEAD {
-                String::new()
+                Vec::new()
             } else {
-                resource.unwrap_or_default()
+                resource.unwrap_or_default().into_bytes()
             },
             headers: vec![],
             redirected: false,
@@ -113,7 +114,7 @@ pub(crate) async fn execute(
     // Even a privileged native caller cannot leak auth through cross-origin redirects.
     let origin = origin.unwrap_or_else(|| request.url.clone());
     let mut current = crate::io::same_origin_url(&origin, &request.url)?;
-    let mut body = request.body;
+    let mut body = request.body_bytes.or_else(|| request.body.map(String::into_bytes));
     for hop in 0..=5 {
         let mut builder = client
             .request(method.clone(), &current)
@@ -188,13 +189,12 @@ pub(crate) async fn execute(
             }
             bytes.extend_from_slice(&chunk);
         }
-        let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes);
         return Ok(FetchResponse {
             url: current,
             status: status.as_u16(),
             status_text: status.canonical_reason().unwrap_or("").into(),
             headers: response_headers,
-            body: String::from_utf8_lossy(bytes).into_owned(),
+            body: bytes,
             redirected: hop > 0,
         });
     }
@@ -210,6 +210,7 @@ mod tests {
             method: method.into(),
             headers: vec![],
             body: None,
+            body_bytes: None,
             redirect: "follow".into(),
         }
     }
@@ -299,14 +300,14 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(created.status, 201);
-            assert_eq!(created.body, "{}");
+            assert_eq!(created.body, b"{}");
             assert!(created.headers.contains(&("x-revision".into(), "2".into())));
             assert!(!created.headers.iter().any(|(k, _)| k == "set-cookie"));
             let missing = execute(request(&url, "GET"), Some(url.clone()), &client)
                 .await
                 .unwrap();
             assert_eq!(missing.status, 404);
-            assert_eq!(missing.body, "missing");
+            assert_eq!(missing.body, b"missing");
             let redirected = execute(post.clone(), Some(url.clone()), &client)
                 .await
                 .unwrap();

@@ -1,0 +1,48 @@
+<hsml>
+  <head><name>Audio - clips y PCM</name></head>
+  <space resources="audio,fetch_text,navigate_self">
+    <text x="0" y="2.1" z="-3" size="0.11" value="Audio / WAV y stream PCM"/>
+    <plane x="-0.7" y="1.55" z="-3" sx="0.6" sy="0.24" color="#315A79" id="clip" touchable="true"/>
+    <text x="-0.7" y="1.55" z="-2.99" size="0.055" value="Clip WAV"/>
+    <plane x="0" y="1.55" z="-3" sx="0.6" sy="0.24" color="#315A79" id="stream" touchable="true"/>
+    <text x="0" y="1.55" z="-2.99" size="0.055" value="PCM 8 s"/>
+    <plane x="0.7" y="1.55" z="-3" sx="0.6" sy="0.24" color="#793E42" id="stop" touchable="true"/>
+    <text x="0.7" y="1.55" z="-2.99" size="0.055" value="Detener"/>
+    <text x="0" y="1.15" z="-3" size="0.045" value="Elegir una prueba. Sin autoplay." id="status"/>
+    <script>
+      const root=hiperspace.dimention;
+      let active=null, generation=0;
+      const status=text=>root.getElementById('status').setAttribute('value',text);
+      function stop(){generation++;if(active){active.dispose();active=null;}status('Detenido');}
+      function wav(){
+        const rate=24000, frames=rate, bytes=new Uint8Array(44+frames*2), d=new DataView(bytes.buffer);
+        const str=(p,s)=>{for(let i=0;i<s.length;i++)bytes[p+i]=s.charCodeAt(i);};
+        str(0,'RIFF');d.setUint32(4,36+frames*2,true);str(8,'WAVE');str(12,'fmt ');d.setUint32(16,16,true);
+        d.setUint16(20,1,true);d.setUint16(22,1,true);d.setUint32(24,rate,true);d.setUint32(28,rate*2,true);d.setUint16(32,2,true);d.setUint16(34,16,true);
+        str(36,'data');d.setUint32(40,frames*2,true);
+        for(let i=0;i<frames;i++){const fade=Math.min(1,i/500,(frames-i)/500);d.setInt16(44+i*2,Math.sin(i/rate*440*Math.PI*2)*6000*fade,true);}
+        return new Blob([bytes],{type:'audio/wav'});
+      }
+      root.getElementById('clip').addEventListener('toque',async()=>{
+        stop();const token=generation, audio=new Audio(wav());active=audio;audio.volume=0.3;
+        audio.addEventListener('ended',()=>status('Clip finalizado'));
+        try{await audio.play();if(token===generation)status('WAV: 1 segundo');}catch(e){if(token===generation)status(String(e));}
+      });
+      root.getElementById('stream').addEventListener('toque',async()=>{
+        stop();const token=generation, stream=new AudioStream({sampleRate:24000,channels:2,bufferSeconds:0.5});active=stream;stream.volume=0.3;
+        stream.addEventListener('ended',()=>status('Stream finalizado'));
+        try{
+          await stream.ready;await stream.play();if(token!==generation)return;status('PCM estéreo por fragmentos');
+          for(let offset=0;offset<24000*8;offset+=2400){
+            if(token!==generation)return;
+            const pcm=new Float32Array(4800);
+            for(let i=0;i<2400;i++){const t=(offset+i)/24000;const fade=Math.min(1,t*20,(8-t)*20);pcm[i*2]=Math.sin(t*220*Math.PI*2)*0.15*fade;pcm[i*2+1]=Math.sin(t*330*Math.PI*2)*0.15*fade;}
+            await stream.writeAll(pcm);
+          }
+          if(token===generation)stream.end();
+        }catch(e){if(token===generation)status(String(e));}
+      });
+      root.getElementById('stop').addEventListener('toque',stop);
+    </script>
+  </space>
+</hsml>

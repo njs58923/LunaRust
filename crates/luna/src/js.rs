@@ -116,6 +116,7 @@ impl DomMirrorDirty {
 }
 
 pub struct JsTickData {
+    pub audio_commands: Vec<js_runtime::audio::SharedPlayback>,
     pub mesh_commands: (u64, Vec<js_runtime::mesh::MeshCommand>),
     pub needs_continuous_ticks: bool,
     pub logs: Vec<(String, String)>,
@@ -669,6 +670,7 @@ fn spawn_space_worker_configured(
                             break;
                         }
                         let tick_data = JsTickData {
+                            audio_commands: ctx.engine.drain_audio_commands(),
                             mesh_commands: ctx.engine.drain_mesh_commands(),
                             needs_continuous_ticks: ctx.engine.needs_continuous_ticks(),
                             logs: ctx.engine.drain_logs(),
@@ -2503,6 +2505,7 @@ pub fn js_tick_system(world: &mut World) {
     let capabilities_by_space = space_capabilities_snapshot(world);
 
     for (space_id, data) in tick_batches {
+        crate::audio::apply_commands(world, space_id, data.audio_commands);
         crate::dynamic_mesh::apply_commands(world, space_id, data.mesh_commands.0, data.mesh_commands.1);
         if !data.logs.is_empty() {
             logs_by_context.push((space_id, data.logs));
@@ -4662,6 +4665,7 @@ mod tests {
         ));
         event_tx
             .send(JsWorkerEvent::TickData(JsTickData {
+                audio_commands: Vec::new(),
                 mesh_commands: (0, Vec::new()),
                 needs_continuous_ticks: false,
                 logs: Vec::new(),
@@ -5296,6 +5300,7 @@ mod tests {
         js_update_snapshots_system(app.world_mut());
         let local = app.world().resource::<SpaceHandleTables>().by_space[&space_id].global_to_local[&child_id];
         events.send(JsWorkerEvent::TickData(JsTickData {
+                audio_commands: Vec::new(),
                 mesh_commands: (0, Vec::new()),
                 needs_continuous_ticks: false,
                 logs: Vec::new(),

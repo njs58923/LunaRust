@@ -60,8 +60,11 @@
       ok:payload.status >= 200 && payload.status < 300,
       redirected:payload.redirected, headers,
       get bodyUsed() { return used; },
-      text:consume,
-      async json() { return JSON.parse(await consume()); },
+      async arrayBuffer() { return (await consume()).slice().buffer; },
+      async bytes() { return (await consume()).slice(); },
+      async blob() { return new Blob([await consume()],{type:headers.get("content-type") || ""}); },
+      async text() { return new TextDecoder().decode(await consume()); },
+      async json() { return JSON.parse(new TextDecoder().decode(await consume())); },
       clone() { if (used) throw new TypeError('Response body already consumed'); return response(payload); },
       [Symbol.toStringTag]:'Response'
     });
@@ -79,6 +82,11 @@
       if (!['follow','error'].includes(redirect)) throw new TypeError('Unsupported redirect mode');
       const headers = new Headers(options.headers);
       let body = options.body ?? null;
+      let binary = null;
+      if (body instanceof Blob) {
+        if (body.type && !headers.has("content-type")) headers.set("content-type",body.type);
+        binary=__lunaBinary.blobBytes(body);body=null;
+      } else if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) { binary=__lunaBinary.view(body);body=null; }
       if (body instanceof URLSearchParams) {
         body = body.toString();
         if (!headers.has('content-type')) headers.set('content-type','application/x-www-form-urlencoded;charset=UTF-8');
@@ -86,9 +94,14 @@
         if (typeof body !== 'string') throw new TypeError('Body must be a string or URLSearchParams; use JSON.stringify for JSON');
         if (!headers.has('content-type')) headers.set('content-type','text/plain;charset=UTF-8');
       }
-      if (body !== null && ['GET','HEAD'].includes(method)) throw new TypeError('GET/HEAD cannot have a body');
+      if ((body !== null || binary !== null) && ['GET','HEAD'].includes(method)) throw new TypeError('GET/HEAD cannot have a body');
       const url = new URL(String(input), location.href).href;
-      const id = ops.op_fetch_request({url,method,headers:[...headers],body,redirect});
+      if(url.startsWith('blob:')) {
+        const blob=__lunaBinary.resolveBlob(url);
+        if(!blob || method!=='GET') throw new TypeError('Unknown Blob URL or unsupported method');
+        resolve(response({url,status:200,statusText:'OK',headers:[['content-type',blob.type]],body:__lunaBinary.blobBytes(blob),redirected:false}));return;
+      }
+      const id = ops.op_fetch_request({url,method,headers:[...headers],body,redirect},binary || new Uint8Array(),binary !== null);
       function poll() {
         try {
           const result = ops.op_fetch_poll(id);

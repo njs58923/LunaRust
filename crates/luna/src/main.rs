@@ -78,6 +78,7 @@ fn main() {
         });
 
     app.add_plugins(add_xr_plugins(default_plugins).set(XrSessionPlugin { auto_handle: false }));
+    app.add_plugins(luna::audio::SpaceAudioPlugin);
     app.add_plugins(bevy_xr_utils::hand_gizmos::HandGizmosPlugin);
     app.add_plugins(TrackingUtilitiesPlugin);
     app.add_systems(OxrSendActionBindings, suggest_action_bindings);

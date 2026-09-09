@@ -7,6 +7,8 @@ pub struct FetchRequest {
     pub method: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+    #[serde(default)]
+    pub body_bytes: Option<Vec<u8>>,
     pub redirect: String,
 }
 
@@ -17,7 +19,8 @@ pub struct FetchResponse {
     pub status: u16,
     pub status_text: String,
     pub headers: Vec<(String, String)>,
-    pub body: String,
+    #[serde(with = "serde_bytes")]
+    pub body: Vec<u8>,
     pub redirected: bool,
 }
 
@@ -58,7 +61,7 @@ mod tests {
                 status_text: "Conflict".into(),
                 url: request.url,
                 headers: vec![("X-Revision".into(), "2".into())],
-                body: "{\"error\":\"exists\"}".into(),
+                body: b"{\"error\":\"exists\"}".to_vec(),
                 redirected: false,
             }),
         );

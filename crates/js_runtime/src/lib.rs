@@ -15,6 +15,8 @@ pub mod cache;
 pub mod csp;
 pub mod storage;
 mod location;
+pub mod audio;
+pub mod binary;
 pub mod fetch;
 pub use fetch::{FetchRequest, FetchResponse};
 use deno_core::Op;
@@ -895,7 +897,9 @@ fn op_hsml_set_transform_batch(state: &mut OpState, #[serde] updates: Vec<f64>) 
 
 #[op2]
 #[smi]
-fn op_fetch_request(state: &mut OpState, #[serde] request: FetchRequest) -> i32 {
+fn op_fetch_request(state: &mut OpState, #[serde] mut request: FetchRequest, #[buffer] bytes: &[u8], binary: bool) -> Result<i32, anyhow::Error> {
+    if bytes.len() > 1024 * 1024 { return Err(anyhow::anyhow!("Fetch request exceeds 1 MiB")); }
+    if binary { request.body_bytes = Some(bytes.to_vec()); }
     let queue = state.borrow::<FetchQueue>();
     let mut next_id = queue.next_request_id.borrow_mut();
     let request_id = *next_id;
@@ -904,21 +908,24 @@ fn op_fetch_request(state: &mut OpState, #[serde] request: FetchRequest) -> i32 
         .requests
         .borrow_mut()
         .push((request_id, request));
-    request_id
+    Ok(request_id)
 }
+
+#[derive(serde::Serialize)]
+struct FetchPoll { status: &'static str, response: Option<FetchResponse>, error: Option<String> }
 
 #[op2]
 #[serde]
-fn op_fetch_poll(state: &mut OpState, #[smi] request_id: i32) -> serde_json::Value {
+fn op_fetch_poll(state: &mut OpState, #[smi] request_id: i32) -> FetchPoll {
     let results = state.borrow::<FetchResults>();
     let mut map = results.results.borrow_mut();
     if let Some(result) = map.remove(&request_id) {
         match result {
-            Ok(response) => serde_json::json!({"status": "ok", "response": response}),
-            Err(err) => serde_json::json!({"status": "error", "error": err}),
+            Ok(response) => FetchPoll {status:"ok", response:Some(response), error:None},
+            Err(err) => FetchPoll {status:"error", response:None, error:Some(err)},
         }
     } else {
-        serde_json::json!({"status": "pending"})
+        FetchPoll {status:"pending", response:None, error:None}
     }
 }
 
@@ -1481,6 +1488,11 @@ impl Engine {
                 op_hsml_set_scale::decl(),
                 op_hsml_set_transform_batch::decl(),
                 op_hsml_set_global_position::decl(),
+                audio::op_audio_create::decl(),
+                audio::op_audio_control::decl(),
+                audio::op_audio_write::decl(),
+                binary::op_encode_utf8::decl(),
+                binary::op_decode_utf8::decl(),
                 op_fetch_request::decl(),
                 op_fetch_poll::decl(),
                 op_capture_frame::decl(),
@@ -1523,6 +1535,7 @@ impl Engine {
                     updates: attr_updates_for_state.updates.clone(),
                 });
                 state.put(mesh::MeshQueue::default());
+                state.put(audio::AudioQueue::default());
                 state.put::<AttrSnapshot>(AttrSnapshot {
                     data: attr_snapshot_for_state.data.clone(),
                 });
@@ -1633,8 +1646,10 @@ impl Engine {
             .expect("runtime.js failed");
         rt.execute_script("<mesh>", FastString::Static(include_str!("../mesh.js")))
             .expect("mesh bootstrap failed");
+        rt.execute_script("<binary>", FastString::Static(include_str!("../binary.js"))).expect("binary bootstrap failed");
         rt.execute_script("<fetch>", FastString::Static(include_str!("../fetch.js")))
             .expect("fetch bootstrap failed");
+        rt.execute_script("<audio>", FastString::Static(include_str!("../audio.js"))).expect("audio bootstrap failed");
 
         eprintln!("[js_runtime] Engine created successfully");
 
@@ -1740,6 +1755,10 @@ impl Engine {
     pub fn drain_attr_updates(&self) -> Vec<(i32, String, String)> {
         take_vec(&self.attr_updates)
     }
+    pub fn drain_audio_commands(&mut self) -> Vec<audio::SharedPlayback> {
+        self.rt.op_state().borrow_mut().borrow_mut::<audio::AudioQueue>().drain()
+    }
+
     pub fn drain_mesh_commands(&mut self) -> (u64, Vec<mesh::MeshCommand>) {
         self.rt.op_state().borrow_mut().borrow_mut::<mesh::MeshQueue>().drain()
     }

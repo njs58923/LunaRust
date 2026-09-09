@@ -619,8 +619,8 @@ mod same_origin_tests {
 #[cfg(test)]
 async fn load_same_origin_text(url: &str, origin: &str, client: &reqwest::Client) -> Result<String, String> {
     crate::http_fetch::execute(js_runtime::FetchRequest { url:url.into(), method:"GET".into(),
-        headers:vec![], body:None, redirect:"follow".into() }, Some(origin.into()), client)
-        .await.map(|response| response.body)
+        headers:vec![], body:None, body_bytes:None, redirect:"follow".into() }, Some(origin.into()), client)
+        .await.map(|response| String::from_utf8_lossy(&response.body).into_owned())
 }
 
 async fn load_text_resource(url: &str, client: &reqwest::Client) -> Result<String, String> {
@@ -1185,7 +1185,7 @@ mod backpressure_tests {
         let space_id = 17;
 
         for request_id in 0..(IoService::PENDING_FETCH_RESULTS_PER_SPACE as i32 + 20) {
-            service.defer_fetch_results(space_id, vec![(request_id, Ok(js_runtime::FetchResponse { body: "ok".into(), ..Default::default() }))]);
+            service.defer_fetch_results(space_id, vec![(request_id, Ok(js_runtime::FetchResponse { body: b"ok".to_vec(), ..Default::default() }))]);
         }
 
         let pending = service.pending_fetch_results.lock().unwrap();

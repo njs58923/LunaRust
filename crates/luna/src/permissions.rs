@@ -40,6 +40,7 @@ bitflags! {
         const CAPTURE_FRAME        = 1 << 18;
         const SPAWN                = 1 << 19;
         const FETCH_HTTP           = 1 << 20;
+        const AUDIO                = 1 << 21;
     }
 }
 
@@ -375,6 +376,7 @@ lazy_static! {
             native_services: NativeServiceBits::empty(),
             auto_scripts: &[],
         });
+        m.insert("audio", ResourceBundleDef { capabilities:CapabilityBits::AUDIO, native_services:NativeServiceBits::empty(), auto_scripts:&[] });
         m.insert("fetch_http", ResourceBundleDef {
             capabilities: CapabilityBits::FETCH_HTTP,
             native_services: NativeServiceBits::empty(),
@@ -1185,7 +1187,7 @@ mod tests {
 
     #[test]
     fn fetch_needs_both_delegation_and_explicit_request() {
-        for (bundle, capability) in [("fetch_text", CapabilityBits::FETCH_TEXT), ("fetch_http", CapabilityBits::FETCH_HTTP)] {
+        for (bundle, capability) in [("fetch_text", CapabilityBits::FETCH_TEXT), ("fetch_http", CapabilityBits::FETCH_HTTP), ("audio", CapabilityBits::AUDIO)] {
         let mut app = build_app_with_xml(&format!("<hsml><space system-space='root' resources='{bundle}'><include resources='{bundle}'><space id='asked' resources='{bundle}'/><space id='silent'/></include><include><space id='blocked' resources='{bundle}'/></include></space></hsml>"));
         app.update();
         let doc = app.world().resource::<crate::ElemenetWorld>();
