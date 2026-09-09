@@ -11,7 +11,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--input', type=Path)
 parser.add_argument('--output', type=Path, default=Path(__file__).resolve().parents[1]/'crates/luna/assets/icons')
 args = parser.parse_args()
-names = ['home', 'settings', 'demos', 'app', 'about', 'scale', 'fire', 'target', 'range']
+# El slot de cada icono es su indice en esta lista, asi que los nombres nuevos
+# van SIEMPRE al final: intercalar uno corre a todos los de atras y les cambia
+# el dibujo a las referencias que ya existen. Los cinco ultimos son de la barra
+# de estado del shell (ver ux_vr.hsml).
+names = ['home', 'settings', 'demos', 'app', 'about', 'scale', 'fire', 'target', 'range',
+         'user', 'wifi', 'battery', 'bell', 'capture',
+         'close', 'minimize', 'anchor']
 icons = []
 if args.input:
     for path in sorted(args.input.glob('*.png')):
@@ -50,6 +56,39 @@ else:
             circle((51,51,141,141),8)
             for a in range(4):
                 t=a*math.pi/2;line([(96+math.cos(t)*24,96+math.sin(t)*24),(96+math.cos(t)*75,96+math.sin(t)*75)],8)
+        elif name=='user':
+            circle((66,24,126,84),11)
+            # Hombros: media elipse por debajo del marco, para que corte recto
+            # abajo en vez de cerrar en ovalo.
+            d.arc((34,92,158,212),180,360,fill=white,width=12)
+        elif name=='wifi':
+            # Tres arcos concentricos desde un mismo centro y el punto abajo.
+            for r in (80,54,28): d.arc((96-r,116-r,96+r,116+r),205,335,fill=white,width=12)
+            d.ellipse((84,104,108,128),fill=white)
+        elif name=='battery':
+            d.rounded_rectangle((22,64,152,128),12,outline=white,width=10)
+            d.rounded_rectangle((156,84,172,108),5,fill=white)
+            d.rounded_rectangle((36,78,106,114),6,fill=white)
+        elif name=='bell':
+            # Cupula + faldon recto + badajo. La campana entera de una pieza
+            # queda con la base curva y se lee como una gota.
+            d.pieslice((50,30,142,122),180,360,fill=white)
+            d.rectangle((50,76,142,128),fill=white)
+            d.rounded_rectangle((34,128,158,146),9,fill=white)
+            d.ellipse((84,150,108,174),fill=white)
+        elif name=='capture':
+            d.rounded_rectangle((22,56,170,160),16,outline=white,width=9)
+            d.polygon([(64,58),(78,34),(114,34),(128,58)],fill=white)
+            circle((70,78,122,130),10)
+        elif name=='close':
+            line([(58,58),(134,134)],14); line([(134,58),(58,134)],14)
+        elif name=='minimize':
+            line([(56,96),(136,96)],14)
+        elif name=='anchor':
+            # Chincheta: cabeza, cuerpo y punta.
+            d.rounded_rectangle((62,30,130,52),8,fill=white)
+            d.polygon([(78,52),(114,52),(122,108),(70,108)],fill=white)
+            line([(96,108),(96,160)],11)
         icons.append((name,im))
 if not icons or len(icons)>32: raise SystemExit('Expected 1–32 PNG icons')
 cell=96; atlas=Image.new('RGBA',(cell*8,cell*4)); manifest={}

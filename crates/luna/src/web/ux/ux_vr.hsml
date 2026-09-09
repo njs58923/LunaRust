@@ -14,10 +14,19 @@
            - ux_vr_focus_zone: silueta del slot focused (commit 3+).
          Toda visibilidad deriva de ShellState (ver script). -->
     <group id="ux_vr_panel" visible="false">
-      <!-- Bookmarks construidos dinámicamente vía script. -->
+      <!-- La grilla la construye el script. El fondo es UNA malla y no un
+           <plane>: el panel se apoya en un cilindro de 1,5 m y un plano de
+           1,3 m de ancho se hunde 14 cm en el medio respecto de los iconos,
+           que sí siguen el arco. Antes había tres placas angostas, una por
+           columna, para disimularlo — de ahí que el fondo se viera partido y
+           chico. Una malla que sigue la curva no tiene el problema. -->
+      <model id="ux_vr_panel_bg"/>
     </group>
 
     <group id="ux_vr_bottom_bar" visible="false">
+      <!-- Las tres pastillas de la barra, también en una sola malla. Va
+           aparte de la del panel porque la barra se ve cuando el panel no. -->
+      <model id="ux_vr_bar_bg"/>
       <!-- Slot 1: Menu (siempre si bar visible). Slots 2..N: focus + anchored.
            Construidos dinámicamente — ver buildBottomBar(). -->
     </group>
@@ -64,24 +73,55 @@
         '#22C55E', '#EAB308',
       ];
 
-      // ── Tamaños (Quest 2 home style) ───────────────────────────────────
-      const SIZE_APP    = 0.18;
-      const BOX_DEPTH   = 0.025;
-      const Z           = 0;       // local al panel
-      const Z_TEXT      = 0.006;
-      const LABEL_DY    = -0.12;
-      const LABEL_SIZE  = 0.028;
-      const BORDER_R    = '0.2';
+      // ── Medidas ────────────────────────────────────────────────────────
+      // Metros, y las alturas son **relativas a los ojos**: el shell se planta
+      // a SHELL_SPAWN_DISTANCE al frente del visitante, así que y=0 es la
+      // altura de la mirada y lo que cuelga por debajo va en negativo.
+      const R_PANEL = 1.5;    // = SHELL_SPAWN_DISTANCE
+      const R_BAR   = 1.15;   // la barra va más cerca: está más abajo y al alcance
 
-      // ── Bottom bar (taskbar) ───────────────────────────────────────────
-      const BAR_Y           = -0.72;
-      const BAR_Z           = 0.12;
-      const BAR_SLOT_SIZE_X = 0.25;
-      const BAR_SLOT_SIZE_Y = 0.095;
-      const BAR_SLOT_DEPTH  = 0.020;
-      const BAR_SLOT_GAP    = 0.025;
-      const BAR_SLOT_BORDER = '0.15';
-      const BAR_LABEL_SIZE  = 0.025;
+      // Grilla
+      const GRID_COLS   = 5;
+      const GRID_STEP_X = 0.24;
+      const GRID_STEP_Y = 0.30;
+      const SIZE_APP    = 0.17;
+      // FRACCIÓN del lado, no metros. En un `plane` el radio se pasa crudo a
+      // `create_rounded_plane`, que trabaja sobre un cuadrado unitario; en un
+      // `box` el mismo atributo son metros del mundo divididos por la escala.
+      // Por eso el icono es un plane: con una caja de 0,17 y radio 0,2 el radio
+      // satura los tres ejes y el icono sale esfera.
+      const CORNER      = 0.22;
+      const LABEL_DY    = -0.122;
+      const LABEL_SIZE  = 0.028;
+      const GRID_Y      = -0.20;
+      const HEADER_DY   = 0.235;
+
+      // Capas en z dentro del grupo de cada pieza. Sin esto el motor decide el
+      // orden solo y las etiquetas parpadean contra su propio fondo.
+      const Z_HIT   = -0.0012;
+      const Z_RING  = -0.0008;
+      const Z_FACE  = 0;
+      const Z_GLYPH = 0.0025;
+      const Z_LABEL = 0.005;
+      const RING    = 0.0025;   // grosor del anillo de hover
+
+      // Barra
+      const BAR_Y        = -0.80;
+      const BAR_ITEM     = 0.072;   // lado de un botón redondo de la barra
+      const BAR_H        = 0.125;   // alto de una pastilla
+      const BAR_GAP      = 0.026;   // aire entre botones de un grupo
+      const BAR_PAD      = 0.070;   // aire entre el grupo y su pastilla
+      const BAR_GROUP_GAP = 0.090;  // aire entre pastillas
+      // Sale de la geometría y no del gusto: atan((ojos - yBarra) / radio) es
+      // el ángulo con que se mira la barra, y la barra tiene que devolverlo
+      // para quedar de frente. Con 0 se le ve el canto.
+      const BAR_TILT     = -Math.atan2(-BAR_Y, R_BAR);
+
+      // Colores
+      const BLANCO    = '#F2F5FA';
+      const PLACA     = '#171A21';
+      const PLACA_ALTA = '#252A34';
+      const TENUE     = '#8A94A6';
 
       // ── Focus zone (frame del focus app) ───────────────────────────────
       // Dimensiones del slot: el shell decide el tamaño, las apps reciben
@@ -109,55 +149,351 @@
       const ANCHORED_SLOT_H = FOCUS_SLOT_H;
       const ANCHORED_SLOT_D = FOCUS_SLOT_D;
 
-      // Local cylindrical layout, facing the viewer without moving the window slot.
-      function computePositions(count) {
-        const columns = Math.min(3, count);
-        return Array.from({length: count}, (_, i) => {
-          const row = Math.floor(i / columns);
-          const inRow = Math.min(columns, count - row * columns);
-          return [(i % columns - (inRow - 1) / 2) * 0.30, 0.18 - row * 0.30];
-        });
+      // ── El arco ────────────────────────────────────────────────────────
+      // La UI vive en un cilindro alrededor del visitante, no en un plano. Un
+      // panel plano de 1,3 m a 1,5 m de distancia se lee torcido en los bordes:
+      // las columnas de las puntas quedan de costado y más lejos que las del
+      // centro.
+      //
+      // El grupo del shell ya está a `radio` al frente y girado por el yaw, así
+      // que en su sistema local el visitante está en (0, 0, radio) y el punto a
+      // `u` metros de arco es
+      //
+      //     t = u / R    x = R sen t    z = R (1 - cos t)
+      //
+      // con **ry = -t** para que la pieza lo mire. De ahí sale que el +z local
+      // de cada pieza apunta a los ojos: acercar un icono es sumarle z.
+      function onArc(u, radius) {
+        const t = u / radius;
+        return { x: Math.sin(t) * radius, z: radius * (1 - Math.cos(t)), ry: -t };
       }
 
-      function surface(parent, u, y) {
+      function surface(parent, u, y, radius, tilt) {
         const group = root.createElement('group');
-        const angle = u / SHELL_SPAWN_DISTANCE;
-        group.position = {x: SHELL_SPAWN_DISTANCE * Math.sin(angle), y,
-                          z: SHELL_SPAWN_DISTANCE * (1 - Math.cos(angle))};
-        group.rotation = {x: 0, y: -angle, z: 0};
+        const a = onArc(u, radius || SHELL_SPAWN_DISTANCE);
+        group.position = { x: a.x, y, z: a.z };
+        group.rotation = { x: tilt || 0, y: a.ry, z: 0 };
         parent.appendChild(group);
         return group;
       }
 
-      function plate(parent, width, height, y, z, color, radius) {
+      function plane(parent, opts) {
         const node = root.createElement('plane');
-        node.setAttribute('color', color);
-        node.setAttribute('border-radius', String(radius || 0.08));
-        node.setAttribute('touchable', 'false');
-        node.position = {x: 0, y, z};
-        node.scale = {x: width, y: height, z: 1};
+        node.setAttribute('color', opts.color);
+        node.setAttribute('border-radius', String(opts.corner));
+        node.setAttribute('touchable', opts.touchable ? 'true' : 'false');
+        node.position = { x: opts.x || 0, y: opts.y || 0, z: opts.z || 0 };
+        node.scale = { x: opts.sx, y: opts.sy, z: 1 };
         parent.appendChild(node);
         return node;
       }
 
-      function caption(parent, value, y, size, color) {
+      function caption(parent, value, y, size, color, x) {
         const node = root.createElement('text');
-        node.setAttribute('value', value);
+        node.setAttribute('value', String(value));
         node.setAttribute('size', String(size));
-        node.setAttribute('color', color || '#F2F5FA');
+        node.setAttribute('color', color || BLANCO);
         node.setAttribute('touchable', 'false');
-        node.position = {x: 0, y, z: Z_TEXT};
+        node.position = { x: x || 0, y, z: Z_LABEL };
         parent.appendChild(node);
         return node;
       }
 
-      // Keep the hit target stationary; two controllers may hover it at once.
-      function highlight(target, visual, base, active) {
-        target.addEventListener('pointerenter', () => visual.setAttribute('color', active));
-        target.addEventListener('pointerleave', () => {
-          if (!target.matches(':hover')) visual.setAttribute('color', typeof base === 'function' ? base() : base);
-        });
+      // ── Los glifos ─────────────────────────────────────────────────────
+      // Un atlas de 8x4 servido por el propio binario. El slot de cada icono es
+      // su índice en `tools/build_icon_atlas.py`, y esta tabla es la otra mitad
+      // de ese contrato: agregar un icono es agregarlo **al final** allá y acá.
+      // Antes el slot salía del índice del bookmark, que coincidía de casualidad
+      // con el orden del generador.
+      const ATLAS = 'luna://icons/menu.png';
+      const GLYPHS = ['home', 'settings', 'demos', 'app', 'about', 'scale',
+                      'fire', 'target', 'range', 'user', 'wifi', 'battery',
+                      'bell', 'capture', 'close', 'minimize', 'anchor'];
+
+      // El glifo va sobre el **mismo nodo** que la placa: con
+      // `texture-face="front"` el motor entra en modo overlay y compone el PNG
+      // sobre el color usando su alfa. Un nodo por icono en vez de dos, y sin
+      // capa extra en z que pueda parpadear. De ahí que los PNG del atlas sean
+      // blancos: en overlay el color del glifo lo pone la textura.
+      function glyph(node, name, padding) {
+        const i = GLYPHS.indexOf(name);
+        if (i < 0) return;
+        node.setAttribute('texture', ATLAS);
+        node.setAttribute('texture-region', [(i % 8) / 8, Math.floor(i / 8) / 4, 1 / 8, 1 / 4].join(','));
+        node.setAttribute('texture-face', 'front');
+        node.setAttribute('texture-fit', 'contain');
+        node.setAttribute('texture-padding', String(padding));
       }
+
+      // ── Piezas tocables ────────────────────────────────────────────────
+      // Una pieza son tres planos: el **hitbox**, el **anillo** y la **cara**.
+      // Los usan por igual los iconos de la grilla, los botones de la barra y
+      // los de la barra de título de una ventana, y por eso el hover se siente
+      // igual en los tres lados.
+      //
+      // **El blanco del hover no puede ser lo que el hover mueve.** Apuntando
+      // cerca del filo, la cara se adelanta, su silueta en pantalla cambia, el
+      // puntero queda afuera, sale el `pointerleave`, la cara vuelve — y queda
+      // otra vez debajo del puntero. Un ciclo cerrado a la frecuencia del
+      // cuadro: parpadeo. Por eso el hitbox no se mueve nunca y la cara y el
+      // anillo son decorado.
+      //
+      // Que eso funcione depende de un detalle del motor, verificado en
+      // `touch.rs`: el raycast recorre `Query<(&GlobalTransform, &Toqueable,
+      // ...)>`, o sea que **sólo los touchable son candidatos**. Un nodo
+      // no-touchable por delante no tapa el rayo aunque sea opaco.
+      const LEVANTE   = 0.028;   // cuánto se adelanta una pieza al apuntarla
+      const K_Z       = 16;      // rapidez del acercamiento, en 1/s
+      const HUNDIDO   = 0.013;   // cuánto se mete al tocarla
+      const K_GOLPE   = 13;      // rapidez del hundimiento y del retorno
+      const MS_APRETADO = 105;   // cuánto se queda abajo antes de volver
+
+      const enVuelo = [];
+      let hoverPiece = null;
+      let previoTs = 0;
+
+      function piece(parent, opts) {
+        const lado = opts.size;
+        const ladoRing = lado + 2 * RING;
+        // El radio del anillo NO es la misma fracción que el de la cara: un
+        // contorno concéntrico tiene radio exterior = interior + grosor, y como
+        // acá el radio es fracción del lado hay que rehacer la cuenta con el
+        // lado nuevo. Repitiendo la fracción, el anillo sale más cuadrado que la
+        // cara y asoma por las esquinas.
+        const corner = opts.corner;
+        const cornerRing = Math.min(0.499, (corner * lado + RING) / ladoRing);
+        const color = opts.color;
+
+        // El hitbox lleva la forma y el tamaño del anillo, medio milímetro más
+        // atrás: una silueta idéntica y más lejos no asoma por ningún lado.
+        const hit = plane(parent, { x: opts.x, y: opts.y, z: Z_HIT, sx: ladoRing,
+                                    sy: ladoRing, color, corner: cornerRing, touchable: true });
+        const ring = plane(parent, { x: opts.x, y: opts.y, z: Z_RING, sx: ladoRing,
+                                     sy: ladoRing, color, corner: cornerRing });
+        const face = plane(parent, { x: opts.x, y: opts.y, z: Z_FACE, sx: lado,
+                                     sy: lado, color, corner });
+        if (opts.glyph) glyph(face, opts.glyph, opts.padding || 0.24);
+        if (opts.name) hit.setAttribute('name', opts.name);
+
+        const it = { hit, ring, face, color, x: opts.x || 0, y: opts.y || 0,
+                     z: 0, zTarget: 0, golpe: 0, hasta: 0, pendiente: false,
+                     onTap: opts.onTap };
+
+        hit.addEventListener('pointerenter', () => {
+          hoverPiece = it;
+          it.pendiente = false;
+          applyPiece(it);
+          if (typeof opts.onHover === 'function') opts.onHover(true);
+        });
+        hit.addEventListener('pointerleave', () => {
+          // Con dos rayos en VR, el leave de uno no significa que nadie apunte:
+          // el otro puede seguir adentro, y eso lo contesta `matches(':hover')`.
+          if (hit.matches(':hover')) return;
+          // Una pieza siempre apaga lo suyo, mande o no en `hoverPiece`: el
+          // enter del vecino llega ANTES que este leave, y si se saliera por no
+          // ser el que manda, el anillo quedaría blanco para siempre.
+          if (hoverPiece === it) hoverPiece = null;
+          // La salida espera a que el click termine de animarse: apretar el
+          // gatillo mueve el rayo, y un temblor de un cuadro sacaba el puntero
+          // justo mientras la pieza se hundía.
+          if (enGolpe(it, previoTs)) it.pendiente = true;
+          else applyPiece(it);
+          if (typeof opts.onHover === 'function') opts.onHover(false);
+        });
+        hit.addEventListener('toque', () => {
+          golpear(it);
+          if (typeof it.onTap === 'function') it.onTap();
+        });
+
+        enVuelo.push(it);   // una pasada para dejar la z inicial escrita
+        return it;
+      }
+
+      // El anillo se enciende con el puntero y con nada más. Compartirlo con un
+      // segundo estado —el de "tocado", por ejemplo— hace que al salir el hover
+      // la pieza baje pero el anillo se quede blanco: la mitad de la salida
+      // ocurre y la otra no, y se lee como trabado.
+      function applyPiece(it) {
+        it.ring.setAttribute('color', it === hoverPiece ? BLANCO : it.color);
+        it.zTarget = it === hoverPiece ? LEVANTE : 0;
+        if (enVuelo.indexOf(it) === -1) enVuelo.push(it);
+      }
+
+      function recolorPiece(it, color) {
+        if (!it || it.color === color) return;
+        it.color = color;
+        it.face.setAttribute('color', color);
+        it.hit.setAttribute('color', color);
+        // El anillo sólo si no lo están apuntando: pisarlo ahora le sacaría el
+        // blanco a una pieza que sigue bajo el puntero.
+        if (it !== hoverPiece) it.ring.setAttribute('color', color);
+      }
+
+      function enGolpe(it, ahora) {
+        return ahora < it.hasta || it.golpe > 0.0005;
+      }
+
+      // El golpe no se escribe: se persigue. Fijar la profundidad de una y
+      // dejarla decaer da un salto —no hay bajada, ya está abajo— y tocar de
+      // nuevo la manda otra vez al fondo. Lo que fija el toque es una **ventana
+      // de tiempo**, y `golpe` corre detrás de ese cuadrado con el mismo
+      // suavizado que todo lo demás, así que tocar de nuevo mientras se recupera
+      // extiende la ventana desde donde esté.
+      function golpear(it) {
+        it.hasta = previoTs + MS_APRETADO;
+        if (enVuelo.indexOf(it) === -1) enVuelo.push(it);
+      }
+
+      // El suavizado es `1 - exp(-k dt)` y no `k dt` porque el segundo depende
+      // del cuadro: a 90 fps y a 500 la pieza tiene que tardar lo mismo.
+      function tickPieces(ts) {
+        requestAnimationFrame(tickPieces);
+        const dt = Math.min(0.05, previoTs ? (ts - previoTs) / 1000 : 0.016);
+        previoTs = ts;
+        const f = 1 - Math.exp(-K_Z * dt);
+        const g = 1 - Math.exp(-K_GOLPE * dt);
+
+        for (let i = enVuelo.length - 1; i >= 0; i--) {
+          const it = enVuelo[i];
+          if (it.dead) { enVuelo.splice(i, 1); continue; }
+
+          // La salida que esperaba a que terminara el golpe. Se aplica antes de
+          // mover nada, para que el objetivo nuevo valga ya en este cuadro.
+          if (it.pendiente && !enGolpe(it, ts)) {
+            it.pendiente = false;
+            applyPiece(it);
+          }
+
+          it.z += (it.zTarget - it.z) * f;
+          it.golpe += ((ts < it.hasta ? HUNDIDO : 0) - it.golpe) * g;
+
+          // Un exponencial no llega nunca: sin este corte la pieza seguiría
+          // escribiendo su z para siempre, por milésimas de milímetro. Sale de
+          // la lista cuando los tres se quedaron quietos: acercamiento, golpe y
+          // la ventana, que todavía puede tenerla abajo esperando.
+          const quieto = Math.abs(it.zTarget - it.z) < 0.0002
+                      && it.golpe < 0.0002 && ts >= it.hasta && !it.pendiente;
+          if (quieto) { it.z = it.zTarget; it.golpe = 0; enVuelo.splice(i, 1); }
+
+          const z = it.z - it.golpe;
+          it.face.position = { x: it.x, y: it.y, z: Z_FACE + z };
+          it.ring.position = { x: it.x, y: it.y, z: Z_RING + z };
+        }
+      }
+      requestAnimationFrame(tickPieces);
+
+      // Soltar una pieza: se saca del bucle y se van sus nodos.
+      function dropPiece(it) {
+        if (!it) return;
+        it.dead = true;
+        if (hoverPiece === it) hoverPiece = null;
+        try { it.hit.remove(); } catch (_) {}
+        try { it.ring.remove(); } catch (_) {}
+        try { it.face.remove(); } catch (_) {}
+      }
+
+      // ── La malla de los fondos ─────────────────────────────────────────
+      // Todos los fondos de un grupo en UNA malla que sigue el arco. Un
+      // `<plane>` es plano y las piezas van sobre un cilindro: la flecha del
+      // arco sobre el ancho del panel —1,3 m sobre radio 1,5— da **14 cm**, así
+      // que la placa se hunde justo donde los iconos se adelantan.
+      //
+      // Para cada muestra se calcula el punto del arco y el **arriba local**,
+      // que no es (0,1,0) sino el (0,1,0) girado `phi` alrededor de la tangente
+      // — que es lo que hace que la barra mire hacia arriba:
+      //
+      //     n(t)   = (-sen t, 0, cos t)              hacia el visitante
+      //     up(t)  = (sen t · sen φ, cos φ, -cos t · sen φ)
+      //     normal = n · cos φ + (0,1,0) · sen φ
+      //
+      // El orden de los triángulos importa —el motor saca la cara de ahí— y sale
+      // de que (tangente, up, normal) es una terna a derechas.
+      const MESH_STEPS = 40;   // fijo: `update` manda siempre la misma cantidad
+
+      function rgba(hex) {
+        const v = parseInt(String(hex).replace('#', ''), 16);
+        // El motor rechaza la malla entera si un canal se va de [0,1].
+        return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, 1];
+      }
+
+      // Cuánto mide de alto una pastilla a `x` metros de su centro: recto en el
+      // medio, arco de radio `r` en las puntas.
+      function halfHeight(x, width, height, r) {
+        const d = width / 2 - Math.abs(x);
+        if (d >= r) return height / 2;
+        const c = r - d;
+        return height / 2 - r + Math.sqrt(Math.max(0, r * r - c * c));
+      }
+
+      function buildMesh(pills) {
+        const positions = [];
+        const normals = [];
+        const colors = [];
+        const indices = [];
+        for (const P of pills) {
+          const r = Math.min(0.05, P.height / 2 - 0.001);
+          const col = rgba(P.color);
+          const base = positions.length / 3;   // en vértices, no en flotantes
+          const phi = P.phi || 0;
+          const sf = Math.sin(phi), cf = Math.cos(phi);
+          // **El centro de curvatura es el del panel, no el de la pastilla.** El
+          // fondo va `depth` metros más lejos que las piezas, y eso es un radio
+          // mayor **alrededor del mismo centro** —que es el visitante, en
+          // (0, 0, radio)—. Calculando `cz = R(1 - cos t)` con el radio propio,
+          // el centro se corre con él: en t=0 da z=0, o sea coplanar con los
+          // iconos, y hacia los costados se separa para el lado equivocado. Los
+          // iconos del medio quedaban tragados por su propio fondo y sólo se
+          // salvaban los de las puntas.
+          const R = P.radius + P.depth;
+          for (let i = 0; i <= MESH_STEPS; i++) {
+            const x = -P.width / 2 + (P.width * i) / MESH_STEPS;
+            // El ángulo sale del radio de las piezas: así el fondo cubre el mismo
+            // tramo angular que ellas y no se corre al alejarse.
+            const t = (P.u + x) / P.radius;
+            const cx = Math.sin(t) * R;
+            const cz = P.radius - R * Math.cos(t);
+            const ux = Math.sin(t) * sf, uy = cf, uz = -Math.cos(t) * sf;
+            const nx = -Math.sin(t) * cf, ny = sf, nz = Math.cos(t) * cf;
+            const h = halfHeight(x, P.width, P.height, r);
+            positions.push(cx - ux * h, P.y - uy * h, cz - uz * h);
+            positions.push(cx + ux * h, P.y + uy * h, cz + uz * h);
+            normals.push(nx, ny, nz, nx, ny, nz);
+            colors.push(col[0], col[1], col[2], col[3], col[0], col[1], col[2], col[3]);
+          }
+          for (let i = 0; i < MESH_STEPS; i++) {
+            const a = base + i * 2, b = a + 1, c = a + 2, d = a + 3;
+            indices.push(a, c, b, c, d, b);
+          }
+        }
+        // Arrays tipados y planos: la API los quiere así. Pasarle arrays de
+        // ternas no da un error de tipo sino «Mesh attributes must be finite and
+        // bounded», que manda a buscar un NaN que no existe.
+        return { positions: new Float32Array(positions),
+                 indices: new Uint32Array(indices),
+                 normals: new Float32Array(normals),
+                 colors: new Float32Array(colors) };
+      }
+
+      // Se crea una vez y se **actualiza**: el número de vértices no cambia
+      // —MESH_STEPS es fijo y la cantidad de pastillas también— así que alcanza
+      // con reescribir lo que se movió. Crear una malla nueva por cada cambio
+      // gastaría del tope de 128 recursos, que además no se liberan al cambiar
+      // de espacio.
+      function paintMesh(slot, node, pills) {
+        if (!node) return;
+        const data = buildMesh(pills);
+        if (!slot.mesh) {
+          slot.mesh = MeshResource.create(data);
+          node.src = slot.mesh.src;
+        } else {
+          // Los cuatro buffers, siempre: los que uno no pasa viajan vacíos, no
+          // "sin cambios", y con `indices` vacío el motor los regenera
+          // implícitos y la malla se vuelve tiras de triángulos.
+          slot.mesh.update(data);
+        }
+      }
+      const panelMesh = {};
+      const barMesh = {};
 
       // ── Animación enter/exit ───────────────────────────────────────────
       const ANIM_MS    = 160;
@@ -194,17 +530,21 @@
       // (incluyendo cuando se abre una app embedded — el panel se oculta solo
       // por la regla de shouldShowBookmarks, pero el flag sigue true). Eso
       // hace que la bar quede visible para volver a marcadores desde una app.
+      // La regla del doc era `bookmarks_visible && (focus || anchored)`: la barra
+      // existía sólo para volver desde una app. Ahora lleva **estado** —usuario,
+      // wifi, batería, avisos, capturas— y eso tiene que estar mientras el shell
+      // esté, haya ventanas o no. Con la regla vieja, abrir el menú sin ninguna
+      // app mostraba una grilla flotando sin nada abajo.
       function shouldShowBottomBar() {
-        if (!shellState.bookmarksVisible) return false;
-        const hasFocus = shellState.focusApp !== null;
-        const hasAnchored = shellState.anchored.length > 0;
-        return hasFocus || hasAnchored;
+        return shellState.bookmarksVisible;
       }
 
       // ── DOM refs ───────────────────────────────────────────────────────
       const panel = root.getElementById('ux_vr_panel');
       const bottomBar = root.getElementById('ux_vr_bottom_bar');
       const focusZone = root.getElementById('ux_vr_focus_zone');
+      const panelBgNode = root.getElementById('ux_vr_panel_bg');
+      const barBgNode = root.getElementById('ux_vr_bar_bg');
 
       // ── Bookmark items refs (para anim cascada) ────────────────────────
       let itemRefs = []; // { box, text, idx }
@@ -214,55 +554,76 @@
 
       let dashboardRefs = [];
       function clearBookmarks() {
-        for (const node of dashboardRefs) node.remove();
+        for (const ref of itemRefs) dropPiece(ref.piece);
+        for (const node of dashboardRefs) { try { node.remove(); } catch (_) {} }
         dashboardRefs = [];
         itemRefs = [];
+      }
+
+      // La grilla: columnas y filas de paso fijo, centradas. **El ancho del
+      // panel sale de la grilla y no al revés**; hacerlo al revés obliga a
+      // retocar dos números cada vez que se agrega un marcador.
+      function gridSlot(i, count) {
+        const rows = Math.max(1, Math.ceil(count / GRID_COLS));
+        const row = Math.floor(i / GRID_COLS);
+        const inRow = Math.min(GRID_COLS, count - row * GRID_COLS);
+        return {
+          u: (i % GRID_COLS - (inRow - 1) / 2) * GRID_STEP_X,
+          y: GRID_Y + ((rows - 1) / 2 - row) * GRID_STEP_Y,
+          rows,
+        };
       }
 
       function buildBookmarks() {
         clearBookmarks();
         if (!panel) return;
-        const header = surface(panel, 0, 0.42);
-        plate(header, 0.94, 0.16, 0, -0.012, '#1B1F27');
-        caption(header, 'LUNA  /  Explorar', 0.022, 0.034);
-        caption(header, 'Mundos y aplicaciones', -0.030, 0.023, '#AAB5C6');
+
+        const n = BOOKMARKS.length;
+        const rows = Math.max(1, Math.ceil(n / GRID_COLS));
+        const half = (rows - 1) / 2 * GRID_STEP_Y;
+        const gridTop = GRID_Y + half + SIZE_APP / 2;
+        const gridBottom = GRID_Y - half + LABEL_DY - LABEL_SIZE;
+        const headerY = gridTop + HEADER_DY;
+
+        const header = surface(panel, 0, headerY, R_PANEL);
         dashboardRefs.push(header);
-        const positions = computePositions(BOOKMARKS.length);
-        // Narrow backing plates follow each column; no flat sheet cuts the arc.
-        for (const u of [-0.30, 0, 0.30]) {
-          const column = surface(panel, u, -0.16);
-          plate(column, 0.288, 0.89, 0, -0.014, '#1B1F27');
-          dashboardRefs.push(column);
-        }
-        for (let i = 0; i < BOOKMARKS.length; i++) {
+        caption(header, 'Explorar', 0.020, 0.040);
+        caption(header, 'Mundos y aplicaciones', -0.036, 0.023, TENUE);
+
+        for (let i = 0; i < n; i++) {
           const bm = BOOKMARKS[i];
-          const [u, y] = positions[i];
-          const tile = surface(panel, u, y);
+          const slot = gridSlot(i, n);
+          const tile = surface(panel, slot.u, slot.y, R_PANEL);
           dashboardRefs.push(tile);
-          const hit = plate(tile, 0.258, 0.276, -0.04, -0.006, '#1B1F27');
-          hit.setAttribute('touchable', 'true');
-          hit.setAttribute('name', 'open-' + bm.name);
-          const visual = root.createElement('group');
-          tile.appendChild(visual);
-          const box = plate(visual, SIZE_APP, SIZE_APP, 0, 0, PALETTE[i % PALETTE.length], 0.22);
-          box.setAttribute('name', 'app-' + bm.name);
-          box.setAttribute('texture', 'luna://icons/menu.png');
-          box.setAttribute('texture-region', [(i % 8) / 8, Math.floor(i / 8) / 4, 1 / 8, 1 / 4].join(','));
-          box.setAttribute('texture-face', 'front');
-          box.setAttribute('texture-fit', 'contain');
-          box.setAttribute('texture-padding', '0.22');
-          const text = caption(visual, bm.name, LABEL_DY, LABEL_SIZE);
-          highlight(hit, hit, '#1B1F27', '#38465D');
-          hit.addEventListener('toque', () => openBookmark(bm));
-          itemRefs.push({box, text, hit, visual, idx: i});
+          const it = piece(tile, {
+            x: 0, y: 0, size: SIZE_APP, corner: CORNER,
+            color: PALETTE[i % PALETTE.length],
+            glyph: GLYPHS[i] || 'app', padding: 0.24,
+            name: 'open-' + bm.name,
+            onTap: () => openBookmark(bm),
+          });
+          const text = caption(tile, bm.name, LABEL_DY, LABEL_SIZE);
+          itemRefs.push({ group: tile, piece: it, text, idx: i });
         }
+
+        // El fondo: una sola pastilla curva que cubre el encabezado y la
+        // grilla entera.
+        const top = headerY + 0.075;
+        const bottom = gridBottom - 0.045;
+        paintMesh(panelMesh, panelBgNode, [{
+          u: 0, y: (top + bottom) / 2, radius: R_PANEL, depth: 0.012,
+          width: (GRID_COLS - 1) * GRID_STEP_X + SIZE_APP + 0.16,
+          height: top - bottom, color: PLACA, phi: 0,
+        }]);
       }
 
       function applyScale(ref, factor) {
         const f = Math.max(0.001, factor);
-        // Labels and icons enter together; targeting remains stable throughout.
-        ref.visual.scale = {x: f, y: f, z: 1};
-        ref.hit.setAttribute('touchable', factor > 0.95 ? 'true' : 'false');
+        // El grupo entero: icono y etiqueta entran juntos.
+        ref.group.scale = { x: f, y: f, z: 1 };
+        // Escalar mueve el hitbox, así que mientras dura la cascada no puede
+        // recibir nada: el objetivo estaría en otro lado que el dibujo.
+        ref.piece.hit.setAttribute('touchable', factor > 0.95 ? 'true' : 'false');
       }
 
       function startEnterAnimation() {
@@ -286,7 +647,7 @@
         const n = itemRefs.length;
         let stillRunning = false;
         for (const ref of itemRefs) {
-          if (!ref.box) continue;
+          if (!ref.group) continue;
           const orderIdx = (animMode === 'exit') ? (n - 1 - ref.idx) : ref.idx;
           const itemElapsed = elapsed - orderIdx * STAGGER_MS;
           if (itemElapsed < 0) {
@@ -314,209 +675,144 @@
         }
       }
 
-      // ── Bottom bar (diff incremental) ──────────────────────────────────
-      // Las entries se reusan entre `applyVisibility()` calls — solo cambian
-      // attrs (color, label, onTap) y position cuando hace falta. Sin esto,
-      // cada applyVisibility destruía/recreaba todos los boxes → parpadeo.
-      let barEntries = []; // { box, text, key, onTap, closeOnTap, closeBox, closeText, label, color, x }
-
-      const BAR_CLOSE_SIZE = 0.055;
-      const BAR_CLOSE_DX   = BAR_SLOT_SIZE_X / 2 - BAR_CLOSE_SIZE / 2 - 0.008;
-      const BAR_CLOSE_DY   = 0;
-
-      function positionBarGroup(group, u) {
-        const radius = SHELL_SPAWN_DISTANCE - BAR_Z;
-        const angle = u / radius;
-        group.position = {x: radius * Math.sin(angle), y: BAR_Y,
-                          z: BAR_Z + radius * (1 - Math.cos(angle))};
-        group.rotation = {x: -Math.atan2(-BAR_Y, radius), y: -angle, z: 0};
-      }
-
-      function buildBarSlot(x, label, color, onTap, key, closeOnTap) {
-        const group = root.createElement('group');
-        bottomBar.appendChild(group);
-        positionBarGroup(group, x);
-        const box = root.createElement('plane');
-        box.setAttribute('border-radius', BAR_SLOT_BORDER);
-        box.setAttribute('color', color);
-        box.setAttribute('touchable', 'true');
-        box.position = { x: 0, y: 0, z: 0 };
-        box.scale = { x: BAR_SLOT_SIZE_X, y: BAR_SLOT_SIZE_Y, z: BAR_SLOT_DEPTH };
-        const onTapWrapper = () => {
-          const entry = barEntries.find(e => e.box === box);
-          if (entry && typeof entry.onTap === 'function') entry.onTap();
-        };
-        box.addEventListener('toque', onTapWrapper);
-        box.addEventListener('pointerenter', () => box.setAttribute('color', '#425779'));
-        box.addEventListener('pointerleave', () => {
-          const entry = barEntries.find(e => e.box === box);
-          if (entry && !box.matches(':hover')) box.setAttribute('color', entry.color);
-        });
-        group.appendChild(box);
-
-        const text = root.createElement('text');
-        text.setAttribute('value', label);
-        text.setAttribute('size', String(BAR_LABEL_SIZE));
-        text.setAttribute('color', '#FFFFFF');
-        text.position = { x: -0.027, y: 0, z: 0.008 };
-        group.appendChild(text);
-
-        const entry = { group, box, text, key, onTap, closeOnTap,
-                        closeBox: null, closeText: null,
-                        label, color, x };
-
-        if (typeof closeOnTap === 'function') {
-          attachBarSlotCloseBtn(entry, x);
-        }
-
-        return entry;
-      }
-
-      function attachBarSlotCloseBtn(entry, x) {
-        const closeBox = root.createElement('plane');
-        closeBox.setAttribute('border-radius', '0.3');
-        closeBox.setAttribute('color', '#E53935');
-        closeBox.setAttribute('touchable', 'true');
-        closeBox.position = { x: BAR_CLOSE_DX, y: BAR_CLOSE_DY, z: 0.004 };
-        closeBox.scale = { x: BAR_CLOSE_SIZE, y: BAR_CLOSE_SIZE, z: BAR_SLOT_DEPTH };
-        const wrapper = (event) => {
-          if (event.stopPropagation) event.stopPropagation();
-          // Re-lookup por si entries fueron reorganizados.
-          const e = barEntries.find(e => e.closeBox === closeBox);
-          if (e && typeof e.closeOnTap === 'function') e.closeOnTap();
-        };
-        closeBox.addEventListener('toque', wrapper);
-        entry.group.appendChild(closeBox);
-
-        const closeText = root.createElement('text');
-        closeText.setAttribute('value', 'x');
-        closeText.setAttribute('size', '0.025');
-        closeText.setAttribute('color', '#FFFFFF');
-        closeText.position = { x: BAR_CLOSE_DX, y: BAR_CLOSE_DY, z: 0.010 };
-        entry.group.appendChild(closeText);
-
-        entry.closeBox = closeBox;
-        entry.closeText = closeText;
-      }
-
-      function detachBarSlotCloseBtn(entry) {
-        try { if (entry.closeBox)  entry.closeBox.remove();  } catch (_) {}
-        try { if (entry.closeText) entry.closeText.remove(); } catch (_) {}
-        entry.closeBox = null;
-        entry.closeText = null;
-      }
-
-      function updateBarSlot(entry, x, label, color, onTap, closeOnTap) {
-        if (entry.color !== color) {
-          entry.box.setAttribute('color', color);
-          entry.color = color;
-        }
-        if (entry.label !== label) {
-          entry.text.setAttribute('value', label);
-          entry.label = label;
-        }
-        const moved = Math.abs(entry.x - x) > 0.0001;
-        if (moved) {
-          positionBarGroup(entry.group, x);
-          entry.box.position = { x: 0, y: 0, z: 0 };
-          entry.text.position = { x: -0.027, y: 0, z: 0.008 };
-          entry.x = x;
-        }
-        // onTap/closeOnTap pueden cambiar (indices anchored). El wrapper
-        // interno lee del entry actualizado.
-        entry.onTap = onTap;
-        entry.closeOnTap = closeOnTap;
-
-        const wantsClose = typeof closeOnTap === 'function';
-        if (wantsClose && !entry.closeBox) {
-          attachBarSlotCloseBtn(entry, x);
-        } else if (!wantsClose && entry.closeBox) {
-          detachBarSlotCloseBtn(entry);
-        } else if (wantsClose && moved && entry.closeBox) {
-          entry.closeBox.position = { x: BAR_CLOSE_DX, y: BAR_CLOSE_DY, z: 0.004 };
-          entry.closeText.position = { x: BAR_CLOSE_DX, y: BAR_CLOSE_DY, z: 0.010 };
-        }
-      }
-
-      function removeBarSlot(entry) {
-        try { if (entry.box)  entry.box.remove();  } catch (e) {}
-        try { if (entry.text) entry.text.remove(); } catch (e) {}
-        detachBarSlotCloseBtn(entry);
-        entry.group.remove();
-      }
-
+      // ── La barra ───────────────────────────────────────────────────────
+      // Tres pastillas, no una sola de punta a punta: una pastilla de 1,2 m
+      // sobre un cilindro habría que segmentarla, y partida en tres la
+      // curvatura no se nota y además queda dicho qué cosa va con qué.
+      //
+      //   [ usuario · wifi · batería ]  [ avisos · capturas ]  [ inicio · apps ]
+      //
+      // Los dos primeros grupos son fijos; el tercero crece con las ventanas
+      // abiertas. Todos los botones son redondos y del mismo lado: un ícono se
+      // reconoce de un vistazo, y las etiquetas de texto que había antes no se
+      // leían a esta distancia y obligaban a hacer los slots anchos.
+      let barPieces = [];      // piezas tocables vivas
+      let barNodes = [];       // grupos y textos, para poder barrer
+      let barSignature = null; // qué composición está dibujada
       let barPage = 0;
-      const BAR_APPS_PER_PAGE = 2;
-      function shortTitle(title) {
-        return title.length > 9 ? title.slice(0, 8) + '…' : title;
+      const BAR_APPS_PER_PAGE = 4;
+
+      function clearBar() {
+        for (const it of barPieces) dropPiece(it);
+        for (const node of barNodes) { try { node.remove(); } catch (_) {} }
+        barPieces = [];
+        barNodes = [];
+      }
+
+      // Centros de una fila de anchos iguales, centrada en cero.
+      function spread(count, step) {
+        const out = [];
+        for (let i = 0; i < count; i++) out.push((i - (count - 1) / 2) * step);
+        return out;
+      }
+
+      function barButton(parent, u, opts) {
+        const group = surface(parent, u, BAR_Y, R_BAR, BAR_TILT);
+        barNodes.push(group);
+        if (opts.glyph && !opts.onTap) {
+          // Indicador de estado: no se toca, así que no es una pieza. Un anillo
+          // que se enciende en algo que no responde miente.
+          const node = plane(group, { x: 0, y: 0, z: Z_FACE, sx: opts.size || BAR_ITEM,
+                                      sy: opts.size || BAR_ITEM,
+                                      color: opts.color || PLACA_ALTA, corner: 0.5 });
+          glyph(node, opts.glyph, 0.28);
+          return null;
+        }
+        const it = piece(group, {
+          x: 0, y: 0, size: opts.size || BAR_ITEM, corner: 0.5,
+          color: opts.color || PLACA_ALTA,
+          glyph: opts.glyph, padding: 0.26,
+          name: opts.name, onTap: opts.onTap,
+        });
+        barPieces.push(it);
+        return it;
       }
 
       function rebuildBottomBar() {
         if (!bottomBar) return;
 
-        // Lista lógica de slots (key estable + props actuales).
-        let slots = [];
-        slots.push({ key: 'menu', label: 'Inicio', color: '#30435F', onTap: onTapBarMenu });
+        // Qué ventanas hay. El grupo tres es inicio + una por ventana.
+        const apps = [];
         if (shellState.focusApp) {
-          slots.push({
-            key: 'focus',
-            label: shellState.focusApp.ready ? shortTitle(shellState.focusApp.title || 'App') : 'Cargando',
-            color: shellState.focusApp.minimized ? '#252A34' : '#304F68',
-            onTap: onTapBarFocus,
-            closeOnTap: onTapFocusClose,
+          apps.push({
+            key: 'focus', dim: !!shellState.focusApp.minimized,
+            title: shellState.focusApp.ready ? (shellState.focusApp.title || 'App') : 'Cargando',
+            onTap: onTapBarFocus, onClose: onTapFocusClose,
           });
         }
-        for (let i = 0; i < shellState.anchored.length; i++) {
-          const a = shellState.anchored[i];
-          const idx = i;
-          const labelText = shortTitle(a.title || 'App');
-          slots.push({
-            key: 'anc:' + a.tabId,
-            label: labelText,
-            color: a.minimized ? '#252A34' : '#3D3658',
+        for (const a of shellState.anchored) {
+          apps.push({
+            key: 'anc:' + a.tabId, dim: !!a.minimized, title: a.title || 'App',
             onTap: () => onTapBarAnchored(shellState.anchored.indexOf(a)),
-            closeOnTap: () => onTapBarAnchoredClose(shellState.anchored.indexOf(a)),
+            onClose: () => onTapBarAnchoredClose(shellState.anchored.indexOf(a)),
           });
         }
 
-        // Bound the width even with many windows. Menu and paging stay reachable.
-        const apps = slots.slice(1);
         const pages = Math.max(1, Math.ceil(apps.length / BAR_APPS_PER_PAGE));
         barPage = Math.max(0, Math.min(barPage, pages - 1));
-        if (pages > 1) {
-          const move = delta => { barPage = (barPage + delta + pages) % pages; rebuildBottomBar(); };
-          slots = [slots[0],
-            {key:'previous', label:'‹ Anterior', color:'#252A34', onTap:() => move(-1)},
-            ...apps.slice(barPage * BAR_APPS_PER_PAGE, (barPage + 1) * BAR_APPS_PER_PAGE),
-            {key:'next', label:(barPage + 1) + '/' + pages + ' ›', color:'#252A34', onTap:() => move(1)}];
-        }
+        const shown = apps.slice(barPage * BAR_APPS_PER_PAGE, (barPage + 1) * BAR_APPS_PER_PAGE);
 
-        // Layout horizontal centrado.
-        const total = slots.length;
-        const span = total * BAR_SLOT_SIZE_X + (total - 1) * BAR_SLOT_GAP;
-        let cursor = -span / 2 + BAR_SLOT_SIZE_X / 2;
-        for (const s of slots) {
-          s.x = cursor;
-          cursor += BAR_SLOT_SIZE_X + BAR_SLOT_GAP;
-        }
+        // **Sólo se redibuja si la composición cambió.** `applyVisibility()` se
+        // llama en cada transición de estado, y rehacer los nodos en cada una
+        // hacía parpadear la barra entera.
+        const signature = [barPage, pages].concat(shown.map(a => a.key + (a.dim ? ':m' : ''))).join('|');
+        if (signature === barSignature) return;
+        barSignature = signature;
+        clearBar();
 
-        // Diff: actualiza existentes, agrega nuevos, remueve obsoletos.
-        const keepKeys = new Set(slots.map(s => s.key));
-        // Remover los que ya no están.
-        barEntries = barEntries.filter(e => {
-          if (keepKeys.has(e.key)) return true;
-          removeBarSlot(e);
-          return false;
+        // Grupo 1: estado. Grupo 2: avisos. Grupo 3: inicio + ventanas.
+        const g1 = ['user', 'wifi', 'battery'];
+        const g2 = ['bell', 'capture'];
+        const g3n = 1 + shown.length + (pages > 1 ? 1 : 0);
+        const counts = [g1.length, g2.length, g3n];
+        const widths = counts.map(n => n * BAR_ITEM + (n - 1) * BAR_GAP + BAR_PAD);
+
+        // Centro de cada pastilla, centradas entre sí.
+        const totalW = widths.reduce((a, b) => a + b, 0) + (widths.length - 1) * BAR_GROUP_GAP;
+        const centers = [];
+        let cursor = -totalW / 2;
+        for (const w of widths) { centers.push(cursor + w / 2); cursor += w + BAR_GROUP_GAP; }
+
+        // Los fondos, en una malla: la barra se inclina hacia arriba, y `phi` es
+        // el ángulo con que la malla la levanta —el opuesto del rx del nodo.
+        paintMesh(barMesh, barBgNode, widths.map((w, i) => ({
+          u: centers[i], y: BAR_Y, radius: R_BAR, depth: 0.012, width: w,
+          height: BAR_H, color: PLACA, phi: -BAR_TILT,
+        })));
+
+        const place = (gi, j, n) => centers[gi] + spread(n, BAR_ITEM + BAR_GAP)[j];
+
+        for (let j = 0; j < g1.length; j++) {
+          barButton(bottomBar, place(0, j, g1.length), { glyph: g1[j], color: PLACA_ALTA });
+        }
+        barButton(bottomBar, place(1, 0, g2.length), { glyph: 'bell', color: PLACA_ALTA, onTap: () => {} });
+        barButton(bottomBar, place(1, 1, g2.length), { glyph: 'capture', color: PLACA_ALTA, onTap: () => {} });
+
+        let j = 0;
+        barButton(bottomBar, place(2, j++, g3n), {
+          glyph: 'home', color: '#30435F', name: 'bar-menu', onTap: onTapBarMenu,
         });
-
-        // Para cada slot deseado, actualizar o crear.
-        for (const s of slots) {
-          const existing = barEntries.find(e => e.key === s.key);
-          if (existing) {
-            updateBarSlot(existing, s.x, s.label, s.color, s.onTap, s.closeOnTap);
-          } else {
-            barEntries.push(buildBarSlot(s.x, s.label, s.color, s.onTap, s.key, s.closeOnTap));
-          }
+        for (const app of shown) {
+          const u = place(2, j++, g3n);
+          barButton(bottomBar, u, {
+            glyph: 'app', color: app.dim ? PLACA_ALTA : '#304F68',
+            name: 'bar-' + app.key, onTap: app.onTap,
+          });
+          // Cerrar: un punto chico arriba a la derecha del botón, no un cuadro
+          // rojo del ancho de un slot.
+          const closeGroup = surface(bottomBar, u + BAR_ITEM * 0.42, BAR_Y + BAR_ITEM * 0.42, R_BAR, BAR_TILT);
+          barNodes.push(closeGroup);
+          const closeIt = piece(closeGroup, {
+            x: 0, y: 0, z: 0, size: 0.030, corner: 0.5, color: '#B0413E',
+            name: 'close-' + app.key, onTap: app.onClose,
+          });
+          barPieces.push(closeIt);
+        }
+        if (pages > 1) {
+          barButton(bottomBar, place(2, j++, g3n), {
+            glyph: 'range', color: PLACA_ALTA, name: 'bar-page',
+            onTap: () => { barPage = (barPage + 1) % pages; barSignature = null; rebuildBottomBar(); },
+          });
         }
       }
 
@@ -710,41 +1006,93 @@
       }
 
       // ── Frame del focus (titlebar + border) ────────────────────────────
-      let focusFrameRefs = []; // { box, text }
+
+      // ── El marco de una ventana ────────────────────────────────────────
+      // Lo usan por igual la ventana con foco y las fijadas: son la misma cosa
+      // en distinto lugar, y tenerlo dos veces escrito fue lo que las dejó
+      // divergir. El marco es sólo el cuadro; el contenido lo dibuja la app en
+      // su propio espacio, ubicado por el slot que le manda el shell.
+      //
+      // Un marco NO va sobre el arco: es una superficie plana que se mira de
+      // frente. La curva es para el menú, que rodea al visitante.
+      const WIN_TITLEBAR = 0.075;
+      const WIN_EDGE     = 0.010;   // cuánto asoma el borde alrededor
+      const WIN_BTN      = 0.046;
+      const WIN_BTN_GAP  = 0.013;
+      const WIN_MARGIN   = 0.030;   // del último botón al filo
+      const WIN_CORNER   = 0.026;   // fracción del lado
+
+      function buildWindowFrame(parent, opts) {
+        const W = opts.width, H = opts.height, T = WIN_TITLEBAR;
+        const nodes = [];
+        const pieces = [];
+        const add = (node) => { nodes.push(node); return node; };
+
+        // Borde: un plano detrás y apenas más grande, igual que el anillo de un
+        // icono. Es lo único que separa la ventana del mundo cuando el fondo es
+        // oscuro, y por eso no puede ser del color de la ventana.
+        add(plane(parent, { x: 0, y: 0, z: -0.006,
+                            sx: W + WIN_EDGE * 2, sy: H + T + WIN_EDGE * 2,
+                            color: '#39445A', corner: WIN_CORNER }));
+        add(plane(parent, { x: 0, y: 0, z: -0.004, sx: W + WIN_EDGE * 0.6,
+                            sy: H + T + WIN_EDGE * 0.6, color: PLACA, corner: WIN_CORNER }));
+
+        // Barra de título y hueco del contenido. La barra NO lleva placa propia:
+        // dibujar un rectángulo más claro encima del fondo daba dos barras
+        // apiladas, una dentro de la otra, y el borde se leía dos veces. Lo que
+        // la separa del contenido es el hueco negro de abajo, nada más.
+        const titleY = H / 2 + T / 2;
+        add(plane(parent, { x: 0, y: 0, z: -0.003, sx: W, sy: H,
+                            color: '#0E1116', corner: 0.02 }));
+
+        // Los botones ocupan la derecha de la barra; el título se centra en lo
+        // que sobra, no en la barra entera, porque si no queda debajo de ellos.
+        const btnBlock = 3 * WIN_BTN + 2 * WIN_BTN_GAP;
+        const btnLeft = W / 2 - WIN_MARGIN - btnBlock;
+
+        const title = root.createElement('text');
+        title.setAttribute('value', windowTitle(opts.title));
+        title.setAttribute('size', '0.028');
+        title.setAttribute('color', TENUE);
+        title.setAttribute('touchable', 'false');
+        title.position = { x: (-W / 2 + btnLeft) / 2, y: titleY, z: 0.006 };
+        parent.appendChild(title);
+        nodes.push(title);
+
+        // Redondos y con glifo: los cuadrados de color con una letra adentro no
+        // se leían a esta distancia y ocupaban media barra.
+        let bx = W / 2 - WIN_MARGIN - WIN_BTN / 2;
+        const button = (glyphName, color, onTap) => {
+          const it = piece(parent, {
+            x: bx, y: titleY, size: WIN_BTN, corner: 0.5,
+            color, glyph: glyphName, padding: 0.28, onTap,
+          });
+          bx -= WIN_BTN + WIN_BTN_GAP;
+          pieces.push(it);
+          return it;
+        };
+
+        button('close', '#B0413E', opts.onClose);
+        button('minimize', PLACA_ALTA, opts.onMinimize);
+        const anchorBtn = opts.onAnchor ? button('anchor', opts.anchorColor || PLACA_ALTA, opts.onAnchor) : null;
+
+        return { nodes, pieces, title, anchorBtn };
+      }
+
+      function clearWindowFrame(frame) {
+        if (!frame) return;
+        for (const it of frame.pieces) dropPiece(it);
+        for (const node of frame.nodes) { try { node.remove(); } catch (_) {} }
+        frame.pieces = [];
+        frame.nodes = [];
+      }
+
+      // ── Marco del focus ────────────────────────────────────────────────
+      let focusFrame = null;
 
       function clearFocusFrame() {
-        for (const r of focusFrameRefs) {
-          try { if (r.box)  r.box.remove();  } catch (_) {}
-          try { if (r.text) r.text.remove(); } catch (_) {}
-        }
-        focusFrameRefs = [];
-      }
-
-      function addFrameBox(opts) {
-        const box = root.createElement('plane');
-        box.setAttribute('color', opts.color || '#1a1a2e');
-        if (opts.borderRadius) box.setAttribute('border-radius', String(opts.borderRadius));
-        box.setAttribute('touchable', opts.touchable ? 'true' : 'false');
-        if (opts.touchable) highlight(box, box, opts.color, '#52627C');
-        box.position = { x: opts.x, y: opts.y, z: opts.z };
-        box.scale = { x: opts.sx, y: opts.sy, z: opts.sz };
-        if (typeof opts.onTap === 'function') {
-          box.addEventListener('toque', opts.onTap);
-        }
-        focusZone.appendChild(box);
-        focusFrameRefs.push({ box });
-        return box;
-      }
-
-      function addFrameText(opts) {
-        const text = root.createElement('text');
-        text.setAttribute('value', String(opts.value || ''));
-        text.setAttribute('size', String(opts.size || 0.04));
-        text.setAttribute('color', opts.color || '#FFFFFF');
-        text.position = { x: opts.x, y: opts.y, z: opts.z };
-        focusZone.appendChild(text);
-        focusFrameRefs.push({ text });
-        return text;
+        clearWindowFrame(focusFrame);
+        focusFrame = null;
       }
 
       function windowTitle(title) {
@@ -755,54 +1103,13 @@
       function buildFocusFrame(title) {
         clearFocusFrame();
         if (!focusZone) return;
-
-        const W = FOCUS_SLOT_W;
-        const H = FOCUS_SLOT_H;
-        const T = FOCUS_TITLEBAR_H;
-        const TH = FOCUS_FRAME_THICK;
-
-        // Borde de fondo (un solo plane atrás).
-        addFrameBox({ x: 0, y: 0, z: -0.005,
-                      sx: W + TH * 2, sy: H + T + TH * 2, sz: 0.005,
-                      color: '#0D1B2A', borderRadius: 0.04 });
-
-        // Titlebar arriba.
-        const titleY = H / 2 + T / 2;
-        addFrameBox({ x: 0, y: titleY, z: 0,
-                      sx: W, sy: T, sz: 0.012,
-                      color: '#1a2030', borderRadius: 0.02 });
-        addFrameText({ x: -0.16, y: titleY, z: 0.008,
-                       value: windowTitle(title), size: 0.035, color: '#B0BEC5' });
-
-        // Botones titlebar (de derecha a izq): close, min, anchor.
-        const btnY = titleY;
-        let bx = W / 2 - FOCUS_BTN_SIZE / 2 - 0.02;
-        // Close (rojo)
-        addFrameBox({ x: bx, y: btnY, z: 0.012,
-                      sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
-                      color: '#EF4444', borderRadius: 0.02, touchable: true,
-                      onTap: onTapFocusClose });
-        addFrameText({ x: bx, y: btnY, z: 0.020, value: 'X', size: 0.035 });
-        // Minimize (gris)
-        bx -= FOCUS_BTN_SIZE + FOCUS_BTN_GAP;
-        addFrameBox({ x: bx, y: btnY, z: 0.012,
-                      sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
-                      color: '#3A4659', borderRadius: 0.02, touchable: true,
-                      onTap: onTapFocusMinimize });
-        addFrameText({ x: bx, y: btnY, z: 0.020, value: '_', size: 0.045 });
-        // Anchor (azul)
-        bx -= FOCUS_BTN_SIZE + FOCUS_BTN_GAP;
-        addFrameBox({ x: bx, y: btnY, z: 0.012,
-                      sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
-                      color: '#3B82F6', borderRadius: 0.02, touchable: true,
-                      onTap: onTapFocusAnchor });
-        addFrameText({ x: bx, y: btnY, z: 0.020, value: 'Fijar', size: 0.021 });
-
-        // Viewport silhouette (un cuadro fino para indicar el slot — la app
-        // dibuja por encima en world coords).
-        addFrameBox({ x: 0, y: 0, z: -0.001,
-                      sx: W, sy: H, sz: 0.002,
-                      color: '#16213E', borderRadius: 0.02 });
+        focusFrame = buildWindowFrame(focusZone, {
+          width: FOCUS_SLOT_W, height: FOCUS_SLOT_H, title,
+          onClose: onTapFocusClose,
+          onMinimize: onTapFocusMinimize,
+          onAnchor: onTapFocusAnchor,
+          anchorColor: '#30435F',
+        });
       }
 
       // ── Slot pose computation ──────────────────────────────────────────
@@ -972,6 +1279,10 @@
         };
       }
 
+      // Una ventana fijada es el mismo marco que la del foco, en su propia pose
+      // world. Antes eran dos constructores copiados, y por eso divergieron: el
+      // botón de fijar decía «Siempre» acá y «Fijar» allá, con dos tamaños de
+      // letra distintos.
       function ensureAnchoredFrame(anc, idx) {
         if (anc.frame) return anc.frame;
         if (!anchoredZone) return null;
@@ -981,84 +1292,22 @@
         group.rotation = anc.rotation;
         anchoredZone.appendChild(group);
 
-        const refs = [];
-        const addBox = (opts) => {
-          const b = root.createElement('plane');
-          b.setAttribute('color', opts.color || '#1a1a2e');
-          if (opts.borderRadius) b.setAttribute('border-radius', String(opts.borderRadius));
-          b.setAttribute('touchable', opts.touchable ? 'true' : 'false');
-          if (opts.touchable) highlight(b, b, () => b._idleColor || opts.color, '#52627C');
-          b.position = { x: opts.x, y: opts.y, z: opts.z };
-          b.scale = { x: opts.sx, y: opts.sy, z: opts.sz };
-          if (typeof opts.onTap === 'function') b.addEventListener('toque', opts.onTap);
-          group.appendChild(b);
-          refs.push({ box: b });
-          return b;
-        };
-        const addText = (opts) => {
-          const t = root.createElement('text');
-          t.setAttribute('value', String(opts.value || ''));
-          t.setAttribute('size', String(opts.size || 0.035));
-          t.setAttribute('color', opts.color || '#FFFFFF');
-          t.position = { x: opts.x, y: opts.y, z: opts.z };
-          group.appendChild(t);
-          refs.push({ text: t });
-          return t;
-        };
+        const win = buildWindowFrame(group, {
+          width: ANCHORED_SLOT_W, height: ANCHORED_SLOT_H, title: anc.title,
+          onClose: () => onTapAnchoredClose(shellState.anchored.indexOf(anc)),
+          onMinimize: () => onTapAnchoredMinimize(shellState.anchored.indexOf(anc)),
+          onAnchor: () => onTapAnchoredAlwaysOn(shellState.anchored.indexOf(anc)),
+          anchorColor: anc.alwaysOn ? '#2F7D5B' : PLACA_ALTA,
+        });
 
-        const W = ANCHORED_SLOT_W;
-        const H = ANCHORED_SLOT_H;
-        const T = FOCUS_TITLEBAR_H;
-        const TH = FOCUS_FRAME_THICK;
-
-        addBox({ x: 0, y: 0, z: -0.005,
-                 sx: W + TH * 2, sy: H + T + TH * 2, sz: 0.005,
-                 color: '#0D1B2A', borderRadius: 0.04 });
-
-        const titleY = H / 2 + T / 2;
-        addBox({ x: 0, y: titleY, z: 0,
-                 sx: W, sy: T, sz: 0.012,
-                 color: '#1a2030', borderRadius: 0.02 });
-        const titleText = addText({ x: -0.16, y: titleY, z: 0.008,
-                                    value: windowTitle(anc.title), size: 0.035, color: '#B0BEC5' });
-
-        // Botones titlebar anchored (de derecha a izq): close, min, always_on.
-        const btnY = titleY;
-        let bx = W / 2 - FOCUS_BTN_SIZE / 2 - 0.02;
-        // Close (rojo)
-        addBox({ x: bx, y: btnY, z: 0.012,
-                 sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
-                 color: '#EF4444', borderRadius: 0.02, touchable: true,
-                 onTap: () => onTapAnchoredClose(shellState.anchored.indexOf(anc)) });
-        addText({ x: bx, y: btnY, z: 0.020, value: 'X', size: 0.035 });
-        // Minimize (gris)
-        bx -= FOCUS_BTN_SIZE + FOCUS_BTN_GAP;
-        addBox({ x: bx, y: btnY, z: 0.012,
-                 sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
-                 color: '#3A4659', borderRadius: 0.02, touchable: true,
-                 onTap: () => onTapAnchoredMinimize(shellState.anchored.indexOf(anc)) });
-        addText({ x: bx, y: btnY, z: 0.020, value: '_', size: 0.045 });
-        // Always_on (verde si on, gris si off) — color refrescado en updateAnchoredFrame.
-        bx -= FOCUS_BTN_SIZE + FOCUS_BTN_GAP;
-        const aoBox = addBox({ x: bx, y: btnY, z: 0.012,
-                 sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
-                 color: anc.alwaysOn ? '#10B981' : '#455A64',
-                 borderRadius: 0.02, touchable: true,
-                 onTap: () => onTapAnchoredAlwaysOn(shellState.anchored.indexOf(anc)) });
-        addText({ x: bx, y: btnY, z: 0.020, value: 'Siempre', size: 0.017 });
-
-        // Viewport silhouette.
-        addBox({ x: 0, y: 0, z: -0.001,
-                 sx: W, sy: H, sz: 0.002,
-                 color: '#16213E', borderRadius: 0.02 });
-
-        anc.frame = { group, refs, titleText, aoBox };
+        anc.frame = { group, win, titleText: win.title, aoPiece: win.anchorBtn };
         return anc.frame;
       }
 
       function clearAnchoredFrame(anc) {
         if (!anc || !anc.frame) return;
-        // Quitar el group entero arrastra a los hijos.
+        clearWindowFrame(anc.frame.win);
+        // Quitar el group entero arrastra lo que quede colgando.
         try { if (anc.frame.group) anc.frame.group.remove(); } catch (_) {}
         anc.frame = null;
       }
@@ -1069,11 +1318,11 @@
         anc.frame.group.rotation = anc.rotation;
       }
 
+      // Verde cuando la ventana se queda quieta en el mundo aunque el menú se
+      // vaya; el color de fondo de la barra cuando sigue al shell.
       function updateAnchoredFrameAOColor(anc) {
-        if (!anc || !anc.frame || !anc.frame.aoBox) return;
-        const button = anc.frame.aoBox;
-        button._idleColor = anc.alwaysOn ? '#10B981' : '#455A64';
-        if (!button.matches(':hover')) button.setAttribute('color', button._idleColor);
+        if (!anc || !anc.frame || !anc.frame.aoPiece) return;
+        recolorPiece(anc.frame.aoPiece, anc.alwaysOn ? '#2F7D5B' : PLACA_ALTA);
       }
 
       function sendAnchoredSlotToApp(idx) {
@@ -1284,6 +1533,32 @@
       buildBookmarks();
       applyVisibility();
       console.log('[ux_vr] Shell loaded —', BOOKMARKS.length, 'bookmarks');
+
+      // <<< DEV: abrir el shell solo y decir dónde quedó, para poder mirarlo
+      // sin apretar el botón menu del mando. QUITAR.
+      setTimeout(() => {
+        toggleShell();
+        try {
+          const p = panel.position, r = panel.rotation;
+          console.log(`[dev] shell pose ${p.x.toFixed(3)} ${p.y.toFixed(3)} ${p.z.toFixed(3)} yaw ${r.y.toFixed(3)}`);
+        } catch (e) { console.log("[dev] pose ilegible " + e); }
+      }, 1200);
+
+      setTimeout(() => {
+        try {
+          const r0 = itemRefs[0];
+          console.log(`[dev] grupo scale ${JSON.stringify(r0.group.scale)}`);
+          console.log(`[dev] face  scale ${JSON.stringify(r0.piece.face.scale)} pos ${JSON.stringify(r0.piece.face.position)}`);
+          console.log(`[dev] ring  scale ${JSON.stringify(r0.piece.ring.scale)}`);
+          console.log(`[dev] SIZE_APP=${SIZE_APP} RING=${RING}`);
+        } catch (e) { console.log("[dev] medidas ilegibles " + e); }
+      }, 3500);
+
+      setTimeout(() => {
+        const bm = BOOKMARKS.find(b => b.kind === 'app-embedded');
+        if (bm) { console.log(`[dev] abriendo ${bm.url}`); openBookmark(bm); }
+      }, 4500);
+      // >>> DEV
     </script>
   </space>
 </hsml>
