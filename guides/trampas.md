@@ -308,6 +308,29 @@ que guardarte las dimensiones originales en el script y multiplicarlas vos.
 
 ---
 
+**El audio no avisa cuando no suena.** `new Audio(...)` y `new AudioStream(...)`
+se construyen igual sin el permiso `audio`; el rechazo aparece recién cuando el
+comando llega al mixer, o sea en el `play()`. Y un `AudioStream` que se queda sin
+datos emite silencio sin emitir ningún evento: quedarse corto de muestras se
+parece exactamente a una pausa querida. Ver [audio.md](audio.md).
+
+**Las voces mueren con su worker.** El audio pertenece al isolate que lo creó: se
+descarta al descargar el espacio, al reiniciar el runtime y al revocarse el
+permiso. No hay sonido que sobreviva a una navegación.
+
+**`URL.createObjectURL` no se limpia solo.** 128 URLs vivas y 64 MiB de cuota, y
+el `RangeError` aparece en la creación número 129, lejos de la que sobra. Un
+`revokeObjectURL` por cada `createObjectURL`.
+
+**`IO.Buffer` y `pipe.write` escriben lo que entra, no lo que les diste.**
+Devuelven cuántos bytes tomaron; el `Buffer` no crece y el `pipe` está acotado
+por su capacidad. Ignorar ese número pierde la cola del mensaje en silencio.
+`writeAll` de `AudioStream` es la única que hace el bucle sola.
+
+**`TextDecoder` no decodifica por partes.** `{ stream: true }` tira `TypeError`,
+y con razón: un carácter multibyte partido entre dos trozos no se reconstruye
+después. Hay que juntar los bytes y decodificar una vez.
+
 ---
 
 ## Patrones
@@ -374,7 +397,7 @@ fina no puede tener esquinas grandes: el radio choca contra el espesor y la caja
 se vuelve una esfera. Es exactamente lo que le pasa hoy al menú de VR, que usa
 una caja de 0,22 con radio 0,2 —`rounded_box_radii(0.2, (0.22,0.22,0.025))` da
 `[0.499, 0.499, 0.499]`, los tres ejes saturados—. Para una tarjeta con esquinas
-grandes, `plane`. Ver [MENU_VR_LAYOUT.md](disenos/menu-vr.md).
+grandes, `plane`. Ver [el diseño del menú VR](disenos/menu-vr.md).
 
 **Los `plane` son de doble cara.** No hace falta duplicarlos ni girarlos para
 verlos desde atrás.
@@ -389,8 +412,6 @@ cada script espere en un `requestAnimationFrame` a que aparezca lo que necesita.
 **`setTransformBatch` toma 7 floats por nodo**: `[nodeId, px,py,pz, rx,ry,rz, …]`,
 en coordenadas **locales**. La escala **no** va en el batch: para eso está el
 proxy `el.scale`, que sí cruza el borde una vez por acceso.
-
----
 
 ---
 

@@ -87,6 +87,8 @@ un motor de juego. Se parece más al DOM que a Unity:
 | [llegada.md](llegada.md) | `<spawn>`: dónde aparece el visitante |
 | [ubicacion.md](ubicacion.md) | `location`, `URL`, navegar entre documentos |
 | [red.md](red.md) | `fetch`, y qué permisos pide |
+| [audio.md](audio.md) | `Audio` y `AudioStream`: clips y PCM generado |
+| [binario.md](binario.md) | `Blob`, `TextEncoder`/`TextDecoder`, `IO.Buffer`, `IO.pipe` |
 | [almacenamiento.md](almacenamiento.md) | `localStorage` por origen |
 | [entorno.md](entorno.md) | el entorno nativo que monta el shell |
 
@@ -120,6 +122,8 @@ Cuando una guía y el motor no coincidan, gana el motor. Y avisá.
 | Permisos / bundles | `crates/luna/src/permissions.rs` |
 | Eventos (raycast) | `crates/luna/src/touch.rs` |
 | Mallas dinámicas | `crates/js_runtime/src/mesh.rs` |
+| Audio (ops y mezcla) | `crates/js_runtime/src/audio.rs`, `crates/luna/src/audio.rs` |
+| Blob, texto y buffers | `crates/js_runtime/binary.js` |
 | Páginas internas de ejemplo | `crates/luna/src/routes.rs` |
 
 ## Lo que no está acá

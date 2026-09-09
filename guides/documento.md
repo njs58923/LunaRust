@@ -57,8 +57,6 @@ De `tags.rs`, la lista completa:
 
 ---
 
----
-
 ## Atributos
 
 ### Transformación (cualquier nodo)
@@ -160,8 +158,6 @@ pz, nz, nx, px, py, ny
 
 Carga las 6: `cielo/pz.png`, `cielo/nz.png`, … Requiere `resources="skybox"`;
 sin el permiso el nodo se monta vacío y se loguea un warning.
-
----
 
 ---
 

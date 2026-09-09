@@ -267,7 +267,7 @@ siguen evolucionando. Las APIs pueden cambiar.
 
 | Dónde | Qué |
 |---|---|
-| **[guides/](guides/index.md)** | cómo **usar** la plataforma: escribir documentos, permisos, API JS, eventos, texturas, mallas |
+| **[guides/](guides/index.md)** | cómo **usar** la plataforma: escribir documentos, permisos, API JS, eventos, texturas, mallas, audio |
 | [guides/trampas.md](guides/trampas.md) | lo que falla en silencio — la página más útil de todas |
 | [guides/disenos/](guides/disenos/) | propuestas y notas de diseño, no referencia de lo que existe |
 | [docs/](docs/) | análisis, mediciones y estado de implementación |

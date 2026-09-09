@@ -93,17 +93,25 @@ requestAnimationFrame / cancelAnimationFrame
 console.log / warn / error
 await fetch(url)                 // requiere fetch_text (lectura) o fetch_http, mismo origen
 localStorage                     // persistente por origen, sin permiso
+TextEncoder / TextDecoder        // sólo UTF-8, sin permiso
+Blob / URL.createObjectURL       // hasta 8 MiB, local al isolate, sin permiso
+IO.Buffer / IO.pipe              // bytes en memoria, sin permiso
 new WebSocket('ws://...')        // onopen/onmessage/onerror/onclose, polling cada 16 ms
 location.href = '...'            // navegar (requiere navigate_self / navigate_global)
 ```
 
 `localStorage` se separa por **protocolo + host + puerto**. Todas las páginas
 `luna://` comparten un almacén interno. `data:` y `file:` reciben `SecurityError`.
-Detalle completo en [`../LOCAL_STORAGE.md`](almacenamiento.md).
+Detalle completo en [almacenamiento.md](almacenamiento.md). Los bytes, el `Blob`
+y los buffers están en [binario.md](binario.md).
 
 ### APIs condicionadas a permisos
 
 ```js
+// audio
+const clip = new Audio('./timbre.ogg');   // ver audio.md
+const voz = new AudioStream({ sampleRate: 24000, channels: 2 });
+
 // read_hmd_pose
 const pose = hiperspace.dimention.readViewerPose();
 // { mode:'vr'|'desktop', px,py,pz, forwardX/Y/Z, yaw,pitch, qx,qy,qz,qw, aspect,fovY }
@@ -124,8 +132,6 @@ Tipos de espacio:
 - `spatial` — "irte a otro lugar"; al abrir uno, el shell cierra los otros spatial.
 - `app` — aditivo, sobrevive a cambios de espacio spatial.
 - `app-embedded` — aditivo, además negocia un slot con el shell vía `dimention.embedded`.
-
----
 
 ---
 

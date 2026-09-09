@@ -148,6 +148,4 @@ En VR: gatillo derecho para `toque`.
 
 ---
 
----
-
 Volver al [índice de guías](index.md).
