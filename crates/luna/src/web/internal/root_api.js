@@ -215,21 +215,15 @@
         kind = options.kind;
       }
 
+      // Qué spatial hay ya montadas. Sólo se junta la lista: qué hacer con
+      // ellas se decide más abajo, cuando ya se calcularon los grants.
+      const spatialesPrevias = [];
       if (kind === 'spatial' && !options.systemShell) {
-        // Cerrar todas las spatial existentes ANTES de crear la nueva, para
-        // evitar que la nueva entre transitoria al barrido si fuera ya child.
-        const toUnmount = [];
         for (const [id, entry] of registry) {
           if (id === this._uxSpaceId) continue;
-          // Las managed-by=dimension.luna que no son el shell son tabs spatiales
-          // o apps que abrimos nosotros — distinguimos por entry.kind.
-          if ((entry.kind || 'spatial') === 'spatial') {
-            toUnmount.push(id);
-          }
-        }
-        if (toUnmount.length) {
-          console.log('[root] mountSpace spatial', url, '— closing', toUnmount.length, 'previous spatial(s)');
-          for (const id of toUnmount) this.unmountSpace(id);
+          // Las managed-by=dimension.luna que no son el shell son tabs
+          // spatiales o apps que abrimos nosotros — las distingue entry.kind.
+          if ((entry.kind || 'spatial') === 'spatial') spatialesPrevias.push(id);
         }
       }
 
@@ -250,6 +244,46 @@
       }
 
       const initialVisible = options.visible !== false && kind !== 'app-embedded';
+
+      // **Una spatial reusa la que ya está, no la reemplaza.**
+      //
+      // Antes se desmontaba la anterior y se creaba un espacio nuevo: el mundo
+      // cambiaba igual, pero cada vez con otra pestaña. Cruzar una puerta del
+      // atrio no hace eso — desde la página, `location.href` se resuelve como
+      // `SelfNav` y el motor le cambia el `src` al include de esa misma
+      // pestaña, así que la escena se reemplaza **en el lugar**. Acá se hace lo
+      // mismo a mano, que es todo lo que `SelfNav` hace: cambiarle la URL al
+      // include.
+      //
+      // Se conserva el `tabId` viejo a propósito. El host ya reservó uno nuevo
+      // para este pedido y queda sin usar —un hueco en la numeración—, pero eso
+      // es más barato que romper la identidad de la pestaña, que es justamente
+      // lo que se venía a arreglar.
+      if (spatialesPrevias.length) {
+        const reusarId = spatialesPrevias[0];
+        const previa = registry.get(reusarId);
+        // Si por alguna razón hubiera más de una, el resto se cierra: la regla
+        // de que hay una sola spatial a la vez sigue valiendo.
+        for (let i = 1; i < spatialesPrevias.length; i++) this.unmountSpace(spatialesPrevias[i]);
+
+        if (previa && previa.space) {
+          console.log('[root] mountSpace spatial', url, '— reusando tab', reusarId);
+          const inc = ensureInclude(previa);
+          if (Array.isArray(grants) && grants.length) {
+            previa.space.setAttribute('resources', grants.join(','));
+            inc.setAttribute('resources', grants.join(','));
+          }
+          applySpaceOptions(previa, {
+            ...options,
+            url,
+            tabId: null,   // la pestaña es la misma: no se le pisa el id
+            visible: initialVisible,
+          });
+          return reusarId;
+        }
+        // La entrada estaba rota: se cierra y se sigue por el camino normal.
+        this.unmountSpace(reusarId);
+      }
 
       const space = root.createElement('space');
       const publicId = registerSpace(space, kind);
