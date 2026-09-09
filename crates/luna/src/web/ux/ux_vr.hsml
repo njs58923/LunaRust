@@ -8,27 +8,29 @@
   </head>
 
   <!-- Controller de VR.
-       No dibuja ni decide nada: declara los contenedores, carga el shell desde
-       `luna://internal/shell_app.js` y le pasa por callbacks todo lo que sale
-       hacia el motor. Las mil quinientas líneas que vivían acá —la interfaz y la
-       máquina de estados de pestañas, slots y ventanas fijadas— están en ese
-       módulo, sin un cambio de comportamiento.
+       El menú es un componente aparte —`luna://shell_menu`, montado como
+       `<include>`— y lo que queda de este lado es el estado, las ventanas de
+       apps y el puente con el motor.
 
-       Lo que queda es lo único que de verdad es de este controller: qué
-       marcadores hay y que el botón menu del mando abre el shell. -->
+       El corte no es de gusto: `bind_embedded_slot` exige que el nodo ancla de
+       una ventana embebida pertenezca al space que manda el slot, y ese space es
+       éste. Un marco dibujado dentro del include tendría el ancla en otro space
+       y el slot sería rechazado. Por eso el menú se va y las ventanas se quedan. -->
   <space id="ux_vr" resources="vr_locomotion,read_system_input,manage_tabs,read_hmd_pose">
-    <group id="ux_vr_panel" visible="false">
-      <!-- El fondo del panel es UNA malla y no un <plane>: el panel se apoya en
-           un cilindro de 1,5 m y un plano de 1,3 m de ancho se hunde 14 cm en el
-           medio respecto de los iconos, que sí siguen el arco. -->
-      <model id="ux_vr_panel_bg"/>
-    </group>
+    <!-- El menú.
+         `props` y `events` son lo que abre el canal de componentes: sin al menos
+         uno de los dos, el motor no crea el Channel y el include queda mudo.
+         `props` arranca vacío porque el estado real se lo manda el shell apenas
+         monta; `events` declara los únicos tipos que el menú puede emitir — uno
+         que no esté en esta lista se rechaza.
 
-    <group id="ux_vr_bottom_bar" visible="false">
-      <!-- Las tres pastillas de la barra, también en una sola malla. Va aparte
-           de la del panel porque la barra se ve cuando el panel no. -->
-      <model id="ux_vr_bar_bg"/>
-    </group>
+         No lleva `resources`: dibujar y recibir punteros no necesita permiso, y
+         los includes **no** heredan nada por defecto. Si algún día el menú
+         necesitara uno, habría que nombrarlo acá Y pedirlo en su `<space>`. -->
+    <include id="ux_vr_menu"
+             src="luna://shell_menu"
+             props="{}"
+             events="open,menu,window"/>
 
     <group id="ux_vr_focus_zone" visible="false"/>
 
@@ -36,6 +38,7 @@
          ventana, los que deciden. -->
     <group id="ux_vr_anchored_zone" visible="true"/>
 
+    <script src="luna://internal/shell_draw.js"/>
     <script src="luna://internal/shell_app.js"/>
     <script>
       // ── Marcadores ───────────────────────────────────────────────────────
@@ -53,11 +56,11 @@
         { name: 'Range',     url: 'luna://range_demo',    kind: 'spatial' },
       ];
 
-      // El script externo llega asincrónico y el motor no garantiza que este
-      // corra después. Esperar a que `ShellApp` exista es más barato que ordenar
-      // la carga, y falla ruidoso si el módulo no llegó.
+      // Los scripts externos llegan asincrónicos y el motor no garantiza el
+      // orden. Esperar a que los dos existan es más barato que ordenarlos, y
+      // falla ruidoso si alguno no llegó.
       (function esperar(intentos) {
-        if (!globalThis.ShellApp) {
+        if (!globalThis.ShellDraw || !globalThis.ShellApp) {
           if (intentos > 200) { console.warn('[ux_vr] el shell no llegó'); return; }
           setTimeout(() => esperar(intentos + 1), 16);
           return;
@@ -70,13 +73,11 @@
 
         const shell = globalThis.ShellApp.mount({
           root: root,
-          panel: root.getElementById('ux_vr_panel'),
-          bottomBar: root.getElementById('ux_vr_bottom_bar'),
+          menuInclude: root.getElementById('ux_vr_menu'),
           focusZone: root.getElementById('ux_vr_focus_zone'),
           anchoredZone: root.getElementById('ux_vr_anchored_zone'),
-          panelBg: root.getElementById('ux_vr_panel_bg'),
-          barBg: root.getElementById('ux_vr_bar_bg'),
           bookmarks: BOOKMARKS,
+          distance: 1.5,
 
           // ── Todo lo que sale hacia el motor entra por acá ────────────────
           // El módulo no conoce `dimention` ni los ops del runtime: recibe
@@ -95,7 +96,8 @@
         });
 
         // El botón menu del mando, normalizado por `system_input` — el mismo
-        // evento que manda ESC en escritorio.
+        // evento que manda ESC en escritorio. Le llega a este space; el include
+        // no lo necesita porque el estado del menú lo lleva el shell.
         root.addEventListener('systeminput', (evt) => {
           if (evt.action === 'shell') shell.toggle();
         });

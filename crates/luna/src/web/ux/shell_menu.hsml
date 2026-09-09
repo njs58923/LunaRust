@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head>
+    <name>Menú del shell</name>
+  </head>
+
+  <!-- El menú del shell, como componente.
+       Se monta con un `<include src="luna://shell_menu" props="…" events="…">`
+       y corre en su propio isolate: no abre pestañas, no lee la pose del
+       visitante y no le habla a las apps. Recibe qué dibujar por `props` y avisa
+       qué se tocó con `component.emit`.
+
+       Por eso este espacio no pide **ningún** recurso: dibujar y recibir
+       punteros no necesita permiso, y todo lo que sí lo necesita quedó del otro
+       lado del include a propósito. Si algún día pidiera alguno, el padre
+       tendría que delegárselo explícitamente en el atributo `resources` del
+       include — sin eso no le llega nada. -->
+  <space id="shell_menu">
+    <group id="menu_panel" visible="false">
+      <!-- El fondo del panel es UNA malla y no un <plane>: el panel se apoya en
+           un cilindro de 1,5 m y un plano de 1,3 m de ancho se hunde 14 cm en el
+           medio respecto de los iconos, que sí siguen el arco. -->
+      <model id="menu_panel_bg"/>
+    </group>
+
+    <group id="menu_bar" visible="false">
+      <!-- Las pastillas de la barra, en su propia malla: la barra se ve cuando
+           el panel no. -->
+      <model id="menu_bar_bg"/>
+    </group>
+
+    <script src="luna://internal/shell_draw.js"/>
+    <script src="luna://internal/shell_menu.js"/>
+  </space>
+</hsml>

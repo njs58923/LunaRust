@@ -142,6 +142,17 @@ impl VirtualRoutes {
             "internal/shell_app.js".to_string(),
             RouteHandler::Static(SCRIPT_SHELL_APP),
         );
+        routes.insert(
+            "internal/shell_draw.js".to_string(),
+            RouteHandler::Static(SCRIPT_SHELL_DRAW),
+        );
+        routes.insert(
+            "internal/shell_menu.js".to_string(),
+            RouteHandler::Static(SCRIPT_SHELL_MENU),
+        );
+        // El menú del shell, como documento: lo monta un <include> del
+        // controller y corre en su propio isolate.
+        routes.insert("shell_menu".to_string(), RouteHandler::Static(LUNA_SHELL_MENU));
 
         // UX routes
         routes.insert("ux_desktop".to_string(), RouteHandler::Static(LUNA_UX_DESKTOP));
@@ -877,6 +888,8 @@ const SCRIPT_VIEWER_POSE_API: &str = include_str!("web/internal/viewer_pose_api.
 const SCRIPT_EMBEDDED_API: &str = include_str!("web/internal/embedded_api.js");
 const SCRIPT_SHELL_UI: &str = include_str!("web/internal/shell_ui.js");
 const SCRIPT_SHELL_APP: &str = include_str!("web/internal/shell_app.js");
+const SCRIPT_SHELL_DRAW: &str = include_str!("web/internal/shell_draw.js");
+const SCRIPT_SHELL_MENU: &str = include_str!("web/internal/shell_menu.js");
 
 // ============================================================================
 // GENERADORES DE CONTENIDO DINÁMICO
@@ -922,6 +935,7 @@ fn generate_cache_stats(_path: &str) -> String {
 const LUNA_UX_DESKTOP: &str = include_str!("web/ux/ux_desktop.hsml");
 const LUNA_UX_VR: &str = include_str!("web/ux/ux_vr.hsml");
 const LUNA_UX_LAB: &str = include_str!("web/ux/ux_lab.hsml");
+const LUNA_SHELL_MENU: &str = include_str!("web/ux/shell_menu.hsml");
 const LUNA_APP_DEMO_EMBEDDED: &str = include_str!("web/apps/demo_embedded.hsml");
 // Legacy agent URLs resolve to Settings; the bridge now belongs to the host.
 
