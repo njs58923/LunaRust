@@ -91,6 +91,8 @@ impl VirtualRoutes {
         routes.insert("demos".to_string(), RouteHandler::Static(LUNA_DEMOS));
         routes.insert("scale_demo".to_string(), RouteHandler::Static(LUNA_SCALE_DEMO));
         routes.insert("audio_demo".to_string(), RouteHandler::Static(include_str!("web/audio_demo.hsml")));
+        routes.insert("component_demo".to_string(), RouteHandler::Static(include_str!("web/component_demo.hsml")));
+        routes.insert("components/counter.hsml".to_string(), RouteHandler::Static(include_str!("web/components/counter.hsml")));
         routes.insert("assets/birds_ambience.mp3".to_string(), RouteHandler::Bytes(include_bytes!("web/assets/birds_ambience.mp3")));
         routes.insert("mesh_demo".to_string(), RouteHandler::Static(include_str!("web/mesh_demo.hsml")));
         routes.insert("surface_demo".to_string(), RouteHandler::Static(include_str!("web/surface_demo.hsml")));

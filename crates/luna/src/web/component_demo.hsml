@@ -1,0 +1,20 @@
+<hsml>
+  <head><name>Componentes / props y eventos</name></head>
+  <space>
+    <text x="0" y="2.2" z="-3" size="0.09" value="Dos instancias, un componente"/>
+    <include id="left" src="luna://components/counter.hsml" x="-0.7" y="1.5" z="-3"
+      props='{"title":"Izquierda","value":0,"color":"#315A79"}' events="change"/>
+    <include id="right" src="luna://components/counter.hsml" x="0.7" y="1.5" z="-3"
+      props='{"title":"Derecha","value":10,"color":"#684979"}' events="change"/>
+    <text x="0" y="0.9" z="-3" size="0.04" value="Tocar un contador: el hijo emite y el padre actualiza sus props."/>
+    <script>
+      for(const id of ['left','right']) {
+        const counter=hiperspace.dimention.getElementById(id);
+        counter.addEventListener('component:change',event=>{
+          if(event.detail.delta!==1)return;
+          counter.props={...counter.props,value:counter.props.value+1};
+        });
+      }
+    </script>
+  </space>
+</hsml>

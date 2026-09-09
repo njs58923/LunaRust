@@ -1,0 +1,16 @@
+<space>
+  <plane id="button" sx="1.1" sy="0.45" color="#315A79" touchable="true"/>
+  <text id="label" z="0.01" size="0.07" value="Contador"/>
+  <script>
+    const root=hiperspace.dimention;
+    function render(props){
+      root.getElementById('label').setAttribute('value',String(props.title)+': '+String(props.value));
+      root.getElementById('button').setAttribute('color',props.color||'#315A79');
+    }
+    render(component.props);
+    component.addEventListener('propschange',event=>render(event.detail.props));
+    root.getElementById('button').addEventListener('toque',()=>{
+      component.emit('change',{delta:1}).catch(error=>console.error(String(error)));
+    });
+  </script>
+</space>

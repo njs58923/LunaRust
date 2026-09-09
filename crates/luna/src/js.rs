@@ -238,6 +238,7 @@ impl std::fmt::Display for JsWorkerQueueError {
 }
 
 pub struct SpaceScriptWorker {
+    pub component_port: Arc<js_runtime::components::ComponentPort>,
     pub cmd_tx: mpsc::SyncSender<JsWorkerCommand>,
     pub event_rx: mpsc::Receiver<JsWorkerEvent>,
     pending_commands: VecDeque<JsWorkerCommand>,
@@ -510,6 +511,8 @@ fn spawn_space_worker_configured(
     limits: WorkerExecutionLimits,
     storage: Option<(std::path::PathBuf, String)>,
 ) -> std::result::Result<SpaceScriptWorker, String> {
+    let component_port = Arc::new(js_runtime::components::ComponentPort::default());
+    let thread_component_port = component_port.clone();
     let (cmd_tx, cmd_rx) = mpsc::sync_channel::<JsWorkerCommand>(JS_WORKER_COMMAND_CAPACITY);
     let (event_tx, event_rx) = mpsc::sync_channel::<JsWorkerEvent>(JS_WORKER_EVENT_CAPACITY);
     let termination = WorkerTermination::default();
@@ -526,6 +529,7 @@ fn spawn_space_worker_configured(
                 }
             };
 
+            ctx.engine.configure_component_port(thread_component_port.clone());
             if let Some((path, url)) = storage {
                 ctx.engine.configure_document_location(url.clone());
                 ctx.engine.configure_local_storage(path, url);
@@ -780,11 +784,13 @@ fn spawn_space_worker_configured(
             if let Ok(mut handle) = worker_termination.handle.lock() {
                 *handle = None;
             }
+            thread_component_port.close();
             watchdog.shutdown();
         })
         .map_err(|e| format!("failed to spawn JS worker for space {}: {}", space_id, e))?;
 
     Ok(SpaceScriptWorker {
+        component_port,
         cmd_tx,
         event_rx,
         pending_commands: VecDeque::new(),
@@ -800,6 +806,7 @@ fn spawn_space_worker_configured(
 }
 
 pub fn stop_space_worker(worker: &mut SpaceScriptWorker) {
+    worker.component_port.close();
     worker
         .termination
         .shutdown_requested
@@ -1762,7 +1769,7 @@ pub fn js_update_snapshots_system(world: &mut World) {
 
 fn scripted_space_ids(mirror: &DomMirror) -> HashSet<u32> {
     let mut spaces = HashSet::new();
-    for node in mirror.nodes.values().filter(|node| node.tag == "script") {
+    for node in mirror.nodes.values().filter(|node| node.tag == "script" || (node.tag == "include" && (node.attrs.contains_key("props") || node.attrs.contains_key("events")))) {
         let mut parent = node.parent;
         // Only the nearest space owns execution, not every containing space.
         for _ in 0..mirror.nodes.len() {
@@ -2147,6 +2154,7 @@ fn sync_snapshots_with_mirror(
 }
 
 pub fn js_eval_pending_scripts(world: &mut World) {
+    crate::components::sync_components(world);
     let _profile = crate::profiling::span("js_eval_pending_scripts");
     const MAX_SCRIPTS_PER_FRAME: usize = 2;
     const MAX_ENQUEUE_BUDGET_MS: f32 = 1.5;
@@ -2355,6 +2363,7 @@ pub fn js_tick_system(world: &mut World) {
                 broken_contexts.push(*space_id);
                 continue;
             }
+            worker.needs_tick |= worker.component_port.take_wake();
             if worker.tick_in_flight || !worker.needs_tick {
                 continue;
             }
@@ -4474,6 +4483,7 @@ mod tests {
             std::sync::mpsc::sync_channel::<JsWorkerEvent>(JS_WORKER_EVENT_CAPACITY);
         (
             SpaceScriptWorker {
+                component_port: Arc::new(js_runtime::components::ComponentPort::default()),
                 cmd_tx,
                 event_rx,
                 pending_commands: VecDeque::new(),

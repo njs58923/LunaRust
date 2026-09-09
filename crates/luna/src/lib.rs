@@ -2,6 +2,7 @@
 // Los módulos aquí son testeables sin depender de bevy_mod_openxr (openxr_sys).
 // El binario (main.rs) importa desde aquí con `use luna::*`.
 
+pub mod components;
 pub mod audio;
 pub mod capture;
 mod profiling;

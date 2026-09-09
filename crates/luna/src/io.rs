@@ -517,7 +517,7 @@ pub fn request_include_load(
     let tx = io_service.sender();
     let client = io_service.http_client();
     rt.spawn(async move {
-        let result = load_text_resource(&url, &client).await;
+        let result = load_include_resource(&url, &client).await;
         let _ = tx.send(IoResult::IncludeLoaded {
             network_id,
             parent_node_id,
@@ -623,6 +623,17 @@ async fn load_same_origin_text(url: &str, origin: &str, client: &reqwest::Client
         .await.map(|response| String::from_utf8_lossy(&response.body).into_owned())
 }
 
+// A component's code must belong to its declared origin. Validate both eager and
+// lazy include loads before executing returned code or exposing parent props.
+async fn load_include_resource(url: &str, client: &reqwest::Client) -> Result<String, String> {
+    if crate::routes::VirtualRoutes::is_virtual_url(url) { return load_text_resource(url, client).await; }
+    let response = client.get(url).send().await.map_err(|e| format!("Include HTTP error: {e}"))?
+        .error_for_status().map_err(|e| format!("Include HTTP status: {e}"))?;
+    let requested = url::Url::parse(url).map_err(|e| e.to_string())?;
+    if requested.origin() != response.url().origin() { return Err("Include redirect changed origin; declare the destination URL explicitly".into()); }
+    response.text().await.map_err(|e| format!("Include read failed: {e}"))
+}
+
 async fn load_text_resource(url: &str, client: &reqwest::Client) -> Result<String, String> {
     if crate::routes::VirtualRoutes::is_virtual_url(url) {
         return VIRTUAL_ROUTES
@@ -701,7 +712,7 @@ async fn load_document_bundle(
                 continue;
             }
 
-            match load_text_resource(&final_url, client).await {
+            match load_include_resource(&final_url, client).await {
                 Ok(include_xml) => {
                     queue.push_back((final_url.clone(), include_xml.clone()));
                     bundle.includes.insert(final_url, include_xml);
@@ -1228,5 +1239,54 @@ mod model_resource_tests {
         assert!(first.ends_with(".glb"));
         assert_eq!(first, model_resource_filename(url, b"first"));
         assert_ne!(first, model_resource_filename(url, b"second"));
+    }
+}
+
+#[cfg(test)]
+mod component_include_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn component_include_redirects_preserve_declared_origin() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4096];
+                let n = socket.read(&mut bytes).await.unwrap();
+                let request = String::from_utf8_lossy(&bytes[..n]);
+                let response = if request.starts_with("GET /same ") {
+                    format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/ok\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                } else if request.starts_with("GET /cross ") {
+                    format!("HTTP/1.1 302 Found\r\nLocation: http://localhost:{port}/ok\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n<space/>".into()
+                };
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(5)).build().unwrap();
+        let same = load_include_resource(&format!("http://127.0.0.1:{port}/same"), &client).await;
+        let cross = load_include_resource(&format!("http://127.0.0.1:{port}/cross"), &client).await;
+        server.abort();
+        assert_eq!(same.unwrap(), "<space/>");
+        assert!(cross.unwrap_err().contains("changed origin"));
+    }
+
+    #[test]
+    fn component_demo_routes_parse_with_typed_props() {
+        use specs::{Join, WorldExt};
+        for url in ["luna://component_demo", "luna://components/counter.hsml"] {
+            let xml = VIRTUAL_ROUTES.resolve(url).unwrap();
+            let mut world = virtual_dom::dom::element::build_world();
+            virtual_dom::parse_xml(&mut world, &xml).unwrap();
+            for attrs in (&world.read_storage::<virtual_dom::dom::element::Attrs>()).join() {
+                if let Some(props) = attrs.0.get("props") {
+                    assert!(js_runtime::components::parse_json(props, true).unwrap()["value"].is_number());
+                }
+            }
+        }
     }
 }

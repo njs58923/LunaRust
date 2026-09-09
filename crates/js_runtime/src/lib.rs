@@ -15,6 +15,7 @@ pub mod cache;
 pub mod csp;
 pub mod storage;
 mod location;
+pub mod components;
 pub mod audio;
 pub mod binary;
 pub mod fetch;
@@ -669,12 +670,15 @@ fn op_hsml_set_attr(
     #[smi] node_id: i32,
     #[string] key: &str,
     #[string] value: &str,
-) {
+) -> Result<(), anyhow::Error> {
+    if key == "props" { components::parse_json(value, true).map_err(anyhow::Error::msg)?; }
+    if key == "events" { components::parse_events(value).map_err(anyhow::Error::msg)?; }
     let updates = state.borrow::<AttrUpdates>();
     updates
         .updates
         .borrow_mut()
         .push((node_id, key.to_string(), value.to_string()));
+    Ok(())
 }
 
 #[op2]
@@ -1488,6 +1492,11 @@ impl Engine {
                 op_hsml_set_scale::decl(),
                 op_hsml_set_transform_batch::decl(),
                 op_hsml_set_global_position::decl(),
+                components::op_component_context::decl(),
+                components::op_component_props::decl(),
+                components::op_component_emit::decl(),
+                components::op_component_poll::decl(),
+                components::op_component_validate::decl(),
                 audio::op_audio_create::decl(),
                 audio::op_audio_control::decl(),
                 audio::op_audio_write::decl(),
@@ -1536,6 +1545,7 @@ impl Engine {
                 });
                 state.put(mesh::MeshQueue::default());
                 state.put(audio::AudioQueue::default());
+                state.put(std::sync::Arc::new(components::ComponentPort::default()));
                 state.put::<AttrSnapshot>(AttrSnapshot {
                     data: attr_snapshot_for_state.data.clone(),
                 });
@@ -1651,6 +1661,8 @@ impl Engine {
             .expect("fetch bootstrap failed");
         rt.execute_script("<audio>", FastString::Static(include_str!("../audio.js"))).expect("audio bootstrap failed");
 
+        rt.execute_script("<components>", FastString::Static(include_str!("../components.js"))).expect("components bootstrap failed");
+
         eprintln!("[js_runtime] Engine created successfully");
 
         Self {
@@ -1720,6 +1732,10 @@ impl Engine {
         ExecutionHandle(self.rt.v8_isolate().thread_safe_handle())
     }
 
+    pub fn configure_component_port(&mut self, port: std::sync::Arc<components::ComponentPort>) {
+        self.rt.op_state().borrow_mut().put(port);
+    }
+
     pub fn fire_raf(&mut self, timestamp_ms: f64) {
         let ids = take_vec(&self.raf_pending);
 
@@ -1733,7 +1749,7 @@ impl Engine {
 
         if let Err(e) = self
             .rt
-            .execute_script("<pump>", FastString::Static("__luna_pump()"))
+            .execute_script("<pump>", FastString::Static("__luna_component_pump(); __luna_pump()"))
         {
             eprintln!("[js_runtime] Error calling pump: {:?}", e);
         }
