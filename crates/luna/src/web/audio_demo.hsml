@@ -1,6 +1,11 @@
 <hsml>
   <head><name>Audio - clips y PCM</name></head>
-  <space resources="audio,fetch_text,navigate_self">
+  <space resources="audio,fetch_text,navigate_self,spawn">
+    <!-- Where the visitor arrives: the origin, which is where this document
+         already assumed they were - all of its content sits at -Z, ahead.
+         The marker does not move anyone; it pins the arrival so that coming
+         from another world does not drop you facing nowhere. -->
+    <spawn id="entrada" default="true" x="0" y="0" z="0" ry="0"/>
     <text x="0" y="2.1" z="-3" size="0.11" value="Audio / WAV y stream PCM"/>
     <plane x="-0.7" y="1.55" z="-3" sx="0.6" sy="0.24" color="#315A79" id="clip" touchable="true"/>
     <text x="-0.7" y="1.55" z="-2.99" size="0.055" value="Clip WAV"/>

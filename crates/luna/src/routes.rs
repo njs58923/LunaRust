@@ -285,7 +285,12 @@ const LUNA_DEMOS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space resources="navigate_self">
+  <space resources="navigate_self,spawn">
+    <!-- Where the visitor arrives: the origin, which is where this document
+         already assumed they were - all of its content sits at -Z, ahead.
+         The marker does not move anyone; it pins the arrival so that coming
+         from another world does not drop you facing nowhere. -->
+    <spawn id="entrada" default="true" x="0" y="0" z="0" ry="0"/>
 
 
     <group y="1.1">
@@ -357,7 +362,12 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space resources="navigate_self">
+  <space resources="navigate_self,spawn">
+    <!-- Where the visitor arrives: the origin, which is where this document
+         already assumed they were - all of its content sits at -Z, ahead.
+         The marker does not move anyone; it pins the arrival so that coming
+         from another world does not drop you facing nowhere. -->
+    <spawn id="entrada" default="true" x="0" y="0" z="0" ry="0"/>
 
     <!-- ═══════════════════════════════════════════════════════════════════════
          ENVIRONMENT
@@ -841,7 +851,12 @@ const LUNA_ABOUT: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space resources="navigate_self">
+  <space resources="navigate_self,spawn">
+    <!-- Where the visitor arrives: the origin, which is where this document
+         already assumed they were - all of its content sits at -Z, ahead.
+         The marker does not move anyone; it pins the arrival so that coming
+         from another world does not drop you facing nowhere. -->
+    <spawn id="entrada" default="true" x="0" y="0" z="0" ry="0"/>
   <plane y="1.6" z="-3.58" sx="5.2" sy="2.6" color="#304B43" touchable="false"/>
   <text x="0.000" y="2.550" z="-3.5" value="About Luna Browser" size="0.240" />
   <text x="0.000" y="2.310" z="-3.5" value="Spatial 3D Web Browser" size="0.108" />
@@ -878,7 +893,12 @@ const LUNA_404: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space resources="navigate_self">
+  <space resources="navigate_self,spawn">
+    <!-- Where the visitor arrives: the origin, which is where this document
+         already assumed they were - all of its content sits at -Z, ahead.
+         The marker does not move anyone; it pins the arrival so that coming
+         from another world does not drop you facing nowhere. -->
+    <spawn id="entrada" default="true" x="0" y="0" z="0" ry="0"/>
   <plane y="1.6" z="-3.58" sx="5.2" sy="2.6" color="#304B43" touchable="false"/>
   <text x="0.000" y="2.550" z="-3.5" value="404 - Page Not Found" size="0.210" color="#F44336" />
   <text x="0.000" y="2.337" z="-3.5" value="The requested luna:// page does not exist" size="0.090" />
@@ -942,7 +962,12 @@ fn generate_cache_stats(_path: &str) -> String {
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space resources="navigate_self">
+  <space resources="navigate_self,spawn">
+    <!-- Where the visitor arrives: the origin, which is where this document
+         already assumed they were - all of its content sits at -Z, ahead.
+         The marker does not move anyone; it pins the arrival so that coming
+         from another world does not drop you facing nowhere. -->
+    <spawn id="entrada" default="true" x="0" y="0" z="0" ry="0"/>
   <plane y="1.6" z="-3.58" sx="5.2" sy="2.6" color="#304B43" touchable="false"/>
   <text x="0.000" y="2.550" z="-3.5" value="HTTP Cache Statistics" size="0.210" />
   <text x="0.000" y="2.250" z="-3.5" value="Real-time cache monitoring" size="0.096" />
@@ -990,7 +1015,12 @@ const LUNA_FIRE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space resources="navigate_self,read_pose_stream">
+  <space resources="navigate_self,read_pose_stream,spawn">
+    <!-- Where the visitor arrives: the origin, which is where this document
+         already assumed they were - all of its content sits at -Z, ahead.
+         The marker does not move anyone; it pins the arrival so that coming
+         from another world does not drop you facing nowhere. -->
+    <spawn id="entrada" default="true" x="0" y="0" z="0" ry="0"/>
     <!-- Invisible volume that enables posemove while the controller is inside.
          Make it generous so the whole play area is covered. -->
     <posezone id="gun_zone" x="0" y="1.0" z="0" sx="40" sy="12" sz="40" visible="false" />
@@ -1232,7 +1262,12 @@ const LUNA_TARGET_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space resources="navigate_self,read_pose_stream">
+  <space resources="navigate_self,read_pose_stream,spawn">
+    <!-- Where the visitor arrives: the origin, which is where this document
+         already assumed they were - all of its content sits at -Z, ahead.
+         The marker does not move anyone; it pins the arrival so that coming
+         from another world does not drop you facing nowhere. -->
+    <spawn id="entrada" default="true" x="0" y="0" z="0" ry="0"/>
     <posezone id="gun_zone" x="0" y="1.0" z="0" sx="40" sy="12" sz="40" visible="false" />
 
 
@@ -1531,7 +1566,12 @@ const LUNA_RANGE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space resources="navigate_self,read_pose_stream">
+  <space resources="navigate_self,read_pose_stream,spawn">
+    <!-- Where the visitor arrives: the origin, which is where this document
+         already assumed they were - all of its content sits at -Z, ahead.
+         The marker does not move anyone; it pins the arrival so that coming
+         from another world does not drop you facing nowhere. -->
+    <spawn id="entrada" default="true" x="0" y="0" z="0" ry="0"/>
     <posezone id="gun_zone" x="0" y="1.0" z="0" sx="40" sy="12" sz="40" visible="false" />
 
 

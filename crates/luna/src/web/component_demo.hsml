@@ -1,6 +1,11 @@
 <hsml>
   <head><name>Componentes / props y eventos</name></head>
-  <space>
+  <space resources="spawn">
+    <!-- Where the visitor arrives: the origin, which is where this document
+         already assumed they were - all of its content sits at -Z, ahead.
+         The marker does not move anyone; it pins the arrival so that coming
+         from another world does not drop you facing nowhere. -->
+    <spawn id="entrada" default="true" x="0" y="0" z="0" ry="0"/>
     <text x="0" y="2.2" z="-3" size="0.09" value="Dos instancias, un componente"/>
     <include id="left" src="luna://components/counter.hsml" x="-0.7" y="1.5" z="-3"
       props='{"title":"Izquierda","value":0,"color":"#315A79"}' events="change"/>

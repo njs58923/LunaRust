@@ -8,7 +8,12 @@
   </head>
   <!-- audio: la ambientación de fondo. fetch_text: el mp3 se baja con
        fetch, aunque viva en el propio origen nativo. -->
-  <space resources="navigate_self,audio,fetch_text">
+  <space resources="navigate_self,audio,fetch_text,spawn">
+    <!-- Where the visitor arrives: the origin, which is where this document
+         already assumed they were - all of its content sits at -Z, ahead.
+         The marker does not move anyone; it pins the arrival so that coming
+         from another world does not drop you facing nowhere. -->
+    <spawn id="entrada" default="true" x="0" y="0" z="0" ry="0"/>
     <!-- Small sign ahead of the viewer; the rest of the island stays empty. -->
     <group id="home_navigation" z="-3.5">
       <text y="1.95" value="Luna" size="0.32" color="#344C49"/>
