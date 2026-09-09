@@ -1,5 +1,7 @@
 use lazy_static::lazy_static;
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::OnceLock;
 
 pub struct VirtualRoutes {
     routes: HashMap<String, RouteHandler>,
@@ -13,6 +15,69 @@ enum RouteHandler {
 
 lazy_static! {
     pub static ref VIRTUAL_ROUTES: VirtualRoutes = VirtualRoutes::init();
+}
+
+/// Directorio del que leer las páginas internas en caliente, si se pidió con
+/// `--dev-web`. Sin él no cambia nada: todo sale de los `include_str!` del
+/// binario, que es lo que se envía.
+///
+/// Existe por una razón medida. `ux_vr.hsml` —el shell entero, mil trescientas
+/// líneas— va embebido, así que tocarle una línea obliga a recompilar `luna` y
+/// a relinkear ochenta y cinco megas: **4m39s** por iteración para mover un
+/// botón dos centímetros. Con esto, recargar la página alcanza.
+static DEV_WEB_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Activa la lectura en caliente. La llama `main` al ver `--dev-web`.
+pub fn set_dev_web_dir(dir: PathBuf) {
+    let _ = DEV_WEB_DIR.set(dir);
+}
+
+pub fn dev_web_dir() -> Option<&'static PathBuf> {
+    DEV_WEB_DIR.get()
+}
+
+/// Dónde buscar en disco una ruta virtual.
+///
+/// Las rutas se registran con un nombre suelto (`ux_vr`) y no con su path
+/// (`ux/ux_vr.hsml`), así que la correspondencia se **busca** en vez de
+/// declararse: una tabla con los quince paths se desincroniza con el primer
+/// archivo que alguien agregue, y esto es un flag de desarrollo.
+///
+/// Varias rutas no son archivos sino literales en este mismo módulo
+/// (`LUNA_ROOT`, `LUNA_SETTINGS`, `LUNA_ABOUT`…). Para esas no hay nada que
+/// encontrar y se cae sola al contenido embebido, que es el comportamiento
+/// correcto.
+fn dev_web_candidates(route_path: &str) -> Vec<PathBuf> {
+    let Some(base) = DEV_WEB_DIR.get() else {
+        return Vec::new();
+    };
+    // Con extensión ya es un path relativo: `internal/root_api.js`.
+    if route_path.contains('.') {
+        return vec![base.join(route_path)];
+    }
+    let file = format!("{route_path}.hsml");
+    vec![
+        base.join(&file),
+        base.join("ux").join(&file),
+        base.join("apps").join(&file),
+    ]
+}
+
+/// Un `..` en la ruta se llevaría el lector fuera del árbol de fuentes. La
+/// ruta viene de una URL `luna://`, o sea de contenido, no del que lanzó el
+/// proceso —y aunque el flag sea de desarrollo, el que lo enciende no está
+/// pidiendo que una página pueda leerle el disco.
+fn dev_web_read(route_path: &str) -> Option<String> {
+    if route_path.split(['/', '\\']).any(|part| part == "..") {
+        return None;
+    }
+    for path in dev_web_candidates(route_path) {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            println!("[VirtualRoutes] ⟳ dev-web '{}' <- {}", route_path, path.display());
+            return Some(text);
+        }
+    }
+    None
 }
 
 impl VirtualRoutes {
@@ -84,6 +149,13 @@ impl VirtualRoutes {
             "[VirtualRoutes] Resolving: '{}' -> route_path: '{}'",
             url, route_path
         );
+
+        // Con `--dev-web`, el disco gana sobre lo embebido. Va antes del mapa
+        // y no dentro de él para que también valga cuando el archivo existe en
+        // el árbol pero la ruta está registrada como literal.
+        if let Some(text) = dev_web_read(route_path) {
+            return Some(text);
+        }
 
         if let Some(handler) = self.routes.get(route_path) {
             let content = match handler {

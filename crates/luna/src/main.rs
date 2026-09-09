@@ -1,4 +1,5 @@
 use std::env;
+use std::path::PathBuf;
 
 use bevy::{
     asset::AssetPlugin,
@@ -51,6 +52,23 @@ fn main() {
     println!("Args: {:?}", &args[1..]);
 
     let ar_on = args.iter().any(|a| a == "--ar");
+
+    // `--dev-web[=DIR]` lee las páginas internas del árbol de fuentes en vez de
+    // las embebidas, para no recompilar por cada ajuste de UI. Sin valor usa el
+    // `src/web` de este crate, resuelto en tiempo de compilación: así funciona
+    // desde cualquier directorio de trabajo y apunta al árbol del que salió el
+    // binario, no al que uno tenga abierto.
+    if let Some(arg) = args
+        .iter()
+        .find(|a| *a == "--dev-web" || a.starts_with("--dev-web="))
+    {
+        let dir = match arg.split_once('=') {
+            Some((_, value)) => PathBuf::from(value),
+            None => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src").join("web"),
+        };
+        println!("[luna] dev-web: páginas internas desde {}", dir.display());
+        luna::routes::set_dev_web_dir(dir);
+    }
     let root_config = RootConfig::load();
     let root_shell_url = "luna://root".to_string();
     let initial_home_url = root_config.home_url.clone();
