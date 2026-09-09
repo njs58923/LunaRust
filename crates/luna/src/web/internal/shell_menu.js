@@ -156,7 +156,14 @@ function armar() {
     animActive = false;
     // Recién al terminar la salida se apaga el panel: apagarlo antes se comería
     // la animación que justo se está mirando.
-    if (animMode === 'exit' && panel) panel.setAttribute('visible', 'false');
+    if (animMode === 'exit') {
+      if (panel) panel.setAttribute('visible', 'false');
+      // Y recién ahora el shell puede mostrar lo que venga detrás. El menú
+      // es el único que sabe cuándo terminó su cascada: son ~250 ms que
+      // dependen de cuántos marcadores haya, y hacer que el otro lado los
+      // adivine con un número fijo se desincroniza al primer cambio.
+      emit('hidden', {});
+    }
     animMode = null;
   }
 

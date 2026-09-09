@@ -105,6 +105,34 @@
     // cada transición y escribir props iguales despierta al isolate del include
     // para nada.
     let lastProps = null;
+
+    // **La ventana espera a que el menú termine de irse.** Al abrir una app
+    // embebida las dos cosas caían en el mismo cuadro: el menú arrancaba su
+    // cascada de salida y la ventana aparecía encima, y eso no se lee como
+    // una transición sino como un parpadeo. El menú avisa por el canal
+    // cuando terminó —es el único que sabe cuánto dura, porque depende de
+    // cuántos marcadores tenga— y hasta entonces la ventana se queda quieta.
+    let menuMostrado = false;
+    let esperandoMenu = false;
+    let esperaTimer = null;
+
+    function empezarEspera() {
+      if (esperandoMenu) return;
+      esperandoMenu = true;
+      // Red de seguridad: si el aviso no llega —el menú no llegó a dibujarse,
+      // su isolate murió, el include no montó— la ventana no puede quedarse
+      // escondida para siempre. El plazo es holgado contra la cascada.
+      if (esperaTimer) clearTimeout(esperaTimer);
+      esperaTimer = setTimeout(terminarEspera, 600);
+    }
+
+    function terminarEspera() {
+      if (!esperandoMenu) return;
+      esperandoMenu = false;
+      if (esperaTimer) { clearTimeout(esperaTimer); esperaTimer = null; }
+      applyVisibility();
+    }
+
     function pushMenuProps() {
       if (!menuInclude) return;
       const windows = [];
@@ -131,6 +159,7 @@
         if (bm) openBookmark(bm);
       });
       menuInclude.addEventListener('component:menu', onTapBarMenu);
+      menuInclude.addEventListener('component:hidden', terminarEspera);
       menuInclude.addEventListener('component:window', function (e) {
         const idx = e.detail && e.detail.index;
         if (typeof idx !== 'number') return;
@@ -181,14 +210,22 @@
 
     // ── Visibilidad: todo se deriva del estado, en un solo lugar ─────────
     function applyVisibility() {
+      const quiereMenu = shouldShowBookmarks();
+      const seVaElMenu = menuMostrado && !quiereMenu;
+      menuMostrado = quiereMenu;
       pushMenuProps();
 
       // El marco del foco espera a que la app tenga tabId y esté lista: si no,
       // se ve un marco vacío durante los ~100 ms entre abrir la pestaña y el
       // primer mensaje de la app.
-      const showFocus = shellState.focusApp
+      const quiereFoco = shellState.focusApp
         && !shellState.focusApp.minimized
         && shellState.focusApp.tabId > 0 && shellState.focusApp.ready;
+
+      // Sólo se espera si el menú de verdad estaba puesto: si ya no se veía
+      // no hay ninguna animación en curso y esperar sería demorar por nada.
+      if (seVaElMenu && quiereFoco) empezarEspera();
+      const showFocus = quiereFoco && !esperandoMenu;
       if (focusZone) focusZone.setAttribute('visible', showFocus ? 'true' : 'false');
       if (shellState.focusApp && shellState.focusApp.tabId > 0) {
         const entry = shellState.focusApp;
