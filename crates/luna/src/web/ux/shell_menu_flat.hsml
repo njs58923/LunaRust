@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head>
+    <name>Menú del shell (plano)</name>
+  </head>
+
+  <!-- El menú plano, como componente.
+       Mismo contrato que `luna://shell_menu` —props para abajo, eventos para
+       arriba— y otro dibujo: sin arco y sin malla, porque esto se mira en una
+       pantalla y no con la cabeza adentro. Que compartan contrato es lo que hace
+       que el shell no sepa cuál de los dos está montado.
+
+       No pide ningún recurso: dibujar y recibir punteros no necesita permiso, y
+       los includes no heredan nada por defecto. -->
+  <space id="shell_menu_flat">
+    <group id="menu_panel" visible="false"/>
+    <group id="menu_bar" visible="false"/>
+
+    <script src="luna://internal/shell_ui.js"/>
+    <script src="luna://internal/shell_menu_flat.js"/>
+  </space>
+</hsml>

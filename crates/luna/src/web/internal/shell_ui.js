@@ -559,8 +559,22 @@
 
     // `tiles` sale afuera para que quien lo monte pueda animarlos: la cascada
     // de entrada es del shell, no del tablero, y necesita tocarlos de a uno.
-    return { group: g, width: w, height: h, centerY: cy, setPage, tiles,
-             rail: railPieces, upPiece, downPiece };
+    //
+    // Y `destroy` porque el tablero se arma con los marcadores que le pasan, y
+    // esos pueden cambiar: quitar el grupo se lleva los nodos, pero las piezas
+    // además hay que sacarlas del bucle de animación o seguirían escribiendo
+    // la z de un nodo que ya no existe.
+    return {
+      group: g, width: w, height: h, centerY: cy, setPage, tiles,
+      rail: railPieces, upPiece, downPiece,
+      destroy() {
+        for (const t of tiles) drop(t.piece);
+        for (const p of railPieces) drop(p);
+        if (upPiece) drop(upPiece);
+        if (downPiece) drop(downPiece);
+        try { g.remove(); } catch (_) {}
+      },
+    };
   }
 
   // ── La barra ───────────────────────────────────────────────────────────────
@@ -620,7 +634,10 @@
       }
     }
 
-    return { group: g, render };
+    return {
+      group: g, render,
+      destroy() { clear(); try { g.remove(); } catch (_) {} },
+    };
   }
 
   // ── Una ventana ────────────────────────────────────────────────────────────

@@ -150,9 +150,19 @@ impl VirtualRoutes {
             "internal/shell_menu.js".to_string(),
             RouteHandler::Static(SCRIPT_SHELL_MENU),
         );
+        routes.insert(
+            "internal/shell_menu_flat.js".to_string(),
+            RouteHandler::Static(SCRIPT_SHELL_MENU_FLAT),
+        );
         // El menú del shell, como documento: lo monta un <include> del
         // controller y corre en su propio isolate.
         routes.insert("shell_menu".to_string(), RouteHandler::Static(LUNA_SHELL_MENU));
+        // El mismo menú, plano: mismo contrato de props y eventos, otro
+        // dibujo. El controller elige cuál incluye.
+        routes.insert(
+            "shell_menu_flat".to_string(),
+            RouteHandler::Static(LUNA_SHELL_MENU_FLAT),
+        );
 
         // UX routes
         routes.insert("ux_desktop".to_string(), RouteHandler::Static(LUNA_UX_DESKTOP));
@@ -890,6 +900,7 @@ const SCRIPT_SHELL_UI: &str = include_str!("web/internal/shell_ui.js");
 const SCRIPT_SHELL_APP: &str = include_str!("web/internal/shell_app.js");
 const SCRIPT_SHELL_DRAW: &str = include_str!("web/internal/shell_draw.js");
 const SCRIPT_SHELL_MENU: &str = include_str!("web/internal/shell_menu.js");
+const SCRIPT_SHELL_MENU_FLAT: &str = include_str!("web/internal/shell_menu_flat.js");
 
 // ============================================================================
 // GENERADORES DE CONTENIDO DINÁMICO
@@ -936,6 +947,7 @@ const LUNA_UX_DESKTOP: &str = include_str!("web/ux/ux_desktop.hsml");
 const LUNA_UX_VR: &str = include_str!("web/ux/ux_vr.hsml");
 const LUNA_UX_LAB: &str = include_str!("web/ux/ux_lab.hsml");
 const LUNA_SHELL_MENU: &str = include_str!("web/ux/shell_menu.hsml");
+const LUNA_SHELL_MENU_FLAT: &str = include_str!("web/ux/shell_menu_flat.hsml");
 const LUNA_APP_DEMO_EMBEDDED: &str = include_str!("web/apps/demo_embedded.hsml");
 // Legacy agent URLs resolve to Settings; the bridge now belongs to the host.
 
