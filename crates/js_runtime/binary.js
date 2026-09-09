@@ -58,10 +58,12 @@
     get [Symbol.toStringTag]() { return 'Blob'; }
   }
   const urls=new Map(); let nextUrl=0, urlBytes=0;
+  // Identity only, not an authorization token: resolution remains isolate-local.
+  const urlNamespace=Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)+'-'+Math.random().toString(36).slice(2);
   URL.createObjectURL = blob => {
     if (!(blob instanceof Blob)) throw new TypeError('Expected Blob');
     if (urls.size >= 128 || urlBytes + blob.size > 64*1024*1024) throw new RangeError('Object URL quota exceeded');
-    const url='blob:'+location.origin+'/luna-'+(++nextUrl);
+    const url='blob:'+location.origin+'/luna-'+urlNamespace+'-'+(++nextUrl);
     urls.set(url,blob); urlBytes+=blob.size; return url;
   };
   URL.revokeObjectURL = url => { const b=urls.get(String(url)); if(b) {urlBytes-=b.size;urls.delete(String(url));} };

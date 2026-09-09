@@ -931,6 +931,9 @@ pub fn rebuild_space_policies_system(
             if !root_space && !requested_caps_raw.contains(CapabilityBits::FETCH_HTTP) {
                 effective_caps.remove(CapabilityBits::FETCH_HTTP);
             }
+            if !root_space && !requested_caps_raw.contains(CapabilityBits::AUDIO) {
+                effective_caps.remove(CapabilityBits::AUDIO);
+            }
             if !root_space && !requested_caps_raw.contains(CapabilityBits::SPAWN) {
                 effective_caps.remove(CapabilityBits::SPAWN);
             }

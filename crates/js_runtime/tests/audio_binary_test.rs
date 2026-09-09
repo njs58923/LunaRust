@@ -165,3 +165,15 @@ fn wav_clip_decodes_seeks_loops_and_uses_volume() {
     e.eval("ops.op_audio_control(clip,'dispose',0)").unwrap();
     assert_eq!(decoder.next(), None);
 }
+#[test]
+fn object_urls_do_not_alias_between_isolates_of_the_same_origin() {
+    let mut a = Engine::new();
+    a.configure_document_location("https://audio.test/a".into());
+    a.eval("console.log(URL.createObjectURL(new Blob(['a'])))")
+        .unwrap();
+    let url = a.drain_logs().pop().unwrap().1;
+    let mut b = Engine::new();
+    b.configure_document_location("https://audio.test/b".into());
+    b.eval(&format!("globalThis.done=false;globalThis.failure='';const own=URL.createObjectURL(new Blob(['b']));const foreign={};if(own===foreign)throw Error('URL collision');fetch(foreign).then(()=>failure='foreign blob resolved',()=>done=true);",serde_json::to_string(&url).unwrap())).unwrap();
+    settle(&mut b);
+}
