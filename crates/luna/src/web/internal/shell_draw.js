@@ -174,6 +174,28 @@
       let hoverPiece = null;
       let previoTs = 0;
 
+      // Una pastilla: un fondo más ancho que alto con esquinas redondeadas.
+      // Va como `box` y no como `plane` porque en un plane el `border-radius`
+      // es una **fracción del lado** y al escalar se estira con él —una
+      // pastilla queda convertida en un óvalo—, mientras que en una caja
+      // `rounded_box_radii` divide el radio **en metros** por la escala de cada
+      // eje y conserva el radio del mundo.
+      //
+      // Una caja crece hacia los dos lados, así que se la corre media
+      // profundidad para que su cara quede en la z pedida.
+      const PILL_DEPTH = 0.020;
+      function pill(parent, o) {
+        const n = root.createElement('box');
+        n.setAttribute('color', o.color);
+        n.setAttribute('border-radius', String(o.r));
+        n.setAttribute('touchable', 'false');
+        const d = o.d || PILL_DEPTH;
+        n.position = { x: o.x || 0, y: o.y || 0, z: (o.z || 0) - d / 2 };
+        n.scale = { x: o.w, y: o.h, z: d };
+        parent.appendChild(n);
+        return n;
+      }
+
       function piece(parent, opts) {
         const lado = opts.size;
         const ladoRing = lado + 2 * RING;
@@ -185,19 +207,25 @@
         const corner = opts.corner;
         const cornerRing = Math.min(0.499, (corner * lado + RING) / ladoRing);
         const color = opts.color;
+        // Todas las capas de esta pieza se corren juntas en z. Sirve para las
+        // que se apoyan **encima** de otra —el punto de cerrar sobre el botón
+        // de una ventana—: sin esto quedan a la misma profundidad que aquello
+        // sobre lo que están y las dos caras pelean por el mismo píxel.
+        const dz = opts.zOffset || 0;
 
         // El hitbox lleva la forma y el tamaño del anillo, medio milímetro más
         // atrás: una silueta idéntica y más lejos no asoma por ningún lado.
-        const hit = plane(parent, { x: opts.x, y: opts.y, z: Z_HIT, sx: ladoRing,
+        const hit = plane(parent, { x: opts.x, y: opts.y, z: Z_HIT + dz, sx: ladoRing,
                                     sy: ladoRing, color, corner: cornerRing, touchable: true });
-        const ring = plane(parent, { x: opts.x, y: opts.y, z: Z_RING, sx: ladoRing,
+        const ring = plane(parent, { x: opts.x, y: opts.y, z: Z_RING + dz, sx: ladoRing,
                                      sy: ladoRing, color, corner: cornerRing });
-        const face = plane(parent, { x: opts.x, y: opts.y, z: Z_FACE, sx: lado,
+        const face = plane(parent, { x: opts.x, y: opts.y, z: Z_FACE + dz, sx: lado,
                                      sy: lado, color, corner });
         if (opts.glyph) glyph(face, opts.glyph, opts.padding || 0.24);
         if (opts.name) hit.setAttribute('name', opts.name);
 
         const it = { hit, ring, face, color, x: opts.x || 0, y: opts.y || 0,
+                     dz,
                      z: 0, zTarget: 0, golpe: 0, hasta: 0, pendiente: false,
                      onTap: opts.onTap };
 
@@ -297,7 +325,7 @@
                       && it.golpe < 0.0002 && ts >= it.hasta && !it.pendiente;
           if (quieto) { it.z = it.zTarget; it.golpe = 0; enVuelo.splice(i, 1); }
 
-          const z = it.z - it.golpe;
+          const z = it.z - it.golpe + it.dz;
           it.face.position = { x: it.x, y: it.y, z: Z_FACE + z };
           it.ring.position = { x: it.x, y: it.y, z: Z_RING + z };
         }
@@ -431,7 +459,7 @@
 
 
     return {
-      onArc, surface, plane, caption, glyph, piece, applyPiece, recolorPiece,
+      onArc, surface, plane, pill, caption, glyph, piece, applyPiece, recolorPiece,
       enGolpe, golpear, dropPiece, buildMesh, paintMesh, rgba, halfHeight,
       easeOutBack, easeInBack,
       // La tabla de glifos y la paleta salen enteras: quien dibuje encima

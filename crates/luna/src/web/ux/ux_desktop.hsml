@@ -74,6 +74,9 @@
           // metro ahí se ve la mitad de lo que se veía la grilla y queda
           // flotando al fondo. Ocupa el lugar que dejó.
           slot: { w: 2.1, h: 1.4, d: 0.2 },
+          // Una ventana de 1,4 de alto con su barra de título abajo llega
+          // hasta -0,80, y la barra del menú arranca en -0,77: se pisaban.
+          windowLift: 0.16,
 
           tabs: {
             open: (url, opts) => dimention.tabs.open(url, opts),

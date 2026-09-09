@@ -73,12 +73,28 @@
     const FOCUS_SLOT_W = slot.w || 1.0;
     const FOCUS_SLOT_H = slot.h || 0.7;
     const FOCUS_SLOT_D = slot.d || 0.1;
-    const FOCUS_TITLEBAR_H = 0.075;
-    const FOCUS_EDGE = 0.010;
+    // La barra de título va **debajo** de la ventana y suelta, como una
+    // pastilla flotante. Arriba competía con el contenido: le comía el borde
+    // superior y, con la ventana a la altura de los ojos, tapaba justo lo que
+    // se estaba mirando.
+    const TITLE_H = 0.075;
+    const TITLE_GAP = 0.026;      // de la ventana a la pastilla
+    const TITLE_RADIUS = 0.032;   // METROS: es una caja, no un plano
+    const TITLE_SIZE = 0.030;
     const FOCUS_BTN = 0.046;
     const FOCUS_BTN_GAP = 0.013;
-    const FOCUS_MARGIN = 0.030;
+    const FOCUS_MARGIN = 0.022;   // del último botón al filo de la pastilla
     const SHELL_SPAWN_DISTANCE = cfg.distance || 1.5;
+
+    // Cuánto se levanta la ventana respecto de la altura de la mirada.
+    //
+    // Con la barra de título abajo, el borde inferior de una ventana llega
+    // más lejos que antes, y en escritorio —donde la ventana es grande y el
+    // menú se planta lejos— terminaba pisando la barra del shell. La barra
+    // vive dentro del include del menú, así que el shell no puede medir dónde
+    // está: el número lo pone el controller, que es quien eligió las dos
+    // cosas que chocan.
+    const WINDOW_LIFT = cfg.windowLift || 0;
 
     // Offsets laterales para apartar las fijadas del frente del shell. Se
     // apilan a la derecha; el par de números es pragmático, no un layout.
@@ -298,10 +314,13 @@
 
       // El include se mueve como cualquier nodo: es el padre quien lo ubica, y
       // adentro el menú dibuja en coordenadas locales sin enterarse.
-      for (const g of [menuInclude, focusZone]) {
-        if (!g) continue;
-        g.position = { x: px, y: py, z: pz };
-        g.rotation = { x: 0, y: ry, z: 0 };
+      if (menuInclude) {
+        menuInclude.position = { x: px, y: py, z: pz };
+        menuInclude.rotation = { x: 0, y: ry, z: 0 };
+      }
+      if (focusZone) {
+        focusZone.position = { x: px, y: py + WINDOW_LIFT, z: pz };
+        focusZone.rotation = { x: 0, y: ry, z: 0 };
       }
 
       if (shellState.focusApp && !shellState.focusApp.minimized && shellState.focusApp.tabId > 0) {
@@ -358,51 +377,56 @@
     function buildWindowFrame(parent, opts) {
       const W = opts.width;
       const H = opts.height;
-      const T = FOCUS_TITLEBAR_H;
       const nodes = [];
       const pieces = [];
       const add = function (n) { nodes.push(n); return n; };
 
-      // Borde: un plano detrás y apenas más grande, igual que el anillo de un
-      // icono. Es lo único que separa la ventana del mundo cuando el fondo es
-      // oscuro, y por eso no puede ser del color de la ventana.
-      add(D.plane(parent, { x: 0, y: 0, z: -0.006,
-                            sx: W + FOCUS_EDGE * 2, sy: H + T + FOCUS_EDGE * 2,
-                            color: '#39445A', corner: 0.026 }));
-      add(D.plane(parent, { x: 0, y: 0, z: -0.004, sx: W + FOCUS_EDGE * 0.6,
-                            sy: H + T + FOCUS_EDGE * 0.6, color: M.PLACA, corner: 0.026 }));
+      // El hueco donde dibuja la app. Un solo plano: el borde de antes —dos
+      // placas apenas más grandes— existía para separar la ventana del mundo
+      // cuando el marco la envolvía. Con la barra afuera, la ventana ya se lee
+      // sola contra el fondo.
       add(D.plane(parent, { x: 0, y: 0, z: -0.003, sx: W, sy: H,
-                            color: '#0E1116', corner: 0.02 }));
+                            color: '#3A3C42', corner: 0.030 }));
 
-      // Los botones ocupan la derecha de la barra; el título se centra en lo que
-      // sobra, no en la barra entera, porque si no queda debajo de ellos.
-      const titleY = H / 2 + T / 2;
-      const btnBlock = 3 * FOCUS_BTN + 2 * FOCUS_BTN_GAP;
-      const btnLeft = W / 2 - FOCUS_MARGIN - btnBlock;
-
-      const title = root.createElement('text');
-      title.setAttribute('value', windowTitle(opts.title));
-      title.setAttribute('size', '0.028');
-      title.setAttribute('color', M.TENUE);
-      title.setAttribute('touchable', 'false');
-      title.position = { x: (-W / 2 + btnLeft) / 2, y: titleY, z: 0.006 };
-      parent.appendChild(title);
-      nodes.push(title);
-
-      // El orden es el de **colocación**, que va de derecha a izquierda: el
-      // primero queda pegado al filo. Así, leídos de izquierda a derecha, salen
-      // fijar · minimizar · cerrar, con el rojo en la punta.
-      let bx = W / 2 - FOCUS_MARGIN - FOCUS_BTN / 2;
+      // La pastilla del título: **debajo**, suelta, y sólo tan ancha como lo
+      // que lleva. Ocupar todo el ancho de la ventana la convertiría otra vez
+      // en un marco.
       const botones = [
         { glyph: 'close', color: '#B0413E', onTap: opts.onClose },
         { glyph: 'minimize', color: M.PLACA_ALTA, onTap: opts.onMinimize },
         { glyph: 'anchor', color: '#30435F', onTap: opts.onAnchor },
       ].filter(function (b) { return typeof b.onTap === 'function'; });
 
+      const btnBlock = botones.length * FOCUS_BTN + (botones.length - 1) * FOCUS_BTN_GAP;
+      const titleW = Math.max(0.30, btnBlock + 0.26);
+      const ty = -H / 2 - TITLE_GAP - TITLE_H / 2;
+      add(D.pill(parent, { x: 0, y: ty, z: -0.004, w: titleW, h: TITLE_H,
+                           r: TITLE_RADIUS, color: M.PLACA }));
+
+      // El título se centra en lo que sobra a la izquierda de los botones, no
+      // en la pastilla entera: centrado en la pastilla queda debajo de ellos.
+      const btnLeft = titleW / 2 - FOCUS_MARGIN - btnBlock;
+      const title = root.createElement('text');
+      title.setAttribute('value', windowTitle(opts.title));
+      title.setAttribute('size', String(TITLE_SIZE));
+      title.setAttribute('color', M.TENUE);
+      title.setAttribute('touchable', 'false');
+      title.position = { x: (-titleW / 2 + btnLeft) / 2, y: ty, z: 0.006 };
+      parent.appendChild(title);
+      nodes.push(title);
+
+      // El orden es el de **colocación**, que va de derecha a izquierda: el
+      // primero queda pegado al filo. Así, leídos de izquierda a derecha, salen
+      // fijar · minimizar · cerrar, con el rojo en la punta.
+      let bx = titleW / 2 - FOCUS_MARGIN - FOCUS_BTN / 2;
       for (const b of botones) {
         pieces.push(D.piece(parent, {
-          x: bx, y: titleY, size: FOCUS_BTN, corner: 0.5, color: b.color,
-          glyph: b.glyph, padding: 0.30, onTap: b.onTap,
+          x: bx, y: ty, size: FOCUS_BTN, corner: 0.5, color: b.color,
+          glyph: b.glyph, padding: 0.30,
+          // Sobre la pastilla, no dentro de ella: la caja tiene espesor y a la
+          // misma z las dos caras pelean por el mismo píxel.
+          zOffset: 0.008,
+          onTap: b.onTap,
         }));
         bx -= FOCUS_BTN + FOCUS_BTN_GAP;
       }

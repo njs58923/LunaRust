@@ -268,6 +268,9 @@ function armar() {
       barNodes.push(cierre);
       barPieces.push(D.piece(cierre, {
         x: 0, y: 0, size: 0.030, corner: 0.5, color: '#B0413E',
+        // Adelantado sobre el botón: a la misma profundidad las dos caras
+        // pelean por el mismo píxel y el punto parpadea.
+        zOffset: 0.006,
         name: 'bar-close-' + i,
         onTap: (function (idx) { return function () { emit('close', { index: idx }); }; })(i),
       }));

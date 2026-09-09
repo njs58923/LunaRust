@@ -272,8 +272,30 @@
   let lastTs = 0;
 
   function piece(parent, o) {
-    const side = o.size;
+    // `size` hace una pieza cuadrada; `w`/`h` una que no lo es. El radio de
+    // las esquinas se mide contra el lado **menor**, porque es el que las
+    // limita: con el mayor, una pieza del doble de ancho saldría con las
+    // esquinas cortadas.
+    const w = o.w || o.size;
+    const h = o.h || o.size;
+    const side = Math.min(w, h);
+    const ringW = w + 2 * M.ring;
+    const ringH = h + 2 * M.ring;
     const ringSide = side + 2 * M.ring;
+    // Todas las capas de esta pieza se corren juntas en z. Sirve para las
+    // que se apoyan **encima** de otra —el punto de cerrar sobre el botón de
+    // una ventana—: sin esto quedan a la misma profundidad que aquello sobre
+    // lo que están y las dos caras pelean por el mismo píxel.
+    const dz = o.zOffset || 0;
+
+    // Un botón ancho se dibuja igual que uno cuadrado: con planos. Probé
+    // hacerlo con caja para que el radio fuera métrico —en un `plane` es
+    // fracción del lado y se estira con cada eje, así que un 2:1 sale con las
+    // puntas más redondas— pero el resultado se leía peor que la deformación
+    // que venía a corregir: la caja tiene cantos, hay que compensarle el
+    // espesor en z y en la animación, y quedaba menos redonda que sus vecinas.
+    // La deformación acá juega a favor: alarga las puntas y el botón ancho se
+    // parece a una pastilla, que es lo que es.
     // El radio del anillo NO es la misma fracción que el de la cara: un contorno
     // concéntrico tiene radio exterior = interior + grosor, y como acá el radio
     // es fracción del lado hay que rehacer la cuenta con el lado nuevo.
@@ -282,11 +304,11 @@
     const corner = o.corner;
     const ringCorner = Math.min(0.499, (corner * side + M.ring) / ringSide);
 
-    const hit = plane(parent, { x: o.x, y: o.y, z: M.zHit, w: ringSide, h: ringSide,
+    const hit = plane(parent, { x: o.x, y: o.y, z: M.zHit + dz, w: ringW, h: ringH,
                                 color: o.color, corner: ringCorner, touchable: true });
-    const ring = plane(parent, { x: o.x, y: o.y, z: M.zRing, w: ringSide, h: ringSide,
+    const ring = plane(parent, { x: o.x, y: o.y, z: M.zRing + dz, w: ringW, h: ringH,
                                  color: o.color, corner: ringCorner });
-    const face = plane(parent, { x: o.x, y: o.y, z: M.zFace, w: side, h: side,
+    const face = plane(parent, { x: o.x, y: o.y, z: M.zFace + dz, w: w, h: h,
                                  color: o.color, corner });
     if (o.glyph) glyph(face, o.glyph, o.padding);
     // Un glifo al revés es el mismo glifo girado: la placa es simétrica, así
@@ -295,6 +317,7 @@
     if (o.name) hit.setAttribute('name', o.name);
 
     const it = { hit, ring, face, color: o.color, x: o.x || 0, y: o.y || 0,
+                 dz: dz,
                  z: 0, zTarget: 0, press: 0, until: 0, pending: false,
                  lift: o.lift === undefined ? LIFT : o.lift,
                  onTap: o.onTap, selected: false };
@@ -410,7 +433,7 @@
         flying.splice(i, 1);
       }
 
-      const z = it.z - it.press;
+      const z = it.z - it.press + it.dz;
       it.face.position = { x: it.x, y: it.y, z: M.zFace + z };
       it.ring.position = { x: it.x, y: it.y, z: M.zRing + z };
     }
@@ -596,13 +619,26 @@
       pills = [];
     }
 
-    function pillWidth(n) {
-      return n * M.barItem + (n - 1) * M.barGap + 2 * M.barPad;
+    const S = M.escala || 1;
+
+    // Un botón puede pedir el doble de ancho. Es para los que no son «una
+    // app más» —el mundo principal, por ejemplo—: se distingue de un vistazo
+    // sin sacarlo de la fila ni cambiarle el color.
+    function itemW(item) {
+      return (item && item.wide ? 2 : 1) * M.barItem;
+    }
+
+    function pillWidth(items) {
+      let total = 2 * M.barPad;
+      for (let i = 0; i < items.length; i++) {
+        total += itemW(items[i]) + (i ? M.barGap : 0);
+      }
+      return total;
     }
 
     function render(groups) {
       clear();
-      const widths = groups.map(items => pillWidth(items.length));
+      const widths = groups.map(pillWidth);
       const total = widths.reduce((a, b) => a + b, 0) + (widths.length - 1) * M.barPillGap;
       let cursor = -total / 2;
       for (let gi = 0; gi < groups.length; gi++) {
@@ -611,11 +647,23 @@
         cursor += w + M.barPillGap;
         pills.push(pill(g, { x: cx, y: 0, z: M.zBack, w, h: M.barH,
                              r: M.barPillRadius, color: C.pill }));
-        const xs = spread(groups[gi].length, M.barItem + M.barGap);
+        // Los centros ya no salen de un paso fijo: con anchos distintos hay
+        // que recorrer la fila acumulando.
+        // Ojo con el nombre: `cursor` es la del recorrido de pastillas, que se
+        // sigue usando más abajo. Declarar otra igual en este bloque la mete en
+        // zona muerta y el `cursor += w` de arriba explota.
+        const xs = [];
+        let dentro = cx - (w - 2 * M.barPad) / 2;
+        for (let j = 0; j < groups[gi].length; j++) {
+          const ancho = itemW(groups[gi][j]);
+          xs.push(dentro + ancho / 2 - cx);
+          dentro += ancho + M.barGap;
+        }
         for (let j = 0; j < groups[gi].length; j++) {
           const item = groups[gi][j];
           const it = piece(g, {
-            x: cx + xs[j], y: 0, size: M.barItem, corner: M.barItemCorner,
+            x: cx + xs[j], y: 0, w: itemW(item), h: M.barItem,
+            corner: M.barItemCorner,
             color: item.color || C.blue, glyph: item.glyph, padding: M.padBar,
             lift: LIFT_SMALL, name: item.name, onTap: item.onTap,
           });
@@ -624,10 +672,19 @@
           // Cerrar: un punto chico arriba a la derecha. **Sí** lleva hitbox
           // propio, al revés que el aviso: si compartiera el del botón,
           // cerrar y traer al frente serían el mismo toque.
+          // El punto va **tangente por dentro** de la esquina, no colgando
+          // afuera. Asomado se salía del botón y también de la pastilla que lo
+          // contiene, y el pedazo que quedaba sobre el fondo se leía como un
+          // error de dibujo. Y adelantado: a la misma profundidad las dos caras
+          // pelean por el mismo píxel.
+          const RADIO_PUNTO = 0.012 * S;
+          const ESQUINA_Y = M.barItem / 2 - RADIO_PUNTO;
+          const esquinaX = cx + xs[j] + itemW(item) / 2 - RADIO_PUNTO;
           if (typeof item.onClose === 'function') {
             const c = piece(g, {
-              x: cx + xs[j] + M.barItem * 0.40, y: M.barItem * 0.40,
-              size: 0.030 * (M.escala || 1), corner: 0.5, color: C.red,
+              x: esquinaX, y: ESQUINA_Y,
+              size: RADIO_PUNTO * 2, corner: 0.5, color: C.red,
+              zOffset: 0.010 * S,
               lift: LIFT_SMALL, name: (item.name || 'win') + '-close',
               onTap: item.onClose,
             });
@@ -637,8 +694,8 @@
           // hitbox propio — es información, no un blanco.
           if (item.badge) {
             const b = plane(g, {
-              x: cx + xs[j] + M.barItem * 0.40, y: M.barItem * 0.40, z: M.zGlyph,
-              w: 0.018, h: 0.018, color: C.red, corner: 0.5,
+              x: esquinaX, y: ESQUINA_Y, z: M.zGlyph + 0.010 * S,
+              w: RADIO_PUNTO * 2, h: RADIO_PUNTO * 2, color: C.red, corner: 0.5,
             });
             pills.push(b);
           }
