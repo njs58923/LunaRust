@@ -70,15 +70,17 @@
         });
 
         const barra = UI.bar(menu, {});
+        // [usuario, mundo principal, avisos] y [apps, ventanas abiertas…]
         barra.render([
           [
-            { glyph: 'user',    color: UI.C.blue, onTap: () => console.log('[lab] usuario') },
-            { glyph: 'wifi',    color: UI.C.blue, onTap: () => console.log('[lab] red') },
-            { glyph: 'bell',    color: UI.C.blue, onTap: () => console.log('[lab] avisos') },
+            { glyph: 'user', color: UI.C.blue, onTap: () => console.log('[lab] usuario') },
+            { glyph: 'home', color: UI.C.blue, onTap: () => console.log('[lab] mundo principal') },
+            { glyph: 'bell', color: UI.C.blue, onTap: () => console.log('[lab] avisos') },
           ],
           [
-            { glyph: 'apps',    color: UI.C.blue, selected: true, onTap: () => console.log('[lab] menu') },
-            { glyph: 'app',     color: UI.C.blue, badge: true,   onTap: () => console.log('[lab] ventana 1') },
+            { glyph: 'apps', color: UI.C.blue, selected: true, onTap: () => console.log('[lab] menu') },
+            { glyph: 'app',  color: UI.C.blue, badge: true, onTap: () => console.log('[lab] ventana 1') },
+            { glyph: 'app',  color: UI.C.blue, onTap: () => console.log('[lab] ventana 2') },
           ],
         ]);
 

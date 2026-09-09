@@ -38,16 +38,19 @@
     panelCorner: 0.035,
 
     headerH: 0.062,
+    headerW: 0.30,
     headerGap: 0.030,
     headerSize: 0.029,
+    headerRadius: 0.021,   // METROS
 
     railSize: 0.052,
     railGap: 0.014,
     railOffset: 0.042,     // del filo del panel al riel
     railCorner: 0.28,
 
-    dotR: 0.010,
-    dotGap: 0.026,
+    dotR: 0.009,
+    dotGap: 0.026,         // centro a centro entre puntos
+    navGap: 0.022,         // entre un botón de página y los puntos
 
     barY: -0.62,
     barH: 0.105,
@@ -56,10 +59,11 @@
     barGap: 0.014,
     barPad: 0.020,
     barPillGap: 0.018,
-    barPillCorner: 0.34,
+    barPillRadius: 0.036,  // METROS: una pastilla no es cuadrada (ver `pill`)
 
     winCorner: 0.030,
     winTitleH: 0.044,
+    winTitleRadius: 0.019, // METROS
     winTitleGap: 0.026,
     winBtn: 0.032,
     winBtnGap: 0.010,
@@ -126,6 +130,35 @@
     return n;
   }
 
+  // Una pastilla: un fondo **más ancho que alto** con esquinas redondeadas.
+  //
+  // Va como `box` y no como `plane` por una diferencia del motor que se ve a
+  // simple vista: en un `plane` el `border-radius` se pasa crudo a
+  // `create_rounded_plane`, que trabaja sobre un cuadrado unitario, así que es
+  // una **fracción del lado** y al escalar 0,37 x 0,10 las esquinas se estiran
+  // con él — una pastilla queda convertida en un óvalo. En un `box`,
+  // `rounded_box_radii` divide el radio **en metros** por la escala de cada eje
+  // (y lo topea en 0,499), o sea que conserva el radio del mundo: esquinas
+  // circulares de verdad en un rectángulo.
+  //
+  // El espesor es el precio. Con una caja fina el radio satura en z y el canto
+  // se redondea entero, pero eso no toca la silueta de frente, que es lo único
+  // que se mira. Lo que sí hay que corregir es la profundidad: una caja crece
+  // hacia los dos lados, así que se la corre media altura para que su **cara**
+  // quede en la z pedida y no se adelante sobre lo que tiene encima.
+  const PILL_DEPTH = 0.020;
+  function pill(parent, o) {
+    const n = root.createElement('box');
+    n.setAttribute('color', o.color);
+    n.setAttribute('border-radius', String(o.r));
+    n.setAttribute('touchable', 'false');
+    const d = o.d || PILL_DEPTH;
+    n.position = { x: o.x || 0, y: o.y || 0, z: (o.z || 0) - d / 2 };
+    n.scale = { x: o.w, y: o.h, z: d };
+    parent.appendChild(n);
+    return n;
+  }
+
   function text(parent, o) {
     const n = root.createElement('text');
     n.setAttribute('value', String(o.value));
@@ -174,7 +207,15 @@
   // `Query<(&GlobalTransform, &Toqueable, ...)>` (ver `crates/luna/src/touch.rs`):
   // **sólo los touchable son candidatos**, así que un nodo no-touchable por
   // delante no tapa el rayo aunque sea opaco.
-  const LIFT = 0.022;        // cuánto se adelanta una pieza al apuntarla
+  // Cuánto se adelanta una pieza al apuntarla. **No es uno solo**: un icono
+  // de la grilla es grande y se apoya sobre un panel hondo, así que puede
+  // salir dos centímetros sin despegarse; un botón de la barra mide un tercio
+  // y vive sobre una pastilla fina, y con el mismo levante se ve flotando
+  // adelante en vez de hundido en su lugar. El levante tiene que ir con el
+  // tamaño de la pieza, no con el gesto.
+  const LIFT = 0.022;        // grilla de aplicaciones
+  const LIFT_SMALL = 0.007;  // barra de abajo: un tercio
+  const LIFT_RAIL = 0.011;   // riel y navegación, al costado del panel
   const K_LIFT = 16;         // rapidez del acercamiento, en 1/s
   const PRESS = 0.011;       // cuánto se hunde al tocarla
   const K_PRESS = 13;
@@ -202,10 +243,14 @@
     const face = plane(parent, { x: o.x, y: o.y, z: M.zFace, w: side, h: side,
                                  color: o.color, corner });
     if (o.glyph) glyph(face, o.glyph, o.padding);
+    // Un glifo al revés es el mismo glifo girado: la placa es simétrica, así
+    // que alcanza para tener «arriba» y «abajo» con un solo dibujo en el atlas.
+    if (o.flip) face.rotation = { x: 0, y: 0, z: Math.PI };
     if (o.name) hit.setAttribute('name', o.name);
 
     const it = { hit, ring, face, color: o.color, x: o.x || 0, y: o.y || 0,
                  z: 0, zTarget: 0, press: 0, until: 0, pending: false,
+                 lift: o.lift === undefined ? LIFT : o.lift,
                  onTap: o.onTap, selected: false };
 
     hit.addEventListener('pointerenter', function () {
@@ -243,7 +288,7 @@
   function applyPiece(it) {
     const on = it === hovered;
     it.ring.setAttribute('color', on ? C.white : (it.selected ? C.white : it.color));
-    it.zTarget = on ? LIFT : 0;
+    it.zTarget = on ? it.lift : 0;
     if (flying.indexOf(it) === -1) flying.push(it);
   }
 
@@ -342,7 +387,12 @@
   function dashboard(parent, cfg) {
     const apps = cfg.apps || [];
     const cols = M.cols;
-    const rows = M.rows;
+    // **Las filas salen del contenido, no de la constante.** Con nueve apps y
+    // cinco columnas alcanzan dos, y reservar siempre tres deja un tercio del
+    // panel vacío abajo. El tope sigue siendo M.rows: pasado eso se pagina.
+    const rows = apps.length > cols * M.rows
+      ? M.rows
+      : Math.max(1, Math.ceil(apps.length / cols));
     const perPage = cols * rows;
     const pages = Math.max(1, Math.ceil(apps.length / perPage));
 
@@ -360,8 +410,8 @@
 
     // Encabezado: una pastilla suelta arriba del panel, no una franja adentro.
     const hy = top + M.headerGap + M.headerH / 2;
-    const hw = 0.30;
-    plane(g, { x: 0, y: hy, z: M.zBack, w: hw, h: M.headerH, color: C.pill, corner: 0.5 });
+    pill(g, { x: 0, y: hy, z: M.zBack, w: M.headerW, h: M.headerH,
+              r: M.headerRadius, color: C.pill });
     text(g, { x: 0, y: hy, value: cfg.title || 'Aplicaciones', size: M.headerSize });
 
     // Riel izquierdo.
@@ -373,28 +423,49 @@
       railPieces.push(piece(g, {
         x: railX, y: cy + railYs[rail.length - 1 - i],
         size: M.railSize, corner: M.railCorner, color: C.panel,
-        glyph: rail[i].glyph, padding: 0.28,
+        glyph: rail[i].glyph, padding: 0.28, lift: LIFT_RAIL,
         name: 'rail-' + rail[i].glyph, onTap: rail[i].onTap,
       }));
     }
 
-    // Puntos de página y, si hay más de una, el botón de pasar.
+    // La navegación de páginas: subir, los puntos, bajar. **Se centra sola** en
+    // el panel: la altura del conjunto sale de cuántas páginas hay, y con los
+    // puntos anclados a una altura fija el bloque se descolgaba en cuanto
+    // aparecía una página más.
+    // Con una sola página no hay nada que navegar: un punto solo no informa
+    // nada y las flechas no llevan a ningún lado.
     const dotX = w / 2 + M.railOffset + M.railSize / 2;
-    const dotYs = spread(pages, M.dotGap);
+    const many = pages > 1;
+    const dotsSpan = (pages - 1) * M.dotGap + M.dotR * 2;
+    const navH = many ? 2 * (M.railSize + M.navGap) + dotsSpan : dotsSpan;
+    const navTop = cy + navH / 2;
+
+    let page = 0;
+    let upPiece = null;
+    let downPiece = null;
+
+    if (many) {
+      upPiece = piece(g, {
+        x: dotX, y: navTop - M.railSize / 2, size: M.railSize, corner: M.railCorner,
+        color: C.panel, glyph: 'chevron', padding: 0.30, flip: true,
+        lift: LIFT_RAIL, name: 'page-prev', onTap: () => setPage(page - 1),
+      });
+    }
+
+    const dotTop = many ? navTop - M.railSize - M.navGap - M.dotR : navTop - M.dotR;
     const dots = [];
-    for (let i = 0; i < pages; i++) {
+    for (let i = 0; many && i < pages; i++) {
       dots.push(plane(g, {
-        x: dotX, y: cy + 0.055 + dotYs[pages - 1 - i], z: M.zFace,
+        x: dotX, y: dotTop - i * M.dotGap, z: M.zFace,
         w: M.dotR * 2, h: M.dotR * 2, color: i === 0 ? C.white : C.dim, corner: 0.5,
       }));
     }
-    let page = 0;
-    let pagePiece = null;
-    if (pages > 1) {
-      pagePiece = piece(g, {
-        x: dotX, y: cy - 0.055, size: M.railSize, corner: M.railCorner,
-        color: C.panel, glyph: 'chevron', padding: 0.30, name: 'page-next',
-        onTap: () => setPage((page + 1) % pages),
+
+    if (many) {
+      downPiece = piece(g, {
+        x: dotX, y: cy - navH / 2 + M.railSize / 2, size: M.railSize,
+        corner: M.railCorner, color: C.panel, glyph: 'chevron', padding: 0.30,
+        lift: LIFT_RAIL, name: 'page-next', onTap: () => setPage(page + 1),
       });
     }
 
@@ -418,8 +489,14 @@
     function appAt(i) { return apps[page * perPage + i] || null; }
 
     function setPage(p) {
+      // Se recorta en vez de dar la vuelta: con flechas arriba y abajo, saltar
+      // de la última a la primera contradice lo que el botón dibuja.
       page = Math.max(0, Math.min(p, pages - 1));
-      for (let i = 0; i < pages; i++) dots[i].setAttribute('color', i === page ? C.white : C.dim);
+      for (let i = 0; i < dots.length; i++) dots[i].setAttribute('color', i === page ? C.white : C.dim);
+      // El botón que no lleva a ningún lado se apaga, pero sigue tocable: que
+      // desaparezca movería los otros dos y el bloque dejaría de estar centrado.
+      if (upPiece) recolor(upPiece, page > 0 ? C.panel : C.pill);
+      if (downPiece) recolor(downPiece, page < pages - 1 ? C.panel : C.pill);
       for (let i = 0; i < tiles.length; i++) {
         const a = appAt(i);
         const t = tiles[i];
@@ -434,7 +511,8 @@
     }
     setPage(0);
 
-    return { group: g, width: w, height: h, centerY: cy, setPage, rail: railPieces, pagePiece };
+    return { group: g, width: w, height: h, centerY: cy, setPage, rail: railPieces,
+             upPiece, downPiece };
   }
 
   // ── La barra ───────────────────────────────────────────────────────────────
@@ -466,15 +544,15 @@
         const w = widths[gi];
         const cx = cursor + w / 2;
         cursor += w + M.barPillGap;
-        pills.push(plane(g, { x: cx, y: 0, z: M.zBack, w, h: M.barH,
-                              color: C.pill, corner: M.barPillCorner }));
+        pills.push(pill(g, { x: cx, y: 0, z: M.zBack, w, h: M.barH,
+                             r: M.barPillRadius, color: C.pill }));
         const xs = spread(groups[gi].length, M.barItem + M.barGap);
         for (let j = 0; j < groups[gi].length; j++) {
           const item = groups[gi][j];
           const it = piece(g, {
             x: cx + xs[j], y: 0, size: M.barItem, corner: M.barItemCorner,
             color: item.color || C.blue, glyph: item.glyph, padding: 0.28,
-            name: item.name, onTap: item.onTap,
+            lift: LIFT_SMALL, name: item.name, onTap: item.onTap,
           });
           if (item.selected) select(it, true);
           pieces.push(it);
@@ -521,8 +599,8 @@
 
     const btnBlock = btns.length * M.winBtn + (btns.length - 1) * M.winBtnGap;
     const titleW = Math.max(0.26, btnBlock + 0.20);
-    nodes.push(plane(g, { x: 0, y: ty, z: M.zBack, w: titleW, h: M.winTitleH,
-                          color: C.pill, corner: 0.5 }));
+    nodes.push(pill(g, { x: 0, y: ty, z: M.zBack, w: titleW, h: M.winTitleH,
+                         r: M.winTitleRadius, color: C.pill }));
 
     // El título se centra en lo que sobra a la izquierda de los botones, no en
     // la pastilla entera: centrado en la pastilla queda debajo de ellos.
@@ -561,7 +639,7 @@
 
   globalThis.ShellUI = {
     M, C, GLYPHS,
-    group, plane, text, glyph, piece, recolor, select, drop, spread,
+    group, plane, pill, text, glyph, piece, recolor, select, drop, spread,
     dashboard, bar, windowFrame,
   };
   console.log('[shell_ui] listo —', GLYPHS.length, 'glifos');

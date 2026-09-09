@@ -2,14 +2,148 @@
 <hsml>
   <head>
     <name>UX Desktop</name>
-    <meta type="position" x="0" y="0" z="0"/>
-    <meta type="scale" x="1" y="1" z="1"/>
-    <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space id="ux_desktop" resources="desktop_camera_control">
-    <text x="0" y="10.0" z="-3" value="UX Desktop Mounted" size="0.15" color="#00FF00" />
+
+  <!-- Controller de escritorio.
+       Hasta acá era un cartel verde que decía «UX Desktop Mounted»: todo el
+       control vivía en el panel de egui, que sigue estando y queda como legacy.
+       Ahora monta el MISMO menú que el de VR, desde
+       `luna://internal/shell_ui.js`, y por eso el diseño es plano: una interfaz
+       apoyada en un cilindro alrededor del visitante se lee bien con la cabeza
+       adentro y mal en una pantalla.
+
+       Lo que este controller NO hace todavía es manejar ventanas de apps
+       embebidas — eso vive en `ux_vr` junto a su máquina de estados. Acá los
+       marcadores abren pestañas y nada más. -->
+  <space id="ux_desktop" resources="desktop_camera_control,read_system_input,manage_tabs,read_hmd_pose">
+    <group id="ux_desktop_menu" visible="false"/>
+
+    <script src="luna://internal/shell_ui.js"/>
     <script>
-      console.log('[ux_desktop] Desktop UX loaded');
+      // ── Marcadores ───────────────────────────────────────────────────────
+      // TODO(persistence): mover a storage cuando exista API.
+      const BOOKMARKS = [
+        { name: 'Inicio',    url: 'luna://home',          kind: 'spatial',      glyph: 'home' },
+        { name: 'Ajustes',   url: 'luna://settings',      kind: 'app-embedded', glyph: 'settings' },
+        { name: 'Demos',     url: 'luna://demos',         kind: 'spatial',      glyph: 'demos' },
+        { name: 'Demo App',  url: 'luna://demo_embedded', kind: 'app-embedded', glyph: 'app' },
+        { name: 'Acerca de', url: 'luna://about',         kind: 'app',          glyph: 'about' },
+        { name: 'Scale',     url: 'luna://scale_demo',    kind: 'spatial',      glyph: 'scale' },
+        { name: 'Fire',      url: 'luna://fire_demo',     kind: 'spatial',      glyph: 'fire' },
+        { name: 'Target',    url: 'luna://target_demo',   kind: 'spatial',      glyph: 'target' },
+        { name: 'Range',     url: 'luna://range_demo',    kind: 'spatial',      glyph: 'range' },
+      ];
+
+      // En escritorio el campo visual es mucho más angosto que el de un visor,
+      // así que el mismo menú a la misma distancia acá tapa la pantalla entera y
+      // la barra de abajo se sale del cuadro. Se aleja en vez de achicarse: el
+      // tamaño de los iconos y los pasos de la grilla son los mismos en los dos
+      // controllers, y eso es lo que hace que sea el mismo menú.
+      const DISTANCIA = 2.15;   // del ojo al menú, en metros
+
+      (function esperar(intentos) {
+        if (!globalThis.ShellUI) {
+          if (intentos > 200) { console.warn('[ux_desktop] ShellUI no llegó'); return; }
+          setTimeout(() => esperar(intentos + 1), 16);
+          return;
+        }
+        armar();
+      })(0);
+
+      function armar() {
+        const UI = globalThis.ShellUI;
+        const root = hiperspace.dimention;
+        const menu = root.getElementById('ux_desktop_menu');
+        let visible = false;
+
+        UI.dashboard(menu, {
+          title: 'Aplicaciones',
+          apps: BOOKMARKS,
+          rail: [
+            { glyph: 'search', onTap: () => console.log('[ux_desktop] buscar (pendiente)') },
+            { glyph: 'add',    onTap: () => console.log('[ux_desktop] agregar (pendiente)') },
+            { glyph: 'edit',   onTap: () => console.log('[ux_desktop] editar (pendiente)') },
+          ],
+          onOpen: abrir,
+        });
+
+        const barra = UI.bar(menu, {});
+        // Izquierda, lo que es del sistema; derecha, lo que está abierto. El
+        // botón de apps es la puerta al menú y los que le siguen son las
+        // ventanas vivas — por eso comparten pastilla y el resto no.
+        barra.render([
+          [
+            { glyph: 'user', color: UI.C.blue, onTap: () => abrirUrl('luna://settings', 'app-embedded') },
+            { glyph: 'home', color: UI.C.blue, onTap: () => abrirUrl('luna://home', 'spatial') },
+            { glyph: 'bell', color: UI.C.blue, onTap: () => console.log('[ux_desktop] avisos (pendiente)') },
+          ],
+          [
+            { glyph: 'apps', color: UI.C.blue, selected: true, onTap: toggle },
+            // TODO: una por ventana abierta, cuando este controller maneje
+            // apps embebidas.
+          ],
+        ]);
+
+        function abrir(bm) {
+          abrirUrl(bm.url, bm.kind);
+          // En escritorio el menú se va al abrir: es una pantalla, y dejarlo
+          // encima taparía justo lo que se acaba de abrir. En VR se puede mirar
+          // para otro lado; acá no.
+          mostrar(false);
+        }
+
+        function abrirUrl(url, kind) {
+          if (!dimention || !dimention.tabs || typeof dimention.tabs.open !== 'function') {
+            console.warn('[ux_desktop] sin dimention.tabs — location.href');
+            location.href = url;
+            return;
+          }
+          dimention.tabs.open(url, { kind: kind || 'spatial' });
+        }
+
+        // El menú se planta al frente de la cámara cada vez que se abre, y no
+        // cada cuadro: pegado a la cámara se movería con cada paso de WASD y no
+        // habría forma de apuntarle un icono.
+        function plantar() {
+          // `readViewerPose` en escritorio lee la cámara, no un visor, pero al
+          // montar el shell la cámara todavía no existe y devuelve null. Antes
+          // acá se salía sin tocar nada y el menú se quedaba en el origen del
+          // mundo —o sea adentro de lo que hubiera en el centro de la escena—,
+          // visible pero imposible de encontrar. Si no hay pose se planta al
+          // frente igual: mejor un lugar fijo que ninguno.
+          const pose = typeof dimention.readViewerPose === 'function'
+            ? dimention.readViewerPose() : null;
+          if (!pose) {
+            menu.position = { x: 0, y: 1.5, z: -DISTANCIA };
+            menu.rotation = { x: 0, y: 0, z: 0 };
+            return;
+          }
+          const fx = -Math.sin(pose.yaw);
+          const fz = -Math.cos(pose.yaw);
+          menu.position = { x: pose.px + fx * DISTANCIA, y: pose.py,
+                            z: pose.pz + fz * DISTANCIA };
+          menu.rotation = { x: 0, y: pose.yaw, z: 0 };
+        }
+
+        function mostrar(on) {
+          visible = !!on;
+          if (visible) plantar();
+          menu.setAttribute('visible', visible ? 'true' : 'false');
+        }
+
+        function toggle() { mostrar(!visible); }
+
+        // ESC en escritorio; el mismo evento que manda el botón menu del mando
+        // en VR, normalizado por `system_input`.
+        root.addEventListener('systeminput', (evt) => {
+          if (evt.action === 'shell') toggle();
+        });
+
+        // Un respiro antes de mostrarlo: la cámara de escritorio se crea unos
+        // cuadros después que el shell, y plantarlo sin ella lo deja en el origen.
+        setTimeout(() => mostrar(true), 400);
+        console.log('[ux_desktop] menú listo — ' + BOOKMARKS.length + ' marcadores');
+      }
     </script>
   </space>
 </hsml>
