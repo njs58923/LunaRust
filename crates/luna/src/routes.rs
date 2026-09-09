@@ -8,6 +8,7 @@ pub struct VirtualRoutes {
 enum RouteHandler {
     Static(&'static str),        // HSML/JS estáticos
     Dynamic(fn(&str) -> String), // Contenido generado (ej: cache stats)
+    Bytes(&'static [u8]),        // Recursos binarios (audio, imágenes)
 }
 
 lazy_static! {
@@ -25,6 +26,7 @@ impl VirtualRoutes {
         routes.insert("demos".to_string(), RouteHandler::Static(LUNA_DEMOS));
         routes.insert("scale_demo".to_string(), RouteHandler::Static(LUNA_SCALE_DEMO));
         routes.insert("audio_demo".to_string(), RouteHandler::Static(include_str!("web/audio_demo.hsml")));
+        routes.insert("assets/birds_ambience.mp3".to_string(), RouteHandler::Bytes(include_bytes!("web/assets/birds_ambience.mp3")));
         routes.insert("mesh_demo".to_string(), RouteHandler::Static(include_str!("web/mesh_demo.hsml")));
         routes.insert("surface_demo".to_string(), RouteHandler::Static(include_str!("web/surface_demo.hsml")));
         routes.insert("fire_demo".to_string(), RouteHandler::Static(LUNA_FIRE_DEMO));
@@ -87,6 +89,10 @@ impl VirtualRoutes {
             let content = match handler {
                 RouteHandler::Static(content) => content.to_string(),
                 RouteHandler::Dynamic(generator) => generator(route_path),
+                // Un recurso binario no tiene lectura como texto: para el
+                // cargador de documentos es indistinguible de una ruta que no
+                // existe, y así no se cuela un mp3 dentro de un parser de XML.
+                RouteHandler::Bytes(_) => return Some(LUNA_404.to_string()),
             };
             println!(
                 "[VirtualRoutes] ✓ Found route, content length: {}",
@@ -98,6 +104,20 @@ impl VirtualRoutes {
         // No match - return 404
         println!("[VirtualRoutes] ✗ Route not found, returning 404");
         Some(LUNA_404.to_string())
+    }
+
+    /// Igual que `resolve`, pero conservando los bytes. Es el único camino por
+    /// el que un recurso binario sale del origen nativo; `resolve` los esconde
+    /// a propósito. El `bool` dice si la ruta existía: `resolve` devuelve el
+    /// documento 404 con estado 200, y un decodificador de audio recibiendo un
+    /// HSML falla con un error del formato, no con un 404.
+    pub fn resolve_bytes(&self, url: &str) -> Option<(Vec<u8>, bool)> {
+        let route_path = url.strip_prefix("luna://")?.trim_start_matches('/');
+        if let Some(RouteHandler::Bytes(data)) = self.routes.get(route_path) {
+            return Some((data.to_vec(), true));
+        }
+        let found = self.routes.contains_key(route_path);
+        self.resolve(url).map(|text| (text.into_bytes(), found))
     }
 
     pub fn is_virtual_url(url: &str) -> bool {

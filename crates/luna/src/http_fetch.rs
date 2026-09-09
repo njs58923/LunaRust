@@ -88,20 +88,19 @@ pub(crate) async fn execute(
         if method != Method::GET && method != Method::HEAD {
             return Err("Native resources only support GET/HEAD".into());
         }
-        let resource = crate::VIRTUAL_ROUTES.resolve(&request.url);
+        // resolve_bytes conserva los bytes tal cual (un mp3 no sobrevive a
+        // String) y además distingue una ruta real del documento 404, que
+        // hasta acá salía con estado 200.
+        let resource = crate::VIRTUAL_ROUTES.resolve_bytes(&request.url);
+        let found = resource.as_ref().is_some_and(|(_, found)| *found);
         return Ok(FetchResponse {
             url: request.url,
-            status: if resource.is_some() { 200 } else { 404 },
-            status_text: if resource.is_some() {
-                "OK"
-            } else {
-                "Not Found"
-            }
-            .into(),
+            status: if found { 200 } else { 404 },
+            status_text: if found { "OK" } else { "Not Found" }.into(),
             body: if method == Method::HEAD {
                 Vec::new()
             } else {
-                resource.unwrap_or_default().into_bytes()
+                resource.map(|(bytes, _)| bytes).unwrap_or_default()
             },
             headers: vec![],
             redirected: false,

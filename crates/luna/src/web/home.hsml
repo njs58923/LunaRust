@@ -6,7 +6,9 @@
     <meta type="scale" x="1" y="1" z="1"/>
     <meta type="rotation" x="0" y="0" z="0"/>
   </head>
-  <space resources="navigate_self">
+  <!-- audio: la ambientación de fondo. fetch_text: el mp3 se baja con
+       fetch, aunque viva en el propio origen nativo. -->
+  <space resources="navigate_self,audio,fetch_text">
     <!-- Small sign ahead of the viewer; the rest of the island stays empty. -->
     <group id="home_navigation" z="-3.5">
       <text y="1.95" value="Luna" size="0.32" color="#344C49"/>
@@ -18,7 +20,36 @@
       <text y="1.15" z="0.04" value="Ajustes" size="0.075" color="#F4F1E5"/>
       <box id="btn_about" x="0.86" y="1.15" sx="0.78" sy="0.28" sz="0.06" color="#405E55" touchable="true"/>
       <text x="0.86" y="1.15" z="0.04" value="Acerca de" size="0.075" color="#F4F1E5"/>
+
+      <box id="btn_ambiente" y="0.72" sx="0.52" sy="0.19" sz="0.05" color="#33474A" touchable="true"/>
+      <text id="lbl_ambiente" y="0.72" z="0.04" value="Pajaros" size="0.05" color="#F4F1E5"/>
     </group>
     <script src="luna://internal/home_navigation.js"/>
+    <script>
+      // Ambientacion de fondo. El clip se decodifica una sola vez y se repite
+      // con `loop`, que corre en el mixer: no vuelve a bajar ni a decodificar.
+      const raiz = hiperspace.dimention;
+      const rotulo = raiz.getElementById('lbl_ambiente');
+      const ambiente = new Audio('luna://assets/birds_ambience.mp3');
+      ambiente.loop = true;
+      ambiente.volume = 0.35;
+      let encendido = false;
+      const marcar = (texto) => rotulo.setAttribute('value', texto);
+      ambiente.addEventListener('error', (e) => {
+        encendido = false;
+        marcar('Sin audio');
+        console.error('[home] ambiente:', e.error);
+      });
+      async function alternar() {
+        if (encendido) { ambiente.pause(); encendido = false; marcar('Pajaros'); return; }
+        encendido = true;
+        marcar('Cargando');
+        // El primer play baja 3 MiB y los decodifica; los siguientes reanudan.
+        try { await ambiente.play(); if (encendido) marcar('Silenciar'); }
+        catch (e) { if (encendido) { encendido = false; marcar('Sin audio'); console.error('[home] ambiente:', e); } }
+      }
+      raiz.getElementById('btn_ambiente').addEventListener('toque', alternar);
+      alternar();
+    </script>
   </space>
 </hsml>
