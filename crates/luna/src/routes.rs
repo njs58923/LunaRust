@@ -1955,6 +1955,7 @@ mod tests {
                 remove() { this.removed = true; }
                 addEventListener(k,fn) { (this.listeners[k] ||= []).push(fn); }
                 removeEventListener(k,fn) { this.listeners[k] = (this.listeners[k] || []).filter(f => f !== fn); }
+                matches() { return !!this.hovered; }
                 fire(k) { for (const fn of this.listeners[k] || []) fn({}); }
             }
             const uiRoot = new UiNode('space');
@@ -1979,12 +1980,34 @@ mod tests {
             globalThis.shell = {{ state:shellState, open:openEmbeddedApp, message:handleAppMessage,
                 anchor:onTapFocusAnchor, close:onTapFocusClose, minimize:onTapFocusMinimize,
                 restore:onTapBarFocus, toggle:toggleShell, reposition:repositionShellAtViewer,
-                barVisible:shouldShowBottomBar, apply:applyVisibility }};
+                barVisible:shouldShowBottomBar, apply:applyVisibility,
+                items:()=>itemRefs, bar:()=>barEntries, rebuild:rebuildBottomBar }};
         }})();"#)).unwrap();
         eng.eval(r#"
             function check(ok, msg) { if (!ok) throw new Error(msg); }
             function hostOpened(id) { shell.message({fromTabId:0,payload:JSON.stringify({type:'tabopened',tabId:id})}); }
             function ready(id) { shell.message({fromTabId:id,payload:JSON.stringify({type:'ready'})}); }
+            const items = shell.items();
+            check(items.length === 9, 'missing dashboard shortcuts');
+            for (const item of items) {
+                check(item.box.tag === 'plane', 'icon must be a flat textured surface');
+                check(item.box.attrs.texture === 'luna://icons/menu.png', 'shared atlas lost');
+                check(item.hit !== item.box, 'visual animation must not move the hit target');
+                const tile = item.hit.parent;
+                const p = tile.position;
+                check(Math.abs(Math.hypot(p.x, p.z - 1.5) - 1.5) < 0.0001, 'tile off cylinder');
+                check(Math.abs(tile.rotation.y + Math.asin(p.x / 1.5)) < 0.0001, 'tile faces away');
+                const pose = JSON.stringify(item.hit.position);
+                item.hit.fire('pointerenter');
+                check(item.hit.attrs.color === '#38465D', 'missing hover feedback');
+                item.hit.hovered = true;
+                item.hit.fire('pointerleave');
+                check(item.hit.attrs.color === '#38465D', 'second controller hover was cleared');
+                item.hit.hovered = false;
+                item.hit.fire('pointerleave');
+                check(item.hit.attrs.color === '#1B1F27', 'hover failed to clear');
+                check(JSON.stringify(item.hit.position) === pose, 'hover moves its target');
+            }
             shell.open({name:'A',url:'luna://demo_embedded'});
             check(shell.barVisible(), 'loading window must retain a cancel control');
             ready(999);
@@ -2019,6 +2042,24 @@ mod tests {
             check(!shell.state.focusApp.ready, 'late closed app revealed replacement');
             ready(45);
             shell.reposition();
+            // More windows must not grow the taskbar beyond the user's field of view.
+            for (let i = 0; i < 7; i++) shell.state.anchored.push({tabId:100+i,title:'Window '+i});
+            shell.rebuild();
+            check(shell.bar().length === 5, 'taskbar should page many windows');
+            check(shell.bar().every(e => e.group.rotation.x < 0), 'lower taskbar must face upward');
+            check(shell.bar().every(e => Math.abs(e.x) + e.box.scale.x / 2 <= 0.7), 'taskbar too wide');
+            const menuNode = shell.bar().find(e => e.key === 'menu').box;
+            shell.bar().find(e => e.key === 'next').box.fire('toque');
+            check(shell.bar().find(e => e.key === 'menu').box === menuNode, 'paging rebuilt stable menu');
+            check(!shell.bar().some(e => e.key === 'focus'), 'page did not advance');
+            shell.state.anchored = [];
+            shell.rebuild();
+            check(shell.bar().some(e => e.key === 'focus'), 'page not clamped after window removal');
+            const focus = shell.bar().find(e => e.key === 'focus');
+            check(focus.text.position.z > focus.box.position.z, 'task label behind surface');
+            check(focus.closeText.position.z > focus.closeBox.position.z, 'close label behind surface');
+            focus.closeBox.fire('toque');
+            check(shell.state.focusApp === null, 'taskbar close failed');
         "#).unwrap();
         let slots: Vec<serde_json::Value> = eng.drain_shell_outbox().iter()
             .filter_map(|m| serde_json::from_str::<serde_json::Value>(&m.payload).ok())

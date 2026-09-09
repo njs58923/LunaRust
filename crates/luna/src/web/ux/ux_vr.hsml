@@ -47,11 +47,11 @@
       // TODO(persistence): mover a storage cuando exista API.
       // kind:  'spatial' (default) | 'app' | 'app-embedded' (futuro)
       const BOOKMARKS = [
-        { name: 'Home',     url: 'luna://home',           kind: 'spatial' },
+        { name: 'Inicio',     url: 'luna://home',           kind: 'spatial' },
         { name: 'Ajustes',  url: 'luna://settings',       kind: 'app-embedded' },
         { name: 'Demos',    url: 'luna://demos',          kind: 'spatial' },
         { name: 'Demo App', url: 'luna://demo_embedded',  kind: 'app-embedded' },
-        { name: 'About',    url: 'luna://about',          kind: 'app' },
+        { name: 'Acerca de',    url: 'luna://about',          kind: 'app' },
         { name: 'Scale',    url: 'luna://scale_demo',     kind: 'spatial' },
         { name: 'Fire',     url: 'luna://fire_demo',      kind: 'spatial' },
         { name: 'Target',   url: 'luna://target_demo',    kind: 'spatial' },
@@ -65,23 +65,23 @@
       ];
 
       // ── Tamaños (Quest 2 home style) ───────────────────────────────────
-      const SIZE_APP    = 0.22;
+      const SIZE_APP    = 0.18;
       const BOX_DEPTH   = 0.025;
       const Z           = 0;       // local al panel
-      const Z_TEXT      = 0.001;
-      const LABEL_DY    = -0.15;
-      const LABEL_SIZE  = 0.040;
+      const Z_TEXT      = 0.006;
+      const LABEL_DY    = -0.12;
+      const LABEL_SIZE  = 0.028;
       const BORDER_R    = '0.2';
 
       // ── Bottom bar (taskbar) ───────────────────────────────────────────
-      const BAR_Y           = -0.55;
-      const BAR_Z           = 0;
-      const BAR_SLOT_SIZE_X = 0.16;
-      const BAR_SLOT_SIZE_Y = 0.10;
+      const BAR_Y           = -0.72;
+      const BAR_Z           = 0.12;
+      const BAR_SLOT_SIZE_X = 0.25;
+      const BAR_SLOT_SIZE_Y = 0.095;
       const BAR_SLOT_DEPTH  = 0.020;
-      const BAR_SLOT_GAP    = 0.04;
+      const BAR_SLOT_GAP    = 0.025;
       const BAR_SLOT_BORDER = '0.15';
-      const BAR_LABEL_SIZE  = 0.035;
+      const BAR_LABEL_SIZE  = 0.025;
 
       // ── Focus zone (frame del focus app) ───────────────────────────────
       // Dimensiones del slot: el shell decide el tamaño, las apps reciben
@@ -90,8 +90,8 @@
       const FOCUS_SLOT_H  = 0.7;
       const FOCUS_SLOT_D  = 0.1;
       const FOCUS_FRAME_THICK = 0.015;
-      const FOCUS_TITLEBAR_H  = 0.08;
-      const FOCUS_BTN_SIZE   = 0.06;
+      const FOCUS_TITLEBAR_H  = 0.10;
+      const FOCUS_BTN_SIZE   = 0.08;
       const FOCUS_BTN_GAP    = 0.012;
 
       const SHELL_SPAWN_DISTANCE = 1.5;
@@ -109,38 +109,59 @@
       const ANCHORED_SLOT_H = FOCUS_SLOT_H;
       const ANCHORED_SLOT_D = FOCUS_SLOT_D;
 
-      // ── buildPositions (layout cluster) ────────────────────────────────
-      const POS_DIV = 4;
-      const SPACEY = 1.5;
-      const POSITIONS_TABLE = [
-        [[4, 1]],
-        [[3, 1], [5, 1]],
-        [[2, 1], [4, 1], [6, 1]],
-        [[1, 1], [3, 1], [5, 1], [7, 1]],
-        [[0, 1], [2, 1], [4, 1], [6, 1], [8, 1]],
-        [[2, 1], [4, 1], [6, 1], [3, 1 - SPACEY], [5, 1 + SPACEY], [3, 1 + SPACEY]],
-        [[2, 1], [4, 1], [6, 1], [3, 1 - SPACEY], [5, 1 + SPACEY], [3, 1 + SPACEY], [5, 1 - SPACEY]],
-        [[1, 1], [3, 1], [5, 1], [7, 1], [2, 1 - SPACEY], [6, 1 - SPACEY], [2, 1 + SPACEY], [6, 1 + SPACEY]],
-      ];
-
+      // Local cylindrical layout, facing the viewer without moving the window slot.
       function computePositions(count) {
-        if (count < 1) return [];
-        if (count > POSITIONS_TABLE.length) {
-          const columns = Math.ceil(Math.sqrt(count));
-          const rows = Math.ceil(count / columns);
-          return Array.from({length: count}, (_, i) => [(i % columns - (columns - 1) / 2) * 0.36, ((rows - 1) / 2 - Math.floor(i / columns)) * 0.40]);
-        }
-        const raw = POSITIONS_TABLE[count - 1].map(([x, y]) => [x / POS_DIV, y / POS_DIV]);
-        let cx = 0, cy = 0;
-        for (const [x, y] of raw) { cx += x; cy += y; }
-        cx /= raw.length;
-        cy /= raw.length;
-        return raw.map(([x, y]) => [x - cx, y - cy]);
+        const columns = Math.min(3, count);
+        return Array.from({length: count}, (_, i) => {
+          const row = Math.floor(i / columns);
+          const inRow = Math.min(columns, count - row * columns);
+          return [(i % columns - (inRow - 1) / 2) * 0.30, 0.18 - row * 0.30];
+        });
+      }
+
+      function surface(parent, u, y) {
+        const group = root.createElement('group');
+        const angle = u / SHELL_SPAWN_DISTANCE;
+        group.position = {x: SHELL_SPAWN_DISTANCE * Math.sin(angle), y,
+                          z: SHELL_SPAWN_DISTANCE * (1 - Math.cos(angle))};
+        group.rotation = {x: 0, y: -angle, z: 0};
+        parent.appendChild(group);
+        return group;
+      }
+
+      function plate(parent, width, height, y, z, color, radius) {
+        const node = root.createElement('plane');
+        node.setAttribute('color', color);
+        node.setAttribute('border-radius', String(radius || 0.08));
+        node.setAttribute('touchable', 'false');
+        node.position = {x: 0, y, z};
+        node.scale = {x: width, y: height, z: 1};
+        parent.appendChild(node);
+        return node;
+      }
+
+      function caption(parent, value, y, size, color) {
+        const node = root.createElement('text');
+        node.setAttribute('value', value);
+        node.setAttribute('size', String(size));
+        node.setAttribute('color', color || '#F2F5FA');
+        node.setAttribute('touchable', 'false');
+        node.position = {x: 0, y, z: Z_TEXT};
+        parent.appendChild(node);
+        return node;
+      }
+
+      // Keep the hit target stationary; two controllers may hover it at once.
+      function highlight(target, visual, base, active) {
+        target.addEventListener('pointerenter', () => visual.setAttribute('color', active));
+        target.addEventListener('pointerleave', () => {
+          if (!target.matches(':hover')) visual.setAttribute('color', typeof base === 'function' ? base() : base);
+        });
       }
 
       // ── Animación enter/exit ───────────────────────────────────────────
-      const ANIM_MS    = 240;
-      const STAGGER_MS = 30;
+      const ANIM_MS    = 160;
+      const STAGGER_MS = 12;
       function easeOutBack(t) {
         const c1 = 1.70158, c3 = c1 + 1;
         return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
@@ -191,60 +212,57 @@
       let animActive = false;
       let animMode = null;
 
+      let dashboardRefs = [];
       function clearBookmarks() {
-        for (const ref of itemRefs) {
-          try { if (ref.box)  ref.box.remove();  } catch (e) {}
-          try { if (ref.text) ref.text.remove(); } catch (e) {}
-        }
+        for (const node of dashboardRefs) node.remove();
+        dashboardRefs = [];
         itemRefs = [];
       }
 
       function buildBookmarks() {
         clearBookmarks();
         if (!panel) return;
+        const header = surface(panel, 0, 0.42);
+        plate(header, 0.94, 0.16, 0, -0.012, '#1B1F27');
+        caption(header, 'LUNA  /  Explorar', 0.022, 0.034);
+        caption(header, 'Mundos y aplicaciones', -0.030, 0.023, '#AAB5C6');
+        dashboardRefs.push(header);
         const positions = computePositions(BOOKMARKS.length);
-        const n = Math.min(BOOKMARKS.length, positions.length);
-        for (let i = 0; i < n; i++) {
+        // Narrow backing plates follow each column; no flat sheet cuts the arc.
+        for (const u of [-0.30, 0, 0.30]) {
+          const column = surface(panel, u, -0.16);
+          plate(column, 0.288, 0.89, 0, -0.014, '#1B1F27');
+          dashboardRefs.push(column);
+        }
+        for (let i = 0; i < BOOKMARKS.length; i++) {
           const bm = BOOKMARKS[i];
-          const [px, py] = positions[i];
-          const color = PALETTE[i % PALETTE.length];
-
-          const box = root.createElement('box');
+          const [u, y] = positions[i];
+          const tile = surface(panel, u, y);
+          dashboardRefs.push(tile);
+          const hit = plate(tile, 0.258, 0.276, -0.04, -0.006, '#1B1F27');
+          hit.setAttribute('touchable', 'true');
+          hit.setAttribute('name', 'open-' + bm.name);
+          const visual = root.createElement('group');
+          tile.appendChild(visual);
+          const box = plate(visual, SIZE_APP, SIZE_APP, 0, 0, PALETTE[i % PALETTE.length], 0.22);
           box.setAttribute('name', 'app-' + bm.name);
-          box.setAttribute('border-radius', BORDER_R);
-          box.setAttribute('color', color);
-          // One shared 32-slot atlas; the icon is composed on the box itself.
           box.setAttribute('texture', 'luna://icons/menu.png');
           box.setAttribute('texture-region', [(i % 8) / 8, Math.floor(i / 8) / 4, 1 / 8, 1 / 4].join(','));
           box.setAttribute('texture-face', 'front');
           box.setAttribute('texture-fit', 'contain');
-          box.setAttribute('touchable', 'true');
-          box.position = { x: px, y: py, z: Z };
-          box.scale = { x: 0.001, y: 0.001, z: 0.001 };
-          const hoverColor = color.replace(/[0-9a-f]{2}/gi, channel =>
-            Math.round(parseInt(channel, 16) * 0.8 + 255 * 0.2).toString(16).padStart(2, '0'));
-          box.addEventListener('pointerenter', () => box.setAttribute('color', hoverColor));
-          box.addEventListener('pointerleave', () => {
-            if (!box.matches(':hover')) box.setAttribute('color', color);
-          });
-          box.addEventListener('toque', () => openBookmark(bm));
-          panel.appendChild(box);
-
-          const text = root.createElement('text');
-          text.setAttribute('name', 'app-name-' + bm.name);
-          text.setAttribute('value', bm.name);
-          text.setAttribute('size', String(LABEL_SIZE));
-          text.position = { x: px, y: py + LABEL_DY, z: Z_TEXT };
-          panel.appendChild(text);
-
-          itemRefs.push({ box, text, idx: i });
+          box.setAttribute('texture-padding', '0.22');
+          const text = caption(visual, bm.name, LABEL_DY, LABEL_SIZE);
+          highlight(hit, hit, '#1B1F27', '#38465D');
+          hit.addEventListener('toque', () => openBookmark(bm));
+          itemRefs.push({box, text, hit, visual, idx: i});
         }
       }
 
       function applyScale(ref, factor) {
-        if (!ref.box) return;
         const f = Math.max(0.001, factor);
-        ref.box.scale = { x: SIZE_APP * f, y: SIZE_APP * f, z: BOX_DEPTH * f };
+        // Labels and icons enter together; targeting remains stable throughout.
+        ref.visual.scale = {x: f, y: f, z: 1};
+        ref.hit.setAttribute('touchable', factor > 0.95 ? 'true' : 'false');
       }
 
       function startEnterAnimation() {
@@ -302,32 +320,48 @@
       // cada applyVisibility destruía/recreaba todos los boxes → parpadeo.
       let barEntries = []; // { box, text, key, onTap, closeOnTap, closeBox, closeText, label, color, x }
 
-      const BAR_CLOSE_SIZE = 0.035;
+      const BAR_CLOSE_SIZE = 0.055;
       const BAR_CLOSE_DX   = BAR_SLOT_SIZE_X / 2 - BAR_CLOSE_SIZE / 2 - 0.008;
-      const BAR_CLOSE_DY   = BAR_SLOT_SIZE_Y / 2 - BAR_CLOSE_SIZE / 2 - 0.008;
+      const BAR_CLOSE_DY   = 0;
+
+      function positionBarGroup(group, u) {
+        const radius = SHELL_SPAWN_DISTANCE - BAR_Z;
+        const angle = u / radius;
+        group.position = {x: radius * Math.sin(angle), y: BAR_Y,
+                          z: BAR_Z + radius * (1 - Math.cos(angle))};
+        group.rotation = {x: -Math.atan2(-BAR_Y, radius), y: -angle, z: 0};
+      }
 
       function buildBarSlot(x, label, color, onTap, key, closeOnTap) {
-        const box = root.createElement('box');
+        const group = root.createElement('group');
+        bottomBar.appendChild(group);
+        positionBarGroup(group, x);
+        const box = root.createElement('plane');
         box.setAttribute('border-radius', BAR_SLOT_BORDER);
         box.setAttribute('color', color);
         box.setAttribute('touchable', 'true');
-        box.position = { x, y: BAR_Y, z: BAR_Z };
+        box.position = { x: 0, y: 0, z: 0 };
         box.scale = { x: BAR_SLOT_SIZE_X, y: BAR_SLOT_SIZE_Y, z: BAR_SLOT_DEPTH };
         const onTapWrapper = () => {
           const entry = barEntries.find(e => e.box === box);
           if (entry && typeof entry.onTap === 'function') entry.onTap();
         };
         box.addEventListener('toque', onTapWrapper);
-        bottomBar.appendChild(box);
+        box.addEventListener('pointerenter', () => box.setAttribute('color', '#425779'));
+        box.addEventListener('pointerleave', () => {
+          const entry = barEntries.find(e => e.box === box);
+          if (entry && !box.matches(':hover')) box.setAttribute('color', entry.color);
+        });
+        group.appendChild(box);
 
         const text = root.createElement('text');
         text.setAttribute('value', label);
         text.setAttribute('size', String(BAR_LABEL_SIZE));
         text.setAttribute('color', '#FFFFFF');
-        text.position = { x, y: BAR_Y, z: BAR_Z + 0.002 };
-        bottomBar.appendChild(text);
+        text.position = { x: -0.027, y: 0, z: 0.008 };
+        group.appendChild(text);
 
-        const entry = { box, text, key, onTap, closeOnTap,
+        const entry = { group, box, text, key, onTap, closeOnTap,
                         closeBox: null, closeText: null,
                         label, color, x };
 
@@ -339,26 +373,27 @@
       }
 
       function attachBarSlotCloseBtn(entry, x) {
-        const closeBox = root.createElement('box');
+        const closeBox = root.createElement('plane');
         closeBox.setAttribute('border-radius', '0.3');
         closeBox.setAttribute('color', '#E53935');
         closeBox.setAttribute('touchable', 'true');
-        closeBox.position = { x: x + BAR_CLOSE_DX, y: BAR_Y + BAR_CLOSE_DY, z: BAR_Z + 0.004 };
+        closeBox.position = { x: BAR_CLOSE_DX, y: BAR_CLOSE_DY, z: 0.004 };
         closeBox.scale = { x: BAR_CLOSE_SIZE, y: BAR_CLOSE_SIZE, z: BAR_SLOT_DEPTH };
-        const wrapper = () => {
+        const wrapper = (event) => {
+          if (event.stopPropagation) event.stopPropagation();
           // Re-lookup por si entries fueron reorganizados.
           const e = barEntries.find(e => e.closeBox === closeBox);
           if (e && typeof e.closeOnTap === 'function') e.closeOnTap();
         };
         closeBox.addEventListener('toque', wrapper);
-        bottomBar.appendChild(closeBox);
+        entry.group.appendChild(closeBox);
 
         const closeText = root.createElement('text');
         closeText.setAttribute('value', 'x');
         closeText.setAttribute('size', '0.025');
         closeText.setAttribute('color', '#FFFFFF');
-        closeText.position = { x: x + BAR_CLOSE_DX, y: BAR_Y + BAR_CLOSE_DY, z: BAR_Z + 0.006 };
-        bottomBar.appendChild(closeText);
+        closeText.position = { x: BAR_CLOSE_DX, y: BAR_CLOSE_DY, z: 0.010 };
+        entry.group.appendChild(closeText);
 
         entry.closeBox = closeBox;
         entry.closeText = closeText;
@@ -382,8 +417,9 @@
         }
         const moved = Math.abs(entry.x - x) > 0.0001;
         if (moved) {
-          entry.box.position = { x, y: BAR_Y, z: BAR_Z };
-          entry.text.position = { x, y: BAR_Y, z: BAR_Z + 0.002 };
+          positionBarGroup(entry.group, x);
+          entry.box.position = { x: 0, y: 0, z: 0 };
+          entry.text.position = { x: -0.027, y: 0, z: 0.008 };
           entry.x = x;
         }
         // onTap/closeOnTap pueden cambiar (indices anchored). El wrapper
@@ -397,8 +433,8 @@
         } else if (!wantsClose && entry.closeBox) {
           detachBarSlotCloseBtn(entry);
         } else if (wantsClose && moved && entry.closeBox) {
-          entry.closeBox.position = { x: x + BAR_CLOSE_DX, y: BAR_Y + BAR_CLOSE_DY, z: BAR_Z + 0.004 };
-          entry.closeText.position = { x: x + BAR_CLOSE_DX, y: BAR_Y + BAR_CLOSE_DY, z: BAR_Z + 0.006 };
+          entry.closeBox.position = { x: BAR_CLOSE_DX, y: BAR_CLOSE_DY, z: 0.004 };
+          entry.closeText.position = { x: BAR_CLOSE_DX, y: BAR_CLOSE_DY, z: 0.010 };
         }
       }
 
@@ -406,19 +442,26 @@
         try { if (entry.box)  entry.box.remove();  } catch (e) {}
         try { if (entry.text) entry.text.remove(); } catch (e) {}
         detachBarSlotCloseBtn(entry);
+        entry.group.remove();
+      }
+
+      let barPage = 0;
+      const BAR_APPS_PER_PAGE = 2;
+      function shortTitle(title) {
+        return title.length > 9 ? title.slice(0, 8) + '…' : title;
       }
 
       function rebuildBottomBar() {
         if (!bottomBar) return;
 
         // Lista lógica de slots (key estable + props actuales).
-        const slots = [];
-        slots.push({ key: 'menu', label: 'Menu', color: '#4CAF50', onTap: onTapBarMenu });
+        let slots = [];
+        slots.push({ key: 'menu', label: 'Inicio', color: '#30435F', onTap: onTapBarMenu });
         if (shellState.focusApp) {
           slots.push({
             key: 'focus',
-            label: shellState.focusApp.ready ? 'Focus' : 'Loading',
-            color: shellState.focusApp.minimized ? '#90A4AE' : '#FFC107',
+            label: shellState.focusApp.ready ? shortTitle(shellState.focusApp.title || 'App') : 'Cargando',
+            color: shellState.focusApp.minimized ? '#252A34' : '#304F68',
             onTap: onTapBarFocus,
             closeOnTap: onTapFocusClose,
           });
@@ -426,14 +469,26 @@
         for (let i = 0; i < shellState.anchored.length; i++) {
           const a = shellState.anchored[i];
           const idx = i;
-          const labelText = (a.title || 'App').slice(0, 6);
+          const labelText = shortTitle(a.title || 'App');
           slots.push({
             key: 'anc:' + a.tabId,
             label: labelText,
-            color: a.minimized ? '#607D8B' : '#7E57C2',
+            color: a.minimized ? '#252A34' : '#3D3658',
             onTap: () => onTapBarAnchored(shellState.anchored.indexOf(a)),
             closeOnTap: () => onTapBarAnchoredClose(shellState.anchored.indexOf(a)),
           });
+        }
+
+        // Bound the width even with many windows. Menu and paging stay reachable.
+        const apps = slots.slice(1);
+        const pages = Math.max(1, Math.ceil(apps.length / BAR_APPS_PER_PAGE));
+        barPage = Math.max(0, Math.min(barPage, pages - 1));
+        if (pages > 1) {
+          const move = delta => { barPage = (barPage + delta + pages) % pages; rebuildBottomBar(); };
+          slots = [slots[0],
+            {key:'previous', label:'‹ Anterior', color:'#252A34', onTap:() => move(-1)},
+            ...apps.slice(barPage * BAR_APPS_PER_PAGE, (barPage + 1) * BAR_APPS_PER_PAGE),
+            {key:'next', label:(barPage + 1) + '/' + pages + ' ›', color:'#252A34', onTap:() => move(1)}];
         }
 
         // Layout horizontal centrado.
@@ -666,10 +721,11 @@
       }
 
       function addFrameBox(opts) {
-        const box = root.createElement('box');
+        const box = root.createElement('plane');
         box.setAttribute('color', opts.color || '#1a1a2e');
         if (opts.borderRadius) box.setAttribute('border-radius', String(opts.borderRadius));
-        if (opts.touchable) box.setAttribute('touchable', 'true');
+        box.setAttribute('touchable', opts.touchable ? 'true' : 'false');
+        if (opts.touchable) highlight(box, box, opts.color, '#52627C');
         box.position = { x: opts.x, y: opts.y, z: opts.z };
         box.scale = { x: opts.sx, y: opts.sy, z: opts.sz };
         if (typeof opts.onTap === 'function') {
@@ -691,6 +747,11 @@
         return text;
       }
 
+      function windowTitle(title) {
+        const value = title || 'App';
+        return value.length > 24 ? value.slice(0, 23) + '…' : value;
+      }
+
       function buildFocusFrame(title) {
         clearFocusFrame();
         if (!focusZone) return;
@@ -710,8 +771,8 @@
         addFrameBox({ x: 0, y: titleY, z: 0,
                       sx: W, sy: T, sz: 0.012,
                       color: '#1a2030', borderRadius: 0.02 });
-        addFrameText({ x: -W/2 + 0.06, y: titleY, z: 0.008,
-                       value: title || 'App', size: 0.035, color: '#B0BEC5' });
+        addFrameText({ x: -0.16, y: titleY, z: 0.008,
+                       value: windowTitle(title), size: 0.035, color: '#B0BEC5' });
 
         // Botones titlebar (de derecha a izq): close, min, anchor.
         const btnY = titleY;
@@ -726,7 +787,7 @@
         bx -= FOCUS_BTN_SIZE + FOCUS_BTN_GAP;
         addFrameBox({ x: bx, y: btnY, z: 0.012,
                       sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
-                      color: '#90A4AE', borderRadius: 0.02, touchable: true,
+                      color: '#3A4659', borderRadius: 0.02, touchable: true,
                       onTap: onTapFocusMinimize });
         addFrameText({ x: bx, y: btnY, z: 0.020, value: '_', size: 0.045 });
         // Anchor (azul)
@@ -735,7 +796,7 @@
                       sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
                       color: '#3B82F6', borderRadius: 0.02, touchable: true,
                       onTap: onTapFocusAnchor });
-        addFrameText({ x: bx, y: btnY, z: 0.020, value: '#', size: 0.04 });
+        addFrameText({ x: bx, y: btnY, z: 0.020, value: 'Fijar', size: 0.021 });
 
         // Viewport silhouette (un cuadro fino para indicar el slot — la app
         // dibuja por encima en world coords).
@@ -922,10 +983,11 @@
 
         const refs = [];
         const addBox = (opts) => {
-          const b = root.createElement('box');
+          const b = root.createElement('plane');
           b.setAttribute('color', opts.color || '#1a1a2e');
           if (opts.borderRadius) b.setAttribute('border-radius', String(opts.borderRadius));
-          if (opts.touchable) b.setAttribute('touchable', 'true');
+          b.setAttribute('touchable', opts.touchable ? 'true' : 'false');
+          if (opts.touchable) highlight(b, b, () => b._idleColor || opts.color, '#52627C');
           b.position = { x: opts.x, y: opts.y, z: opts.z };
           b.scale = { x: opts.sx, y: opts.sy, z: opts.sz };
           if (typeof opts.onTap === 'function') b.addEventListener('toque', opts.onTap);
@@ -957,8 +1019,8 @@
         addBox({ x: 0, y: titleY, z: 0,
                  sx: W, sy: T, sz: 0.012,
                  color: '#1a2030', borderRadius: 0.02 });
-        const titleText = addText({ x: -W/2 + 0.06, y: titleY, z: 0.008,
-                                    value: anc.title || 'App', size: 0.035, color: '#B0BEC5' });
+        const titleText = addText({ x: -0.16, y: titleY, z: 0.008,
+                                    value: windowTitle(anc.title), size: 0.035, color: '#B0BEC5' });
 
         // Botones titlebar anchored (de derecha a izq): close, min, always_on.
         const btnY = titleY;
@@ -973,7 +1035,7 @@
         bx -= FOCUS_BTN_SIZE + FOCUS_BTN_GAP;
         addBox({ x: bx, y: btnY, z: 0.012,
                  sx: FOCUS_BTN_SIZE, sy: FOCUS_BTN_SIZE, sz: 0.012,
-                 color: '#90A4AE', borderRadius: 0.02, touchable: true,
+                 color: '#3A4659', borderRadius: 0.02, touchable: true,
                  onTap: () => onTapAnchoredMinimize(shellState.anchored.indexOf(anc)) });
         addText({ x: bx, y: btnY, z: 0.020, value: '_', size: 0.045 });
         // Always_on (verde si on, gris si off) — color refrescado en updateAnchoredFrame.
@@ -983,7 +1045,7 @@
                  color: anc.alwaysOn ? '#10B981' : '#455A64',
                  borderRadius: 0.02, touchable: true,
                  onTap: () => onTapAnchoredAlwaysOn(shellState.anchored.indexOf(anc)) });
-        addText({ x: bx, y: btnY, z: 0.020, value: '!', size: 0.035 });
+        addText({ x: bx, y: btnY, z: 0.020, value: 'Siempre', size: 0.017 });
 
         // Viewport silhouette.
         addBox({ x: 0, y: 0, z: -0.001,
@@ -1009,7 +1071,9 @@
 
       function updateAnchoredFrameAOColor(anc) {
         if (!anc || !anc.frame || !anc.frame.aoBox) return;
-        anc.frame.aoBox.setAttribute('color', anc.alwaysOn ? '#10B981' : '#455A64');
+        const button = anc.frame.aoBox;
+        button._idleColor = anc.alwaysOn ? '#10B981' : '#455A64';
+        if (!button.matches(':hover')) button.setAttribute('color', button._idleColor);
       }
 
       function sendAnchoredSlotToApp(idx) {
