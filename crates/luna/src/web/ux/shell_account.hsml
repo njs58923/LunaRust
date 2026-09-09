@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head>
+    <name>Cuenta</name>
+  </head>
+
+  <!-- Sección vacía: por ahora sólo el fondo y su título. Es su propio
+       documento para poder crecer por separado; lo único que la distingue de
+       sus hermanas es el `title` de acá abajo, que el script lee.
+
+       El fondo lo dibuja el script y no este archivo: sus medidas salen de las
+       mismas constantes que la grilla, y escritas a mano acá se quedarían del
+       tamaño viejo la primera vez que alguien toque la escala del menú. -->
+  <space id="shell_account" title="Cuenta">
+    <group id="seccion" visible="false"/>
+    <script src="luna://internal/shell_ui.js"/>
+    <script src="luna://internal/shell_section_blank.js"/>
+  </space>
+</hsml>

@@ -154,6 +154,18 @@ impl VirtualRoutes {
             "internal/shell_menu_flat.js".to_string(),
             RouteHandler::Static(SCRIPT_SHELL_MENU_FLAT),
         );
+        // Las secciones del menú plano. Cada una corre en su propio isolate,
+        // un nivel más adentro que el menú, y sólo está cargada la que se ve.
+        routes.insert(
+            "internal/shell_section_apps.js".to_string(),
+            RouteHandler::Static(SCRIPT_SHELL_SECTION_APPS),
+        );
+        // El mismo script para las tres secciones que todavía no tienen
+        // contenido: lo que las distingue es el title de su <space>.
+        routes.insert(
+            "internal/shell_section_blank.js".to_string(),
+            RouteHandler::Static(SCRIPT_SHELL_SECTION_BLANK),
+        );
         // El menú del shell, como documento: lo monta un <include> del
         // controller y corre en su propio isolate.
         routes.insert("shell_menu".to_string(), RouteHandler::Static(LUNA_SHELL_MENU));
@@ -162,6 +174,18 @@ impl VirtualRoutes {
         routes.insert(
             "shell_menu_flat".to_string(),
             RouteHandler::Static(LUNA_SHELL_MENU_FLAT),
+        );
+        // Las secciones, como documentos. Las monta el <include> del menú
+        // plano cambiándole el src.
+        routes.insert("shell_apps".to_string(), RouteHandler::Static(LUNA_SHELL_APPS));
+        routes.insert(
+            "shell_notifs".to_string(),
+            RouteHandler::Static(LUNA_SHELL_NOTIFS),
+        );
+        routes.insert("shell_world".to_string(), RouteHandler::Static(LUNA_SHELL_WORLD));
+        routes.insert(
+            "shell_account".to_string(),
+            RouteHandler::Static(LUNA_SHELL_ACCOUNT),
         );
 
         // UX routes
@@ -901,6 +925,9 @@ const SCRIPT_SHELL_APP: &str = include_str!("web/internal/shell_app.js");
 const SCRIPT_SHELL_DRAW: &str = include_str!("web/internal/shell_draw.js");
 const SCRIPT_SHELL_MENU: &str = include_str!("web/internal/shell_menu.js");
 const SCRIPT_SHELL_MENU_FLAT: &str = include_str!("web/internal/shell_menu_flat.js");
+const SCRIPT_SHELL_SECTION_APPS: &str = include_str!("web/internal/shell_section_apps.js");
+const SCRIPT_SHELL_SECTION_BLANK: &str =
+    include_str!("web/internal/shell_section_blank.js");
 
 // ============================================================================
 // GENERADORES DE CONTENIDO DINÁMICO
@@ -948,6 +975,10 @@ const LUNA_UX_VR: &str = include_str!("web/ux/ux_vr.hsml");
 const LUNA_UX_LAB: &str = include_str!("web/ux/ux_lab.hsml");
 const LUNA_SHELL_MENU: &str = include_str!("web/ux/shell_menu.hsml");
 const LUNA_SHELL_MENU_FLAT: &str = include_str!("web/ux/shell_menu_flat.hsml");
+const LUNA_SHELL_APPS: &str = include_str!("web/ux/shell_apps.hsml");
+const LUNA_SHELL_NOTIFS: &str = include_str!("web/ux/shell_notifs.hsml");
+const LUNA_SHELL_WORLD: &str = include_str!("web/ux/shell_world.hsml");
+const LUNA_SHELL_ACCOUNT: &str = include_str!("web/ux/shell_account.hsml");
 const LUNA_APP_DEMO_EMBEDDED: &str = include_str!("web/apps/demo_embedded.hsml");
 // Legacy agent URLs resolve to Settings; the bridge now belongs to the host.
 

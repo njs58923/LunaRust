@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head>
+    <name>Aplicaciones</name>
+  </head>
+
+  <!-- La sección de aplicaciones del menú: el encabezado y la grilla.
+       Va como `<include>` del menú, un nivel más adentro que él, para que
+       cambiar de sección sea cambiarle el `src` a ese include y **sólo esté
+       cargada la que se ve**. -->
+  <space id="shell_apps">
+    <group id="seccion" visible="false"/>
+    <script src="luna://internal/shell_ui.js"/>
+    <script src="luna://internal/shell_section_apps.js"/>
+  </space>
+</hsml>

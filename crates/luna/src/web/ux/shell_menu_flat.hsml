@@ -7,13 +7,23 @@
   <!-- El menú plano, como componente.
        Mismo contrato que `luna://shell_menu` —props para abajo, eventos para
        arriba— y otro dibujo: sin arco y sin malla, porque esto se mira en una
-       pantalla y no con la cabeza adentro. Que compartan contrato es lo que hace
-       que el shell no sepa cuál de los dos está montado.
+       pantalla y no con la cabeza adentro.
 
-       No pide ningún recurso: dibujar y recibir punteros no necesita permiso, y
-       los includes no heredan nada por defecto. -->
+       Acá viven la barra y el hueco de la sección. El contenido del panel es
+       **otro include**, un nivel más adentro, y cambiar de sección es cambiarle
+       el `src`: así sólo está cargada la que se ve.
+
+       Ninguno de los dos pide recursos: dibujar y recibir punteros no necesita
+       permiso, y los includes no heredan nada por defecto. -->
   <space id="shell_menu_flat">
-    <group id="menu_panel" visible="false"/>
+    <!-- La sección activa. `props` y `events` son lo que abre el canal de
+         componentes: sin al menos uno de los dos el motor no crea el Channel y
+         el include queda mudo. -->
+    <include id="menu_seccion"
+             src="luna://shell_apps"
+             props="{}"
+             events="open,hidden"/>
+
     <group id="menu_bar" visible="false"/>
 
     <script src="luna://internal/shell_ui.js"/>
