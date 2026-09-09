@@ -63,11 +63,48 @@ pub fn get_text_font() -> &'static Font {
     })
 }
 
+/// Alto de la fuente al rasterizar, y el aire que se le deja alrededor. Los
+/// comparten `text_texture_size` y `create_text_texture`: si las dos no
+/// midieran igual, el quad y su textura tendrían proporciones distintas y el
+/// texto saldría estirado.
+const TEXT_FONT_PX: f32 = 48.0;
+const TEXT_PADDING: u32 = 4;
+
+/// Tamaño en píxeles de la textura de un texto, sin rasterizarlo.
+///
+/// Hace el layout dos veces —una acá y otra al rasterizar— y vale la pena: el
+/// layout es barato al lado del rasterizado, y tener el ancho de verdad es lo
+/// único que evita estirar el texto.
+pub fn text_texture_size(text: &str) -> (u32, u32) {
+    let text_font = get_text_font();
+    let normalized_text = if text.is_empty() { " " } else { text };
+
+    let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+    layout.reset(&LayoutSettings {
+        x: 0.0,
+        y: 0.0,
+        ..LayoutSettings::default()
+    });
+    layout.append(&[text_font], &TextStyle::new(normalized_text, TEXT_FONT_PX, 0));
+
+    let mut max_x = 0f32;
+    let mut max_y = 0f32;
+    for glyph in layout.glyphs() {
+        max_x = max_x.max(glyph.x + glyph.width as f32);
+        max_y = max_y.max(glyph.y + glyph.height as f32);
+    }
+
+    (
+        (max_x.ceil() as u32 + TEXT_PADDING * 2).max(32),
+        (max_y.ceil() as u32 + TEXT_PADDING * 2).max(16),
+    )
+}
+
 pub fn create_text_texture(text: &str, color: Color, images: &mut Assets<Image>) -> Handle<Image> {
     let text_font = get_text_font();
     let normalized_text = if text.is_empty() { " " } else { text };
-    let font_px = 48.0f32;
-    let padding = 4u32;
+    let font_px = TEXT_FONT_PX;
+    let padding = TEXT_PADDING;
 
     let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
     layout.reset(&LayoutSettings {
@@ -78,15 +115,11 @@ pub fn create_text_texture(text: &str, color: Color, images: &mut Assets<Image>)
     layout.append(&[text_font], &TextStyle::new(normalized_text, font_px, 0));
 
     let glyphs = layout.glyphs();
-    let mut max_x = 0f32;
-    let mut max_y = 0f32;
-    for glyph in glyphs {
-        max_x = max_x.max(glyph.x + glyph.width as f32);
-        max_y = max_y.max(glyph.y + glyph.height as f32);
-    }
 
-    let width = (max_x.ceil() as u32 + padding * 2).max(32);
-    let height = (max_y.ceil() as u32 + padding * 2).max(16);
+    // Las mismas medidas que usa el quad, de la misma función: si se
+    // calcularan por separado alcanzaría un redondeo distinto para que el
+    // texto salga corrido.
+    let (width, height) = text_texture_size(text);
     let mut data = vec![0u8; (width * height * 4) as usize];
 
     let color_array = color.to_srgba().to_u8_array();
@@ -140,13 +173,32 @@ pub fn parse_text_attrs(attrs_map: &HashMap<String, String>) -> (String, f32, Co
     (text_value, text_size, text_color)
 }
 
+/// El quad sobre el que se pega la textura del texto.
+///
+/// Antes el ancho se **estimaba** en `size * caracteres * 0.6` y el alto era
+/// `size` a secas. Las dos cuentas fallaban, y de distinta manera:
+///
+/// - El ancho estimado no es el ancho real del layout, así que cada palabra se
+///   estiraba o se aplastaba según cuánto se pareciera al promedio: una con
+///   muchas «i» salía comprimida, y una con «m» y espacios, estirada.
+/// - La textura se recorta hasta donde llega el glifo más bajo, así que
+///   «Ajustes» —que baja con la j— rasteriza más alto que «Inicio». Forzando
+///   las dos al mismo alto de quad, la primera se dibujaba más chica: dos
+///   etiquetas con el mismo `size` se veían de distinto tamaño.
+///
+/// Ahora `size` es la altura de una **línea completa** —el em de la fuente más
+/// su aire—, el alto del quad es la fracción de esa línea que la palabra ocupa
+/// de verdad, y el ancho sale de la proporción de la textura. Con eso el glifo
+/// mide lo mismo en todas las etiquetas y ninguna se deforma.
 pub fn build_text_transform(
     mut base_transform: Transform,
     text_value: &str,
     text_size: f32,
 ) -> Transform {
-    let text_width = text_size * text_value.chars().count() as f32 * 0.6;
-    let text_height = text_size;
+    let (tex_w, tex_h) = text_texture_size(text_value);
+    let line_px = TEXT_FONT_PX + (TEXT_PADDING * 2) as f32;
+    let text_height = text_size * (tex_h as f32 / line_px);
+    let text_width = text_height * (tex_w as f32 / tex_h.max(1) as f32);
     base_transform.scale = Vec3::new(text_width.max(0.01), text_height.max(0.01), 1.0);
     base_transform
 }

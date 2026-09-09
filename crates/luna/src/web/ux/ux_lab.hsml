@@ -56,9 +56,9 @@
         const apps = NOMBRES.map((name, i) => ({ name, glyph: ICONOS[i] }));
 
         // El menú se planta al frente del visitante, a la altura de la mirada.
-        menu.position = { x: 0, y: 1.55, z: -1.5 };
+        menu.position = { x: 0, y: 1.55, z: -2.6 };
 
-        UI.dashboard(menu, {
+        const tablero = UI.dashboard(menu, {
           title: 'Aplicaciones',
           apps,
           rail: [
@@ -69,7 +69,8 @@
           onOpen: (app) => console.log('[lab] abrir ' + app.name),
         });
 
-        const barra = UI.bar(menu, {});
+        const barraY = tablero.centerY - tablero.height / 2 - UI.M.barH / 2 - 0.06 * UI.M.escala;
+        const barra = UI.bar(menu, { y: barraY });
         // [usuario, mundo principal, avisos] y [apps, ventanas abiertas…]
         barra.render([
           [
@@ -85,7 +86,7 @@
         ]);
 
         // Una ventana al costado, para mirar el marco sin taparse el menú.
-        win.position = { x: 1.55, y: 1.55, z: -1.35 };
+        win.position = { x: 2.6, y: 1.55, z: -2.2 };
         win.rotation = { x: 0, y: -0.55, z: 0 };
         UI.windowFrame(win, {
           width: 1.20, height: 0.85, title: 'MyAapp',

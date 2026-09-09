@@ -24,6 +24,19 @@
   // ── Medidas ────────────────────────────────────────────────────────────────
   // Metros. El origen de cada pieza es el centro de su grupo, y el eje +z apunta
   // al visitante: acercar algo es sumarle z.
+  //
+  // **Un solo número gobierna el tamaño de todo.** Los iconos viven en tres
+  // escalas —la grilla, la barra, el riel— y cada una arrastra sus pasos, sus
+  // huecos y sus etiquetas: agrandar un icono sin agrandar el paso los hace
+  // pisarse, y agrandarlo sin la etiqueta deja un texto de juguete al lado. Por
+  // eso la tabla de abajo son las medidas **base** y `ESCALA` las multiplica a
+  // todas de una vez, en el bucle que sigue al objeto.
+  //
+  // Lo que NO se escala son las fracciones —los `border-radius` de un `plane`
+  // son proporción del lado y ya siguen a la pieza— ni las capas en z, que no
+  // son tamaño sino orden de dibujo.
+  const ESCALA = 2;
+
   const M = {
     tile: 0.17,
     tileCorner: 0.16,      // FRACCIÓN del lado, no metros (ver `plane`)
@@ -78,7 +91,37 @@
     zGlyph: 0.0025,
     zText: 0.005,
     ring: 0.0022,          // grosor del anillo de hover
+
+    // Aire entre el glifo y el borde de su placa, como fracción del lado.
+    // **No pasa por ESCALA**: es una proporción, no una longitud, y ahí estaba
+    // el malentendido — al duplicar las placas los iconos se veían igual porque
+    // crecían junto con su marco. Para agrandar el dibujo hay que agrandar su
+    // rect adentro, o sea bajar esto.
+    //
+    // El atlas ya trae su propio aire: cada icono se ajusta a 72 px dentro de
+    // una celda de 96, así que el glifo visible ocupa el 75% de lo que se le
+    // reserve. Con 0,10 termina cerca del 60% del lado de la placa.
+    padTile: 0.10,
+    padBar: 0.13,
+    padRail: 0.14,
+    padWin: 0.18,
   };
+
+  // Las claves que son una longitud. Enumerarlas en vez de escalar el objeto
+  // entero es a propósito: así una medida nueva no se escala sola por olvido, y
+  // agregar una obliga a decidir de qué lado está.
+  const ESCALABLES = [
+    'tile', 'stepX', 'stepY', 'labelDy', 'labelSize',
+    'panelPad',
+    'headerH', 'headerW', 'headerGap', 'headerSize', 'headerRadius',
+    'railSize', 'railGap', 'railOffset',
+    'dotR', 'dotGap', 'navGap',
+    'barY', 'barH', 'barItem', 'barGap', 'barPad', 'barPillGap', 'barPillRadius',
+    'winTitleH', 'winTitleRadius', 'winTitleGap', 'winBtn', 'winBtnGap',
+    'winTitleSize', 'ring',
+  ];
+  for (const k of ESCALABLES) M[k] *= ESCALA;
+  M.escala = ESCALA;
 
   const C = {
     panel: '#2A2C31',
@@ -146,7 +189,7 @@
   // que se mira. Lo que sí hay que corregir es la profundidad: una caja crece
   // hacia los dos lados, así que se la corre media altura para que su **cara**
   // quede en la z pedida y no se adelante sobre lo que tiene encima.
-  const PILL_DEPTH = 0.020;
+  const PILL_DEPTH = 0.020 * M.escala;
   function pill(parent, o) {
     const n = root.createElement('box');
     n.setAttribute('color', o.color);
@@ -213,11 +256,14 @@
   // y vive sobre una pastilla fina, y con el mismo levante se ve flotando
   // adelante en vez de hundido en su lugar. El levante tiene que ir con el
   // tamaño de la pieza, no con el gesto.
-  const LIFT = 0.022;        // grilla de aplicaciones
-  const LIFT_SMALL = 0.007;  // barra de abajo: un tercio
-  const LIFT_RAIL = 0.011;   // riel y navegación, al costado del panel
-  const K_LIFT = 16;         // rapidez del acercamiento, en 1/s
-  const PRESS = 0.011;       // cuánto se hunde al tocarla
+  // Van por `ESCALA` como todo lo demás: con piezas del doble de tamaño, un
+  // levante fijo se vuelve un temblor. Lo que no escala es la **rapidez**, que
+  // es un tiempo y no una distancia.
+  const LIFT = 0.022 * M.escala;        // grilla de aplicaciones
+  const LIFT_SMALL = 0.007 * M.escala;  // barra de abajo: un tercio
+  const LIFT_RAIL = 0.011 * M.escala;   // riel y navegación, al costado del panel
+  const K_LIFT = 16;                    // rapidez del acercamiento, en 1/s
+  const PRESS = 0.011 * M.escala;       // cuánto se hunde al tocarla
   const K_PRESS = 13;
   const MS_PRESS = 105;      // cuánto se queda abajo antes de volver
 
@@ -423,7 +469,7 @@
       railPieces.push(piece(g, {
         x: railX, y: cy + railYs[rail.length - 1 - i],
         size: M.railSize, corner: M.railCorner, color: C.panel,
-        glyph: rail[i].glyph, padding: 0.28, lift: LIFT_RAIL,
+        glyph: rail[i].glyph, padding: M.padRail, lift: LIFT_RAIL,
         name: 'rail-' + rail[i].glyph, onTap: rail[i].onTap,
       }));
     }
@@ -447,7 +493,7 @@
     if (many) {
       upPiece = piece(g, {
         x: dotX, y: navTop - M.railSize / 2, size: M.railSize, corner: M.railCorner,
-        color: C.panel, glyph: 'chevron', padding: 0.30, flip: true,
+        color: C.panel, glyph: 'chevron', padding: M.padRail, flip: true,
         lift: LIFT_RAIL, name: 'page-prev', onTap: () => setPage(page - 1),
       });
     }
@@ -464,7 +510,7 @@
     if (many) {
       downPiece = piece(g, {
         x: dotX, y: cy - navH / 2 + M.railSize / 2, size: M.railSize,
-        corner: M.railCorner, color: C.panel, glyph: 'chevron', padding: 0.30,
+        corner: M.railCorner, color: C.panel, glyph: 'chevron', padding: M.padRail,
         lift: LIFT_RAIL, name: 'page-next', onTap: () => setPage(page + 1),
       });
     }
@@ -479,7 +525,7 @@
       const tg = group(g, xs[col], ys[rows - 1 - row], 0);
       const it = piece(tg, {
         x: 0, y: 0, size: M.tile, corner: M.tileCorner, color: C.blue,
-        glyph: 'app', padding: 0.24, name: 'app-' + i,
+        glyph: 'app', padding: M.padTile, name: 'app-' + i,
         onTap: () => { const a = appAt(i); if (a && cfg.onOpen) cfg.onOpen(a); },
       });
       const label = text(tg, { x: 0, y: M.labelDy, value: '', size: M.labelSize, color: C.label });
@@ -506,7 +552,7 @@
         if (!a) continue;
         t.label.setAttribute('value', a.name || '');
         recolor(t.piece, a.color || C.blue);
-        glyph(t.piece.face, a.glyph || 'app', 0.24);
+        glyph(t.piece.face, a.glyph || 'app', M.padTile);
       }
     }
     setPage(0);
@@ -519,6 +565,9 @@
   // Dos pastillas: estado a la izquierda, ventanas a la derecha. Cada una se
   // dimensiona por su contenido; separarlas en dos deja dicho qué cosa va con
   // qué sin necesidad de un separador dibujado.
+  // `cfg.y` la ata al panel: el llamador pasa dónde termina el tablero y la
+  // barra se cuelga de ahí. Con una altura fija, cualquier cambio de escala o
+  // de cantidad de filas la dejaba flotando lejos o encima del panel.
   function bar(parent, cfg) {
     const g = group(parent, 0, cfg.y === undefined ? M.barY : cfg.y, 0);
     let pills = [];
@@ -551,7 +600,7 @@
           const item = groups[gi][j];
           const it = piece(g, {
             x: cx + xs[j], y: 0, size: M.barItem, corner: M.barItemCorner,
-            color: item.color || C.blue, glyph: item.glyph, padding: 0.28,
+            color: item.color || C.blue, glyph: item.glyph, padding: M.padBar,
             lift: LIFT_SMALL, name: item.name, onTap: item.onTap,
           });
           if (item.selected) select(it, true);
@@ -615,7 +664,7 @@
     for (const b of btns) {
       pieces.push(piece(g, {
         x: bx, y: ty, size: M.winBtn, corner: 0.5, color: b.color,
-        glyph: b.glyph, padding: 0.30, onTap: b.onTap,
+        glyph: b.glyph, padding: M.padWin, onTap: b.onTap,
       }));
       bx -= M.winBtn + M.winBtnGap;
     }

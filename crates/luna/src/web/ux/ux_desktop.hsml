@@ -39,7 +39,7 @@
       // la barra de abajo se sale del cuadro. Se aleja en vez de achicarse: el
       // tamaño de los iconos y los pasos de la grilla son los mismos en los dos
       // controllers, y eso es lo que hace que sea el mismo menú.
-      const DISTANCIA = 2.15;   // del ojo al menú, en metros
+      const DISTANCIA = 2.6;   // del ojo al menú, en metros
 
       (function esperar(intentos) {
         if (!globalThis.ShellUI) {
@@ -56,7 +56,7 @@
         const menu = root.getElementById('ux_desktop_menu');
         let visible = false;
 
-        UI.dashboard(menu, {
+        const tablero = UI.dashboard(menu, {
           title: 'Aplicaciones',
           apps: BOOKMARKS,
           rail: [
@@ -67,7 +67,9 @@
           onOpen: abrir,
         });
 
-        const barra = UI.bar(menu, {});
+        // La barra cuelga del borde de abajo del tablero, no de una altura fija.
+        const barraY = tablero.centerY - tablero.height / 2 - UI.M.barH / 2 - 0.06 * UI.M.escala;
+        const barra = UI.bar(menu, { y: barraY });
         // Izquierda, lo que es del sistema; derecha, lo que está abierto. El
         // botón de apps es la puerta al menú y los que le siguen son las
         // ventanas vivas — por eso comparten pastilla y el resto no.
