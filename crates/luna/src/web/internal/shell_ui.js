@@ -557,8 +557,10 @@
     }
     setPage(0);
 
-    return { group: g, width: w, height: h, centerY: cy, setPage, rail: railPieces,
-             upPiece, downPiece };
+    // `tiles` sale afuera para que quien lo monte pueda animarlos: la cascada
+    // de entrada es del shell, no del tablero, y necesita tocarlos de a uno.
+    return { group: g, width: w, height: h, centerY: cy, setPage, tiles,
+             rail: railPieces, upPiece, downPiece };
   }
 
   // ── La barra ───────────────────────────────────────────────────────────────

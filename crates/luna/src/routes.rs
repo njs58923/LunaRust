@@ -128,10 +128,25 @@ impl VirtualRoutes {
             "internal/embedded_api.js".to_string(),
             RouteHandler::Static(SCRIPT_EMBEDDED_API),
         );
+        // La interfaz del shell y su máquina de estados. Las cargan los dos
+        // controllers con <script src>, no con <include>: un include es otro
+        // documento, con su propio isolate, y desde ahí no se podría hablar con
+        // las pestañas ni mandarle el slot a una app.
+        routes.insert(
+            "internal/shell_ui.js".to_string(),
+            RouteHandler::Static(SCRIPT_SHELL_UI),
+        );
+        routes.insert(
+            "internal/shell_app.js".to_string(),
+            RouteHandler::Static(SCRIPT_SHELL_APP),
+        );
 
         // UX routes
         routes.insert("ux_desktop".to_string(), RouteHandler::Static(LUNA_UX_DESKTOP));
         routes.insert("ux_vr".to_string(), RouteHandler::Static(LUNA_UX_VR));
+        // Banco de pruebas de la interfaz, con datos de mentira y sin escena
+        // alrededor. No se llega desde ningún lado: se abre a mano.
+        routes.insert("ux_lab".to_string(), RouteHandler::Static(LUNA_UX_LAB));
 
         // Apps embedded
         routes.insert("demo_embedded".to_string(), RouteHandler::Static(LUNA_APP_DEMO_EMBEDDED));
@@ -858,6 +873,8 @@ const SCRIPT_ROOT_API: &str = include_str!("web/internal/root_api.js");
 const SCRIPT_TABS_API: &str = include_str!("web/internal/tabs_api.js");
 const SCRIPT_VIEWER_POSE_API: &str = include_str!("web/internal/viewer_pose_api.js");
 const SCRIPT_EMBEDDED_API: &str = include_str!("web/internal/embedded_api.js");
+const SCRIPT_SHELL_UI: &str = include_str!("web/internal/shell_ui.js");
+const SCRIPT_SHELL_APP: &str = include_str!("web/internal/shell_app.js");
 
 // ============================================================================
 // GENERADORES DE CONTENIDO DINÁMICO
@@ -902,6 +919,7 @@ fn generate_cache_stats(_path: &str) -> String {
 
 const LUNA_UX_DESKTOP: &str = include_str!("web/ux/ux_desktop.hsml");
 const LUNA_UX_VR: &str = include_str!("web/ux/ux_vr.hsml");
+const LUNA_UX_LAB: &str = include_str!("web/ux/ux_lab.hsml");
 const LUNA_APP_DEMO_EMBEDDED: &str = include_str!("web/apps/demo_embedded.hsml");
 // Legacy agent URLs resolve to Settings; the bridge now belongs to the host.
 
