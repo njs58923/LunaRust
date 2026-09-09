@@ -65,9 +65,14 @@
     }
 
     // ── Medidas de una ventana ───────────────────────────────────────────
-    const FOCUS_SLOT_W = 1.0;
-    const FOCUS_SLOT_H = 0.7;
-    const FOCUS_SLOT_D = 0.1;
+    // El lienzo de una app. **Va con la distancia a la que se planta el
+    // shell**: el mismo tamaño a 2,6 m se ve la mitad que a 1,5, y la ventana
+    // queda flotando chiquita al fondo en vez de ocupar el lugar donde estaba
+    // la grilla. Cada controller pasa el suyo.
+    const slot = cfg.slot || {};
+    const FOCUS_SLOT_W = slot.w || 1.0;
+    const FOCUS_SLOT_H = slot.h || 0.7;
+    const FOCUS_SLOT_D = slot.d || 0.1;
     const FOCUS_TITLEBAR_H = 0.075;
     const FOCUS_EDGE = 0.010;
     const FOCUS_BTN = 0.046;
@@ -95,6 +100,15 @@
       // Con una app en primer plano el panel estorba: ocupa el mismo lugar.
       if (shellState.focusApp && !shellState.focusApp.minimized && shellState.focusApp.ready) return false;
       return true;
+    }
+
+    // La barra sobrevive al panel: el panel se va cuando una app toma el
+    // frente, la barra se queda mientras dure la sesión del shell. Es lo único
+    // que permite volver al menú desde adentro de una app, y además ahora lleva
+    // estado —usuario, mundo, avisos—, que no tiene por qué desaparecer porque
+    // haya una ventana abierta.
+    function shouldShowBottomBar() {
+      return shellState.bookmarksVisible;
     }
 
     // ── El menú, por props ───────────────────────────────────────────────
@@ -139,7 +153,9 @@
       if (shellState.focusApp) windows.push({ dim: !!shellState.focusApp.minimized });
       for (const a of shellState.anchored) windows.push({ dim: !!a.minimized });
       const next = {
-        visible: shouldShowBookmarks(),
+        // Dos banderas, no una. La barra sobrevive al panel a propósito.
+        panelVisible: shouldShowBookmarks(),
+        barVisible: shouldShowBottomBar(),
         bookmarks: BOOKMARKS.map(function (b) { return { name: b.name }; }),
         windows: windows,
       };
@@ -160,21 +176,31 @@
       });
       menuInclude.addEventListener('component:menu', onTapBarMenu);
       menuInclude.addEventListener('component:hidden', terminarEspera);
+      menuInclude.addEventListener('component:close', function (e) {
+        const idx = e.detail && e.detail.index;
+        if (typeof idx !== 'number') return;
+        const anc = mapaVentana(idx);
+        if (anc === null) onTapFocusClose();
+        else unmountAnchored(anc);
+      });
       menuInclude.addEventListener('component:window', function (e) {
         const idx = e.detail && e.detail.index;
         if (typeof idx !== 'number') return;
-        // El índice viene del orden con que se armaron las props: primero el
-        // foco, después las fijadas.
-        if (shellState.focusApp) {
-          if (idx === 0) { onTapBarFocus(); return; }
-          onTapBarAnchored(idx - 1);
-          return;
-        }
-        onTapBarAnchored(idx);
+        const anc = mapaVentana(idx);
+        if (anc === null) onTapBarFocus();
+        else onTapBarAnchored(anc);
       });
     }
 
-    // ── Handlers de la barra ─────────────────────────────────────────────
+    // El índice que manda el menú sigue el orden con que se armaron las props:
+    // primero el foco —si lo hay— y después las fijadas. Devuelve `null` para
+    // el foco, o el índice dentro de `anchored`.
+    function mapaVentana(idx) {
+      if (shellState.focusApp) return idx === 0 ? null : idx - 1;
+      return idx;
+    }
+
+    // Handlers de la barra ─
     function onTapBarMenu() {
       if (shellState.focusApp && !shellState.focusApp.minimized) {
         shellState.focusApp.minimized = true;

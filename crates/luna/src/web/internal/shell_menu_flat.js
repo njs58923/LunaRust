@@ -101,9 +101,16 @@ function armar() {
     for (let i = 0; i < windows.length; i++) {
       apps.push({
         glyph: 'app',
-        color: windows[i].dim ? UI.C.pill : UI.C.blue,
+        // Azul como el resto de la barra, siempre. Pintar de gris la ventana
+        // minimizada la hacía leer como un botón apagado en una fila de
+        // botones vivos; lo que está minimizado se dice con el anillo, que es
+        // el mismo signo que usa el botón de aplicaciones para decir «acá
+        // estás».
+        color: UI.C.blue,
+        selected: !windows[i].dim,
         name: 'bar-win-' + i,
         onTap: (function (idx) { return function () { emit('window', { index: idx }); }; })(i),
+        onClose: (function (idx) { return function () { emit('close', { index: idx }); }; })(i),
       });
     }
     bar.render([estado, apps]);
@@ -203,7 +210,10 @@ function armar() {
     }
     rebuildBar(windows);
 
-    const quiere = !!props.visible;
+    // El panel y la barra no siguen la misma regla: el panel se va cuando una
+    // app toma el frente, la barra se queda mientras dure la sesión del shell,
+    // que es lo único que permite volver al menú desde adentro de una app.
+    const quiere = !!props.panelVisible;
     if (quiere !== visible) {
       const primera = visible === null;
       visible = quiere;
@@ -216,7 +226,7 @@ function armar() {
         startExitAnimation();   // el panel se apaga al terminar, no ahora
       }
     }
-    if (barZone) barZone.setAttribute('visible', quiere ? 'true' : 'false');
+    if (barZone) barZone.setAttribute('visible', props.barVisible ? 'true' : 'false');
   }
 
   component.addEventListener('propschange', function (e) { render(e.detail.props); });

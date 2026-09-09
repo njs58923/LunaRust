@@ -25,7 +25,7 @@
     <include id="ux_desktop_menu"
              src="luna://shell_menu_flat"
              props="{}"
-             events="open,menu,window,hidden"/>
+             events="open,menu,window,close,hidden"/>
 
     <group id="ux_desktop_focus_zone" visible="false"/>
     <group id="ux_desktop_anchored_zone" visible="true"/>
@@ -70,6 +70,10 @@
           anchoredZone: root.getElementById('ux_desktop_anchored_zone'),
           bookmarks: BOOKMARKS,
           distance: DISTANCIA,
+          // El menú plano mide ~2,4 m y se planta a 2,6: una ventana de un
+          // metro ahí se ve la mitad de lo que se veía la grilla y queda
+          // flotando al fondo. Ocupa el lugar que dejó.
+          slot: { w: 2.1, h: 1.4, d: 0.2 },
 
           tabs: {
             open: (url, opts) => dimention.tabs.open(url, opts),

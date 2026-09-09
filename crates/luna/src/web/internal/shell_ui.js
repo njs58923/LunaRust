@@ -621,6 +621,18 @@
           });
           if (item.selected) select(it, true);
           pieces.push(it);
+          // Cerrar: un punto chico arriba a la derecha. **Sí** lleva hitbox
+          // propio, al revés que el aviso: si compartiera el del botón,
+          // cerrar y traer al frente serían el mismo toque.
+          if (typeof item.onClose === 'function') {
+            const c = piece(g, {
+              x: cx + xs[j] + M.barItem * 0.40, y: M.barItem * 0.40,
+              size: 0.030 * (M.escala || 1), corner: 0.5, color: C.red,
+              lift: LIFT_SMALL, name: (item.name || 'win') + '-close',
+              onTap: item.onClose,
+            });
+            pieces.push(c);
+          }
           // El punto de aviso: chico, arriba a la derecha del botón, sin
           // hitbox propio — es información, no un blanco.
           if (item.badge) {

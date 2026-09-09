@@ -254,11 +254,23 @@ function armar() {
       onTap: function () { emit('menu', {}); },
     });
     for (let i = 0; i < windows.length; i++) {
-      barButton(bottomBar, place(2, j++, g3n), {
+      const u = place(2, j++, g3n);
+      barButton(bottomBar, u, {
         glyph: 'app', color: windows[i].dim ? M.PLACA_ALTA : '#304F68',
         name: 'bar-win-' + i,
         onTap: (function (idx) { return function () { emit('window', { index: idx }); }; })(i),
       });
+      // Cerrar: un punto chico arriba a la derecha del botón. Tiene que ser
+      // su propia pieza —hitbox aparte— o cerrar y traer al frente serían el
+      // mismo toque.
+      const cierre = D.surface(bottomBar, u + M.BAR_ITEM * 0.42,
+                               M.BAR_Y + M.BAR_ITEM * 0.42, M.R_BAR, M.BAR_TILT);
+      barNodes.push(cierre);
+      barPieces.push(D.piece(cierre, {
+        x: 0, y: 0, size: 0.030, corner: 0.5, color: '#B0413E',
+        name: 'bar-close-' + i,
+        onTap: (function (idx) { return function () { emit('close', { index: idx }); }; })(i),
+      }));
     }
   }
 
@@ -289,7 +301,10 @@ function armar() {
     }
     rebuildBar(windows);
 
-    const quiere = !!props.visible;
+    // El panel y la barra no siguen la misma regla: el panel se va cuando una
+    // app toma el frente, la barra se queda mientras dure la sesión del shell,
+    // que es lo único que permite volver al menú desde adentro de una app.
+    const quiere = !!props.panelVisible;
     if (quiere !== visible) {
       const primera = visible === null;
       visible = quiere;
@@ -303,7 +318,7 @@ function armar() {
         startExitAnimation();
       }
     }
-    if (bottomBar) bottomBar.setAttribute('visible', quiere ? 'true' : 'false');
+    if (bottomBar) bottomBar.setAttribute('visible', props.barVisible ? 'true' : 'false');
   }
 
   component.addEventListener('propschange', function (e) { render(e.detail.props); });

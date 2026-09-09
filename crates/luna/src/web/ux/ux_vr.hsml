@@ -30,7 +30,7 @@
     <include id="ux_vr_menu"
              src="luna://shell_menu"
              props="{}"
-             events="open,menu,window,hidden"/>
+             events="open,menu,window,close,hidden"/>
 
     <group id="ux_vr_focus_zone" visible="false"/>
 
@@ -78,6 +78,10 @@
           anchoredZone: root.getElementById('ux_vr_anchored_zone'),
           bookmarks: BOOKMARKS,
           distance: 1.5,
+          // El lienzo de una app, en metros. Va con la distancia: acá el menú
+          // está cerca, así que una ventana de un metro ocupa más o menos lo
+          // que ocupaba la grilla.
+          slot: { w: 1.0, h: 0.7, d: 0.1 },
 
           // ── Todo lo que sale hacia el motor entra por acá ────────────────
           // El módulo no conoce `dimention` ni los ops del runtime: recibe
