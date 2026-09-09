@@ -152,7 +152,7 @@ Pero un componente sí es posible, porque las dos piezas que hacen falta funcion
 | | |
 |---|---|
 | dos `<include>` del mismo archivo son **dos isolates con dos URLs** | sí |
-| el hijo lee sus parámetros con `location.search` | sí |
+| el hijo lee sus parámetros con `location.search` | sí (hoy conviene `props`) |
 | el documento **padre** ve los nodos del include por `getElementById` | sí |
 | el padre puede **escribirles atributos** | sí |
 | el hijo puede cambiarse su propio `id` con `setAttribute` | sí |
@@ -169,11 +169,29 @@ componente sin ponerle un id a cada uno: se les pone `class` en el HSML y el
 script los recorre. Verificado con 24 nodos por documento en
 `server_noche/public/puerta.js`.
 
-El reparto que sí funciona: **el componente dibuja, y el nodo tocable lo declara
-el padre**, encima del marco del include. Está implementado así en
-`server_noche/public/puerta.hsml` + `src/atrio.ts`: un único documento para las
-veintiocho puertas del atrio, y veintiocho vanos tocables en el documento del
-atrio.
+**Pero ya hay un canal.** Todo lo de la tabla sigue siendo cierto —el toque
+nunca cruza el borde— y sin embargo el reparto que obligaba cambió, porque un
+include con `props` o `events` habla con el espacio que lo contiene:
+
+```xml
+<include id="puerta_cueva" src="./puerta.hsml" events="abrir"
+         props='{"titulo":"La cueva","roca":"#4A515C"}'/>
+```
+
+El hijo lee `component.props` —disponibles **antes de su primer script**— y
+avisa con `component.emit('abrir', {...})`; el padre escucha `component:abrir`
+**en el nodo include** y contesta reemplazando `include.props`. Así el nodo
+tocable puede vivir dentro del componente: recibe su toque en su propio isolate
+y lo que cruza el borde es el evento, no el nodo. Contrato completo y límites en
+[`../COMPONENT_CHANNEL.md`](../COMPONENT_CHANNEL.md).
+
+Está implementado así en `server_noche/public/puerta.hsml` + `src/atrio.ts`: un
+único documento **y una única URL** para las veintiocho puertas del atrio, cada
+una con su propio vano adentro. Antes eran veintiocho URLs —los datos viajaban
+en la query— y veintiocho vanos tocables declarados por el atrio.
+
+Lo que el canal **no** arregla: **un include sigue sin poder navegar** el
+documento que lo contiene. Por eso la puerta avisa y el padre navega.
 
 Lo que **no** funciona, probado: la escala de un `<group>` **no** se aplica al
 contenido de un `<include>`. La idea de meter el mundo de destino encogido adentro
