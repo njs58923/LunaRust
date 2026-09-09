@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head>
+    <name>UX Lab</name>
+  </head>
+
+  <!-- Banco de pruebas de la interfaz del shell.
+       Una escena vacía a propósito: sin piso, sin cielo y sin nada que se
+       cruce. El menú del shell vive normalmente sobre lo que el usuario esté
+       mirando, y probarlo dentro de una escena con geometría —el atrio, por
+       ejemplo— hace perder media hora persiguiendo oclusiones del decorado que
+       no son del menú.
+
+       Carga el MISMO `shell_ui.js` que los dos controllers, con datos de
+       mentira, y se abre como página normal: `luna://ux_lab`. En escritorio se
+       recorre con el mouse, que es lo que permite mirar el hover y el click sin
+       ponerse el visor. -->
+  <space id="ux_lab" resources="spawn,desktop_camera_control">
+    <spawn id="entrada" default="true" x="0" y="0" z="0" ry="0"/>
+
+    <!-- Un fondo liso y nada más. Va lejos y es de una sola cara: alcanza para
+         que las piezas no floten contra el vacío. -->
+    <plane z="-8" sx="30" sy="18" color="#111214" touchable="false"/>
+
+    <group id="lab_menu"/>
+    <group id="lab_window"/>
+
+    <script src="luna://internal/shell_ui.js"/>
+    <script>
+      // Los scripts externos llegan asincrónicos y el motor no garantiza que
+      // este corra después. Esperar a que `ShellUI` exista es más barato que
+      // ordenar la carga, y falla ruidoso si el módulo no llegó.
+      (function esperar(intentos) {
+        if (!globalThis.ShellUI) {
+          if (intentos > 200) { console.warn('[lab] ShellUI no llegó'); return; }
+          setTimeout(() => esperar(intentos + 1), 16);
+          return;
+        }
+        armar();
+      })(0);
+
+      function armar() {
+        const UI = globalThis.ShellUI;
+        const root = hiperspace.dimention;
+        const menu = root.getElementById('lab_menu');
+        const win = root.getElementById('lab_window');
+
+        // Diecisiete para que haya dos páginas y el riel de puntos tenga algo
+        // que hacer: con una sola página el paginador no se prueba.
+        const NOMBRES = ['Inicio', 'Ajustes', 'Demos', 'Demo App', 'Acerca de',
+                         'Scale', 'Fire', 'Target', 'Range', 'Fotos', 'Notas',
+                         'Mapa', 'Radio', 'Taller', 'Sala', 'Tienda', 'Chats'];
+        const ICONOS = ['home', 'settings', 'demos', 'app', 'about', 'scale',
+                        'fire', 'target', 'range', 'capture', 'edit', 'search',
+                        'bell', 'settings', 'home', 'add', 'user'];
+        const apps = NOMBRES.map((name, i) => ({ name, glyph: ICONOS[i] }));
+
+        // El menú se planta al frente del visitante, a la altura de la mirada.
+        menu.position = { x: 0, y: 1.55, z: -1.5 };
+
+        UI.dashboard(menu, {
+          title: 'Aplicaciones',
+          apps,
+          rail: [
+            { glyph: 'add',    onTap: () => console.log('[lab] agregar') },
+            { glyph: 'search', onTap: () => console.log('[lab] buscar') },
+            { glyph: 'edit',   onTap: () => console.log('[lab] editar') },
+          ],
+          onOpen: (app) => console.log('[lab] abrir ' + app.name),
+        });
+
+        const barra = UI.bar(menu, {});
+        barra.render([
+          [
+            { glyph: 'user',    color: UI.C.blue, onTap: () => console.log('[lab] usuario') },
+            { glyph: 'wifi',    color: UI.C.blue, onTap: () => console.log('[lab] red') },
+            { glyph: 'bell',    color: UI.C.blue, onTap: () => console.log('[lab] avisos') },
+          ],
+          [
+            { glyph: 'apps',    color: UI.C.blue, selected: true, onTap: () => console.log('[lab] menu') },
+            { glyph: 'app',     color: UI.C.blue, badge: true,   onTap: () => console.log('[lab] ventana 1') },
+          ],
+        ]);
+
+        // Una ventana al costado, para mirar el marco sin taparse el menú.
+        win.position = { x: 1.55, y: 1.55, z: -1.35 };
+        win.rotation = { x: 0, y: -0.55, z: 0 };
+        UI.windowFrame(win, {
+          width: 1.20, height: 0.85, title: 'MyAapp',
+          onAnchor:   () => console.log('[lab] fijar'),
+          onMinimize: () => console.log('[lab] minimizar'),
+          onClose:    () => console.log('[lab] cerrar'),
+        });
+
+        console.log('[lab] listo — ' + apps.length + ' apps');
+      }
+    </script>
+  </space>
+</hsml>

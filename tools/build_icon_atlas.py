@@ -17,7 +17,8 @@ args = parser.parse_args()
 # de estado del shell (ver ux_vr.hsml).
 names = ['home', 'settings', 'demos', 'app', 'about', 'scale', 'fire', 'target', 'range',
          'user', 'wifi', 'battery', 'bell', 'capture',
-         'close', 'minimize', 'anchor']
+         'close', 'minimize', 'anchor',
+         'search', 'add', 'edit', 'apps', 'chevron']
 icons = []
 if args.input:
     for path in sorted(args.input.glob('*.png')):
@@ -89,6 +90,18 @@ else:
             d.rounded_rectangle((62,30,130,52),8,fill=white)
             d.polygon([(78,52),(114,52),(122,108),(70,108)],fill=white)
             line([(96,108),(96,160)],11)
+        elif name=='search':
+            circle((34,34,126,126),13); line([(118,118),(158,158)],15)
+        elif name=='add':
+            line([(96,42),(96,150)],15); line([(42,96),(150,96)],15)
+        elif name=='edit':
+            d.polygon([(66,126),(122,70),(146,94),(90,150)],fill=white)
+            d.polygon([(40,176),(66,126),(90,150)],fill=white)
+        elif name=='apps':
+            for cx in (54,96,138):
+                for cy in (54,96,138): d.ellipse((cx-15,cy-15,cx+15,cy+15),fill=white)
+        elif name=='chevron':
+            line([(50,74),(96,124),(142,74)],16)
         icons.append((name,im))
 if not icons or len(icons)>32: raise SystemExit('Expected 1–32 PNG icons')
 cell=96; atlas=Image.new('RGBA',(cell*8,cell*4)); manifest={}
