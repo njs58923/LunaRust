@@ -49,7 +49,7 @@
         base: "luna://",
         distancia: 1.6,
         C: {
-          fondo: "#0E1218E0", piso: "#12121A", reja: "#2A2A3A",
+          fondo: "#3A3C42", piso: "#12121A", reja: "#2A2A3A",
           superficie: "#1B2028C0", superficieAlta: "#2A3038", borde: "#5A6270",
           texto: "#FFFFFF", textoTenue: "#A8B0BC",
           azul: "#0A84FF", rojo: "#FF3B30", verde: "#30D158", amarillo: "#FFD60A",

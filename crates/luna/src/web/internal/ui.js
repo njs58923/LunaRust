@@ -2823,7 +2823,15 @@ if (!globalThis.UI_CFG) {
   TexturedBatch.prototype.commit = function () {
     if (!this.indices.length) { this.node.setAttribute("visible","false"); return; }
     this.node.setAttribute("visible","true");
-    const data={positions:this.positions,indices:this.indices,normals:this.normals,uvs:this.uvs,colors:this.colors};
+    // Bevy sorts transparent meshes by entity translation, not vertex Z.
+    // Keep the origin on the text layer instead of tying it with the panel.
+    // Subtract the same offset from vertices to preserve their world positions.
+    let originZ=Infinity;
+    for(let i=2;i<this.positions.length;i+=3)originZ=Math.min(originZ,this.positions[i]);
+    const positions=this.positions.slice();
+    for(let i=2;i<positions.length;i+=3)positions[i]-=originZ;
+    this.node.setAttribute("z",String(originZ));
+    const data={positions,indices:this.indices,normals:this.normals,uvs:this.uvs,colors:this.colors};
     if(this.resource) this.resource.update(data);
     else {this.resource=MeshResource.create(data);this.node.src=this.resource.src;}
   };

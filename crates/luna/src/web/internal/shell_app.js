@@ -381,12 +381,8 @@
       const pieces = [];
       const add = function (n) { nodes.push(n); return n; };
 
-      // El hueco donde dibuja la app. Un solo plano: el borde de antes —dos
-      // placas apenas más grandes— existía para separar la ventana del mundo
-      // cuando el marco la envolvía. Con la barra afuera, la ventana ya se lee
-      // sola contra el fondo.
-      add(D.plane(parent, { x: 0, y: 0, z: -0.003, sx: W, sy: H,
-                            color: '#3A3C42', corner: 0.030 }));
+      // El contenido y su fondo pertenecen a la app. El shell conserva sólo
+      // la barra de ventana y el ancla; las apps transparentes no llevan placa.
 
       // La pastilla del título: **debajo**, suelta, y sólo tan ancha como lo
       // que lleva. Ocupar todo el ancho de la ventana la convertiría otra vez

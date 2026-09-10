@@ -140,7 +140,7 @@
   function marcado() {
     const detalle = datos.seccion === "mcp" ? PANEL_MCP : PANEL_NAV;
     return `
-<Border Background="${C.fondo}" BorderBrush="${C.borde}" BorderThickness="0.003"
+<Border Background="${C.fondo}"
         CornerRadius="0.024" Padding="0.018">
   <Grid ColumnDefinitions="0.30,*" ColumnSpacing="0.018">
 
