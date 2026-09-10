@@ -60,7 +60,7 @@ impl Atlas {
                 return Err("UI font atlas capacity reached".into());
             }
             self.pages.push(Page {
-                pixels: [255,255,255,0].repeat(SIDE*SIDE),
+                pixels: [255, 255, 255, 0].repeat(SIDE * SIDE),
                 x: 0,
                 y: 0,
                 row: 0,
@@ -193,5 +193,48 @@ mod tests {
         assert_eq!(narrow.glyphs[0].u, again.glyphs[0].u);
         let wrapped = layout("hello world hello world", 0.1, Some(0.3)).unwrap();
         assert!(wrapped.h > 0.1);
+    }
+}
+
+/// CSS-style RGB/RGBA notation. Alpha is the last component, including shorthand.
+pub fn parse_color(hex: &str) -> Option<[u8; 4]> {
+    if hex.eq_ignore_ascii_case("transparent") {
+        return Some([0, 0, 0, 0]);
+    }
+    let hex = hex.strip_prefix('#')?;
+    if !hex.is_ascii() {
+        return None;
+    }
+    let expanded;
+    let hex = if matches!(hex.len(), 3 | 4) {
+        expanded = hex.chars().flat_map(|c| [c, c]).collect::<String>();
+        expanded.as_str()
+    } else {
+        hex
+    };
+    if !matches!(hex.len(), 6 | 8) {
+        return None;
+    }
+    Some([
+        u8::from_str_radix(&hex[0..2], 16).ok()?,
+        u8::from_str_radix(&hex[2..4], 16).ok()?,
+        u8::from_str_radix(&hex[4..6], 16).ok()?,
+        if hex.len() == 8 {
+            u8::from_str_radix(&hex[6..8], 16).ok()?
+        } else {
+            255
+        },
+    ])
+}
+#[cfg(test)]
+mod color_tests {
+    #[test]
+    fn rgba_and_transparent_are_unambiguous() {
+        assert_eq!(super::parse_color("#1234"), Some([17, 34, 51, 68]));
+        assert_eq!(super::parse_color("#20304080"), Some([32, 48, 64, 128]));
+        assert_eq!(super::parse_color("#fff"), Some([255; 4]));
+        assert_eq!(super::parse_color("transparent"), Some([0; 4]));
+        assert_eq!(super::parse_color("#éffé"), None);
+        assert_eq!(super::parse_color("#invalid"), None);
     }
 }

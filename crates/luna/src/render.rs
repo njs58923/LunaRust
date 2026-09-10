@@ -28,14 +28,7 @@ pub fn apply_transform(node: &Transform2, transform: &mut Transform) {
 // ─── Attribute helpers ───────────────────────────────────────────────────────
 
 pub fn parse_hex_color(hex: &str) -> Option<Color> {
-    let hex = hex.strip_prefix('#')?;
-    if hex.len() != 6 {
-        return None;
-    }
-    let r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32 / 255.0;
-    let g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32 / 255.0;
-    let b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32 / 255.0;
-    Some(Color::srgb(r, g, b))
+    ui_graphics::parse_color(hex).map(|[r,g,b,a]|Color::srgba_u8(r,g,b,a))
 }
 
 pub fn get_attr_f32(attrs: &HashMap<String, String>, key: &str, default: f32) -> f32 {
