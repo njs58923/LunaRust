@@ -1,8 +1,49 @@
-# Canal de componentes para includes
+# Componentes: hablar con un `<include>`
 
-Estado: **implementado**. Demo: `luna://component_demo` (requiere recompilar Luna).
+Un `<include>` es **otro documento adentro**, con su propio isolate y sus propios
+permisos. Eso lo hace un componente de verdad, y también lo dejaba mudo: el padre
+podía ver sus nodos con `getElementById` y escribirles atributos, pero **el toque
+nunca cruza el borde** —se despacha sólo al espacio dueño del nodo— así que el
+hijo no tenía forma de avisar nada hacia arriba.
 
-## Declaración y API
+El canal cierra eso con dos atributos: **`props`** baja datos y **`events`**
+declara qué puede emitir el hijo.
+
+```xml
+<include id="puerta_cueva" src="./puerta.hsml" events="abrir"
+         props='{"titulo":"La cueva","roca":"#4A515C"}'/>
+```
+
+```js
+// El padre
+const p = hiperspace.dimention.getElementById('puerta_cueva');
+p.addEventListener('component:abrir', () => {
+  p.props = { ...p.props, estado: 'abriendo' };   // la vuelta
+  location.href = './cueva.hsml';                 // lo que el hijo no puede hacer
+});
+```
+
+```js
+// El hijo
+render(component.props);                          // ya están, antes del primer script
+component.addEventListener('propschange', e => render(e.detail.props));
+component.emit('abrir', { id: 'cueva' });
+```
+
+**Lo que el canal no arregla: un include sigue sin poder navegar** el documento
+que lo contiene. `location.href` adentro de un include navega el include, y el
+destino aparece dentro del marco. Por eso el patrón es siempre el mismo — el
+componente avisa, el padre actúa.
+
+> Un caso entero, con veintiocho instancias del mismo archivo: las puertas del
+> atrio en `server_noche` (`public/puerta.hsml` + `src/atrio.ts`). Antes los datos
+> viajaban en la query, así que eran veintiocho URLs distintas del mismo
+> documento, y el vano tocable lo tenía que declarar el atrio porque el toque no
+> llegaba. Hoy son **una URL** y cada puerta es una puerta entera.
+
+Demo mínima: `luna://component_demo` (requiere recompilar Luna).
+
+## El contrato
 
 Se usa JSON estándar en el atributo `props`. Evita otro lenguaje de valores, conserva tipos y no evalúa código. Para datos grandes o dinámicos, asignar un objeto desde JavaScript. No se admite sintaxis CSS ni interpolación de expresiones.
 
@@ -78,3 +119,7 @@ Pruebas de runtime y montaje nativo cubren props antes del primer script, cambio
 La demo usa dos instancias del mismo contador. Cada hijo emite una intención; el padre incrementa su estado y devuelve nuevas props. No necesita permisos elevados.
 
 Quedan fuera de V1: RPC/request-response, transferencia de Blob/ArrayBuffer, callbacks entre isolates y validación de esquemas de negocio. Se pueden añadir posteriormente sin cambiar el contrato de props y eventos.
+
+---
+
+Volver al [índice de guías](index.md).

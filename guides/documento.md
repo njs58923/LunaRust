@@ -76,7 +76,7 @@ Las unidades son metros y el suelo está en `y = 0`. Altura de ojos ≈ `1.6`.
 
 | Tag | Atributos |
 |---|---|
-| `box`, `sphere`, `cylinder`, `plane` | `color="#RRGGBB"`, `touchable`, `border-radius` (sólo `box` y `plane`), y los de textura (abajo) |
+| `box`, `sphere`, `cylinder`, `plane` | `color` (ver abajo), `touchable`, `border-radius` (sólo `box` y `plane`), y los de textura (abajo) |
 | `image` | `src`, `fit`, `color` (tiñe), `material-alpha`; expone `naturalWidth`/`naturalHeight`/`onload`/`onerror` |
 | `text` | `value` (default `"Text"`), `size` (default `0.1`), `color` (default blanco) |
 | `model` | `src` (glTF/GLB, relativo o absoluto), `rigidbody`, `collider`, y los de animación (abajo) |
@@ -110,8 +110,28 @@ Prende el modo *overlay*, donde el shader hace
 la textura y `color` es el fondo**. Con un PNG negro sobre un botón azul el icono
 sale negro. En un `<image>`, que va por *multiply*, es al revés: `color` tiñe.
 
-El ancho del `text` se calcula como `size * nChars * 0.6`; es una aproximación
-monoespaciada, no layout real. Para centrar, colocá el texto en el mismo `x` que su fondo.
+### El color acepta alfa
+
+`color` toma la notación CSS entera, con el alfa **al final**: `#RGB`, `#RGBA`
+—forma corta, cada dígito se duplica—, `#RRGGBB`, `#RRGGBBAA`, y la palabra
+`transparent`.
+
+**El alfa solo no se ve.** Un nodo sin atributos de superficie se dibuja con un
+material opaco: el alfa se parsea y se guarda, y nada más. Para que atraviese hay
+que agregar `material-alpha="blend"`, que es lo que manda el nodo por el camino
+de superficies —el único que fija el modo de mezcla—. Detalle y usos en
+[interfaz.md](interfaz.md).
+
+### El ancho del `text` ya no se adivina
+
+~~`size * nChars * 0.6`.~~ Eso fue cierto mientras el texto se dibujaba
+monoespaciado. Hoy `build_text_transform` mide la cadena con la fuente real
+(FiraSans) a través de `text_texture_size`, así que **un `<text>` ocupa lo que
+ocupa**. Si necesitás el número antes de dibujarlo, pedilo:
+`TextLayout.create(texto, size).w` — ver [interfaz.md](interfaz.md).
+
+Para centrar, colocá el texto en el mismo `x` que su fondo: el motor lo ancla por
+el centro, en `x` **y** en `y`.
 
 ### Animación de un `<model>`
 

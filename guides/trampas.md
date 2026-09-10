@@ -183,7 +183,7 @@ avisa con `component.emit('abrir', {...})`; el padre escucha `component:abrir`
 **en el nodo include** y contesta reemplazando `include.props`. Así el nodo
 tocable puede vivir dentro del componente: recibe su toque en su propio isolate
 y lo que cruza el borde es el evento, no el nodo. Contrato completo y límites en
-[`../COMPONENT_CHANNEL.md`](../COMPONENT_CHANNEL.md).
+[componentes.md](componentes.md).
 
 Está implementado así en `server_noche/public/puerta.hsml` + `src/atrio.ts`: un
 único documento **y una única URL** para las veintiocho puertas del atrio, cada
@@ -348,6 +348,30 @@ por su capacidad. Ignorar ese número pierde la cola del mensaje en silencio.
 **`TextDecoder` no decodifica por partes.** `{ stream: true }` tira `TypeError`,
 y con razón: un carácter multibyte partido entre dos trozos no se reconstruye
 después. Hay que juntar los bytes y decodificar una vez.
+
+---
+
+**El alfa de un color no se ve sin `material-alpha`.** `color` acepta
+`#RRGGBBAA` y `transparent` desde
+`feat(ui): support shared CSS-style RGBA colors and transparent surfaces`, pero
+un `box` o un `plane` sin atributos de superficie se dibuja con un material
+**opaco**: el alfa se parsea, se guarda y no pasa nada. La mezcla la fija el
+camino de superficies, y a ese camino se entra declarando `material-alpha`
+(`surface.rs:472`; el gate está en `SurfaceDesc::parse`, `surface.rs:70`).
+
+    <plane color="transparent" material-alpha="blend" touchable="true"/>
+
+Eso último es lo que más rinde: **un blanco táctil invisible**. Sigue recibiendo
+`toque` y `pointerenter` sin dibujar nada, así que las zonas de impacto dejan de
+tener que pintarse del color de lo que tapan.
+
+**~~El ancho del texto es `size · nChars · 0.6`.~~ Ya no.** Era una aproximación
+monoespaciada y estaba bien medida en su momento; `add real mesh render` la
+reemplazó por layout de verdad con FiraSans, así que `build_text_transform` mide
+la cadena con la fuente (`text_texture_size`, `render.rs:66`). Un framework que
+todavía multiplique por 0,6 va a acomodar mal — y ahora hay a quién preguntarle:
+`TextLayout.create(texto, size)` devuelve `{w, h, glyphs}`. Ver
+[interfaz.md](interfaz.md).
 
 ---
 

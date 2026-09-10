@@ -205,4 +205,20 @@ image.onerror = () => status.setAttribute('value', image.error);
 
 ---
 
+## El atlas de glifos también es una textura
+
+`texture="luna://ui-font/<page>"` entrega una página del atlas de la fuente de
+interfaz: 1024×1024, gris con alfa, hasta 8 páginas que se abren a medida que se
+piden glifos nuevos. Con las UV que devuelve `TextLayout.create` alcanza para
+meter **texto dentro de una malla propia**, sin un `<text>` por renglón. Ver
+[interfaz.md](interfaz.md).
+
+## El color de un nodo ahora puede llevar alfa
+
+`#RGBA`, `#RRGGBBAA` y `transparent`. No se ve sin `material-alpha="blend"`: es
+ese atributo el que mete al nodo en este camino, que es el único que fija el modo
+de mezcla.
+
+---
+
 Volver al [índice de guías](index.md).

@@ -57,6 +57,9 @@ Cuota: 128 URLs vivas y 64 MiB en total. **No se revocan solas** — un bucle qu
 crea una por cuadro se queda sin cuota, y el error llega en el
 `createObjectURL`, lejos de donde está el problema real.
 
+Revocar impide **nuevas** resoluciones; no invalida una respuesta que ya se
+obtuvo. Un `fetch` en vuelo sobre esa URL termina bien.
+
 ## `IO.Buffer` e `IO.pipe`
 
 Utilidades de bytes en memoria; ningún archivo, ningún socket.
@@ -74,6 +77,10 @@ buf.close();
 `Buffer` **no crece**: `write` recorta a la capacidad y devuelve lo que escribió.
 Ignorar ese número es la forma corriente de perder la cola de un mensaje.
 Máximo 8 MiB.
+
+Las dos operaciones también existen como funciones sueltas, que es la forma
+cómoda cuando el destino puede ser un `Buffer` o una punta de `pipe`:
+`IO.write(destino, bytes)` e `IO.read(origen, destino)`.
 
 ```js
 const { reader, writer } = IO.pipe({ capacity: 65536 });

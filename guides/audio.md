@@ -118,6 +118,20 @@ catchearlo, no es un fallo real.
 La cuota se mide en muestras decodificadas: un MP3 chico puede ocupar mucho.
 Un minuto estéreo a 48 kHz son 23 MiB.
 
+## Lo que todavía no hay
+
+Vale saber dónde termina esto, porque la cola PCM se parece lo suficiente a un
+streaming como para hacer creer que ya lo es: **`fetch` baja la respuesta
+entera**. No hay lectura incremental de HTTP con cancelación, ni WebSocket
+binario, ni decodificadores incrementales para radio o formatos comprimidos
+continuos. Tampoco hay HLS, MediaSource, grafo de Web Audio, captura de
+micrófono ni sonido espacial/HRTF — el audio es 2D y sale por la mezcla del
+shell.
+
+Una fuente de red futura va a poder alimentar esta misma cola PCM sin cambiarle
+los controles de reproducción, que es justamente por qué la cola está separada
+del origen de los datos.
+
 ## Demo
 
 `luna://audio_demo` — un WAV armado a mano en el propio script (sin bajar nada)

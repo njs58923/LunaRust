@@ -75,12 +75,14 @@ un motor de juego. Se parece más al DOM que a Unity:
 | [permisos.md](permisos.md) | `resources`, los bundles y qué hereda un `<include>` |
 | [javascript.md](javascript.md) | la API del script: raíz, crear, mover, consultar |
 | [eventos.md](eventos.md) | `toque` y hover (`pointerenter`, `matches(':hover')`) |
+| [componentes.md](componentes.md) | `props` y `events`: hablar con un `<include>` |
 | [ejemplo.md](ejemplo.md) | un documento y su script, enteros |
 
 ### Por tema
 
 | | |
 |---|---|
+| [interfaz.md](interfaz.md) | medir texto, el atlas de glifos, curvas y color con alfa |
 | [superficies.md](superficies.md) | texturas sobre primitivas, atlas, y el tag `<image>` |
 | [modelos.md](modelos.md) | `<model>`: cómo se cargan y comparten los glTF |
 | [animaciones.md](animaciones.md) | los clips que trae un `.glb` |
@@ -122,6 +124,8 @@ Cuando una guía y el motor no coincidan, gana el motor. Y avisá.
 | Permisos / bundles | `crates/luna/src/permissions.rs` |
 | Eventos (raycast) | `crates/luna/src/touch.rs` |
 | Mallas dinámicas | `crates/js_runtime/src/mesh.rs` |
+| Texto, glifos y curvas | `crates/ui_graphics/src/`, `crates/js_runtime/src/ui_text.rs` |
+| Canal de componentes | `crates/luna/src/components.rs`, `crates/js_runtime/components.js` |
 | Audio (ops y mezcla) | `crates/js_runtime/src/audio.rs`, `crates/luna/src/audio.rs` |
 | Blob, texto y buffers | `crates/js_runtime/binary.js` |
 | Páginas internas de ejemplo | `crates/luna/src/routes.rs` |

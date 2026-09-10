@@ -91,4 +91,12 @@ eliminaciones del DOM aunque el puntero permanezca quieto.
 
 ---
 
+## Eventos que cruzan un `<include>`
+
+Ni `toque` ni el hover cruzan el borde de un include: se despachan sólo al
+espacio dueño del nodo. Lo que sí cruza es el canal de componentes — el hijo
+emite y el padre escucha `component:<nombre>` **en el nodo include**. Ver
+[componentes.md](componentes.md).
+
+
 Volver al [índice de guías](index.md).

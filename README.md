@@ -267,8 +267,10 @@ siguen evolucionando. Las APIs pueden cambiar.
 
 | Dónde | Qué |
 |---|---|
-| **[guides/](guides/index.md)** | cómo **usar** la plataforma: escribir documentos, permisos, API JS, eventos, texturas, mallas, audio |
+| **[guides/](guides/index.md)** | cómo **usar** la plataforma: escribir documentos, permisos, API JS, eventos, texturas, mallas, audio, componentes, texto y curvas |
 | [guides/trampas.md](guides/trampas.md) | lo que falla en silencio — la página más útil de todas |
+| [guides/interfaz.md](guides/interfaz.md) | medir texto, el atlas de glifos, curvas y color con alfa |
+| [guides/componentes.md](guides/componentes.md) | `props` y `events`: hablar con un `<include>` |
 | [guides/disenos/](guides/disenos/) | propuestas y notas de diseño, no referencia de lo que existe |
 | [docs/](docs/) | análisis, mediciones y estado de implementación |
 | [docs/deuda_tecnica/](docs/deuda_tecnica/) | lo que se sabe que está mal y todavía no se arregló |
