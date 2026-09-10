@@ -167,7 +167,7 @@ function armar() {
 
     pushSectionProps(false);
     rebuildBar(ultimasWindows);
-    if (barZone) barZone.setAttribute('visible', props.barVisible ? 'true' : 'false');
+    if (barZone) barZone.setAttribute('visible', props.barVisible ? 'inherit' : 'false');
   }
 
   component.addEventListener('propschange', function (e) { render(e.detail.props); });

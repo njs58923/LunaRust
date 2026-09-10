@@ -149,7 +149,7 @@ function armar() {
       const primera = visible === null;
       visible = quiere;
       if (quiere) {
-        if (panel) panel.setAttribute('visible', 'true');
+        if (panel) panel.setAttribute('visible', 'inherit');
         if (!primera) startEnter();
       } else if (primera) {
         if (panel) panel.setAttribute('visible', 'false');

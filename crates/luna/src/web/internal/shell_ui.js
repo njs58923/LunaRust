@@ -571,7 +571,7 @@
         const t = tiles[i];
         // Una celda sin app no se borra: se apaga. Quitar y recrear nodos por
         // paginar es lo que hacía parpadear la grilla entera.
-        t.group.setAttribute('visible', a ? 'true' : 'false');
+        t.group.setAttribute('visible', a ? 'inherit' : 'false');
         if (!a) continue;
         t.label.setAttribute('value', a.name || '');
         recolor(t.piece, a.color || C.blue);

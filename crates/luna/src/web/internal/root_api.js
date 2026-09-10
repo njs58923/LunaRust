@@ -46,7 +46,7 @@
       environment.appendChild(include);
     }
     if (environment && visible !== environmentVisible) {
-      environment.setAttribute('visible', visible ? 'true' : 'false');
+      environment.setAttribute('visible', visible ? 'inherit' : 'false');
       environmentVisible = visible;
     }
   }
@@ -150,7 +150,7 @@
     }
 
     if (opts.visible != null) {
-      space.setAttribute('visible', opts.visible ? 'true' : 'false');
+      space.setAttribute('visible', opts.visible ? 'inherit' : 'false');
     }
 
     if (opts.position) {
@@ -290,7 +290,7 @@
       const entry = registry.get(publicId);
       if (!entry) return -1;
 
-      space.setAttribute('visible', initialVisible ? 'true' : 'false');
+      space.setAttribute('visible', initialVisible ? 'inherit' : 'false');
       space.setAttribute('managed-by', 'dimension.luna');
       space.setAttribute('data-luna-kind', kind);
       if (options.systemShell) {
@@ -335,7 +335,7 @@
       const tidStr = String(tabId);
       for (const [pid, entry] of registry) {
         if (entry.space.getAttribute('data-luna-tab-id') === tidStr) {
-          entry.space.setAttribute('visible', visible ? 'true' : 'false');
+          entry.space.setAttribute('visible', visible ? 'inherit' : 'false');
           return true;
         }
       }

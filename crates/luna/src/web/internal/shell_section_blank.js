@@ -64,7 +64,7 @@ function armar() {
     const quiere = !!props.visible;
     if (quiere === visible) return;
     visible = quiere;
-    if (panel) panel.setAttribute('visible', quiere ? 'true' : 'false');
+    if (panel) panel.setAttribute('visible', quiere ? 'inherit' : 'false');
     if (!quiere) emit('hidden', {});
   }
 

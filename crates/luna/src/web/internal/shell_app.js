@@ -268,7 +268,7 @@
       // no hay ninguna animación en curso y esperar sería demorar por nada.
       if (seVaElMenu && quiereFoco) empezarEspera();
       const showFocus = quiereFoco && !esperandoMenu;
-      if (focusZone) focusZone.setAttribute('visible', showFocus ? 'true' : 'false');
+      if (focusZone) focusZone.setAttribute('visible', showFocus ? 'inherit' : 'false');
       if (shellState.focusApp && shellState.focusApp.tabId > 0) {
         const entry = shellState.focusApp;
         if (entry._lastVisible !== !!showFocus) {
@@ -289,7 +289,7 @@
 
         const visible = !a.minimized && (a.alwaysOn || shellState.bookmarksVisible);
         if (a.frame && a.frame.group) {
-          a.frame.group.setAttribute('visible', visible ? 'true' : 'false');
+          a.frame.group.setAttribute('visible', visible ? 'inherit' : 'false');
         }
         if (a.tabId > 0) tabVisible(a.tabId, visible);
         if (a._lastVisible !== visible) {

@@ -312,7 +312,7 @@ function armar() {
       const primera = visible === null;
       visible = quiere;
       if (quiere) {
-        if (panel) panel.setAttribute('visible', 'true');
+        if (panel) panel.setAttribute('visible', 'inherit');
         if (!primera) startEnterAnimation();
       } else if (primera) {
         if (panel) panel.setAttribute('visible', 'false');
@@ -321,7 +321,7 @@ function armar() {
         startExitAnimation();
       }
     }
-    if (bottomBar) bottomBar.setAttribute('visible', props.barVisible ? 'true' : 'false');
+    if (bottomBar) bottomBar.setAttribute('visible', props.barVisible ? 'inherit' : 'false');
   }
 
   component.addEventListener('propschange', function (e) { render(e.detail.props); });
