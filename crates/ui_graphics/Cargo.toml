@@ -5,4 +5,5 @@ edition.workspace = true
 
 [dependencies]
 fontdue = "0.9"
+lyon_tessellation = "1.0"
 serde = { version = "1", features = ["derive"] }

@@ -27,3 +27,11 @@ pub fn op_ui_text(
     (backend.0)(&text, size, if width > 0.0 { Some(width) } else { None })
         .map_err(anyhow::Error::msg)
 }
+
+#[op2]
+#[serde]
+pub fn op_ui_path(
+    #[serde] request: ui_graphics::paths::Request,
+) -> Result<ui_graphics::paths::Geometry, anyhow::Error> {
+    ui_graphics::paths::tessellate(request).map_err(anyhow::Error::msg)
+}

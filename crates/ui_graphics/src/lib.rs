@@ -1,4 +1,5 @@
-//! Shared font atlas for mesh UI. Immutable glyph coordinates; uploads only after insertion.
+//! Shared graphics services for mesh UI.
+pub mod paths;
 use fontdue::layout::{CoordinateSystem, GlyphRasterConfig, Layout, LayoutSettings, TextStyle};
 use fontdue::{Font, FontSettings};
 use serde::Serialize;

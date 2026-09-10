@@ -1498,6 +1498,7 @@ impl Engine {
                 op_hsml_set_transform_batch::decl(),
                 op_hsml_set_global_position::decl(),
                 ui_text::op_ui_text::decl(),
+                ui_text::op_ui_path::decl(),
                 components::op_component_context::decl(),
                 components::op_component_props::decl(),
                 components::op_component_emit::decl(),
@@ -1667,6 +1668,7 @@ impl Engine {
             .expect("fetch bootstrap failed");
         rt.execute_script("<audio>", FastString::Static(include_str!("../audio.js"))).expect("audio bootstrap failed");
 
+        rt.execute_script("<ui-path>",FastString::Static("globalThis.PathGeometry=Object.freeze({tessellate(commands,{tolerance=0.0001,strokeWidth=0,nonZero=false}={}){return Deno.core.ops.op_ui_path({commands,tolerance,strokeWidth,nonZero});}});")).expect("UI path bootstrap failed");
         rt.execute_script("<ui-text>", FastString::Static("globalThis.TextLayout = Object.freeze({create(text,size,width=0){return Deno.core.ops.op_ui_text(String(text),Number(size),Number(width));}});")).expect("UI text bootstrap failed");
 
         rt.execute_script("<components>", FastString::Static(include_str!("../components.js"))).expect("components bootstrap failed");
