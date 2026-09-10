@@ -270,6 +270,7 @@ siguen evolucionando. Las APIs pueden cambiar.
 | **[guides/](guides/index.md)** | cómo **usar** la plataforma: escribir documentos, permisos, API JS, eventos, texturas, mallas, audio, componentes, texto y curvas |
 | [guides/trampas.md](guides/trampas.md) | lo que falla en silencio — la página más útil de todas |
 | [guides/interfaz.md](guides/interfaz.md) | medir texto, el atlas de glifos, curvas y color con alfa |
+| [guides/framework-ui.md](guides/framework-ui.md) | el framework de interfaces que sirve `luna://internal/ui.js` |
 | [guides/componentes.md](guides/componentes.md) | `props` y `events`: hablar con un `<include>` |
 | [guides/disenos/](guides/disenos/) | propuestas y notas de diseño, no referencia de lo que existe |
 | [docs/](docs/) | análisis, mediciones y estado de implementación |

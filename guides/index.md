@@ -83,6 +83,7 @@ un motor de juego. Se parece más al DOM que a Unity:
 | | |
 |---|---|
 | [interfaz.md](interfaz.md) | medir texto, el atlas de glifos, curvas y color con alfa |
+| [framework-ui.md](framework-ui.md) | `luna://internal/ui.js`: paneles, controles y enlaces |
 | [superficies.md](superficies.md) | texturas sobre primitivas, atlas, y el tag `<image>` |
 | [modelos.md](modelos.md) | `<model>`: cómo se cargan y comparten los glTF |
 | [animaciones.md](animaciones.md) | los clips que trae un `.glb` |
@@ -125,6 +126,7 @@ Cuando una guía y el motor no coincidan, gana el motor. Y avisá.
 | Eventos (raycast) | `crates/luna/src/touch.rs` |
 | Mallas dinámicas | `crates/js_runtime/src/mesh.rs` |
 | Texto, glifos y curvas | `crates/ui_graphics/src/`, `crates/js_runtime/src/ui_text.rs` |
+| El framework de interfaz | `server_ui/` (se genera desde ahí; ver framework-ui.md) |
 | Canal de componentes | `crates/luna/src/components.rs`, `crates/js_runtime/components.js` |
 | Audio (ops y mezcla) | `crates/js_runtime/src/audio.rs`, `crates/luna/src/audio.rs` |
 | Blob, texto y buffers | `crates/js_runtime/binary.js` |

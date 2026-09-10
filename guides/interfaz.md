@@ -136,7 +136,9 @@ real (FiraSans) vía `text_texture_size`, así que un `<text>` ocupa lo que ocup
 | Páginas del atlas en Bevy | `crates/luna/src/ui_text.rs` |
 
 Un consumidor entero de todo esto vive en `server_ui/RENDERING.md`, con su demo
-en `/curves.hsml`.
+en `/curves.hsml`. Y ese consumidor viene con el motor: es el framework de
+[framework-ui.md](framework-ui.md), que ya usa las tres cosas de esta página —
+mide su texto, lo mete en su propia malla y tesela sus esquinas.
 
 ---
 
