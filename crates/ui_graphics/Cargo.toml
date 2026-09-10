@@ -1,0 +1,8 @@
+[package]
+name = "ui_graphics"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fontdue = "0.9"
+serde = { version = "1", features = ["derive"] }

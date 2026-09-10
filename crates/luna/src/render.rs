@@ -1,10 +1,10 @@
-use std::{collections::HashMap, path::Path, sync::OnceLock};
+use std::{collections::HashMap, path::Path};
 
 use base64::{engine::general_purpose::STANDARD as Base64Engine, Engine as _};
 use bevy::prelude::*;
 use fontdue::{
     layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
-    Font, FontSettings,
+    Font,
 };
 use crate::{
     PrimitiveMaterialCache, PrimitiveMaterialKey, TextMaterialCache, TextMaterialKey,
@@ -55,12 +55,7 @@ pub fn get_attr_string(attrs: &HashMap<String, String>, key: &str, default: &str
 // ─── Font & text texture ─────────────────────────────────────────────────────
 
 pub fn get_text_font() -> &'static Font {
-    static FONT: OnceLock<Font> = OnceLock::new();
-    FONT.get_or_init(|| {
-        let font_bytes: &[u8] = include_bytes!("../assets/fonts/FiraSans-Regular.ttf");
-        Font::from_bytes(font_bytes, FontSettings::default())
-            .expect("Failed to load FiraSans-Regular.ttf")
-    })
+    ui_graphics::get_text_font()
 }
 
 /// Alto de la fuente al rasterizar, y el aire que se le deja alrededor. Los

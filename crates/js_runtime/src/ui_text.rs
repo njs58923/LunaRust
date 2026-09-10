@@ -1,24 +1,6 @@
 //! Native text layout service supplied by the host. No DOM or cross-isolate handles.
 use deno_core::{op2, OpState};
-use serde::Serialize;
-#[derive(Clone, Serialize)]
-pub struct GlyphQuad {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-    pub u: f32,
-    pub v: f32,
-    pub uw: f32,
-    pub vh: f32,
-    pub page: usize,
-}
-#[derive(Clone, Serialize)]
-pub struct TextLayout {
-    pub w: f32,
-    pub h: f32,
-    pub glyphs: Vec<GlyphQuad>,
-}
+pub use ui_graphics::{GlyphQuad, TextLayout};
 pub struct TextBackend(pub fn(&str, f32, Option<f32>) -> Result<TextLayout, String>);
 #[op2]
 #[serde]
