@@ -275,35 +275,26 @@ y lo que se perdería son los comentarios.
 `luna://settings` es la primera página interna hecha así, y muestra los dos
 patrones que hacen falta cuando la interfaz vive adentro del motor:
 
-**El buzón.** El host publica el estado del MCP inyectando JavaScript que hace
-`getElementById('mcp_status').setAttribute('value', …)`, con los ids escritos en
-`agent.rs`. El framework dibuja su texto **adentro de una malla** y sus nodos son
-de pileta, sin ids estables: no hay nada que el host pueda encontrar. Así que el
-documento declara esos nodos **invisibles**, como buzón, y la aplicación los lee.
+**El estado llega por una API, no por nodos.** Hubo una versión en la que el
+host publicaba inyectando JavaScript que le escribía atributos a nodos de ids
+fijos, y el documento declaraba esos nodos invisibles como buzón. Andaba y era
+un rodeo: el id quedaba acordado a mano entre `agent.rs` y el `.hsml`, el dato
+pasaba por tres conversiones, y borrar el nodo no rompía nada — la página
+simplemente no se enteraba nunca.
 
-```xml
-<group visible="false">
-  <text id="mcp_status" value="MCP local" size="0.01"/>
-</group>
+Ahora `luna://internal/settings_api.js` expone `dimention.settings`, sobre el
+mismo buzón tipado que ya usan `fetch`, las capturas y el hover: el host deja el
+dato en una cola del `OpState` y el isolate lo saca con un op.
+
+```js
+dimention.settings.on(estado => render(estado));   // avisa al cambiar
+dimention.settings.set({ homeUrl: "luna://home" }); // sólo lo que cambió
 ```
 
-Vale para cualquier estado que el host publique así. Si se borran, deja de
-llegar y **no falla nada**: simplemente no se entera nunca.
-
-Con más de un dato conviene un solo nodo con un JSON, y no un atributo por
-campo. `luna_config` publica así la configuración raíz entera —inicio, modo de
-render, permisos por sitio, rutas— y agregar una preferencia deja de tocar el
-documento:
-
-```xml
-<box id="luna_config" data-json="{}" sx="0.01" sy="0.01" sz="0.01"/>
-```
-
-**La vuelta.** Para escribir hay `dimention.setRootSettings(parche)`, que manda
-**sólo lo que cambió**: el host aplica campo por campo, así que una página vieja
-no puede pisar una preferencia que todavía no conoce. Está detrás de la misma
-lista blanca de URL que los toggles del MCP, así que desde cualquier otro
-documento se encola y se descarta en silencio.
+El sondeo es de un entero: el op compara la revisión ya vista y devuelve el JSON
+**sólo** cuando cambió, así un cuadro sin novedades cuesta una llamada y ninguna
+copia. Si te toca publicar estado del host hacia un documento, éste es el camino
+— no los atributos.
 
 **El slot embebido.** La app dibuja su fondo; el shell conserva la barra de
 ventana y el ancla, sin una placa fija detrás. Ajustes recibe el evento `slot`

@@ -418,7 +418,21 @@ fn settings_status(
         return;
     }
     *last = time.elapsed_seconds_f64();
-    let label = serde_json::to_string(control.connection_label()).unwrap();
+    // Un solo JSON con todo lo que el documento de ajustes necesita saber. Se
+    // arma una vez por barrido, no una por worker: no depende de a quién va.
+    //
+    // Antes esto se mandaba como JavaScript inyectado que le escribía atributos
+    // a nodos de ids fijos. Andaba, y era un rodeo: el id quedaba acordado a
+    // mano entre este archivo y el documento, y si alguien lo borraba la página
+    // no se enteraba nunca, sin un solo error. Ahora va por el buzón tipado,
+    // que es el mismo camino que ya usan fetch, las capturas y el hover.
+    let publicacion = crate::settings::publish(
+        control.connection_label(),
+        config.mcp_auto_start,
+        &config,
+        &decisions,
+        &root_url.0,
+    );
     for (&id, worker) in &mut manager.contexts {
         if !is_settings_document(&crate::dom::find_node_base_url(
             &dom.0,
@@ -427,27 +441,8 @@ fn settings_status(
         )) {
             continue;
         }
-        let code = format!("{{ const node = hiperspace.dimention.getElementById('mcp_status'); if (node && node.getAttribute('value') !== {label}) node.setAttribute('value', {label}); }}");
-        let enabled = config.mcp_auto_start;
-        let startup_label = if enabled { "MCP al iniciar: SI" } else { "MCP al iniciar: NO" };
-        let code = format!("{code} {{ const root = hiperspace.dimention; const button = root.getElementById('mcp_auto_start'); const label = root.getElementById('mcp_auto_start_label'); if (button && button.getAttribute('data-enabled') !== '{enabled}') button.setAttribute('data-enabled', '{enabled}'); if (label && label.getAttribute('value') !== '{startup_label}') label.setAttribute('value', '{startup_label}'); }}");
-        // Y la configuración raíz entera, como JSON en un atributo. Mismo
-        // camino que el estado del MCP porque es el único que hay: el host no
-        // puede llamar a una función del isolate, sólo escribirle atributos.
-        // Se compara antes de escribir para no ensuciar el DOM dos veces por
-        // segundo con lo mismo. Ver settings.rs y web/internal/settings_ui.js.
-        let ajustes = serde_json::to_string(&crate::settings::publish(
-            &config,
-            &decisions,
-            &root_url.0,
-        ))
-        .unwrap_or_else(|_| "\"{}\"".to_string());
-        let code = format!("{code} {{ const nodo = hiperspace.dimention.getElementById('luna_config'); if (nodo && nodo.getAttribute('data-json') !== {ajustes}) nodo.setAttribute('data-json', {ajustes}); }}");
         if worker
-            .try_send(crate::js::JsWorkerCommand::EvalScript {
-                url: "eval://settings/mcp".into(),
-                code,
-            })
+            .try_send(crate::js::JsWorkerCommand::PushSettings(publicacion.clone()))
             .is_ok()
         {
             worker.needs_tick = true;

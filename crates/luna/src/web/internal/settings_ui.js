@@ -18,30 +18,13 @@
   const C = globalThis.UI_CFG.C;
   const raiz = hiperspace.dimention;
 
-  // ── El buzon del host ─────────────────────────────────────────────────────
-  // Nada de esto llega por una API: el host inyecta JavaScript que escribe
-  // atributos en nodos de ids fijos, porque no puede llamar a una funcion del
-  // isolate. El MCP usa un atributo por dato; la configuracion raiz, un JSON
-  // entero en `data-json`, que es lo que evita agregar un nodo cada vez que
-  // aparece una preferencia.
-  const buzon = {
-    estado: raiz.getElementById("mcp_status"),
-    arranque: raiz.getElementById("mcp_auto_start"),
-    config: raiz.getElementById("luna_config"),
-  };
-
-  function leerBuzon() {
-    const estado = buzon.estado ? buzon.estado.getAttribute("value") : null;
-    const auto = buzon.arranque ? buzon.arranque.getAttribute("data-enabled") : null;
-    const crudo = buzon.config ? buzon.config.getAttribute("data-json") : null;
-    return {
-      estado: estado || "sin datos",
-      // Hasta que el host publique el primero, `data-enabled` no existe: eso es
-      // "todavia no se", no "apagado". Se distingue para no dibujar un
-      // interruptor en una posicion que no es la de la configuracion real.
-      auto: auto === "true" ? true : auto === "false" ? false : null,
-      crudo: crudo || "",
-    };
+  // El estado lo publica el host por `dimention.settings`, que inyecta
+  // `settings_api.js`. Si no esta, esta pagina se abrio fuera de Luna o el
+  // motor es viejo: se dibuja igual, con los valores de reserva, y se dice.
+  const ajustes = raiz.settings;
+  if (!ajustes) {
+    console.error("[settings] falta dimention.settings: la pagina se dibuja " +
+                  "pero no va a mostrar ni guardar nada");
   }
 
   // ── El modelo ─────────────────────────────────────────────────────────────
@@ -72,13 +55,13 @@
     seccion: "general",
     titulo: "General",
 
-    // Del buzon del MCP.
+    // Del estado que publica el host: el MCP.
     estado: "sin datos",
     encendido: false,
     auto: false,
     autoTexto: "cargando…",
 
-    // De `luna_config`.
+    // Y la configuracion raiz.
     inicioAuto: true,
     inicios: INICIOS.slice(),
     inicioElegido: 0,
@@ -261,10 +244,10 @@
       // ── Desarrollador ──
       alternarMcp: function () {
         // El toggle ya escribió `datos.encendido` por el enlace TwoWay.
-        raiz.setMcpEnabled(!!datos.encendido);
+        if (ajustes) ajustes.setMcp(!!datos.encendido);
       },
       alternarArranque: function () {
-        raiz.setMcpAutoStart(!!datos.auto);
+        if (ajustes) ajustes.setMcpAutoStart(!!datos.auto);
       },
       ir_cache: function () { location.href = "luna://cache-stats"; },
 
@@ -273,14 +256,14 @@
       // campo por campo, así que esta página no puede pisar una preferencia que
       // todavía no sabe que existe.
       cambiarInicioAuto: function () {
-        raiz.setRootSettings({ autoLoadHome: !!datos.inicioAuto });
+        if (ajustes) ajustes.set({ autoLoadHome: !!datos.inicioAuto });
       },
       cambiarInicio: function () {
         const url = datos.inicios[datos.inicioElegido];
-        if (url) raiz.setRootSettings({ homeUrl: url });
+        if (url && ajustes) ajustes.set({ homeUrl: url });
       },
       cambiarModo: function () {
-        raiz.setRootSettings({ renderMode: datos.modoElegido === 1 ? "vr" : "desktop" });
+        if (ajustes) ajustes.set({ renderMode: datos.modoElegido === 1 ? "vr" : "desktop" });
       },
       tocarPermiso: function (control) {
         const item = control.itemDeLista();
@@ -288,7 +271,8 @@
         // Conceder se revoca; negar vuelve a preguntar. No hay un botón para
         // conceder desde acá a propósito: un permiso se concede contestándole
         // al sitio que lo pide, no repartiéndolo de antemano en una lista.
-        raiz.setRootSettings({
+        if (!ajustes) return;
+        ajustes.set({
           permission: {
             origin: item.origin,
             key: item.key,
@@ -324,16 +308,26 @@
     app.invalidar();
   }
 
-  // ── El buzón, una vez por cuadro ──────────────────────────────────────────
-  // El host publica cada medio segundo. Leer tres atributos por cuadro es más
-  // barato que cualquier forma de suscripción que se pudiera inventar acá, y
-  // sólo se invalida cuando algo cambió de verdad.
-  let ultimo = "";
+  // ── Lo que publica el host ────────────────────────────────────────────────
+  // Un solo evento con todo. No hay sondeo: `settings_api.js` avisa cuando la
+  // publicacion cambia de verdad, y si ya habia una la entrega al suscribirse.
 
-  function aplicarConfig(crudo) {
-    let cfg;
-    try { cfg = JSON.parse(crudo); } catch (e) { return; }
+  function aplicar(cfg) {
     if (!cfg || typeof cfg !== "object") return;
+
+    const mcp = cfg.mcp || {};
+    // `connection_label()` (agent.rs) devuelve exactamente una de tres cadenas.
+    // Se comparan como lo que son —constantes del host— y no con una expresión
+    // regular que adivine: si el día de mañana cambian, esto tiene que dejar de
+    // reconocerlas y mostrar el texto crudo, no acertar por casualidad.
+    const etiqueta = String(mcp.label || "");
+    datos.estado = etiqueta === "MCP disabled" ? "apagado"
+                 : etiqueta === "MCP connected (localhost)" ? "conectado"
+                 : etiqueta === "MCP waiting for local adapter" ? "esperando al adaptador"
+                 : (etiqueta || "sin datos");
+    datos.encendido = etiqueta !== "" && etiqueta !== "MCP disabled";
+    datos.auto = !!mcp.autoStart;
+    datos.autoTexto = datos.auto ? "se abre solo al arrancar" : "hay que prenderlo a mano";
 
     datos.inicioAuto = cfg.autoLoadHome !== false;
     datos.rutaConfig = cfg.configPath || "—";
@@ -363,34 +357,13 @@
     });
     const vacio = app.buscar("sinPermisos");
     if (vacio) vacio.visible = vacio.opaco = datos.permisos.length === 0;
-  }
 
-  function latir() {
-    requestAnimationFrame(latir);
-    const b = leerBuzon();
-    const firma = b.estado + "|" + b.auto + "|" + b.crudo;
-    if (firma === ultimo) return;
-    ultimo = firma;
-
-    // `connection_label()` (agent.rs) devuelve exactamente una de tres cadenas.
-    // Se comparan como lo que son —constantes del host— y no con una expresión
-    // regular que adivine: si el día de mañana cambian, esto tiene que dejar de
-    // reconocerlas y mostrar el texto crudo, no acertar por casualidad.
-    datos.estado = b.estado === "MCP disabled" ? "apagado"
-                 : b.estado === "MCP connected (localhost)" ? "conectado"
-                 : b.estado === "MCP waiting for local adapter" ? "esperando al adaptador"
-                 : b.estado;
-    datos.encendido = b.estado !== "MCP disabled";
-    if (b.auto !== null) {
-      datos.auto = b.auto;
-      datos.autoTexto = b.auto ? "se abre solo al arrancar" : "hay que prenderlo a mano";
-    }
-    if (b.crudo) aplicarConfig(b.crudo);
     app.invalidar();
   }
 
+  if (ajustes) ajustes.on(aplicar);
+
   app.correr();
-  requestAnimationFrame(latir);
 
   // ── El panel embebido ─────────────────────────────────────────────────────
   // Un mismo documento sirve para el Home espacial y para el panel de la

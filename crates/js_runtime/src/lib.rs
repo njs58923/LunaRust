@@ -19,6 +19,7 @@ pub mod components;
 pub mod ui_text;
 pub mod audio;
 pub mod binary;
+pub mod settings;
 pub mod fetch;
 pub use fetch::{FetchRequest, FetchResponse};
 use deno_core::Op;
@@ -1532,6 +1533,7 @@ impl Engine {
                 op_luna_mcp_enabled::decl(),
                 op_luna_mcp_auto_start::decl(),
                 op_luna_root_settings::decl(),
+                settings::op_settings_read::decl(),
                 op_capture_poll::decl(),
                 op_navigate::decl(),
                 op_tab_open::decl(),
@@ -1570,6 +1572,7 @@ impl Engine {
                 });
                 state.put(mesh::MeshQueue::default());
                 state.put(audio::AudioQueue::default());
+                state.put(settings::SettingsInbox::default());
                 state.put(std::sync::Arc::new(components::ComponentPort::default()));
                 state.put::<AttrSnapshot>(AttrSnapshot {
                     data: attr_snapshot_for_state.data.clone(),
@@ -1803,6 +1806,16 @@ impl Engine {
     pub fn drain_attr_updates(&self) -> Vec<(i32, String, String)> {
         take_vec(&self.attr_updates)
     }
+    /// Dejar en el buzón lo último que el host quiere que sepa el documento de
+    /// ajustes. No despierta nada por sí solo: el isolate lo lee cuando pasa.
+    pub fn publish_settings(&mut self, json: String) {
+        self.rt
+            .op_state()
+            .borrow_mut()
+            .borrow_mut::<settings::SettingsInbox>()
+            .publish(json);
+    }
+
     pub fn drain_audio_commands(&mut self) -> Vec<audio::SharedPlayback> {
         self.rt.op_state().borrow_mut().borrow_mut::<audio::AudioQueue>().drain()
     }

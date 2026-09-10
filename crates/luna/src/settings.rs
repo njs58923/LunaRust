@@ -139,12 +139,16 @@ pub fn apply_root_patch(world: &mut World, patch: &str) -> Result<(), String> {
     }
 }
 
-/// El JSON que el host publica en el documento de ajustes.
+/// El JSON que el host publica en el documento de ajustes: **todo** lo que la
+/// página necesita saber, en una sola pieza.
 ///
-/// Va como texto en un atributo porque es el mismo camino que ya usa el estado
-/// del MCP: el host no puede llamar a una función del isolate, sólo escribir
-/// atributos e inyectar scripts. Ver `agent.rs`.
+/// Viaja por el buzón tipado (`js_runtime::settings`), que es el mismo camino
+/// de `fetch`, las capturas y el hover. El estado del MCP va acá adentro y no
+/// por su propio canal: son dos datos del mismo documento y separarlos era lo
+/// que obligaba a tener tres nodos de ids fijos.
 pub fn publish(
+    mcp_label: &str,
+    mcp_auto_start: bool,
     config: &RootConfig,
     decisions: &PermissionDecisionStore,
     root_url: &str,
@@ -166,6 +170,12 @@ pub fn publish(
         .collect();
 
     serde_json::json!({
+        "mcp": {
+            // La cadena cruda de `connection_label()`. La traduce la página: el
+            // host no tiene por qué saber en qué idioma se muestra.
+            "label": mcp_label,
+            "autoStart": mcp_auto_start,
+        },
         "autoLoadHome": config.auto_load_home,
         "homeUrl": config.home_url,
         "renderMode": match config.preferred_render_mode {

@@ -140,6 +140,10 @@ impl VirtualRoutes {
             RouteHandler::Static(SCRIPT_UI_FRAMEWORK),
         );
         routes.insert(
+            "internal/settings_api.js".to_string(),
+            RouteHandler::Static(SCRIPT_SETTINGS_API),
+        );
+        routes.insert(
             "internal/settings_ui.js".to_string(),
             RouteHandler::Static(SCRIPT_SETTINGS_UI),
         );
@@ -874,6 +878,7 @@ const SCRIPT_TABS_API: &str = include_str!("web/internal/tabs_api.js");
 const SCRIPT_VIEWER_POSE_API: &str = include_str!("web/internal/viewer_pose_api.js");
 const SCRIPT_EMBEDDED_API: &str = include_str!("web/internal/embedded_api.js");
 const SCRIPT_UI_FRAMEWORK: &str = include_str!("web/internal/ui.js");
+const SCRIPT_SETTINGS_API: &str = include_str!("web/internal/settings_api.js");
 const SCRIPT_SETTINGS_UI: &str = include_str!("web/internal/settings_ui.js");
 const SCRIPT_SHELL_UI: &str = include_str!("web/internal/shell_ui.js");
 const SCRIPT_SHELL_APP: &str = include_str!("web/internal/shell_app.js");

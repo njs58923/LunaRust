@@ -175,6 +175,10 @@ pub enum JsWorkerCommand {
         elapsed_ms: f64,
     },
     PushElementCreationResults(Vec<(i32, i32)>),
+    /// Lo que el host publica hacia el documento de ajustes: estado del MCP y
+    /// configuración raíz, en un JSON. Reemplaza al `EvalScript` que le escribía
+    /// atributos a nodos de ids fijos. Ver `js_runtime::settings`.
+    PushSettings(String),
     PushFetchResults(Vec<(i32, std::result::Result<js_runtime::FetchResponse, String>)>),
     /// Resultado de una captura de frame: Ok(ruta del PNG) o Err(motivo).
     PushCaptureResults(Vec<(i32, std::result::Result<String, String>)>),
@@ -304,6 +308,12 @@ impl SpaceScriptWorker {
                 .pending_commands
                 .iter()
                 .rposition(|queued| matches!(queued, JsWorkerCommand::SetHoverTargets(_))),
+            // Es un estado, no una secuencia: la publicación vieja no le sirve
+            // a nadie si ya hay una nueva esperando.
+            JsWorkerCommand::PushSettings(_) => self
+                .pending_commands
+                .iter()
+                .rposition(|queued| matches!(queued, JsWorkerCommand::PushSettings(_))),
             JsWorkerCommand::SetViewerPose(_) => self
                 .pending_commands
                 .iter()
@@ -724,6 +734,9 @@ fn spawn_space_worker_configured(
                                 }
                             }
                         }
+                    }
+                    JsWorkerCommand::PushSettings(json) => {
+                        ctx.engine.publish_settings(json);
                     }
                     JsWorkerCommand::SetHoverTargets(targets) => {
                         // Data only: callbacks run in the guarded worker tick, never here.
