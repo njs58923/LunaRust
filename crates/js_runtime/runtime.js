@@ -643,6 +643,15 @@
       core.ops.op_luna_mcp_enabled(Boolean(enabled));
     }
 
+    // Parche de la configuración raíz. Como las dos de arriba, el host sólo la
+    // acepta desde el documento de ajustes; desde cualquier otro lado se
+    // descarta sin avisar. Campos reconocidos: autoLoadHome, homeUrl,
+    // renderMode ('desktop' | 'vr') y permission {origin, key, decision}, con
+    // decision 'allow' | 'deny' | 'ask'.
+    setRootSettings(patch) {
+      core.ops.op_luna_root_settings(JSON.stringify(patch || {}));
+    }
+
     captureFrame(name) {
       return new Promise((resolve, reject) => {
         const requestId = core.ops.op_capture_frame(String(name || 'capture'));

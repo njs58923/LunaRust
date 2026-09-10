@@ -351,6 +351,11 @@ pub enum TabAction {
     /// Host-only settings action; the host verifies the source document.
     SetMcpEnabled { enabled: bool },
     SetMcpAutoStart { enabled: bool },
+    /// Parche de la configuración raíz, en JSON. Va como texto y no como campos
+    /// para que agregar una preferencia no toque este enum ni el runtime: el
+    /// host parsea y aplica lo que reconoce. Mismo control que las dos de
+    /// arriba — sólo vale desde el documento de ajustes.
+    SetRootSettings { patch: String },
     /// Abre nueva tab cargando url. `kind` opaco — JS shell aplica policy.
     Open { url: String, kind: String },
     /// Cierra tab por su tab_id.
@@ -948,6 +953,18 @@ fn op_luna_mcp_auto_start(state: &mut OpState, enabled: bool) {
         .push(TabAction::SetMcpAutoStart { enabled });
 }
 
+/// El parche llega serializado. Se acota acá para que un documento no pueda
+/// encolar megabytes; el host valida el contenido.
+#[op2(fast)]
+fn op_luna_root_settings(state: &mut OpState, #[string] patch: String) -> Result<(), anyhow::Error> {
+    if patch.len() > 64 * 1024 {
+        return Err(anyhow::anyhow!("Root settings patch exceeds 64 KiB"));
+    }
+    state.borrow::<TabActionQueue>().queue.borrow_mut()
+        .push(TabAction::SetRootSettings { patch });
+    Ok(())
+}
+
 // El host valida la cap CAPTURE_FRAME por space antes de ejecutar nada; acá
 // sólo se encola. `name` es un nombre de archivo, no una ruta: el host decide
 // el directorio.
@@ -1514,6 +1531,7 @@ impl Engine {
                 op_capture_frame::decl(),
                 op_luna_mcp_enabled::decl(),
                 op_luna_mcp_auto_start::decl(),
+                op_luna_root_settings::decl(),
                 op_capture_poll::decl(),
                 op_navigate::decl(),
                 op_tab_open::decl(),

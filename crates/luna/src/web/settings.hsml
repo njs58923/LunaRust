@@ -14,14 +14,19 @@
         esta misma pagina no puede prender el MCP: los ops se encolan y el host
         los descarta sin decir nada.
 
-     2. **Los tres nodos de abajo son un buzon, no interfaz.** El host publica
-        el estado del MCP inyectando JavaScript que hace
+     2. **Los cuatro nodos de abajo son un buzon, no interfaz.** El host publica
+        el estado inyectando JavaScript que hace
         `getElementById('mcp_status').setAttribute('value', ...)` cada medio
         segundo (agent.rs). Los ids estan escritos en el motor, asi que tienen
         que existir con esos nombres exactos. El framework dibuja su texto
         adentro de una malla y sus nodos son de pileta, sin ids estables: si se
         borran estos, el estado deja de llegar y no falla nada — simplemente no
         se entera nunca.
+
+        `luna_config` es el mismo mecanismo para la configuracion raiz entera
+        —inicio, modo de render, permisos por sitio— pero como un JSON en
+        `data-json` en vez de un atributo por dato. Es lo que evita agregar un
+        nodo cada vez que aparece una preferencia.
 
      3. **`UI_CFG` va en linea y antes que `ui.js`.** Un script sin `src` no
         espera a la red y se evalua antes que cualquier externo, y el framework
@@ -38,6 +43,7 @@
         <text id="mcp_status" value="MCP local" size="0.01"/>
         <text id="mcp_auto_start_label" value="MCP al iniciar: cargando..." size="0.01"/>
         <box id="mcp_auto_start" data-enabled="false" sx="0.01" sy="0.01" sz="0.01"/>
+        <box id="luna_config" data-json="{}" sx="0.01" sy="0.01" sz="0.01"/>
       </group>
 
       <model id="ui_malla" material-unlit="true"/>

@@ -406,6 +406,8 @@ impl Plugin for AgentPlugin {
 fn settings_status(
     control: Res<AgentControl>,
     config: Res<crate::RootConfig>,
+    decisions: Res<crate::permissions::PermissionDecisionStore>,
+    root_url: Res<crate::types::CurrentUrl>,
     time: Res<Time>,
     mut last: Local<f64>,
     dom: Res<crate::ElemenetWorld>,
@@ -429,6 +431,18 @@ fn settings_status(
         let enabled = config.mcp_auto_start;
         let startup_label = if enabled { "MCP al iniciar: SI" } else { "MCP al iniciar: NO" };
         let code = format!("{code} {{ const root = hiperspace.dimention; const button = root.getElementById('mcp_auto_start'); const label = root.getElementById('mcp_auto_start_label'); if (button && button.getAttribute('data-enabled') !== '{enabled}') button.setAttribute('data-enabled', '{enabled}'); if (label && label.getAttribute('value') !== '{startup_label}') label.setAttribute('value', '{startup_label}'); }}");
+        // Y la configuración raíz entera, como JSON en un atributo. Mismo
+        // camino que el estado del MCP porque es el único que hay: el host no
+        // puede llamar a una función del isolate, sólo escribirle atributos.
+        // Se compara antes de escribir para no ensuciar el DOM dos veces por
+        // segundo con lo mismo. Ver settings.rs y web/internal/settings_ui.js.
+        let ajustes = serde_json::to_string(&crate::settings::publish(
+            &config,
+            &decisions,
+            &root_url.0,
+        ))
+        .unwrap_or_else(|_| "\"{}\"".to_string());
+        let code = format!("{code} {{ const nodo = hiperspace.dimention.getElementById('luna_config'); if (nodo && nodo.getAttribute('data-json') !== {ajustes}) nodo.setAttribute('data-json', {ajustes}); }}");
         if worker
             .try_send(crate::js::JsWorkerCommand::EvalScript {
                 url: "eval://settings/mcp".into(),

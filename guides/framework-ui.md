@@ -290,6 +290,21 @@ documento declara esos nodos **invisibles**, como buzón, y la aplicación los l
 Vale para cualquier estado que el host publique así. Si se borran, deja de
 llegar y **no falla nada**: simplemente no se entera nunca.
 
+Con más de un dato conviene un solo nodo con un JSON, y no un atributo por
+campo. `luna_config` publica así la configuración raíz entera —inicio, modo de
+render, permisos por sitio, rutas— y agregar una preferencia deja de tocar el
+documento:
+
+```xml
+<box id="luna_config" data-json="{}" sx="0.01" sy="0.01" sz="0.01"/>
+```
+
+**La vuelta.** Para escribir hay `dimention.setRootSettings(parche)`, que manda
+**sólo lo que cambió**: el host aplica campo por campo, así que una página vieja
+no puede pisar una preferencia que todavía no conoce. Está detrás de la misma
+lista blanca de URL que los toggles del MCP, así que desde cualquier otro
+documento se encola y se descarta en silencio.
+
 **El slot embebido.** La app dibuja su fondo; el shell conserva la barra de
 ventana y el ancla, sin una placa fija detrás. Ajustes recibe el evento `slot`
 de `dimention.embedded` y, cuando `coordinateSpace` es `window-local`, calcula

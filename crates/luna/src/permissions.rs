@@ -225,13 +225,15 @@ impl PermissionPromptQueue {
     }
 }
 
-fn elevated_capability_key(capability: CapabilityBits) -> Option<&'static str> {
+// pub: el documento de ajustes direcciona los permisos por su clave de texto,
+// que es lo unico estable que puede viajar a un isolate. Ver settings.rs.
+pub fn elevated_capability_key(capability: CapabilityBits) -> Option<&'static str> {
     ELEVATED_CAPABILITY_DEFS
         .iter()
         .find_map(|(key, bit)| (*bit == capability).then_some(*key))
 }
 
-fn elevated_capability_from_key(key: &str) -> Option<CapabilityBits> {
+pub fn elevated_capability_from_key(key: &str) -> Option<CapabilityBits> {
     ELEVATED_CAPABILITY_DEFS
         .iter()
         .find_map(|(candidate, bit)| (*candidate == key).then_some(*bit))

@@ -3476,6 +3476,22 @@ pub fn js_tick_system(world: &mut World) {
                             }
                         }
                     }
+                    js_runtime::TabAction::SetRootSettings { patch } => {
+                        // Mismo control que las dos del MCP: la autoridad es la
+                        // URL del documento, no una capacidad. Ver
+                        // `is_settings_document`.
+                        let allowed = world.get_resource::<ElemenetWorld>().is_some_and(|dom| {
+                            let entity = dom.0.entities().entity(space_id);
+                            crate::agent::is_settings_document(&crate::dom::find_node_base_url(&dom.0, entity, ""))
+                        });
+                        if allowed {
+                            if let Err(error) = crate::settings::apply_root_patch(world, &patch) {
+                                if let Some(mut log) = world.get_resource_mut::<LogPanel>() {
+                                    log.push_warn(format!("[settings] {error}"));
+                                }
+                            }
+                        }
+                    }
                     js_runtime::TabAction::Open { url, kind } => {
                         let caps = capabilities_by_space
                             .get(&space_id)

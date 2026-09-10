@@ -23,6 +23,7 @@ pub mod dynamic_mesh;
 pub mod surface;
 pub mod js;
 pub mod permissions;
+pub mod settings;
 pub mod render;
 pub mod routes;
 pub mod system_input;
