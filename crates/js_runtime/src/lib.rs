@@ -16,6 +16,7 @@ pub mod csp;
 pub mod storage;
 mod location;
 pub mod components;
+pub mod ui_text;
 pub mod audio;
 pub mod binary;
 pub mod fetch;
@@ -507,6 +508,7 @@ impl Default for WsCloseQueue {
 
 #[derive(Clone, Debug)]
 pub struct DomEvent {
+    pub local: Option<[f32;3]>,
     pub event_type: String,
     pub node_id: i32,
     pub x: Option<f32>,
@@ -1181,6 +1183,9 @@ fn op_poll_dom_events(state: &mut OpState) -> serde_json::Value {
                 "dx": evt.dx,
                 "dy": evt.dy,
                 "dz": evt.dz,
+                "localX": evt.local.map(|p|p[0]),
+                "localY": evt.local.map(|p|p[1]),
+                "localZ": evt.local.map(|p|p[2]),
                 "trigger": evt.trigger,
                 "grip": evt.grip,
                 "qx": evt.qx,
@@ -1492,6 +1497,7 @@ impl Engine {
                 op_hsml_set_scale::decl(),
                 op_hsml_set_transform_batch::decl(),
                 op_hsml_set_global_position::decl(),
+                ui_text::op_ui_text::decl(),
                 components::op_component_context::decl(),
                 components::op_component_props::decl(),
                 components::op_component_emit::decl(),
@@ -1661,6 +1667,8 @@ impl Engine {
             .expect("fetch bootstrap failed");
         rt.execute_script("<audio>", FastString::Static(include_str!("../audio.js"))).expect("audio bootstrap failed");
 
+        rt.execute_script("<ui-text>", FastString::Static("globalThis.TextLayout = Object.freeze({create(text,size,width=0){return Deno.core.ops.op_ui_text(String(text),Number(size),Number(width));}});")).expect("UI text bootstrap failed");
+
         rt.execute_script("<components>", FastString::Static(include_str!("../components.js"))).expect("components bootstrap failed");
 
         eprintln!("[js_runtime] Engine created successfully");
@@ -1730,6 +1738,10 @@ impl Engine {
     /// Returns a thread-safe handle that can interrupt a long-running script.
     pub fn execution_handle(&mut self) -> ExecutionHandle {
         ExecutionHandle(self.rt.v8_isolate().thread_safe_handle())
+    }
+
+    pub fn configure_text_backend(&mut self, backend: ui_text::TextBackend) {
+        self.rt.op_state().borrow_mut().put(backend);
     }
 
     pub fn configure_component_port(&mut self, port: std::sync::Arc<components::ComponentPort>) {
@@ -1990,6 +2002,7 @@ impl Engine {
         z: Option<f32>,
     ) {
         self.dom_events.borrow_mut().push(DomEvent {
+            local: None,
             event_type: event_type.into(),
             node_id,
             x,
@@ -2017,6 +2030,13 @@ impl Engine {
         self.push_dom_event("toque", node_id, Some(x), Some(y), Some(z));
     }
 
+    pub fn push_local_toque_event(&self,node_id:i32,x:f32,y:f32,z:f32,local:[f32;3]) {
+        self.push_dom_toque_event(node_id,x,y,z);
+        if let Some(event)=self.dom_events.borrow_mut().last_mut() {
+            if local.iter().all(|v|v.is_finite()) {event.local=Some(local);}
+        }
+    }
+
     pub fn push_posemove_event(
         &self,
         node_id: i32,
@@ -2035,6 +2055,7 @@ impl Engine {
         qw: f32,
     ) {
         self.dom_events.borrow_mut().push(DomEvent {
+            local: None,
             event_type: "posemove".to_string(),
             node_id,
             x: None,
@@ -2067,6 +2088,7 @@ impl Engine {
         source: impl Into<String>,
     ) {
         self.dom_events.borrow_mut().push(DomEvent {
+            local: None,
             event_type: "systeminput".to_string(),
             node_id: 0,
             x: None,

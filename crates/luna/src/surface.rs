@@ -327,6 +327,12 @@ fn request_texture(
     cache: &mut SurfaceCache,
     desc: &SurfaceDesc,
 ) -> TextureState {
+    if let Some(page) = desc.source.as_deref().and_then(|s|s.strip_prefix("luna://ui-font/")).and_then(|s|s.parse::<usize>().ok()) {
+        return match crate::ui_text::image(world,page) {
+            Some(image)=>TextureState::Ready{image,width:1024,height:1024},
+            None=>TextureState::Error("Unknown UI font atlas page".into()),
+        };
+    }
     let key = texture_key(desc);
     if let Some(entry) = cache.textures.get_mut(&key) {
         entry.touched = Instant::now();
@@ -553,6 +559,7 @@ fn hide_image(world: &mut World, entity: Entity) {
 
 /// After dom_sync / scene readiness. Transform-only work never enters this queue.
 pub fn sync_surfaces(world: &mut World) {
+    crate::ui_text::sync(world);
     if !world.contains_resource::<SurfaceCache>() {
         return;
     }

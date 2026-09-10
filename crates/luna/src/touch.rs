@@ -181,6 +181,7 @@ pub enum ToqueSource {
 
 #[derive(Debug, Clone, Copy)]
 pub struct HostToqueHit {
+    pub local:[f32;3],
     pub node_id: u32,
     pub x: f32,
     pub y: f32,
@@ -291,7 +292,7 @@ pub fn desktop_toque_raycast_system(
         return;
     };
 
-    let mut closest: Option<(f32, u32, Vec3)> = None;
+    let mut closest: Option<(f32, u32, Vec3, Vec3)> = None;
 
     for (global_transform, toqueable, inherited_vis, hit_shape) in toqueable_query.iter() {
         if !inherited_vis.get() {
@@ -309,15 +310,16 @@ pub fn desktop_toque_raycast_system(
             shape,
         ) {
             if closest.is_none() || t < closest.unwrap().0 {
-                closest = Some((t, toqueable.0, hit_point));
+                closest = Some((t, toqueable.0, hit_point, global_transform.affine().inverse().transform_point3(hit_point)));
             }
         }
     }
 
-    hover.0[0] = closest.map(|(_, id, _)| id);
+    hover.0[0] = closest.map(|(_, id, _, _)| id);
     if !mouse_button.just_pressed(MouseButton::Left) { return; }
-    if let Some((_, node_id, hit_point)) = closest {
+    if let Some((_, node_id, hit_point, local)) = closest {
         toque_hits.0.push(HostToqueHit {
+            local:local.to_array(),
             node_id,
             x: hit_point.x,
             y: hit_point.y,
@@ -379,7 +381,7 @@ pub fn vr_toque_raycast_system(
         return;
     }
 
-    let mut closest: Option<(f32, u32, Vec3)> = None;
+    let mut closest: Option<(f32, u32, Vec3, Vec3)> = None;
 
     for (global_transform, toqueable, inherited_vis, hit_shape) in toqueable_query.iter() {
         if !inherited_vis.get() {
@@ -392,15 +394,16 @@ pub fn vr_toque_raycast_system(
             intersect_shape(ray_origin, ray_dir, entity_pos, rotation, scale, shape)
         {
             if t < 20.0 && (closest.is_none() || t < closest.unwrap().0) {
-                closest = Some((t, toqueable.0, hit_point));
+                closest = Some((t, toqueable.0, hit_point, global_transform.affine().inverse().transform_point3(hit_point)));
             }
         }
     }
 
-    hover.0[2] = closest.map(|(_, id, _)| id);
+    hover.0[2] = closest.map(|(_, id, _, _)| id);
     if !just_pressed { return; }
-    if let Some((_, node_id, hit_point)) = closest {
+    if let Some((_, node_id, hit_point, local)) = closest {
         toque_hits.0.push(HostToqueHit {
+            local:local.to_array(),
             node_id,
             x: hit_point.x,
             y: hit_point.y,
@@ -577,7 +580,7 @@ pub fn dispatch_toque_events_to_js(
 
     let events: Vec<HostToqueHit> = toque_hits.0.drain(..).collect();
 
-    let mut dom_by_space: HashMap<u32, Vec<(i32, f32, f32, f32)>> = HashMap::new();
+    let mut dom_by_space: HashMap<u32, Vec<(i32, f32, f32, f32,[f32;3])>> = HashMap::new();
     let mut raw_by_space: HashMap<u32, Vec<(i32, f32, f32, f32)>> = HashMap::new();
 
     for evt in events {
@@ -603,7 +606,7 @@ pub fn dispatch_toque_events_to_js(
         dom_by_space
             .entry(space_id)
             .or_default()
-            .push((local_id, evt.x, evt.y, evt.z));
+            .push((local_id, evt.x, evt.y, evt.z,evt.local));
         if allow_raw {
             raw_by_space
                 .entry(space_id)
@@ -614,7 +617,7 @@ pub fn dispatch_toque_events_to_js(
 
     for (space_id, batch) in dom_by_space {
         if let Some(worker) = manager.contexts.get_mut(&space_id) {
-            let send_result = worker.try_send(JsWorkerCommand::PushDomToqueEvents(batch));
+            let send_result = worker.try_send(JsWorkerCommand::PushLocalToqueEvents(batch));
             if send_result.is_ok() {
                 worker.needs_tick = true;
             }

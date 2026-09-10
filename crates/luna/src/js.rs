@@ -180,6 +180,7 @@ pub enum JsWorkerCommand {
     PushCaptureResults(Vec<(i32, std::result::Result<String, String>)>),
     PushWsEvents(Vec<WsWorkerEvent>),
     PushDomToqueEvents(Vec<(i32, f32, f32, f32)>),
+    PushLocalToqueEvents(Vec<(i32,f32,f32,f32,[f32;3])>),
     SetHoverTargets([Option<i32>; 3]),
     PushPoseMoveEvents(Vec<PoseMoveEventData>),
     PushToqueRawEvents(Vec<(i32, f32, f32, f32)>),
@@ -530,6 +531,7 @@ fn spawn_space_worker_configured(
             };
 
             ctx.engine.configure_component_port(thread_component_port.clone());
+            ctx.engine.configure_text_backend(js_runtime::ui_text::TextBackend(crate::ui_text::layout));
             if let Some((path, url)) = storage {
                 ctx.engine.configure_document_location(url.clone());
                 ctx.engine.configure_local_storage(path, url);
@@ -728,6 +730,9 @@ fn spawn_space_worker_configured(
                         for (pointer, target) in targets.into_iter().enumerate() {
                             ctx.engine.push_dom_event("__luna_hover", target.unwrap_or(-1), Some(pointer as f32), None, None);
                         }
+                    }
+                    JsWorkerCommand::PushLocalToqueEvents(events) => {
+                        for (id,x,y,z,local) in events {ctx.engine.push_local_toque_event(id,x,y,z,local);}
                     }
                     JsWorkerCommand::PushDomToqueEvents(events) => {
                         for (node_id, x, y, z) in events {

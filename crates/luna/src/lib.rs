@@ -3,6 +3,7 @@
 // El binario (main.rs) importa desde aquí con `use luna::*`.
 
 pub mod components;
+pub mod ui_text;
 pub mod audio;
 pub mod capture;
 mod profiling;
