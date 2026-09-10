@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Ajustes.
+
+     Primera pagina interna dibujada con el framework de interfaces en vez de
+     con <text> y <box> en coordenadas absolutas. Lo que habia antes era un
+     tablero de 5,4 x 2,8 con todo puesto a mano y despues escalado para caber
+     en el slot; cambiar una fila de lugar era recalcular las de abajo.
+
+     Tres cosas de este documento no son decoracion:
+
+     1. **La URL tiene que ser `luna://settings`.** Los dos toggles del MCP no
+        estan detras de un permiso sino de una lista blanca de URL en el host
+        (`is_settings_document`, agent.rs). Servida desde cualquier otro lado,
+        esta misma pagina no puede prender el MCP: los ops se encolan y el host
+        los descarta sin decir nada.
+
+     2. **Los tres nodos de abajo son un buzon, no interfaz.** El host publica
+        el estado del MCP inyectando JavaScript que hace
+        `getElementById('mcp_status').setAttribute('value', ...)` cada medio
+        segundo (agent.rs). Los ids estan escritos en el motor, asi que tienen
+        que existir con esos nombres exactos. El framework dibuja su texto
+        adentro de una malla y sus nodos son de pileta, sin ids estables: si se
+        borran estos, el estado deja de llegar y no falla nada — simplemente no
+        se entera nunca.
+
+     3. **`UI_CFG` va en linea y antes que `ui.js`.** Un script sin `src` no
+        espera a la red y se evalua antes que cualquier externo, y el framework
+        lee la configuracion al cargarse. -->
+<hsml>
+  <head><name>Luna Settings</name></head>
+
+  <space resources="navigate_self,ux_embed,spawn">
+    <spawn id="entrada" default="true" x="0" y="0" z="0" ry="0"/>
+
+    <group id="settings_content">
+      <!-- El buzon del host. Invisible: son datos, no interfaz. -->
+      <group visible="false">
+        <text id="mcp_status" value="MCP local" size="0.01"/>
+        <text id="mcp_auto_start_label" value="MCP al iniciar: cargando..." size="0.01"/>
+        <box id="mcp_auto_start" data-enabled="false" sx="0.01" sy="0.01" sz="0.01"/>
+      </group>
+
+      <model id="ui_malla" material-unlit="true"/>
+      <group id="ui_nodos"/>
+    </group>
+
+    <script>
+      globalThis.UI_CFG = {
+        base: "luna://",
+        distancia: 1.6,
+        C: {
+          fondo: "#0E1218E0", piso: "#12121A", reja: "#2A2A3A",
+          superficie: "#1B2028C0", superficieAlta: "#2A3038", borde: "#5A6270",
+          texto: "#FFFFFF", textoTenue: "#A8B0BC",
+          azul: "#0A84FF", rojo: "#FF3B30", verde: "#30D158", amarillo: "#FFD60A",
+          violeta: "#BF5AF2", naranja: "#FF9F0A", cian: "#40E0D0"
+        }
+      };
+    </script>
+    <script src="luna://internal/ui.js"/>
+    <script src="luna://internal/settings_ui.js"/>
+  </space>
+</hsml>

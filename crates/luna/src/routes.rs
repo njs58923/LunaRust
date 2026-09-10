@@ -130,6 +130,19 @@ impl VirtualRoutes {
             "internal/embedded_api.js".to_string(),
             RouteHandler::Static(SCRIPT_EMBEDDED_API),
         );
+        // El framework de interfaces, para las páginas internas. Lo genera
+        // `server_ui` con `bun run build` — no se edita a mano. Va como script
+        // y no como bundle por página: son 140 kB que seis páginas compartirían
+        // copiadas, y acá el isolate lo evalúa una vez por espacio de todos
+        // modos. Ver la cabecera del archivo para cómo se carga.
+        routes.insert(
+            "internal/ui.js".to_string(),
+            RouteHandler::Static(SCRIPT_UI_FRAMEWORK),
+        );
+        routes.insert(
+            "internal/settings_ui.js".to_string(),
+            RouteHandler::Static(SCRIPT_SETTINGS_UI),
+        );
         // La interfaz del shell y su máquina de estados. Las cargan los dos
         // controllers con <script src>, no con <include>: un include es otro
         // documento, con su propio isolate, y desde ahí no se podría hablar con
@@ -761,87 +774,7 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   </space>
 </hsml>"##;
 
-const LUNA_SETTINGS: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
-<hsml>
-  <head>
-    <name>Luna Settings</name>
-    <meta type="position" x="0" y="0" z="0"/>
-    <meta type="scale" x="1" y="1" z="1"/>
-    <meta type="rotation" x="0" y="0" z="0"/>
-  </head>
-  <space resources="navigate_self,ux_embed">
-  <group id="settings_content">
-  <text x="0.000" y="2.550" z="-3.5" value="Luna Settings" size="0.240" />
-  <text x="0.000" y="2.317" z="-3.5" value="Browser Configuration" size="0.108" />
-
-  <text x="-1.950" y="1.945" z="-3.5" value="Appearance" size="0.090" color="#4CAF50" />
-  <text x="-1.950" y="1.759" z="-3.5" value="- Theme: Default" size="0.060" />
-  <text x="-1.950" y="1.620" z="-3.5" value="- Font Size: Medium" size="0.060" />
-
-  <text x="0.000" y="1.945" z="-3.5" value="Performance" size="0.090" color="#2196F3" />
-  <text x="0.000" y="1.759" z="-3.5" value="- Render Quality: High" size="0.060" />
-  <text x="0.000" y="1.620" z="-3.5" value="- Cache Enabled: Yes" size="0.060" />
-
-  <text x="1.950" y="1.945" z="-3.5" value="Network" size="0.090" color="#FF9800" />
-  <text x="1.950" y="1.759" z="-3.5" value="- Proxy: None" size="0.060" />
-  <text x="1.950" y="1.620" z="-3.5" value="- Timeout: 30s" size="0.060" />
-
-  <group id="settings_navigation">
-  <box x="-0.975" y="0.922" z="-3.5" sx="1.2" sy="0.3" sz="0.05" color="#9C27B0" id="btn_cache" touchable="true"/>
-  <text x="-0.975" y="0.922" z="-3.45" value="Cache Stats" size="0.060" />
-
-  <box x="0.975" y="0.922" z="-3.5" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
-  <text x="0.975" y="0.922" z="-3.45" value="Back to Home" size="0.060" />
-
-  </group>
-  <box id="mcp_start" x="-0.975" y="1.28" z="-3.5" sx="1.2" sy="0.24" sz="0.05" color="#356F58" touchable="true"/>
-  <text x="-0.975" y="1.28" z="-3.45" value="Iniciar MCP local" size="0.06"/>
-  <box id="mcp_stop" x="0.975" y="1.28" z="-3.5" sx="1.2" sy="0.24" sz="0.05" color="#714B45" touchable="true"/>
-  <text x="0.975" y="1.28" z="-3.45" value="Detener MCP" size="0.06"/>
-  <box id="mcp_auto_start" x="0" y="0.25" z="-3.5" sx="3.0" sy="0.24" sz="0.05" color="#405E55" touchable="true"/>
-  <text id="mcp_auto_start_label" x="0" y="0.25" z="-3.45" value="MCP al iniciar: cargando..." size="0.06"/>
-  <text id="mcp_status" x="0" y="0.550" z="-3.5" value="MCP local" size="0.054" color="#B8CCC0"/>
-
-  </group>
-  <script>
-    const btnHome = hiperspace.dimention.getElementById('btn_home');
-    const btnCache = hiperspace.dimention.getElementById('btn_cache');
-
-    if (btnHome) btnHome.addEventListener('toque', () => { location.href = 'luna://home'; });
-    if (btnCache) btnCache.addEventListener('toque', () => { location.href = 'luna://cache-stats'; });
-
-    const root = hiperspace.dimention;
-    const start = root.getElementById('mcp_start');
-    const stop = root.getElementById('mcp_stop');
-    const autoStart = root.getElementById('mcp_auto_start');
-    if (autoStart) autoStart.addEventListener('toque', () => {
-      const current = autoStart.getAttribute('data-enabled');
-      if (current === 'true' || current === 'false') root.setMcpAutoStart(current !== 'true');
-    });
-    if (start) start.addEventListener('toque', () => root.setMcpEnabled(true));
-    if (stop) stop.addEventListener('toque', () => root.setMcpEnabled(false));
-    // One Settings document for spatial Home and the menu's window-local panel.
-    function attachPanel(attempt) {
-      const embedded = dimention.embedded;
-      if (!embedded) {
-        if (attempt < 50) setTimeout(() => attachPanel(attempt + 1), 5);
-        return;
-      }
-      const navigation = root.getElementById('settings_navigation');
-      if (navigation) navigation.setAttribute('visible', 'false');
-      embedded.on('slot', slot => {
-        const content = root.getElementById('settings_content');
-        if (!content || slot.coordinateSpace !== 'window-local') return;
-        const scale = Math.min(slot.size.x / 5.4, slot.size.y / 2.8);
-        content.scale = { x: scale, y: scale, z: scale };
-        content.position = { x: 0, y: -1.6 * scale, z: 3.58 * scale };
-      });
-      embedded.requestSlot({title:'Ajustes', minSize:{x:1.2,y:0.7,z:0.1}, preferredSize:{x:1.5,y:0.85,z:0.1}});
-    }
-    attachPanel(0);
-  </script>
-  </space>
-</hsml>"##;
+const LUNA_SETTINGS: &str = include_str!("web/settings.hsml");
 
 const LUNA_ABOUT: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 <hsml>
@@ -940,6 +873,8 @@ const SCRIPT_ROOT_API: &str = include_str!("web/internal/root_api.js");
 const SCRIPT_TABS_API: &str = include_str!("web/internal/tabs_api.js");
 const SCRIPT_VIEWER_POSE_API: &str = include_str!("web/internal/viewer_pose_api.js");
 const SCRIPT_EMBEDDED_API: &str = include_str!("web/internal/embedded_api.js");
+const SCRIPT_UI_FRAMEWORK: &str = include_str!("web/internal/ui.js");
+const SCRIPT_SETTINGS_UI: &str = include_str!("web/internal/settings_ui.js");
 const SCRIPT_SHELL_UI: &str = include_str!("web/internal/shell_ui.js");
 const SCRIPT_SHELL_APP: &str = include_str!("web/internal/shell_app.js");
 const SCRIPT_SHELL_DRAW: &str = include_str!("web/internal/shell_draw.js");
