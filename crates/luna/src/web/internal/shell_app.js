@@ -86,6 +86,18 @@
     const FOCUS_MARGIN = 0.022;   // del último botón al filo de la pastilla
     const SHELL_SPAWN_DISTANCE = cfg.distance || 1.5;
 
+    /** Cuánto te podés alejar antes de que el menú se cierre solo, en metros.
+     *
+     *  El menú se planta donde estabas parado y no te sigue: dar dos pasos lo
+     *  deja flotando de costado, o atrás. Cerrarlo es la lectura correcta de
+     *  ese gesto — si te fuiste, no lo estabas mirando. */
+    const CIERRE_POR_DISTANCIA = cfg.closeDistance || 0.5;
+
+    /** Dónde estaba el visitante cuando se plantó el menú. Es su posición, no
+     *  la del menú: la pregunta es cuánto te moviste vos. */
+    let anclaVisitante = null;
+    let ultimaMirada = 0;
+
     // Cuánto se levanta la ventana respecto de la altura de la mirada.
     //
     // Con la barra de título abajo, el borde inferior de una ventana llega
@@ -305,6 +317,10 @@
     function repositionShellAtViewer() {
       const pose = viewerPose();
       if (!pose) return;
+      // Acá es donde el menú deja de seguirte: se planta y se queda. Por eso
+      // este es el punto contra el que se mide después.
+      anclaVisitante = { px: pose.px, pz: pose.pz };
+      ultimaMirada = 0;
       const fwdX = -Math.sin(pose.yaw);
       const fwdZ = -Math.cos(pose.yaw);
       const px = pose.px + fwdX * SHELL_SPAWN_DISTANCE;
@@ -773,11 +789,42 @@
       }
     }
 
+    /** Cerrar el menú si el visitante se alejó del lugar donde lo abrió.
+     *
+     *  Se mide **en el plano**, sin la altura: agacharse o pararse en puntas de
+     *  pie mueve la cabeza medio metro y no es irse a ningún lado.
+     *
+     *  Sólo cuenta mientras el menú se está viendo de verdad. Con una app en
+     *  primer plano el menú ya está oculto, y cerrarlo por debajo dejaría el
+     *  estado cambiado sin que nadie lo haya pedido.
+     *
+     *  El ancla se limpia sola cuando el menú no está: reabrirlo pasa otra vez
+     *  por `repositionShellAtViewer`, que lo vuelve a plantar donde estés. */
+    function vigilarDistancia(ahora) {
+      if (!shouldShowBookmarks()) { anclaVisitante = null; return; }
+      if (!anclaVisitante) return;
+      // Seis veces por segundo alcanza para algo que se mide en pasos, y evita
+      // pedirle la pose al motor sesenta veces por segundo para nada.
+      if (ahora - ultimaMirada < 160) return;
+      ultimaMirada = ahora;
+
+      const pose = viewerPose();
+      if (!pose) return;
+      const dx = pose.px - anclaVisitante.px;
+      const dz = pose.pz - anclaVisitante.pz;
+      if (dx * dx + dz * dz < CIERRE_POR_DISTANCIA * CIERRE_POR_DISTANCIA) return;
+
+      anclaVisitante = null;
+      shellState.bookmarksVisible = false;
+      applyVisibility();
+    }
+
     function pollInbox() {
       const msgs = poll();
       if (Array.isArray(msgs) && msgs.length) {
         for (const m of msgs) handleAppMessage(m);
       }
+      vigilarDistancia(Date.now());
       setTimeout(pollInbox, 16);
     }
 
