@@ -138,7 +138,6 @@
     "navegación reemplaza el contenido del panel, no el mundo.");
 
   function marcado() {
-    const detalle = datos.seccion === "mcp" ? PANEL_MCP : PANEL_NAV;
     return `
 <Border Background="${C.fondo}"
         CornerRadius="0.024" Padding="0.018">
@@ -156,7 +155,10 @@
                  Foreground="${C.texto}" TextAlignment="Center"
                  Margin="0,0.004,0,0.014"/>
       <ScrollViewer>
-        ${detalle}
+        <StackPanel>
+          <StackPanel Name="detalleMcp">${PANEL_MCP}</StackPanel>
+          <StackPanel Name="detalleNav" Visibility="Collapsed">${PANEL_NAV}</StackPanel>
+        </StackPanel>
       </ScrollViewer>
     </DockPanel>
 
@@ -192,9 +194,8 @@
 
   app.cargar(marcado());
 
-  // Elegir sección. El ItemsControl no tiene selección propia todavía, así que
-  // la lleva la aplicación: se repinta el fondo de cada fila y se recarga el
-  // detalle, que es un árbol distinto por sección.
+  // Conservar el árbol y los recursos del panel al cambiar de sección.
+  // Recargar toda la raíz destruía las mallas antes de preparar sus reemplazos.
   function elegir(id) {
     if (datos.seccion === id) return;
     datos.seccion = id;
@@ -204,7 +205,9 @@
         fondo: s.id === id ? C.superficieAlta : "transparent",
       });
     });
-    app.cargar(marcado());
+    app.buscar("detalleMcp").visible = id === "mcp";
+    const nav = app.buscar("detalleNav");
+    nav.visible = nav.opaco = id === "nav";
     app.invalidar();
   }
 
@@ -254,7 +257,11 @@
       if (!contenido || slot.coordinateSpace !== "window-local") return;
       // El framework mide en metros y no se reescala solo: se ajusta el grupo
       // que lo contiene, que es lo mismo que hacía la versión anterior.
+      if (!(Number.isFinite(slot.size.x) && slot.size.x > 0 && Number.isFinite(slot.size.y) && slot.size.y > 0)) return;
       const escala = Math.min(slot.size.x / 1.6, slot.size.y / 0.95);
+      // El fondo ocupa todo el slot, incluso si cambia su relación de aspecto.
+      // Escala uniforme para conservar las proporciones del texto y controles.
+      app.redimensionar(slot.size.x / escala, slot.size.y / escala);
       contenido.scale = { x: escala, y: escala, z: escala };
       contenido.position = { x: 0, y: -1.55 * escala, z: 1.6 * escala };
     });

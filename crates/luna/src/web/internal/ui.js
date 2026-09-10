@@ -2542,6 +2542,19 @@ if (!globalThis.UI_CFG) {
     return this.raiz;
   };
 
+  // Resize layout in place: retain panel resources and update the shared origin.
+  Aplicacion.prototype.redimensionar = function (ancho, alto) {
+    if (!Number.isFinite(ancho) || !Number.isFinite(alto) || ancho<=0 || alto<=0)
+      throw new RangeError("UI dimensions must be finite and positive");
+    if (this.ancho===ancho && this.alto===alto) return;
+    this.ancho=ancho;this.alto=alto;
+    this.origenX=this.x-ancho/2;this.origenY=this.y+alto/2;
+    for(const node of [this.nodoMalla,this.contenedor])if(node){
+      node.setAttribute("x",String(this.origenX));node.setAttribute("y",String(this.origenY));
+    }
+    this.invalidar();
+  };
+
   Aplicacion.prototype.buscar = function (nombre) {
     return this.raiz ? this.raiz.buscar(nombre) : null;
   };
