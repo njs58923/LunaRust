@@ -110,6 +110,17 @@ Prende el modo *overlay*, donde el shader hace
 la textura y `color` es el fondo**. Con un PNG negro sobre un botón azul el icono
 sale negro. En un `<image>`, que va por *multiply*, es al revés: `color` tiñe.
 
+### `visible` tiene tres estados, no dos
+
+Sin el atributo un nodo **hereda** del padre. `false`, `0`, `no`, `off` y
+`hidden` lo ocultan. `inherit` y `auto` son la herencia dicha explícitamente, y
+**cualquier otro valor —`true` incluido— lo fuerza visible aunque su padre esté
+oculto**.
+
+Importa desde JS, porque no hay `removeAttribute`: escribir `visible="true"`
+para mostrar algo lo desengancha de sus padres para siempre. Para volver a
+mostrar lo que uno ocultó va `visible="inherit"`.
+
 ### El color acepta alfa
 
 `color` toma la notación CSS entera, con el alfa **al final**: `#RGB`, `#RGBA`

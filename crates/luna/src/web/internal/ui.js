@@ -2679,7 +2679,12 @@ if (!globalThis.UI_CFG) {
         }
         const r=self.g.aplicarClip(x,y,w,h);
         if(!r){it.el.setAttribute("visible","false");return;}
-        it.el.setAttribute("visible","true");
+        // "inherit", no "true": `visible="true"` es Visibility::Visible en Bevy,
+        // que se ve **aunque el padre esté oculto**. Y como no hay
+        // removeAttribute, un nodo pinneado en true no vuelve nunca a heredar.
+        // Es lo que dejaba el panel de Ajustes dibujado con su ventana
+        // minimizada: el shell ocultaba el <space> de la tab y esto lo ignoraba.
+        it.el.setAttribute("visible","inherit");
         it.el.setAttribute("fit","stretch");
         it.el.setAttribute("texture-region",[u+(r.x-x)/w*uw,v+(r.y-y)/h*vh,r.w/w*uw,r.h/h*vh].join(","));
         it.el.setAttribute("color",tinte||"#FFFFFF");
@@ -2724,7 +2729,7 @@ if (!globalThis.UI_CFG) {
     const d = this.g.malla();
     if(d.indices.length){
       this.nodoMalla.setAttribute("material-alpha",transparent(d.colors)?"blend":"opaque");
-      this.nodoMalla.setAttribute("visible","true");
+      this.nodoMalla.setAttribute("visible","inherit");   // ver la nota de arriba
       if (!this.malla) {this.malla=MeshResource.create(d);this.nodoMalla.src=this.malla.src;}
       else this.malla.update(d);
     } else if(this.nodoMalla) this.nodoMalla.setAttribute("visible","false");
@@ -2770,7 +2775,7 @@ if (!globalThis.UI_CFG) {
       this.textos.terminar();this.imagenes.terminar();this.blancos.terminar();
       const d=this.g.malla();
       panel.node.setAttribute("material-alpha",transparent(d.colors)?"blend":"opaque");
-      panel.node.setAttribute("visible",d.indices.length?"true":"false");
+      panel.node.setAttribute("visible",d.indices.length?"inherit":"false");
       if(d.indices.length){
         if(panel.resource)panel.resource.update(d);
         else {panel.resource=MeshResource.create(d);panel.node.src=panel.resource.src;}
@@ -2835,7 +2840,7 @@ if (!globalThis.UI_CFG) {
   };
   TexturedBatch.prototype.commit = function () {
     if (!this.indices.length) { this.node.setAttribute("visible","false"); return; }
-    this.node.setAttribute("visible","true");
+    this.node.setAttribute("visible","inherit");
     // Bevy sorts transparent meshes by entity translation, not vertex Z.
     // Keep the origin on the text layer instead of tying it with the panel.
     // Subtract the same offset from vertices to preserve their world positions.

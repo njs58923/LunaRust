@@ -375,6 +375,29 @@ todavía multiplique por 0,6 va a acomodar mal — y ahora hay a quién pregunta
 
 ---
 
+**Para mostrar algo desde JS, `visible="inherit"`, no `visible="true"`.** Los dos
+se ven, pero no significan lo mismo: `"true"` es `Visibility::Visible` de Bevy,
+que se dibuja **aunque un padre esté oculto**. Y como **no hay
+`removeAttribute`**, un nodo al que un script le escribió `"true"` no puede
+volver nunca a heredar: queda desenganchado de sus padres para siempre.
+
+Fue exactamente el bug del panel de Ajustes: minimizar la ventana pone
+`visible="false"` en el `<space>` de la tab, y los nodos del framework de
+interfaz —pinneados en `"true"` para mostrarse— lo ignoraban y seguían
+dibujándose sobre el mundo.
+
+| valor | qué hace |
+|---|---|
+| *(sin atributo)* | hereda del padre |
+| `inherit`, `auto` | hereda del padre, dicho explícitamente |
+| `false`, `0`, `no`, `off`, `hidden` | oculto, y propaga a los hijos que heredan |
+| cualquier otro | **forzado visible, aunque el padre esté oculto** |
+
+`"true"` sirve para el caso raro de querer justamente eso. Para el caso normal
+—mostrar de nuevo lo que uno mismo ocultó— es `"inherit"`.
+
+---
+
 ## Patrones
 
 **Delegar navegación con un mapa de ids.** Es lo que hacen las páginas internas

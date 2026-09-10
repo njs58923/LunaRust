@@ -116,6 +116,17 @@ intersectadas todavía pueden mostrar limitaciones de ordenación.
 - La tipografía usa Fira Sans y atlas bitmap compartido. No hay shaping complejo,
   fallback completo de fuentes ni SDF.
 
+## Visibilidad: el framework hereda
+
+Los nodos que crea el framework —las mallas de los paneles, las de texto, las
+imágenes— se muestran con `visible="inherit"`, nunca con `"true"`. La diferencia
+no es cosmética: `"true"` se dibuja aunque un padre esté oculto, y sin
+`removeAttribute` no hay vuelta atrás.
+
+Con `"inherit"`, ocultar el `<group>` o el `<space>` que contiene la interfaz la
+oculta entera, que es lo que espera cualquiera que minimice una ventana. Hay una
+prueba que falla si algún nodo vuelve a quedar pinneado en `"true"`.
+
 ## Bindings y propiedades
 
 Un binding debe ocupar **todo** el valor del atributo. Para prefijos o sufijos,

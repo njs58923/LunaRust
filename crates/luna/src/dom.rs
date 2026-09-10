@@ -317,13 +317,26 @@ fn get_or_create_rounded_mesh(
 }
 
 /// Decide el `Visibility` del nodo según el attr `visible`:
-///   - sin attr           → `Inherited` (hereda del padre — comportamiento natural).
-///   - "false"/"0"/etc    → `Hidden` (forzado oculto, propaga a hijos Inherited).
-///   - cualquier otro     → `Visible` (forzado visible, override del padre).
+///   - sin attr             → `Inherited` (hereda del padre — comportamiento natural).
+///   - "false"/"0"/etc      → `Hidden` (forzado oculto, propaga a hijos Inherited).
+///   - "inherit"/"auto"     → `Inherited` explícito.
+///   - cualquier otro       → `Visible` (forzado visible, **override del padre**).
 ///
 /// Usar `Inherited` por default es clave: sin esto, los hijos se renderizan
 /// como `Visible` literal y NO siguen el `Hidden` del padre, rompiendo la
 /// jerarquía de visibilidad de Bevy.
+///
+/// `"inherit"` existe porque el default no alcanza cuando el atributo se maneja
+/// desde JS: no hay `removeAttribute`, así que un script que escribió
+/// `visible="true"` para mostrar algo **ya no podía volver a Inherited**, y ese
+/// nodo dejaba de seguir a sus padres para siempre. Es exactamente lo que hacía
+/// que el panel de Ajustes siguiera dibujándose con su ventana minimizada: el
+/// shell ocultaba el `<space>` de la tab y los nodos del framework de interfaz,
+/// pinneados en `true`, lo ignoraban.
+///
+/// Regla para cualquier script: **para mostrar, escribí `"inherit"`, no
+/// `"true"`.** `"true"` es para el caso raro de querer que algo se vea aunque su
+/// padre esté oculto.
 fn node_visibility(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> Visibility {
     let Some(attrs) = attrs_storage.get(node) else {
         return Visibility::Inherited;
@@ -331,13 +344,10 @@ fn node_visibility(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> Visi
     let Some(value) = attrs.0.get("visible") else {
         return Visibility::Inherited;
     };
-    if matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "false" | "0" | "no" | "off" | "hidden"
-    ) {
-        Visibility::Hidden
-    } else {
-        Visibility::Visible
+    match value.trim().to_ascii_lowercase().as_str() {
+        "false" | "0" | "no" | "off" | "hidden" => Visibility::Hidden,
+        "inherit" | "auto" => Visibility::Inherited,
+        _ => Visibility::Visible,
     }
 }
 fn node_touchable(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> bool {
