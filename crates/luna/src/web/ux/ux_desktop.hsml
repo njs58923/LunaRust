@@ -17,7 +17,7 @@
            aunque los dos llegan como el mismo evento `systeminput`
 
        El panel de egui sigue estando y queda como legacy. -->
-  <space id="ux_desktop" resources="desktop_camera_control,read_system_input,manage_tabs,read_hmd_pose">
+  <space id="ux_desktop" resources="desktop_camera_control,vr_locomotion,read_system_input,manage_tabs,read_hmd_pose">
     <!-- `props` y `events` son lo que abre el canal de componentes: sin al menos
          uno de los dos el motor no crea el Channel y el include queda mudo.
          `props` arranca vacío porque el estado real se lo manda el shell apenas

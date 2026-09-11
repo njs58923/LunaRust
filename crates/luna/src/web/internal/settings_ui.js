@@ -36,6 +36,7 @@
   // abra paginas.
   const SECCIONES = [
     { id: "general", titulo: "General", icono: C.azul },
+    { id: "personalizar", titulo: "Personalizar", icono: C.violeta },
     { id: "dev", titulo: "Desarrollador", icono: C.naranja },
   ];
 
@@ -67,6 +68,8 @@
     inicioElegido: 0,
     modos: MODOS.slice(),
     modoElegido: 0,
+    controllers: ["Curvo (actual)", "Plano (escritorio)"],
+    controllerElegido: 0,
     rutaConfig: "—",
     urlRaiz: "—",
     permisos: [],
@@ -179,6 +182,13 @@
 
   // ── Desarrollador ─────────────────────────────────────────────────────────
 
+  const PANEL_PERSONALIZAR = grupo(
+    fila("Controller", "el mismo en escritorio y VR",
+      `<ComboBox Grid.Column="1" Items="{Binding controllers}"
+                 SelectedIndex="{Binding controllerElegido, Mode=TwoWay}"
+                 SelectionChanged="cambiarController" VerticalAlignment="Center"/>`),
+    "Se aplica al elegirlo y se conserva al reiniciar. Usa el bot�n de men� para volver a abrirlo.");
+
   const PANEL_DEV =
     grupo(
       fila("Servidor MCP", null,
@@ -225,6 +235,7 @@
       <ScrollViewer>
         <StackPanel Spacing="0.004">
           <StackPanel Name="detalleGeneral">${PANEL_GENERAL}</StackPanel>
+          <StackPanel Name="detallePersonalizar" Visibility="Collapsed">${PANEL_PERSONALIZAR}</StackPanel>
           <StackPanel Name="detalleDev" Visibility="Collapsed">${PANEL_DEV}</StackPanel>
         </StackPanel>
       </ScrollViewer>
@@ -261,6 +272,9 @@
       cambiarInicio: function () {
         const url = datos.inicios[datos.inicioElegido];
         if (url && ajustes) ajustes.set({ homeUrl: url });
+      },
+      cambiarController: function () {
+        if (ajustes) ajustes.set({ controllerStyle: datos.controllerElegido === 1 ? "flat" : "curved" });
       },
       cambiarModo: function () {
         if (ajustes) ajustes.set({ renderMode: datos.modoElegido === 1 ? "vr" : "desktop" });
@@ -303,6 +317,8 @@
     });
     const general = app.buscar("detalleGeneral");
     general.visible = general.opaco = id === "general";
+    const personalizar = app.buscar("detallePersonalizar");
+    personalizar.visible = personalizar.opaco = id === "personalizar";
     const dev = app.buscar("detalleDev");
     dev.visible = dev.opaco = id === "dev";
     app.invalidar();
@@ -332,6 +348,7 @@
     datos.inicioAuto = cfg.autoLoadHome !== false;
     datos.rutaConfig = cfg.configPath || "—";
     datos.urlRaiz = cfg.rootUrl || "—";
+    datos.controllerElegido = cfg.controllerStyle === "flat" ? 1 : 0;
     datos.modoElegido = cfg.renderMode === "vr" ? 1 : 0;
 
     // La URL configurada entra en la lista si no estaba. Es lo que hace que una

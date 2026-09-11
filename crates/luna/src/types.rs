@@ -167,8 +167,23 @@ pub enum PreferredRenderMode {
     Vr,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ControllerStyle {
+    #[default]
+    Curved,
+    Flat,
+}
+impl ControllerStyle {
+    pub fn as_str(self) -> &'static str {
+        match self { Self::Curved => "curved", Self::Flat => "flat" }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Resource)]
 pub struct RootConfig {
+    #[serde(default)]
+    pub controller_style: ControllerStyle,
     #[serde(default)]
     pub mcp_auto_start: bool,
     pub auto_load_home: bool,
@@ -179,6 +194,7 @@ pub struct RootConfig {
 impl Default for RootConfig {
     fn default() -> Self {
         Self {
+            controller_style: ControllerStyle::default(),
             mcp_auto_start: false,
             auto_load_home: true,
             home_url: "luna://home".to_string(),

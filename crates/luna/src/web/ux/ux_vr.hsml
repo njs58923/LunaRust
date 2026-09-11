@@ -16,7 +16,7 @@
        una ventana embebida pertenezca al space que manda el slot, y ese space es
        éste. Un marco dibujado dentro del include tendría el ancla en otro space
        y el slot sería rechazado. Por eso el menú se va y las ventanas se quedan. -->
-  <space id="ux_vr" resources="vr_locomotion,read_system_input,manage_tabs,read_hmd_pose">
+  <space id="ux_vr" resources="desktop_camera_control,vr_locomotion,read_system_input,manage_tabs,read_hmd_pose">
     <!-- El menú.
          `props` y `events` son lo que abre el canal de componentes: sin al menos
          uno de los dos, el motor no crea el Channel y el include queda mudo.

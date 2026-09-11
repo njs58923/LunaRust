@@ -17,7 +17,7 @@ use crate::permissions::{
     describe_capability_bits, elevated_capability_from_key, elevated_capability_key,
     PermissionDecision, PermissionDecisionStore,
 };
-use crate::types::{PreferredRenderMode, RootConfig};
+use crate::types::{ControllerStyle, PreferredRenderMode, RootConfig};
 
 /// Un `home_url` más largo que esto no es una URL, es un accidente.
 const MAX_URL: usize = 2048;
@@ -68,6 +68,14 @@ pub fn apply_root_patch(world: &mut World, patch: &str) -> Result<(), String> {
                 Some("desktop") => { updated.preferred_render_mode = PreferredRenderMode::Desktop; toco_config = true; }
                 Some("vr") => { updated.preferred_render_mode = PreferredRenderMode::Vr; toco_config = true; }
                 _ => config_error = Some("renderMode tiene que ser 'desktop' o 'vr'".to_string()),
+            }
+        }
+
+        if let Some(v) = obj.get("controllerStyle") {
+            match v.as_str() {
+                Some("curved") => { updated.controller_style = ControllerStyle::Curved; toco_config = true; }
+                Some("flat") => { updated.controller_style = ControllerStyle::Flat; toco_config = true; }
+                _ => config_error = Some("controllerStyle tiene que ser 'curved' o 'flat'".to_string()),
             }
         }
 
@@ -176,6 +184,7 @@ pub fn publish(
             "label": mcp_label,
             "autoStart": mcp_auto_start,
         },
+        "controllerStyle": config.controller_style.as_str(),
         "autoLoadHome": config.auto_load_home,
         "homeUrl": config.home_url,
         "renderMode": match config.preferred_render_mode {

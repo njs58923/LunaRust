@@ -399,12 +399,24 @@
       return true;
     },
 
-    switchMode(mode) {
+    switchMode(mode, style = this._controllerStyle || 'curved') {
       if (mode !== 'desktop' && mode !== 'vr') {
         console.error('[root] Invalid mode:', mode);
         return false;
       }
-      if (mode === this._currentMode) return true;
+      if (style !== 'curved' && style !== 'flat') return false;
+      const grants = mode === 'vr'
+        ? ['navigate_self', 'vr_locomotion', 'read_system_input', 'manage_tabs', 'read_hmd_pose']
+        : ['navigate_self', 'desktop_camera_control', 'read_system_input', 'manage_tabs', 'read_hmd_pose'];
+      const existing = registry.get(this._uxSpaceId);
+      if (existing && style === this._controllerStyle) {
+        if (mode !== this._currentMode) ensureInclude(existing).setAttribute('resources', grants.join(','));
+        this._currentMode = mode;
+        return true;
+      }
+      // Remove through the registry too: a just-mounted wrapper may not yet
+      // appear in the asynchronous root.children snapshot.
+      if (existing) this.unmountSpace(this._uxSpaceId);
 
       // Sweep defensivo en el DOM. Las ops mount/unmount son async, así que
       // un switchMode previo puede dejar wrappers zombi. Busca direct children
@@ -426,19 +438,16 @@
       }
       this._uxSpaceId = null;
 
-      const uxUrl = mode === 'vr' ? 'luna://ux_vr' : 'luna://ux_desktop';
-      const grants = mode === 'vr'
-        ? ['navigate_self', 'vr_locomotion', 'read_system_input', 'manage_tabs', 'read_hmd_pose']
-        : ['navigate_self', 'desktop_camera_control', 'read_system_input', 'manage_tabs', 'read_hmd_pose'];
+      const uxUrl = style === 'curved' ? 'luna://ux_vr' : 'luna://ux_desktop';
       this._uxSpaceId = this.mountSpace(uxUrl, { visible: true, grants, systemShell: true });
       this._currentMode = mode;
+      this._controllerStyle = style;
       console.log('[root] ux mounted id=', this._uxSpaceId, 'url=', uxUrl);
       return true;
     },
   };
 
-  // Auto-mount desktop UX on startup
-  dimension.luna.switchMode('desktop');
+  // The host supplies mode and persisted style together before mounting the shell.
 
   // Poll only the small tab registry, not the page DOM. No writes while stable.
   // Keeping the same loaded include also preserves the environment across
