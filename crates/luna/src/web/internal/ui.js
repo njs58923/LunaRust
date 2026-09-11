@@ -2727,12 +2727,7 @@ if (!globalThis.UI_CFG) {
     this.blancos.terminar();
 
     const d = this.g.malla();
-    if(d.indices.length){
-      this.nodoMalla.setAttribute("material-alpha",transparent(d.colors)?"blend":"opaque");
-      this.nodoMalla.setAttribute("visible","inherit");   // ver la nota de arriba
-      if (!this.malla) {this.malla=MeshResource.create(d);this.nodoMalla.src=this.malla.src;}
-      else this.malla.update(d);
-    } else if(this.nodoMalla) this.nodoMalla.setAttribute("visible","false");
+    commitPanelMesh(this, this.nodoMalla, "malla", d, this.contenedor);
     for(const [element,panel] of this._panels){
       if(!panel.seen){this._disposePanel(panel);element._panelState=null;this._panels.delete(element);}
     }
@@ -2774,12 +2769,7 @@ if (!globalThis.UI_CFG) {
       for(const batch of this._textBatches.values())batch.commit();
       this.textos.terminar();this.imagenes.terminar();this.blancos.terminar();
       const d=this.g.malla();
-      panel.node.setAttribute("material-alpha",transparent(d.colors)?"blend":"opaque");
-      panel.node.setAttribute("visible",d.indices.length?"inherit":"false");
-      if(d.indices.length){
-        if(panel.resource)panel.resource.update(d);
-        else {panel.resource=MeshResource.create(d);panel.node.src=panel.resource.src;}
-      }
+      commitPanelMesh(panel, panel.node, "resource", d, this.contenedor);
       panel.renders++;
     } catch(error){panel.dirty=true;throw error;}
     finally {[this.g,this.textos,this.imagenes,this.blancos,this._textBatches,this._activePanel]=saved;}
@@ -2787,6 +2777,7 @@ if (!globalThis.UI_CFG) {
   };
   Aplicacion.prototype._disposePanel = function (panel) {
     if(panel.resource)panel.resource.dispose();panel.node.remove();
+    disposeBlendPass(panel);
     for(const pool of [panel.texts,panel.images,panel.hits])for(const item of pool.items){if(item.duenio)item.duenio.encima=false;item.duenio=null;item.alTocar=null;item.el.remove();}
     for(const batch of panel.batches.values())batch.dispose();
   };
@@ -2795,6 +2786,7 @@ if (!globalThis.UI_CFG) {
     this._animations.clear();this.animando=0;this.capas=[];this.globoDuenio=null;
     for(const batch of this._textBatches.values())batch.dispose();this._textBatches.clear();
     if(this.malla){this.malla.dispose();this.malla=null;}
+    disposeBlendPass(this);
     for(const pool of [this.textos,this.imagenes,this.blancos]){for(const item of pool.items)item.el.remove();pool.items.length=0;pool.usados=0;}
     this.raiz=null;
   };
@@ -2815,7 +2807,63 @@ if (!globalThis.UI_CFG) {
 
   // A batch owns one mesh/material, not one node per glyph. Rectangular clips
   // modify both positions and UVs so partially visible glyphs remain correct.
-  function transparent(colors){for(let i=3;i<colors.length;i+=4)if(colors[i]<1)return true;return false;}
+  // Opaque backgrounds must write depth even when the same panel also contains
+  // translucent controls. Sorting a mixed mesh as one transparent object lets
+  // camera movement draw its opaque background over an independent child panel.
+  function splitPanelMesh(data) {
+    if(!data.indices.length)return [null,null];
+    let opaque=true;
+    for(let i=3;i<(data.colors||[]).length;i+=4)if(data.colors[i]<1){opaque=false;break;}
+    if(opaque)return [data,null];
+    const passes = [null, null], maps = [new Map(), new Map()];
+    const fields = {positions:3, normals:3, uvs:2, colors:4};
+    for (let i=0; i<data.indices.length; i+=3) {
+      const ids=Array.from(data.indices.slice(i,i+3));
+      const alpha=ids.map(id=>data.colors && data.colors.length ? data.colors[id*4+3] : 1);
+      if (alpha.every(a=>a===0)) continue;
+      const pass=alpha.every(a=>a>=1)?0:1;
+      const out=passes[pass] || (passes[pass]={positions:[],indices:[],normals:[],uvs:[],colors:[]});
+      const map=maps[pass];
+      for(const id of ids){
+        if(!map.has(id)){
+          map.set(id,out.positions.length/3);
+          for(const [field,size] of Object.entries(fields)) {
+            if(data[field])out[field].push(...data[field].slice(id*size,(id+1)*size));
+          }
+        }
+        out.indices.push(map.get(id));
+      }
+    }
+    return passes;
+  }
+  function commitPanelMesh(owner,node,key,data,parent) {
+    const [opaque,blend]=splitPanelMesh(data);
+    node.setAttribute("material-alpha","opaque");
+    node.setAttribute("visible",opaque?"inherit":"false");
+    if(opaque){
+      if(owner[key])owner[key].update(opaque);
+      else {owner[key]=MeshResource.create(opaque);node.src=owner[key].src;}
+    }
+    if(blend){
+      if(!owner._blendPass){
+        const n=root.createElement("model");
+        n.setAttribute("material-alpha","blend");n.setAttribute("material-unlit","true");
+        n.setAttribute("touchable","false");parent.appendChild(n);
+        owner._blendPass={node:n,resource:null};
+      }
+      const pass=owner._blendPass;
+      let z=Infinity;
+      for(let i=2;i<blend.positions.length;i+=3)z=Math.min(z,blend.positions[i]);
+      for(let i=2;i<blend.positions.length;i+=3)blend.positions[i]-=z;
+      pass.node.setAttribute("z",String(z));pass.node.setAttribute("visible","inherit");
+      if(pass.resource)pass.resource.update(blend);
+      else {pass.resource=MeshResource.create(blend);pass.node.src=pass.resource.src;}
+    } else if(owner._blendPass)owner._blendPass.node.setAttribute("visible","false");
+  }
+  function disposeBlendPass(owner){
+    const pass=owner._blendPass;if(!pass)return;
+    if(pass.resource)pass.resource.dispose();pass.node.remove();owner._blendPass=null;
+  }
   function TexturedBatch(parent,source) {
     this.node = root.createElement("model");
     this.node.setAttribute("texture",source);
