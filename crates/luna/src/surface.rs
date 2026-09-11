@@ -180,7 +180,7 @@ struct SurfaceRequest {
 #[derive(Component)]
 struct OriginalMaterial(Handle<StandardMaterial>);
 
-#[derive(Clone, Copy, ShaderType)]
+#[derive(Clone, Copy, Default, ShaderType)]
 pub struct SurfaceUniform {
     region: Vec4,
     // x: fit (0 stretch,1 contain,2 cover), y: texture aspect, z: padding, w: front only
