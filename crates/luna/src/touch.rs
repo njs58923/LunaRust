@@ -7,8 +7,18 @@ use crate::permissions::{space_has_capability, CapabilityBits, SpacePolicies};
 use crate::{ElemenetWorld, LogPanel, SpaceHandleTables};
 
 /// Marker component for primitives that can receive a normalized `toque`.
-#[derive(Component)]
-pub struct Toqueable(pub u32);
+#[derive(Component, Clone, Copy)]
+pub struct Toqueable(pub u32, pub bool);
+// The second field enables event delivery. False is a native-only blocker.
+
+
+type PointerHit = (f32, Option<u32>, Vec3, Vec3);
+fn consider_pointer_hit(closest: &mut Option<PointerHit>, distance: f32, target: &Toqueable, point: Vec3, transform: &GlobalTransform) {
+    if closest.as_ref().is_none_or(|hit| distance < hit.0) {
+        *closest = Some((distance, target.1.then_some(target.0), point,
+            transform.affine().inverse().transform_point3(point)));
+    }
+}
 
 /// Marker component for invisible/controller-tracked pose volumes.
 #[derive(Component)]
@@ -292,7 +302,7 @@ pub fn desktop_toque_raycast_system(
         return;
     };
 
-    let mut closest: Option<(f32, u32, Vec3, Vec3)> = None;
+    let mut closest: Option<(f32, Option<u32>, Vec3, Vec3)> = None;
 
     for (global_transform, toqueable, inherited_vis, hit_shape) in toqueable_query.iter() {
         if !inherited_vis.get() {
@@ -309,15 +319,13 @@ pub fn desktop_toque_raycast_system(
             scale,
             shape,
         ) {
-            if closest.is_none() || t < closest.unwrap().0 {
-                closest = Some((t, toqueable.0, hit_point, global_transform.affine().inverse().transform_point3(hit_point)));
-            }
+            consider_pointer_hit(&mut closest, t, toqueable, hit_point, global_transform);
         }
     }
 
-    hover.0[0] = closest.map(|(_, id, _, _)| id);
+    hover.0[0] = closest.and_then(|(_, id, _, _)| id);
     if !mouse_button.just_pressed(MouseButton::Left) { return; }
-    if let Some((_, node_id, hit_point, local)) = closest {
+    if let Some((_, Some(node_id), hit_point, local)) = closest {
         toque_hits.0.push(HostToqueHit {
             local:local.to_array(),
             node_id,
@@ -381,7 +389,7 @@ pub fn vr_toque_raycast_system(
         return;
     }
 
-    let mut closest: Option<(f32, u32, Vec3, Vec3)> = None;
+    let mut closest: Option<(f32, Option<u32>, Vec3, Vec3)> = None;
 
     for (global_transform, toqueable, inherited_vis, hit_shape) in toqueable_query.iter() {
         if !inherited_vis.get() {
@@ -393,15 +401,15 @@ pub fn vr_toque_raycast_system(
         if let Some((t, hit_point)) =
             intersect_shape(ray_origin, ray_dir, entity_pos, rotation, scale, shape)
         {
-            if t < 20.0 && (closest.is_none() || t < closest.unwrap().0) {
-                closest = Some((t, toqueable.0, hit_point, global_transform.affine().inverse().transform_point3(hit_point)));
+            if t < 20.0 {
+                consider_pointer_hit(&mut closest, t, toqueable, hit_point, global_transform);
             }
         }
     }
 
-    hover.0[2] = closest.map(|(_, id, _, _)| id);
+    hover.0[2] = closest.and_then(|(_, id, _, _)| id);
     if !just_pressed { return; }
-    if let Some((_, node_id, hit_point, local)) = closest {
+    if let Some((_, Some(node_id), hit_point, local)) = closest {
         toque_hits.0.push(HostToqueHit {
             local:local.to_array(),
             node_id,
@@ -430,14 +438,15 @@ pub fn vr_left_hover_raycast_system(
     let (origin, rotation) = compose_tracking_pose(root, controller);
     let direction = controller_ui_ray_direction(rotation);
     if direction == Vec3::ZERO { return; }
-    let mut nearest = 20.0;
+    let mut nearest = None;
     for (transform, target, visible, shape) in &shapes {
         if !visible.get() { continue; }
         let (scale, rotation, position) = transform.to_scale_rotation_translation();
-        if let Some((distance, _)) = intersect_shape(origin, direction, position, rotation, scale, shape.copied().unwrap_or(HitShape::Sphere)) {
-            if distance < nearest { nearest = distance; hover.0[1] = Some(target.0); }
+        if let Some((distance, point)) = intersect_shape(origin, direction, position, rotation, scale, shape.copied().unwrap_or(HitShape::Sphere)) {
+            if distance < 20.0 { consider_pointer_hit(&mut nearest, distance, target, point, transform); }
         }
     }
+    hover.0[1] = nearest.and_then(|(_, id, _, _)| id);
 }
 
 fn push_pose_events_for_hand(
@@ -704,6 +713,19 @@ pub fn dispatch_posemove_events_to_js(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pointer_blocking_stops_both_click_and_hover_without_event_target() {
+        use super::*;
+        let transform = GlobalTransform::IDENTITY;
+        let mut hit = None;
+        consider_pointer_hit(&mut hit, 3.0, &Toqueable(1, true), Vec3::ZERO, &transform);
+        consider_pointer_hit(&mut hit, 2.0, &Toqueable(2, false), Vec3::ZERO, &transform);
+        consider_pointer_hit(&mut hit, 4.0, &Toqueable(3, true), Vec3::ZERO, &transform);
+        assert_eq!(hit.unwrap().1, None);
+        consider_pointer_hit(&mut hit, 1.0, &Toqueable(4, true), Vec3::ZERO, &transform);
+        assert_eq!(hit.unwrap().1, Some(4));
+    }
+
     use super::*;
 
     #[derive(Resource)]

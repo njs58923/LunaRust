@@ -20,6 +20,9 @@
 		},
 		{
 			"path": "../server_ui"
+		},
+		{
+			"path": "../server_arcada"
 		}
 	],
 	"settings": {}

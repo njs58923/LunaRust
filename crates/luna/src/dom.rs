@@ -362,6 +362,13 @@ fn node_touchable(attrs_storage: &ReadStorage<Attrs>, node: SpecEntity) -> bool 
         "true" | "1" | "yes" | "on"
     )
 }
+fn node_pointer_target(attrs: &ReadStorage<Attrs>, node: SpecEntity) -> Option<crate::touch::Toqueable> {
+    let events = node_touchable(attrs, node);
+    let blocking = attrs.get(node).and_then(|a| a.0.get("pointer-blocking"))
+        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on"));
+    (events || blocking).then_some(crate::touch::Toqueable(node.id(), events))
+}
+
 fn spawn_colored_primitive(
     commands: &mut Commands,
     materials: &mut Assets<StandardMaterial>,
@@ -370,7 +377,7 @@ fn spawn_colored_primitive(
     color: Color,
     transform: Transform,
     double_sided: bool,
-    touchable_node_id: Option<u32>,
+    touchable_node_id: Option<crate::touch::Toqueable>,
     hit_shape: Option<crate::touch::HitShape>,
 ) -> Entity {
     let material =
@@ -385,7 +392,7 @@ fn spawn_colored_primitive(
         Dirty,
     ));
     if let Some(node_id) = touchable_node_id {
-        entity_commands.insert(crate::touch::Toqueable(node_id));
+        entity_commands.insert(node_id);
         if let Some(shape) = hit_shape {
             entity_commands.insert(shape);
         }
@@ -2047,11 +2054,11 @@ pub fn dom_sync_system(
                     "plane" => crate::touch::HitShape::Plane,
                     _ => crate::touch::HitShape::Sphere,
                 };
-                let touchable = node_touchable(&attrs_storage, *node);
-                if touchable {
+                let touchable = node_pointer_target(&attrs_storage, *node);
+                if let Some(target) = touchable {
                     commands
                         .entity(bevy_ent)
-                        .insert((crate::touch::Toqueable(node_id), hit_shape));
+                        .insert((target, hit_shape));
                 } else {
                     commands.entity(bevy_ent).remove::<crate::touch::Toqueable>();
                     commands.entity(bevy_ent).remove::<crate::touch::HitShape>();
@@ -2347,7 +2354,7 @@ pub fn dom_sync_system(
                 "box" => {
                     let attrs_opt = attrs_storage.get(*node);
                     let color = primitive_color(&attrs_storage, *node);
-                    let touchable = node_touchable(&attrs_storage, *node);
+                    let touchable = node_pointer_target(&attrs_storage, *node);
                     let border_radius = parse_border_radius(attrs_opt);
 
                     let mesh = if let Some(radius) = border_radius {
@@ -2369,12 +2376,12 @@ pub fn dom_sync_system(
                         color,
                         transform_b,
                         false,
-                        if touchable { Some(node_id) } else { None },
-                        if touchable { Some(crate::touch::HitShape::Box) } else { None },
+                        touchable,
+                        if touchable.is_some() { Some(crate::touch::HitShape::Box) } else { None },
                     )
                 }
                 "sphere" => {
-                    let touchable = node_touchable(&attrs_storage, *node);
+                    let touchable = node_pointer_target(&attrs_storage, *node);
                     spawn_colored_primitive(
                         &mut commands,
                         &mut text_render.materials,
@@ -2383,13 +2390,13 @@ pub fn dom_sync_system(
                         primitive_color(&attrs_storage, *node),
                         transform_b,
                         false,
-                        if touchable { Some(node_id) } else { None },
-                        if touchable { Some(crate::touch::HitShape::Sphere) } else { None },
+                        touchable,
+                        if touchable.is_some() { Some(crate::touch::HitShape::Sphere) } else { None },
                     )
                 },
                 "plane" => {
                     let attrs_opt = attrs_storage.get(*node);
-                    let touchable = node_touchable(&attrs_storage, *node);
+                    let touchable = node_pointer_target(&attrs_storage, *node);
                     let border_radius = parse_border_radius(attrs_opt);
                     let mesh = if let Some(radius) = border_radius {
                         get_or_create_rounded_mesh(
@@ -2410,12 +2417,12 @@ pub fn dom_sync_system(
                         primitive_color(&attrs_storage, *node),
                         transform_b,
                         true,
-                        if touchable { Some(node_id) } else { None },
-                        if touchable { Some(crate::touch::HitShape::Plane) } else { None },
+                        touchable,
+                        if touchable.is_some() { Some(crate::touch::HitShape::Plane) } else { None },
                     )
                 }
                 "cylinder" => {
-                    let touchable = node_touchable(&attrs_storage, *node);
+                    let touchable = node_pointer_target(&attrs_storage, *node);
                     spawn_colored_primitive(
                         &mut commands,
                         &mut text_render.materials,
@@ -2424,8 +2431,8 @@ pub fn dom_sync_system(
                         primitive_color(&attrs_storage, *node),
                         transform_b,
                         false,
-                        if touchable { Some(node_id) } else { None },
-                        if touchable { Some(crate::touch::HitShape::Sphere) } else { None },
+                        touchable,
+                        if touchable.is_some() { Some(crate::touch::HitShape::Sphere) } else { None },
                     )
                 },
                 "text" => {
@@ -4508,5 +4515,23 @@ mod tests {
             vec![attached_mid.id(), leaf.id()],
             "mid debe quedar antes que leaf cuando el root real está detached"
         );
+    }
+}
+
+#[cfg(test)]
+mod pointer_blocking_tests {
+    use super::*;
+    #[test]
+    fn pointer_blocking_attribute_is_independent_of_event_delivery() {
+        use specs::Builder;
+        let mut world = SpecWorld::new();world.register::<Attrs>();
+        let node = world.create_entity().with(Attrs(HashMap::from([
+            ("pointer-blocking".into(), "true".into()),
+        ]))).build();
+        assert!(!node_pointer_target(&world.read_storage::<Attrs>(), node).unwrap().1);
+        world.write_storage::<Attrs>().get_mut(node).unwrap().0.insert("touchable".into(), "true".into());
+        assert!(node_pointer_target(&world.read_storage::<Attrs>(), node).unwrap().1);
+        world.write_storage::<Attrs>().get_mut(node).unwrap().0.clear();
+        assert!(node_pointer_target(&world.read_storage::<Attrs>(), node).is_none());
     }
 }

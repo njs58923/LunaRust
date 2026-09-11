@@ -604,6 +604,7 @@ if (!globalThis.UI_CFG) {
     this.padre = null;
     this.nombre = a.Name || null;
     this.renderPanel = a.RenderPanel === "true";
+    this.pointerBlocking = a.PointerBlocking !== "false";
     this.depth = Math.max(0,Math.min(1,numero(a.Depth,0)));
     this.elevation = Math.max(-1,Math.min(1,numero(a.Elevation,0)));
 
@@ -744,6 +745,7 @@ if (!globalThis.UI_CFG) {
     ctx.g.z=baseZ+lift;
     function paint(){
       const b=self.caja;
+      if(self.renderPanel && self.pointerBlocking && ctx.bloquear)ctx.bloquear(b.x,b.y,b.w,b.h,self.radio||0);
       if(depth>0 && (self.fondo || self.brocha)) {
         ctx.g.solidRect(b.x,b.y,b.w,b.h,self.radio||0,depth,self.fondo||self.brocha);
         ctx.subir();
@@ -2468,6 +2470,10 @@ if (!globalThis.UI_CFG) {
       item.el.setAttribute("touchable", "false");
       item.el.addEventListener("load",function(){self.invalidar();});
     });
+    this.bloqueos = new U.Pileta(this.contenedor, "plane", function(item){
+      item.el.setAttribute("touchable","false");item.el.setAttribute("pointer-blocking","true");
+      item.el.setAttribute("material-alpha","blend");item.el.setAttribute("color","#00000000");
+    });
     this.blancos = new U.Pileta(this.contenedor, "plane", function (item) {
       item.el.setAttribute("touchable", "true");
       item.el.setAttribute("material-alpha","blend");
@@ -2627,7 +2633,7 @@ if (!globalThis.UI_CFG) {
     for (const batch of this._textBatches.values()) batch.begin();
     this.textos.comenzar();
     this.imagenes.comenzar();
-    this.blancos.comenzar();
+    this.blancos.comenzar();this.bloqueos.comenzar();
 
     const self = this;
     const ctx = {
@@ -2692,6 +2698,29 @@ if (!globalThis.UI_CFG) {
         it.el.setAttribute("x",String(r.x+r.w/2));it.el.setAttribute("y",String(-(r.y+r.h/2)));
         it.el.setAttribute("z",String(self.g.z+PASO_Z*2));
       },
+      bloquear: function(x,y,w,h,radius) {
+        // Cover the rounded rectangle with horizontal strips; clip each strip
+        // against the active viewport. These native-only targets have no JS work.
+        const r=Math.max(0,Math.min(radius||0,w/2,h/2));
+        function strip(sx,sy,sw,sh){
+          const clip=self.g.aplicarClip(sx,sy,sw,sh);if(!clip || clip.w<=0 || clip.h<=0)return;
+          const it=self.bloqueos.pedir();it.estacionado=false;
+          it.el.setAttribute("touchable","false");it.el.setAttribute("pointer-blocking","true");
+          it.el.setAttribute("sx",String(clip.w));it.el.setAttribute("sy",String(clip.h));
+          it.el.setAttribute("x",String(clip.x+clip.w/2));it.el.setAttribute("y",String(-clip.y-clip.h/2));
+          it.el.setAttribute("z",String(self.g.z));
+        }
+        if(!r){strip(x,y,w,h);return;}
+        strip(x,y+r,w,h-2*r);
+        // Inscribed strips do not block the empty corners outside the panel.
+        const steps=8;
+        for(let i=0;i<steps;i++){
+          const dy=r*i/steps,dh=r/steps;
+          const inset=r-Math.sqrt(Math.max(0,r*r-(r-dy)*(r-dy)));
+          strip(x+inset,y+dy,w-2*inset,dh);
+          strip(x+inset,y+h-dy-dh,w-2*inset,dh);
+        }
+      },
       blanco: function (x, y, w, h, color, alTocar, duenio) {
         if (w <= 0 || h <= 0) return;
         // El blanco también se recorta: un botón que se fue de la lista no tiene
@@ -2701,6 +2730,8 @@ if (!globalThis.UI_CFG) {
         x = r.x; y = r.y; w = r.w; h = r.h;
         const it = self.blancos.pedir();
         it.estacionado = false;
+        it.el.setAttribute("touchable","true");
+        it.el.setAttribute("pointer-blocking","true");
         it.alTocar = alTocar;
         it.bounds={x,y,w,h};
         it.duenio = duenio || null;
@@ -2724,7 +2755,7 @@ if (!globalThis.UI_CFG) {
     for (const batch of this._textBatches.values()) batch.commit();
     this.textos.terminar();
     this.imagenes.terminar();
-    this.blancos.terminar();
+    this.blancos.terminar();this.bloqueos.terminar();
 
     const d = this.g.malla();
     commitPanelMesh(this, this.nodoMalla, "malla", d, this.contenedor);
@@ -2747,6 +2778,7 @@ if (!globalThis.UI_CFG) {
       node.setAttribute("touchable","false");this.contenedor.appendChild(node);
       panel={node,geometry:new U.Geometria(),resource:null,dirty:true,version:0,children:new Set(),
         texts:new U.Pileta(this.contenedor,"text"),images:new U.Pileta(this.contenedor,"image",this.imagenes.preparar),
+        blockers:new U.Pileta(this.contenedor,"plane",this.bloqueos.preparar),
         hits:new U.Pileta(this.contenedor,"plane",this.blancos.preparar),batches:new Map(),renders:0};
       this._panels.set(element,panel);element._panelState=panel;
     }
@@ -2757,28 +2789,28 @@ if (!globalThis.UI_CFG) {
     if(!panel.dirty && panel.version===this._renderVersion && panel.start===start && panel.clip===clip && panel.box===box){
       seen(panel);this.g.z=panel.end;this._frontmost=Math.max(this._frontmost,panel.frontmost);return;
     }
-    const saved=[this.g,this.textos,this.imagenes,this.blancos,this._textBatches,this._activePanel];
+    const saved=[this.g,this.textos,this.imagenes,this.blancos,this.bloqueos,this._textBatches,this._activePanel];
     panel.geometry.reiniciar();panel.geometry.z=start;panel.geometry.clip=this.g.clip;
-    this.g=panel.geometry;this.textos=panel.texts;this.imagenes=panel.images;this.blancos=panel.hits;
+    this.g=panel.geometry;this.textos=panel.texts;this.imagenes=panel.images;this.blancos=panel.hits;this.bloqueos=panel.blockers;
     this._textBatches=panel.batches;this._activePanel=panel;panel.children.clear();
     panel.dirty=false;panel.version=this._renderVersion;panel.start=start;panel.clip=clip;panel.box=box;
-    this.textos.comenzar();this.imagenes.comenzar();this.blancos.comenzar();
+    this.textos.comenzar();this.imagenes.comenzar();this.blancos.comenzar();this.bloqueos.comenzar();
     for(const batch of this._textBatches.values())batch.begin();
     try {
       emit();panel.end=this.g.z;panel.frontmost=this._frontmost;
       for(const batch of this._textBatches.values())batch.commit();
-      this.textos.terminar();this.imagenes.terminar();this.blancos.terminar();
+      this.textos.terminar();this.imagenes.terminar();this.blancos.terminar();this.bloqueos.terminar();
       const d=this.g.malla();
       commitPanelMesh(panel, panel.node, "resource", d, this.contenedor);
       panel.renders++;
     } catch(error){panel.dirty=true;throw error;}
-    finally {[this.g,this.textos,this.imagenes,this.blancos,this._textBatches,this._activePanel]=saved;}
+    finally {[this.g,this.textos,this.imagenes,this.blancos,this.bloqueos,this._textBatches,this._activePanel]=saved;}
     this.g.z=panel.end;
   };
   Aplicacion.prototype._disposePanel = function (panel) {
     if(panel.resource)panel.resource.dispose();panel.node.remove();
     disposeBlendPass(panel);
-    for(const pool of [panel.texts,panel.images,panel.hits])for(const item of pool.items){if(item.duenio)item.duenio.encima=false;item.duenio=null;item.alTocar=null;item.el.remove();}
+    for(const pool of [panel.texts,panel.images,panel.hits,panel.blockers])for(const item of pool.items){if(item.duenio)item.duenio.encima=false;item.duenio=null;item.alTocar=null;item.el.remove();}
     for(const batch of panel.batches.values())batch.dispose();
   };
   Aplicacion.prototype.dispose = function () {
@@ -2787,7 +2819,7 @@ if (!globalThis.UI_CFG) {
     for(const batch of this._textBatches.values())batch.dispose();this._textBatches.clear();
     if(this.malla){this.malla.dispose();this.malla=null;}
     disposeBlendPass(this);
-    for(const pool of [this.textos,this.imagenes,this.blancos]){for(const item of pool.items)item.el.remove();pool.items.length=0;pool.usados=0;}
+    for(const pool of [this.textos,this.imagenes,this.blancos,this.bloqueos]){for(const item of pool.items)item.el.remove();pool.items.length=0;pool.usados=0;}
     this.raiz=null;
   };
 
@@ -3069,6 +3101,10 @@ if (!globalThis.UI_CFG) {
       }
 
       el.acomodar(x, y, w, h);
+      // Popups absorb the gaps between options. Tooltips must not steal hover
+      // from the control that keeps them open.
+      if(ctx.bloquear && c.id !== this.globoCapa && el.pointerBlocking !== false)
+        ctx.bloquear(x,y,w,h,el.radio||0);
       el.emitir(ctx);
     }
   };
