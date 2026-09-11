@@ -64,6 +64,32 @@ capacidades vacías. Si el `include` declara `resources`, eso genera un *entry g
 para el documento hijo, siempre intersecado con lo que el padre ya tenía
 (no se puede escalar privilegios desde un include).
 
+Da igual que el hijo sea del mismo origen o de otro servidor: la regla es la
+misma. Un componente de cielo servido desde otro puerto monta su `<skybox>`
+si, y sólo si, el que lo incluye se lo delega:
+
+```xml
+<space resources="skybox,navigate_self">
+  <include resources="skybox"
+           src="http://localhost:2057/componentes/cielo.hsml?preset=dia"/>
+</space>
+```
+
+El hijo tiene que pedirlo también (`<space resources="skybox">`): lo que recibe
+es la intersección entre lo que pide, lo que el include delega y lo que tiene
+el padre.
+
+Sin el `resources` del include el hijo queda con `effective_caps=[none]`, el
+motor loguea `Skybox blocked` y el aviso de diagnóstico ahora lo dice:
+
+```
+[diagnostic] Requested capabilities not granted: SKYBOX — this document was
+loaded by an <include>; delegate them from the parent with <include resources="skybox" …>
+```
+
+El nombre que sugiere es el token del atributo, no el de la constante. Nunca
+sugiere `root`, aunque técnicamente alcanzaría.
+
 ---
 
 Volver al [índice de guías](index.md).

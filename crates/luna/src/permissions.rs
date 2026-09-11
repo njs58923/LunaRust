@@ -568,6 +568,23 @@ pub fn describe_capability_bits(bits: CapabilityBits) -> String {
     }
 }
 
+/// The `resources` tokens that would grant `bits`, comma-separated as the
+/// attribute expects. Only single-capability bundles count: suggesting `root`
+/// for a missing `skybox` would be correct and terrible advice.
+pub fn describe_resource_names(bits: CapabilityBits) -> String {
+    let mut names: Vec<&str> = RESOURCE_BUNDLES
+        .iter()
+        .filter(|(_, def)| {
+            !def.capabilities.is_empty()
+                && def.capabilities.bits().count_ones() == 1
+                && bits.contains(def.capabilities)
+        })
+        .map(|(name, _)| *name)
+        .collect();
+    names.sort_unstable();
+    names.join(",")
+}
+
 pub fn describe_native_service_bits(bits: NativeServiceBits) -> String {
     let labels = native_service_labels(bits);
     if labels.is_empty() {
@@ -828,6 +845,7 @@ pub fn rebuild_space_policies_system(
         inherited_native: NativeServiceBits,
         entry_caps: CapabilityBits,
         entry_native: NativeServiceBits,
+        via_include: bool,
         policy_children: &HashMap<specs::Entity, Vec<specs::Entity>>,
         fallback_url: &str,
         decisions: &PermissionDecisionStore,
@@ -837,6 +855,7 @@ pub fn rebuild_space_policies_system(
         attrs: &specs::ReadStorage<Attrs>,
         base_urls: &specs::ReadStorage<BaseUrl>,
         out: &mut HashMap<u32, SpacePolicy>,
+        included_spaces: &mut HashSet<u32>,
     ) {
         let tag_name = tags.get(ent).map(|t| t.0.as_str()).unwrap_or("");
         let attrs_map = attrs.get(ent).map(|a| &a.0);
@@ -845,8 +864,10 @@ pub fn rebuild_space_policies_system(
         let mut child_native = inherited_native;
         let mut child_entry_caps = entry_caps;
         let mut child_entry_native = entry_native;
+        let mut child_via_include = via_include;
 
         if tag_name == "include" {
+            child_via_include = true;
             if let Some(raw) = attrs_map.and_then(|m| m.get("resources")) {
                 let tokens = parse_resource_tokens(raw);
                 let (grant_caps, grant_native, _) = resolve_resource_set(&tokens);
@@ -877,6 +898,9 @@ pub fn rebuild_space_policies_system(
 
             let root_space = is_root_space(attrs_map);
             let managed = is_dimension_luna_managed(attrs_map);
+            if via_include && !root_space {
+                included_spaces.insert(ent.id());
+            }
             let origin = find_permission_origin(ent, fallback_url, hierarchies, base_urls);
 
             // Un entry grant elevado ya fue delegado explícitamente por el UX
@@ -994,6 +1018,7 @@ pub fn rebuild_space_policies_system(
             // El entry grant se consume en este space y no sigue heredándose.
             child_entry_caps = CapabilityBits::empty();
             child_entry_native = NativeServiceBits::empty();
+            child_via_include = false;
         }
 
         if let Some(children) = policy_children.get(&ent) {
@@ -1004,6 +1029,7 @@ pub fn rebuild_space_policies_system(
                     child_native,
                     child_entry_caps,
                     child_entry_native,
+                    child_via_include,
                     policy_children,
                     fallback_url,
                     decisions,
@@ -1013,6 +1039,7 @@ pub fn rebuild_space_policies_system(
                     attrs,
                     base_urls,
                     out,
+                    included_spaces,
                 );
             }
         }
@@ -1020,6 +1047,7 @@ pub fn rebuild_space_policies_system(
 
     let mut next = HashMap::new();
     let mut pending_prompts = HashMap::new();
+    let mut included_spaces = HashSet::new();
     for root in roots {
         walk(
             root,
@@ -1027,6 +1055,7 @@ pub fn rebuild_space_policies_system(
             NativeServiceBits::empty(),
             CapabilityBits::empty(),
             NativeServiceBits::empty(),
+            false,
             &policy_children,
             &current_url.0,
             &decisions,
@@ -1036,6 +1065,7 @@ pub fn rebuild_space_policies_system(
             &attrs,
             &base_urls,
             &mut next,
+            &mut included_spaces,
         );
     }
 
@@ -1052,8 +1082,20 @@ pub fn rebuild_space_policies_system(
         let node = entities.entity(*space_id);
         let denied_message = format!("denied:{}", denied.bits());
         if !denied.is_empty() && diagnostic_cache.insert((node, denied_message)) {
+            // Un documento cargado por <include> no hereda permisos: los recibe
+            // sólo si el include se los delega con su propio `resources`, y
+            // nunca más de los que tiene el padre. Sin decirlo, el aviso deja
+            // buscando el problema en el documento hijo, que está bien escrito.
+            let hint = if included_spaces.contains(space_id) {
+                format!(
+                    " — this document was loaded by an <include>; delegate them from the parent with <include resources=\"{}\" …>",
+                    describe_resource_names(denied)
+                )
+            } else {
+                String::new()
+            };
             log_panel.push_for_space(crate::LogLevel::Warn,
-                format!("[diagnostic] Requested capabilities not granted: {}", describe_capability_bits(denied)), *space_id);
+                format!("[diagnostic] Requested capabilities not granted: {}{}", describe_capability_bits(denied), hint), *space_id);
         }
         let snapshot = SpacePolicySnapshotEntry {
             generation: policies.generation,
@@ -1439,6 +1481,19 @@ mod tests {
             ),
             vec!["luna://internal/embedded_api.js".to_string()]
         );
+    }
+
+    #[test]
+    fn describe_resource_names_maps_bits_back_to_attribute_tokens() {
+        assert_eq!(describe_resource_names(CapabilityBits::SKYBOX), "skybox");
+        assert_eq!(
+            describe_resource_names(CapabilityBits::SKYBOX | CapabilityBits::NAVIGATE_SELF),
+            "navigate_self,skybox"
+        );
+        // `root` grants everything, so it must never be what the hint suggests.
+        // (Exact token: bundles like `mount_root_space` are fine and do appear.)
+        let all = describe_resource_names(CapabilityBits::all());
+        assert!(!all.split(',').any(|t| t == "root"), "{all}");
     }
 
     #[test]
