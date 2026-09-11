@@ -104,6 +104,9 @@
         node.setAttribute('color', opts.color);
         node.setAttribute('border-radius', String(opts.corner));
         node.setAttribute('touchable', opts.touchable ? 'true' : 'false');
+        // `pointer-blocking` tapa el rayo sin recibir eventos: es lo que hace
+        // que el fondo de un panel no deje pasar el puntero a lo que hay atrás.
+        if (opts.blocking) node.setAttribute('pointer-blocking', 'true');
         node.position = { x: opts.x || 0, y: opts.y || 0, z: opts.z || 0 };
         node.scale = { x: opts.sx, y: opts.sy, z: 1 };
         parent.appendChild(node);
@@ -424,6 +427,43 @@
                  colors: new Float32Array(colors) };
       }
 
+      // ── El bloqueo del fondo ───────────────────────────────────────────
+      // El fondo de un panel curvo es una malla, y el raycast del motor sólo
+      // mira primitivas: `node_pointer_target` (dom.rs) se aplica a box,
+      // sphere, plane y cylinder, no a `model`. Una malla, entonces, se ve pero
+      // no tapa nada, y el puntero atraviesa el panel y llega al mundo que hay
+      // detrás — o a la ventana de una app.
+      //
+      // Se cubre con planos invisibles y `pointer-blocking`, uno por tramo de
+      // arco: un plano es una cuerda, así que a mayor tramo más se separa del
+      // arco (la flecha vale ~s²/8R). Con tramos de 12 cm sobre 1,5 m son
+      // 1,2 mm, menos que el espesor del propio fondo.
+      //
+      // Van **detrás** de las piezas, que están más cerca: el raycast se queda
+      // con el impacto más próximo, así que el bloqueo no le roba ningún toque
+      // a los iconos que tiene encima.
+      const PASO_BLOQUEO = 0.12;
+      function bloquearPastillas(parent, pills, tilt) {
+        const nodes = [];
+        for (const P of pills) {
+          const r = Math.min(0.05, P.height / 2 - 0.001);
+          const tramos = Math.max(1, Math.ceil(P.width / PASO_BLOQUEO));
+          const ancho = P.width / tramos;
+          for (let i = 0; i < tramos; i++) {
+            const x = -P.width / 2 + ancho * (i + 0.5);
+            // El alto sigue el contorno de la pastilla: en las puntas
+            // redondeadas, un rectángulo entero bloquearía aire.
+            const h = 2 * halfHeight(x, P.width, P.height, r);
+            if (h <= 0) continue;
+            const g = surface(parent, P.u + x, P.y, P.radius, tilt || 0);
+            plane(g, { x: 0, y: 0, z: -(P.depth || 0), sx: ancho, sy: h,
+                       color: '#00000000', corner: 0, blocking: true });
+            nodes.push(g);
+          }
+        }
+        return nodes;
+      }
+
       // Se crea una vez y se **actualiza**: el número de vértices no cambia
       // —MESH_STEPS es fijo y la cantidad de pastillas también— así que alcanza
       // con reescribir lo que se movió. Crear una malla nueva por cada cambio
@@ -460,7 +500,7 @@
 
     return {
       onArc, surface, plane, pill, caption, glyph, piece, applyPiece, recolorPiece,
-      enGolpe, golpear, dropPiece, buildMesh, paintMesh, rgba, halfHeight,
+      enGolpe, golpear, dropPiece, buildMesh, paintMesh, bloquearPastillas, rgba, halfHeight,
       easeOutBack, easeInBack,
       // La tabla de glifos y la paleta salen enteras: quien dibuje encima
       // tiene que poder elegir un icono por nombre sin duplicar el índice.

@@ -3026,4 +3026,32 @@ mod tests {
         let errors: Vec<_> = logs.iter().filter(|(level, _)| level == "error").collect();
         assert!(errors.is_empty(), "churn produced errors: {:?}", errors);
     }
+
+    /// Los dos menus tapan el puntero con su propio fondo.
+    ///
+    /// El fondo curvo es una malla y el raycast solo mira primitivas
+    /// (`node_pointer_target`), asi que el menu curvo lo cubre con planos
+    /// `pointer-blocking`; el plano lo pide sobre la placa y las pastillas. Si
+    /// alguno de los dos deja de pedirlo, el puntero vuelve a atravesar el menu
+    /// y esta prueba lo dice antes de que haya que descubrirlo apuntando.
+    #[test]
+    fn ambos_menus_bloquean_el_puntero_con_su_fondo() {
+        assert!(
+            SCRIPT_SHELL_DRAW.contains("pointer-blocking"),
+            "el menu curvo dejo de bloquear el puntero"
+        );
+        assert!(
+            SCRIPT_SHELL_MENU.contains("bloquearPastillas"),
+            "el menu curvo ya no cubre su malla de fondo"
+        );
+        assert!(
+            SCRIPT_SHELL_UI.contains("pointer-blocking"),
+            "el menu plano dejo de bloquear el puntero"
+        );
+        let plano_pide = SCRIPT_SHELL_UI.matches("blocking: true").count();
+        assert!(
+            plano_pide >= 3,
+            "el menu plano solo pide bloqueo en {plano_pide} lugares: placa, encabezado y pastillas de la barra"
+        );
+    }
 }

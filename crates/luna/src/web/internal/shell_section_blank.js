@@ -51,12 +51,12 @@ function armar() {
 
   UI.plane(panel, {
     x: 0, y: cy, z: M.zBack, w: w, h: top - bottom,
-    color: UI.C.panel, corner: M.panelCorner,
+    color: UI.C.panel, corner: M.panelCorner, blocking: true,
   });
 
   const hy = top + M.headerGap + M.headerH / 2;
   UI.pill(panel, { x: 0, y: hy, z: M.zBack, w: M.headerW, h: M.headerH,
-                   r: M.headerRadius, color: UI.C.pill });
+                   r: M.headerRadius, color: UI.C.pill, blocking: true });
   UI.text(panel, { x: 0, y: hy, value: titulo, size: M.headerSize });
 
   let visible = null;

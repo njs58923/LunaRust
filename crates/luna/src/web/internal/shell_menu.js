@@ -103,11 +103,16 @@ function armar() {
 
     const top = headerY + 0.075;
     const bottom = gridBottom - 0.045;
-    D.paintMesh(panelMesh, panelBgNode, [{
+    const placa = [{
       u: 0, y: (top + bottom) / 2, radius: M.R_PANEL, depth: 0.012,
       width: (M.GRID_COLS - 1) * M.GRID_STEP_X + M.SIZE_APP + 0.16,
       height: top - bottom, color: M.PLACA, phi: 0,
-    }]);
+    }];
+    D.paintMesh(panelMesh, panelBgNode, placa);
+    // La malla del fondo se ve pero no recibe punteros. Sin esto el panel es
+    // una ventana: se apunta a un hueco entre iconos y el rayo sigue de largo
+    // hasta lo que haya atrás.
+    for (const n of D.bloquearPastillas(panel, placa, 0)) dashboardRefs.push(n);
   }
 
   // ── La cascada de entrada y de salida ──────────────────────────────────────
@@ -232,10 +237,15 @@ function armar() {
 
     // `phi` es el ángulo con que la malla levanta la pastilla — el opuesto del
     // rx de los nodos, que se inclinan hacia arriba porque están bajo los ojos.
-    D.paintMesh(barMesh, barBgNode, widths.map((w, i) => ({
+    const pastillas = widths.map((w, i) => ({
       u: centers[i], y: M.BAR_Y, radius: M.R_BAR, depth: 0.012, width: w,
       height: M.BAR_H, color: M.PLACA, phi: -M.BAR_TILT,
-    })));
+    }));
+    D.paintMesh(barMesh, barBgNode, pastillas);
+    // Los nodos de la barra sí se inclinan hacia arriba —están bajo los ojos—,
+    // así que el bloqueo va con `BAR_TILT` y no con el `phi` de la malla, que
+    // es su opuesto.
+    for (const n of D.bloquearPastillas(bottomBar, pastillas, M.BAR_TILT)) barNodes.push(n);
 
     const place = (gi, j, n) => centers[gi] + spread(n, M.BAR_ITEM + M.BAR_GAP)[j];
 

@@ -167,6 +167,10 @@
     n.setAttribute('color', o.color);
     n.setAttribute('border-radius', String(o.corner === undefined ? 0 : o.corner));
     n.setAttribute('touchable', o.touchable ? 'true' : 'false');
+    // `pointer-blocking` tapa el rayo sin recibir eventos (ver
+    // `node_pointer_target` en dom.rs): un fondo de panel no es un blanco, pero
+    // tampoco tiene que dejar pasar el puntero a lo que haya detrás.
+    if (o.blocking) n.setAttribute('pointer-blocking', 'true');
     n.position = { x: o.x || 0, y: o.y || 0, z: o.z || 0 };
     n.scale = { x: o.w, y: o.h, z: 1 };
     parent.appendChild(n);
@@ -195,6 +199,7 @@
     n.setAttribute('color', o.color);
     n.setAttribute('border-radius', String(o.r));
     n.setAttribute('touchable', 'false');
+    if (o.blocking) n.setAttribute('pointer-blocking', 'true');
     const d = o.d || PILL_DEPTH;
     n.position = { x: o.x || 0, y: o.y || 0, z: (o.z || 0) - d / 2 };
     n.scale = { x: o.w, y: o.h, z: d };
@@ -475,12 +480,13 @@
     const h = top - bottom;
     const cy = (top + bottom) / 2;
 
-    plane(g, { x: 0, y: cy, z: M.zBack, w, h, color: C.panel, corner: M.panelCorner });
+    plane(g, { x: 0, y: cy, z: M.zBack, w, h, color: C.panel, corner: M.panelCorner,
+               blocking: true });
 
     // Encabezado: una pastilla suelta arriba del panel, no una franja adentro.
     const hy = top + M.headerGap + M.headerH / 2;
     pill(g, { x: 0, y: hy, z: M.zBack, w: M.headerW, h: M.headerH,
-              r: M.headerRadius, color: C.pill });
+              r: M.headerRadius, color: C.pill, blocking: true });
     text(g, { x: 0, y: hy, value: cfg.title || 'Aplicaciones', size: M.headerSize });
 
     // Riel izquierdo.
@@ -646,7 +652,7 @@
         const cx = cursor + w / 2;
         cursor += w + M.barPillGap;
         pills.push(pill(g, { x: cx, y: 0, z: M.zBack, w, h: M.barH,
-                             r: M.barPillRadius, color: C.pill }));
+                             r: M.barPillRadius, color: C.pill, blocking: true }));
         // Los centros ya no salen de un paso fijo: con anchos distintos hay
         // que recorrer la fila acumulando.
         // Ojo con el nombre: `cursor` es la del recorrido de pastillas, que se
