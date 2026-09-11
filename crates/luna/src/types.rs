@@ -252,6 +252,7 @@ mod mcp_startup_tests {
             "home_url": "https://example.test/world",
             "preferred_render_mode": "Desktop"
         }"#).unwrap();
+        assert_eq!(config.controller_style, ControllerStyle::Curved);
         assert!(!config.auto_load_home);
         assert_eq!(config.home_url, "https://example.test/world");
         assert!(!config.mcp_auto_start);

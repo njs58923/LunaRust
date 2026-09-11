@@ -69,7 +69,7 @@ function armar() {
 
   function buildBookmarks(bookmarks) {
     clearBookmarks();
-    if (!panel) return;
+    if (!panel || bookmarks.length === 0) return;
 
     const n = bookmarks.length;
     const rows = Math.max(1, Math.ceil(n / M.GRID_COLS));
@@ -291,7 +291,9 @@ function armar() {
   let visible = null;
 
   function render(props) {
-    const bookmarks = props.bookmarks || [];
+    // No provisional header or bar before the controller delivers its state.
+    if (!Array.isArray(props.bookmarks)) return;
+    const bookmarks = props.bookmarks;
     const windows = props.windows || [];
 
     // La grilla se rehace sólo si cambiaron los marcadores: es lo caro —una

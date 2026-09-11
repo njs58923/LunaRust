@@ -1976,20 +1976,33 @@ mod tests {
             const home = api.mountSpace('luna://home'); frame();
             const root = __nativeTestRoot;
             const env = root.children.find(n => n.id === 'luna_native_environment');
-            check(env && env.getAttribute('visible') === 'true', 'home has no environment');
+            check(env && env.getAttribute('visible') === 'inherit', 'home has no environment');
             const include = env.children[0];
             check(include.getAttribute('src') === 'luna://environment', 'wrong environment route');
             api.mountSpace('luna://about'); frame();
             check(root.children.includes(env) && env.children[0] === include, 'environment was remounted');
-            api.switchMode('vr'); frame();
+            check(!api._uxSpaceId, 'shell mounted before receiving preferences');
+            api.switchMode('desktop', 'flat'); frame();
+            const flatId = api._uxSpaceId;
+            api.switchMode('vr', 'flat'); frame();
+            check(api._uxSpaceId === flatId, 'mode switch remounted selected controller');
+            const shell = root.children.find(n => n.children.some(c => c.getAttribute('src') === 'luna://ux_desktop'));
+            check(shell.children[0].getAttribute('resources').includes('vr_locomotion'), 'VR grants not updated');
+            api.switchMode('vr', 'curved'); frame();
+            check(api._uxSpaceId !== flatId, 'style switch did not replace controller');
+            check(root.children.filter(n => n.getAttribute('system-shell') === 'true').length === 1,
+                'duplicate shell after switching styles');
+            const curvedId = api._uxSpaceId;
+            api.switchMode('desktop', 'curved'); frame();
+            check(api._uxSpaceId === curvedId, 'curved controller not preserved in desktop');
             check(api.listMountedSpaces().some(n => n.url === 'luna://about'), 'mode switch closed page');
-            check(env.getAttribute('visible') === 'true', 'mode switch hid environment');
+            check(env.getAttribute('visible') === 'inherit', 'mode switch hid environment');
             const about = root.children.find(n => n.tagName === 'space' &&
                 n.children.some(c => c.getAttribute('src') === 'luna://about'));
             about.children[0].setAttribute('src','https://example.test/'); frame();
             check(env.getAttribute('visible') === 'false', 'self-navigation leaked environment externally');
             about.children[0].setAttribute('src','luna://scale_demo'); frame();
-            check(env.getAttribute('visible') === 'true', 'self-navigation did not restore environment');
+            check(env.getAttribute('visible') === 'inherit', 'self-navigation did not restore environment');
             const external = api.mountSpace('https://example.test/');
             api.mountSpace('luna://settings', {kind:'app-embedded'}); frame();
             check(env.getAttribute('visible') === 'false', 'embedded app overrode external scene');

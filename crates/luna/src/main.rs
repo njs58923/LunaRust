@@ -725,13 +725,10 @@ fn sync_root_mode_resources(
     mut manager: NonSendMut<js::ScriptRuntimeManager>,
     specs_world: Res<ElemenetWorld>,
     config: Res<RootConfig>,
-    mut last_sent: Local<Option<(u32, bool, String)>>,
 ) {
     let Some(root_id) = find_root_worker_space_id(&specs_world.0, &manager) else {
         return;
     };
-    let target = (root_id, render_mode.is_vr, config.controller_style.as_str().to_owned());
-    if last_sent.as_ref() == Some(&target) { return; }
     let Some(worker) = manager.contexts.get_mut(&root_id) else {
         return;
     };
@@ -741,6 +738,8 @@ fn sync_root_mode_resources(
 
     let mode = if render_mode.is_vr { "vr" } else { "desktop" };
     let style = config.controller_style.as_str();
+    let target = (render_mode.is_vr, style);
+    if worker.shell_config_sent == Some(target) { return; }
     let code = format!(
         "dimension.luna.switchMode('{mode}', '{style}'); dimension.luna.regrantMountedSpaces('{mode}');"
     );
@@ -753,7 +752,7 @@ fn sync_root_mode_resources(
     }
 
     if send_result.is_ok() {
-        *last_sent = Some(target);
+        worker.shell_config_sent = Some(target);
     }
 }
 

@@ -187,7 +187,7 @@
       `<ComboBox Grid.Column="1" Items="{Binding controllers}"
                  SelectedIndex="{Binding controllerElegido, Mode=TwoWay}"
                  SelectionChanged="cambiarController" VerticalAlignment="Center"/>`),
-    "Se aplica al elegirlo y se conserva al reiniciar. Usa el botón de menú para volver a abrirlo.");
+    "Se aplica al elegirlo y se conserva al reiniciar. Usa el botÃ³n de menÃº para volver a abrirlo.");
 
   const PANEL_DEV =
     grupo(

@@ -1,3 +1,27 @@
+
+            let nextNode = 1;
+            const frames = [];
+            globalThis.requestAnimationFrame = fn => frames.push(fn);
+            class NativeNode {
+                constructor(tag) {
+                    this.nodeId = nextNode++; this.tagName = tag;
+                    this.children = []; this.parent = null; this.attrs = {};
+                    this.position = {x:0,y:0,z:0};
+                    this.rotation = {x:0,y:0,z:0}; this.scale = {x:1,y:1,z:1};
+                }
+                setAttribute(k,v) { this.attrs[k] = String(v); }
+                getAttribute(k) { return this.attrs[k] || ''; }
+                appendChild(n) { this.children.push(n); n.parent = this; }
+                remove() {
+                    if (this.parent) this.parent.children = this.parent.children.filter(n => n !== this);
+                    this.parent = null;
+                }
+                createElement(tag) { return new NativeNode(tag); }
+            }
+            globalThis.__nativeTestRoot = new NativeNode('space');
+            function frame() { const batch = frames.splice(0); batch.forEach(fn => fn()); }
+            function check(ok,msg) { if (!ok) throw new Error(msg); }
+        
 // luna://internal/root_api.js
 // API privilegiada del root space — `dimension.luna.*` permite montar tabs
 // hijas del luna_root (mountSpace/unmountSpace/updateSpace/listMountedSpaces)
@@ -6,7 +30,7 @@
 // Se auto-inyecta vía el bundle "root" (ver permissions.rs).
 
 (function (global) {
-  const root = global.hiperspace && global.hiperspace.dimention;
+  const root = global.__nativeTestRoot;
   if (!root) {
     console.error('[luna://root] Missing root space');
     return;
@@ -463,3 +487,46 @@
 
   console.log('[luna://root] dimension.luna ready');
 })(globalThis);
+
+
+            const api = dimension.luna;
+            const home = api.mountSpace('luna://home'); frame();
+            const root = __nativeTestRoot;
+            const env = root.children.find(n => n.id === 'luna_native_environment');
+            check(env && env.getAttribute('visible') === 'inherit', 'home has no environment');
+            const include = env.children[0];
+            check(include.getAttribute('src') === 'luna://environment', 'wrong environment route');
+            api.mountSpace('luna://about'); frame();
+            check(root.children.includes(env) && env.children[0] === include, 'environment was remounted');
+            check(!api._uxSpaceId, 'shell mounted before receiving preferences');
+            api.switchMode('desktop', 'flat'); frame();
+            const flatId = api._uxSpaceId;
+            api.switchMode('vr', 'flat'); frame();
+            check(api._uxSpaceId === flatId, 'mode switch remounted selected controller');
+            const shell = root.children.find(n => n.children.some(c => c.getAttribute('src') === 'luna://ux_desktop'));
+            check(shell.children[0].getAttribute('resources').includes('vr_locomotion'), 'VR grants not updated');
+            api.switchMode('vr', 'curved'); frame();
+            check(api._uxSpaceId !== flatId, 'style switch did not replace controller');
+            check(root.children.filter(n => n.getAttribute('system-shell') === 'true').length === 1,
+                'duplicate shell after switching styles');
+            const curvedId = api._uxSpaceId;
+            api.switchMode('desktop', 'curved'); frame();
+            check(api._uxSpaceId === curvedId, 'curved controller not preserved in desktop');
+            check(api.listMountedSpaces().some(n => n.url === 'luna://about'), 'mode switch closed page');
+            check(env.getAttribute('visible') === 'inherit', 'mode switch hid environment');
+            const about = root.children.find(n => n.tagName === 'space' &&
+                n.children.some(c => c.getAttribute('src') === 'luna://about'));
+            about.children[0].setAttribute('src','https://example.test/'); frame();
+            check(env.getAttribute('visible') === 'false', 'self-navigation leaked environment externally');
+            about.children[0].setAttribute('src','luna://scale_demo'); frame();
+            check(env.getAttribute('visible') === 'inherit', 'self-navigation did not restore environment');
+            const external = api.mountSpace('https://example.test/');
+            api.mountSpace('luna://settings', {kind:'app-embedded'}); frame();
+            check(env.getAttribute('visible') === 'false', 'embedded app overrode external scene');
+            api.unmountSpace(external); frame();
+            check(env.getAttribute('visible') === 'false', 'empty browser retained environment');
+            api.mountSpace('luna://home'); frame();
+            check(root.children.filter(n => n.id === 'luna_native_environment').length === 1,
+                'duplicate environment');
+            check(env.children[0] === include, 'cached environment replaced');
+        

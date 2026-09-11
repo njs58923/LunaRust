@@ -257,6 +257,8 @@ pub struct SpaceScriptWorker {
     /// True once `luna://internal/root_api.js` has been flushed into the worker's cmd channel.
     /// Guards any eval that calls `dimension.luna.*`.
     pub root_api_sent: bool,
+    /// Last shell preference successfully queued for this isolate.
+    pub shell_config_sent: Option<(bool, &'static str)>,
 }
 
 impl SpaceScriptWorker {
@@ -820,6 +822,7 @@ fn spawn_space_worker_configured(
         bootstrap_scripts_enqueued: HashSet::new(),
         last_capabilities_bits: 0,
         root_api_sent: false,
+        shell_config_sent: None,
     })
 }
 
@@ -2219,6 +2222,7 @@ pub fn js_eval_pending_scripts(world: &mut World) {
                     .map_err(|e| e);
                 if result.is_ok() && url == "luna://internal/root_api.js" {
                     worker.root_api_sent = true;
+                    worker.shell_config_sent = None;
                 }
                 if result.is_ok() {
                     worker.needs_tick = true;
@@ -2973,10 +2977,19 @@ pub fn js_tick_system(world: &mut World) {
     let attached_nodes: std::collections::HashSet<u32> = if remove_batches.is_empty() {
         std::collections::HashSet::new()
     } else {
-        world
+        let mut known: std::collections::HashSet<u32> = world
             .get_resource::<crate::VirtualDomData>()
             .map(|d| d.nodes.keys().copied().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Created nodes already have valid handles but are not in VirtualDomData
+        // until the deferred attach commits. Removing them in that interval must
+        // delete them too, otherwise replaced menus leave orphaned geometry.
+        if let Some(tables) = world.get_resource::<SpaceHandleTables>() {
+            for table in tables.by_space.values() {
+                known.extend(table.detached_globals.iter().copied());
+            }
+        }
+        known
     };
     for (space_id, remove_queue) in remove_batches {
         let (allowed_remove_ids, rejected_logs) = {
@@ -3148,6 +3161,13 @@ pub fn js_tick_system(world: &mut World) {
             for &nid in &all_removed_ids {
                 include_states.0.remove(&nid);
             }
+        }
+        // A cancelled attach must not later resurrect a recycled Specs id.
+        if let Some(mut pending) = world.get_resource_mut::<PendingJsAttachNodes>() {
+            pending.0.retain(|id| !frame_deleted_global.contains(id));
+        }
+        if let Some(mut pending) = world.get_resource_mut::<crate::PendingJsFirstRenderNodes>() {
+            pending.0.retain(|(id, _)| !frame_deleted_global.contains(id));
         }
         // Clean up handle table entries for ALL subtree nodes
         if let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() {
@@ -4529,6 +4549,7 @@ mod tests {
                 bootstrap_scripts_enqueued: HashSet::new(),
                 last_capabilities_bits: 0,
                 root_api_sent: false,
+        shell_config_sent: None,
             },
             cmd_rx,
             event_tx,
@@ -5343,6 +5364,63 @@ mod tests {
         app.world_mut().non_send_resource_mut::<ScriptRuntimeManager>().contexts.insert(space_id, worker);
         js_update_snapshots_system(app.world_mut());
         let local = app.world().resource::<SpaceHandleTables>().by_space[&space_id].global_to_local[&child_id];
+        events.send(JsWorkerEvent::TickData(JsTickData {
+                audio_commands: Vec::new(),
+                mesh_commands: (0, Vec::new()),
+                needs_continuous_ticks: false,
+                logs: Vec::new(),
+                attr_updates: Vec::new(),
+                pos_updates: Vec::new(),
+                rot_updates: Vec::new(),
+                scale_updates: Vec::new(),
+                creation_queue: Vec::new(),
+                hierarchy_queue: Vec::new(),
+                remove_queue: vec![local],
+                fetch_queue: Vec::new(),
+                navigate_queue: Vec::new(),
+                tab_action_queue: Vec::new(),
+                capture_queue: Vec::new(),
+                shell_outbox: Vec::new(),
+                ws_connect_queue: Vec::new(),
+                ws_send_queue: Vec::new(),
+                ws_close_queue: Vec::new(),
+            })).unwrap();
+        js_tick_system(app.world_mut());
+        let sky = app.world().resource::<crate::SkyboxEntity>();
+        assert!(sky.active.is_none());
+        assert!(!sky.nodes.contains_key(&child_id));
+        assert!(!sky.pending.contains_key("old-sky"));
+        assert!(sky.pending.contains_key("other-sky"));
+        assert!(app.world().get_entity(bevy_entity).is_none());
+    }
+
+    #[test]
+    fn removing_pending_js_node_does_not_leave_orphaned_geometry() {
+        let (mut app, space_id, child_id, _, _) = snapshot_test_app_with_child();
+        app.init_resource::<crate::EntityMap>();
+        app.init_resource::<crate::ScriptLoadStates>();
+        app.init_resource::<crate::PendingModelLoads>();
+        app.init_resource::<crate::ModelLoadStates>();
+        app.init_resource::<crate::SkyboxEntity>();
+        let bevy_entity = app.world_mut().spawn_empty().id();
+        app.world_mut().resource_mut::<crate::EntityMap>().0.insert(child_id, bevy_entity);
+        {
+            let mut sky = app.world_mut().resource_mut::<crate::SkyboxEntity>();
+            sky.active = Some((child_id, bevy_entity));
+            sky.nodes.insert(child_id, crate::SkyboxNodeState {
+                key: "old-sky".into(), status: crate::SkyboxLoadStatus::Requested, mounted: None,
+            });
+            sky.enqueue("old-sky", child_id);
+            sky.enqueue("other-sky", 9000);
+        }
+        let (worker, _commands, events) = fake_worker(false);
+        app.world_mut().non_send_resource_mut::<ScriptRuntimeManager>().contexts.insert(space_id, worker);
+        js_update_snapshots_system(app.world_mut());
+        let local = app.world().resource::<SpaceHandleTables>().by_space[&space_id].global_to_local[&child_id];
+        // A newly created element has a handle before the deferred DOM commit.
+        app.world_mut().resource_mut::<VirtualDomData>().nodes.remove(&child_id);
+        app.world_mut().resource_mut::<SpaceHandleTables>().by_space.get_mut(&space_id)
+            .unwrap().detached_globals.insert(child_id);
         events.send(JsWorkerEvent::TickData(JsTickData {
                 audio_commands: Vec::new(),
                 mesh_commands: (0, Vec::new()),
