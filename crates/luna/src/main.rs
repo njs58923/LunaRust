@@ -15,7 +15,7 @@ use bevy_mod_openxr::action_binding::OxrSendActionBindings;
 use bevy_mod_openxr::add_xr_plugins;
 use bevy_mod_xr::session::{
     XrBeginSessionEvent, XrCreateSessionEvent, XrDestroySessionEvent, XrEndSessionEvent,
-    XrRequestExitEvent, XrSessionCreated, XrSessionPlugin, XrState, XrStateChanged,
+    XrRequestExitEvent, XrSessionCreated, XrSessionPlugin, XrState,
 };
 use bevy_xr_utils::tracking_utils::{
     suggest_action_bindings, TrackingUtilitiesPlugin, XrTrackedLeftGrip, XrTrackedRightGrip,
@@ -109,6 +109,7 @@ fn main() {
         root_config.mcp_enabled_on_startup(args.iter().any(|arg| arg == "--mcp"));
     app.add_plugins(luna::surface::SurfacePlugin);
     app.add_systems(XrSessionCreated, spawn_controllers);
+    app.add_systems(bevy_mod_xr::session::XrPreDestroySession, cleanup_controllers);
     app.insert_resource(RenderMode {
         is_vr: initial_render_mode,
     });
@@ -333,7 +334,7 @@ fn main() {
             .run_if(|rm: Res<RenderMode>| !rm.is_vr)
             .run_if(permissions::desktop_camera_control_enabled),
     );
-    app.add_systems(Update, (xr_session_handler, toggle_render_mode));
+    app.add_systems(Update, xr_session_handler);
     app.add_systems(
         Update,
         touch::desktop_toque_raycast_system
@@ -349,6 +350,7 @@ fn main() {
     app.add_systems(
         Update,
         touch::vr_posemove_system
+            .run_if(|mode: Res<RenderMode>| mode.is_vr)
             .run_if(bevy_mod_openxr::openxr_session_running)
             .run_if(resource_exists::<luna::vr_locomotion::LunaLocomotionActions>),
     );
@@ -498,34 +500,87 @@ fn camera_keyboard_movement_system(
     }
 }
 
+// Reconcile desired mode with current state, including changes made while idle.
+// Retry transient create failures without flooding the runtime every frame.
 fn xr_session_handler(
-    render_mode: Res<RenderMode>,
-    mut state_changed: EventReader<XrStateChanged>,
+    mut render_mode: ResMut<RenderMode>,
+    state: Res<XrState>,
+    time: Res<Time>,
+    mut last: Local<Option<(bool, XrState)>>,
+    mut next_attempt: Local<f64>,
+    mut exit_requested: Local<bool>,
     mut create_session: EventWriter<XrCreateSessionEvent>,
     mut begin_session: EventWriter<XrBeginSessionEvent>,
     mut end_session: EventWriter<XrEndSessionEvent>,
     mut destroy_session: EventWriter<XrDestroySessionEvent>,
+    mut request_exit: EventWriter<XrRequestExitEvent>,
+    mut cameras: Query<&mut Camera, With<DesktopCamera>>,
+    frame: Option<Res<bevy_mod_openxr::resources::OxrFrameState>>,
+    mut controllers: Query<
+        &mut Visibility,
+        Or<(With<XrTrackedLeftGrip>, With<XrTrackedRightGrip>)>,
+    >,
 ) {
-    for XrStateChanged(state) in state_changed.read() {
-        match state {
-            XrState::Available => {
-                if render_mode.is_vr {
-                    create_session.send_default();
-                }
-            }
-            XrState::Ready => {
-                if render_mode.is_vr {
-                    begin_session.send_default();
-                }
-            }
-            XrState::Stopping => {
-                end_session.send_default();
-            }
-            XrState::Exiting { .. } => {
-                destroy_session.send_default();
-            }
-            _ => {}
+    let vr_running = render_mode.is_vr
+        && *state == XrState::Running
+        && frame.is_some_and(|frame| frame.should_render);
+    for mut visibility in &mut controllers {
+        let desired = if vr_running {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *visibility != desired {
+            *visibility = desired;
         }
+    }
+    for mut camera in &mut cameras {
+        if camera.is_active == vr_running {
+            camera.is_active = !vr_running;
+        }
+    }
+    let current = (render_mode.is_vr, *state);
+    let now = time.elapsed_seconds_f64();
+    if *last == Some(current) && now < *next_attempt {
+        return;
+    }
+    *last = Some(current);
+    *next_attempt = now + 2.0;
+    match *state {
+        XrState::Available => {
+            *exit_requested = false;
+            if render_mode.is_vr {
+                create_session.send_default();
+            }
+        }
+        XrState::Ready if render_mode.is_vr => {
+            begin_session.send_default();
+        }
+        XrState::Running if !render_mode.is_vr => {
+            *exit_requested = true;
+            request_exit.send_default();
+        }
+        XrState::Stopping => {
+            end_session.send_default();
+        }
+        XrState::Exiting { should_restart } => {
+            // Runtime/user exit is not device loss. Respect leaving VR instead
+            // of immediately reopening it when cleanup returns Available.
+            if !should_restart && !*exit_requested && render_mode.is_vr {
+                render_mode.is_vr = false;
+            }
+            destroy_session.send_default();
+        }
+        _ => {}
+    }
+}
+
+fn cleanup_controllers(
+    mut commands: Commands,
+    controllers: Query<Entity, Or<(With<XrTrackedLeftGrip>, With<XrTrackedRightGrip>)>>,
+) {
+    for entity in &controllers {
+        commands.entity(entity).despawn_recursive();
     }
 }
 
@@ -664,33 +719,6 @@ fn process_space_unmount_queue(
     unmount_queue.0.extend(deferred);
 }
 
-fn toggle_render_mode(
-    render_mode: Res<RenderMode>,
-    xr_state: Res<XrState>,
-    mut create_session: EventWriter<XrCreateSessionEvent>,
-    mut request_exit: EventWriter<XrRequestExitEvent>,
-    mut desktop_cameras: Query<&mut Camera, With<DesktopCamera>>,
-) {
-    if !render_mode.is_changed() {
-        return;
-    }
-
-    if render_mode.is_vr {
-        for mut cam in desktop_cameras.iter_mut() {
-            cam.is_active = false;
-        }
-        if *xr_state == XrState::Available {
-            create_session.send_default();
-        }
-    } else {
-        for mut cam in desktop_cameras.iter_mut() {
-            cam.is_active = true;
-        }
-        if *xr_state == XrState::Running || *xr_state == XrState::Ready {
-            request_exit.send_default();
-        }
-    }
-}
 
 fn sync_root_mode_resources(
     render_mode: Res<RenderMode>,
@@ -727,5 +755,156 @@ fn sync_root_mode_resources(
 
     if send_result.is_ok() {
         *ran_once = true;
+    }
+}
+
+#[cfg(test)]
+mod xr_lifecycle_tests {
+    use super::*;
+    fn app(state: XrState, vr: bool) -> App {
+        let mut app = App::new();
+        app.insert_resource(state)
+            .insert_resource(RenderMode { is_vr: vr })
+            .insert_resource(Time::<()>::default())
+            .add_event::<XrCreateSessionEvent>()
+            .add_event::<XrBeginSessionEvent>()
+            .add_event::<XrEndSessionEvent>()
+            .add_event::<XrDestroySessionEvent>()
+            .add_event::<XrRequestExitEvent>()
+            .add_systems(Update, xr_session_handler);
+        app.world_mut()
+            .insert_resource(bevy_mod_openxr::resources::OxrFrameState(
+                openxr::FrameState {
+                    predicted_display_time: openxr::Time::from_nanos(1),
+                    predicted_display_period: openxr::Duration::from_nanos(1),
+                    should_render: true,
+                },
+            ));
+        app.world_mut().spawn((Camera::default(), DesktopCamera));
+        app
+    }
+    #[test]
+    fn switching_to_vr_while_already_ready_begins_session() {
+        let mut app = app(XrState::Ready, false);
+        app.update();
+        assert_eq!(
+            app.world().resource::<Events<XrRequestExitEvent>>().len(),
+            0
+        );
+        app.world_mut().resource_mut::<RenderMode>().is_vr = true;
+        app.update();
+        assert_eq!(
+            app.world().resource::<Events<XrBeginSessionEvent>>().len(),
+            1
+        );
+    }
+    #[test]
+    fn create_retries_are_throttled_and_desktop_remains_visible() {
+        let mut app = app(XrState::Available, true);
+        app.update();
+        assert_eq!(
+            app.world().resource::<Events<XrCreateSessionEvent>>().len(),
+            1
+        );
+        app.world_mut()
+            .resource_mut::<Events<XrCreateSessionEvent>>()
+            .clear();
+        app.update();
+        assert!(app
+            .world()
+            .resource::<Events<XrCreateSessionEvent>>()
+            .is_empty());
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs(3));
+        app.update();
+        assert_eq!(
+            app.world().resource::<Events<XrCreateSessionEvent>>().len(),
+            1
+        );
+        let world = app.world_mut();
+        assert!(world.query::<&Camera>().single(world).is_active);
+    }
+    #[test]
+    fn stop_idle_ready_cycle_and_exit_are_reconciled_without_transition_events() {
+        let mut app = app(XrState::Stopping, true);
+        app.update();
+        assert_eq!(app.world().resource::<Events<XrEndSessionEvent>>().len(), 1);
+        app.world_mut().insert_resource(XrState::Idle);
+        app.update();
+        app.world_mut().insert_resource(XrState::Ready);
+        app.update();
+        assert_eq!(
+            app.world().resource::<Events<XrBeginSessionEvent>>().len(),
+            1
+        );
+        app.world_mut().insert_resource(XrState::Running);
+        app.update();
+        {
+            let world = app.world_mut();
+            assert!(!world.query::<&Camera>().single(world).is_active);
+        }
+        app.world_mut().resource_mut::<RenderMode>().is_vr = false;
+        app.update();
+        assert_eq!(
+            app.world().resource::<Events<XrRequestExitEvent>>().len(),
+            1
+        );
+        app.world_mut().insert_resource(XrState::Exiting {
+            should_restart: true,
+        });
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<Events<XrDestroySessionEvent>>()
+                .len(),
+            1
+        );
+    }
+    #[test]
+    fn runtime_exit_does_not_immediately_reopen_vr() {
+        let mut app = app(
+            XrState::Exiting {
+                should_restart: false,
+            },
+            true,
+        );
+        app.update();
+        assert!(!app.world().resource::<RenderMode>().is_vr);
+        app.world_mut().insert_resource(XrState::Available);
+        app.update();
+        assert!(app
+            .world()
+            .resource::<Events<XrCreateSessionEvent>>()
+            .is_empty());
+    }
+    #[test]
+    fn rapid_desktop_vr_toggle_preserves_latest_intent_during_exit() {
+        let mut app = app(XrState::Running, false);
+        app.update();
+        app.world_mut().resource_mut::<RenderMode>().is_vr = true;
+        app.world_mut().insert_resource(XrState::Exiting {
+            should_restart: false,
+        });
+        app.update();
+        assert!(app.world().resource::<RenderMode>().is_vr);
+        app.world_mut().insert_resource(XrState::Available);
+        app.update();
+        assert_eq!(
+            app.world().resource::<Events<XrCreateSessionEvent>>().len(),
+            1
+        );
+    }
+    #[test]
+    fn controller_cleanup_leaves_no_duplicate_targets() {
+        let mut app = App::new();
+        app.add_systems(Update, cleanup_controllers);
+        for _ in 0..3 {
+            app.world_mut().spawn(XrTrackedLeftGrip);
+            app.world_mut().spawn(XrTrackedRightGrip);
+            app.update();
+            let world = app.world_mut();
+            assert_eq!(world.query::<&XrTrackedLeftGrip>().iter(world).count(), 0);
+        }
     }
 }

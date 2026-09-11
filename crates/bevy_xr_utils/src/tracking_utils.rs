@@ -3,7 +3,7 @@ use bevy_mod_openxr::{
     action_binding::{OxrSendActionBindings, OxrSuggestActionBinding}, action_set_attaching::OxrAttachActionSet, action_set_syncing::{OxrActionSetSyncSet, OxrSyncActionSet}, helper_traits::{ToQuat, ToVec3}, openxr_session_available, openxr_session_running, resources::{OxrFrameState, OxrInstance, Pipelined}, session::OxrSession, spaces::{OxrSpaceLocationFlags, OxrSpaceSyncSet}
 };
 use bevy_mod_xr::{
-    session::{session_available, session_running, XrSessionCreated, XrTrackingRoot},
+    session::{session_available, session_running, XrSessionCreated, XrPreDestroySession, XrTrackingRoot},
     spaces::{XrPrimaryReferenceSpace, XrReferenceSpace},
     types::XrPose,
 };
@@ -31,6 +31,7 @@ impl Plugin for TrackingUtilitiesPlugin {
     fn build(&self, app: &mut App) {
         //spawn tracking rig
         app.add_systems(XrSessionCreated, spawn_tracking_rig);
+        app.add_systems(XrPreDestroySession, cleanup_tracking_rig);
 
         //update stage transforms
         //external
@@ -198,6 +199,17 @@ fn update_right_grip(
     }
 }
 
+// Spaces belong to one session; leaving them alive duplicates single-entity
+// queries and retains handles into a destroyed OpenXR session.
+fn cleanup_tracking_rig(
+    mut commands: Commands,
+    entities: Query<Entity, Or<(With<HeadXRSpace>, With<LeftGrip>, With<RightGrip>)>>,
+) {
+    for entity in &entities {
+        commands.entity(entity).despawn_recursive();
+    }
+}
+
 //tracking rig
 #[derive(Resource)]
 pub struct ControllerActions {
@@ -274,4 +286,40 @@ fn create_actions(instance: Res<OxrInstance>, mut cmds: Commands) {
         .unwrap();
 
     cmds.insert_resource(ControllerActions { set, left, right })
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    #[test]
+    fn session_cleanup_removes_internal_grips_but_preserves_root_and_consumers() {
+        let mut app = App::new();
+        app.add_systems(Update, cleanup_tracking_rig);
+        let root = app
+            .world_mut()
+            .spawn((SpatialBundle::default(), XrTrackingRoot))
+            .id();
+        let consumer = app
+            .world_mut()
+            .spawn((SpatialBundle::default(), XrTrackedLeftGrip))
+            .id();
+        for _ in 0..3 {
+            let left = app
+                .world_mut()
+                .spawn((SpatialBundle::default(), LeftGrip))
+                .id();
+            let right = app
+                .world_mut()
+                .spawn((SpatialBundle::default(), RightGrip))
+                .id();
+            app.world_mut()
+                .entity_mut(root)
+                .push_children(&[left, right]);
+            app.update();
+            assert!(app.world().get_entity(left).is_none());
+            assert!(app.world().get_entity(right).is_none());
+            assert!(app.world().get_entity(root).is_some());
+            assert!(app.world().get_entity(consumer).is_some());
+        }
+    }
 }

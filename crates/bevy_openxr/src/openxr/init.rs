@@ -39,7 +39,7 @@ pub fn should_run_frame_loop(
     state: Option<Res<XrState>>,
 ) -> bool {
     started.is_some_and(|started| started.0)
-        && state.is_some_and(|state| *state != XrState::Stopping)
+        && state.is_some_and(|state| matches!(*state, XrState::Ready | XrState::Running))
 }
 
 pub fn should_render(frame_state: Option<Res<OxrFrameState>>) -> bool {
@@ -458,6 +458,15 @@ fn init_xr_session(
 }
 
 pub fn create_xr_session(world: &mut World) {
+    // Pipelined rendering may still own the previous session. Wait for its
+    // cleanup acknowledgement before publishing a new set of GPU resources.
+    if world
+        .resource::<XrDestroySessionRender>()
+        .0
+        .load(Ordering::Relaxed)
+    {
+        return;
+    }
     let mut chain = world
         .remove_non_send_resource::<OxrSessionCreateNextChain>()
         .unwrap();
@@ -489,9 +498,15 @@ pub fn create_xr_session(world: &mut World) {
                     .clone(),
             });
         }
-        Err(e) => error!("Failed to initialize XrSession: {e}"),
+        Err(e) => {
+            error!("Failed to initialize XrSession: {e}");
+            world.insert_non_send_resource(chain);
+            return;
+        }
     }
     world.insert_non_send_resource(chain);
+    world.insert_resource(XrState::Idle);
+    world.send_event(XrStateChanged(XrState::Idle));
     world.run_schedule(XrSessionCreated);
     world.send_event(XrSessionCreatedEvent);
 }
@@ -504,7 +519,13 @@ pub fn destroy_xr_session(world: &mut World) {
     world.remove_resource::<OxrSwapchain>();
     world.remove_resource::<OxrSwapchainImages>();
     world.remove_resource::<OxrGraphicsInfo>();
+    world.remove_resource::<OxrRenderResources>();
+    world.insert_resource(OxrSessionStarted(false));
     world.insert_resource(XrState::Available);
+    // This cleanup also runs in the render world, which has no event queue.
+    if world.contains_resource::<Events<XrStateChanged>>() {
+        world.send_event(XrStateChanged(XrState::Available));
+    }
 }
 
 pub fn begin_xr_session(
@@ -512,12 +533,17 @@ pub fn begin_xr_session(
     // session: Res<OxrSession>, mut session_started: ResMut<OxrSessionStarted>
 ) {
     let _span = info_span!("xr_begin_session");
-    world
-        .get_resource::<OxrSession>()
-        .unwrap()
-        .begin(openxr::ViewConfigurationType::PRIMARY_STEREO)
-        .expect("Failed to begin session");
-    world.get_resource_mut::<OxrSessionStarted>().unwrap().0 = true;
+    let Some(session) = world.get_resource::<OxrSession>() else {
+        return;
+    };
+    if world.resource::<OxrSessionStarted>().0 {
+        return;
+    }
+    if let Err(error) = session.begin(openxr::ViewConfigurationType::PRIMARY_STEREO) {
+        warn!("Unable to begin XR session: {error}");
+        return;
+    }
+    world.resource_mut::<OxrSessionStarted>().0 = true;
     world.run_schedule(XrPostSessionBegin);
 }
 
@@ -528,16 +554,21 @@ pub fn end_xr_session(
     // Maybe this could be an event?
     world.run_schedule(XrPreSessionEnd);
     let _span = info_span!("xr_end_session");
-    world
-        .get_resource::<OxrSession>()
-        .unwrap()
-        .end()
-        .expect("Failed to end session");
-    world.get_resource_mut::<OxrSessionStarted>().unwrap().0 = false;
+    let Some(session) = world.get_resource::<OxrSession>() else {
+        return;
+    };
+    if let Err(error) = session.end() {
+        warn!("Unable to end XR session: {error}");
+        return;
+    }
+    world.resource_mut::<OxrSessionStarted>().0 = false;
 }
 
 pub fn request_exit_xr_session(session: Res<OxrSession>) {
-    session.request_exit().expect("Failed to request exit");
+    if let Err(error) = session.request_exit() {
+        // A state change can race a user request; never terminate the app.
+        warn!("Unable to request XR session exit: {error}");
+    }
 }
 
 /// This is used solely to transport resources from the main world to the render world.
@@ -571,4 +602,33 @@ pub fn transfer_xr_resources(mut commands: Commands, mut world: ResMut<MainWorld
     commands.insert_resource(images);
     commands.insert_resource(graphics_info);
     commands.insert_resource(session_destroy_flag);
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+    #[test]
+    fn frame_loop_never_runs_after_idle_or_session_loss() {
+        let mut world = World::new();
+        world.insert_resource(OxrSessionStarted(true));
+        for state in [
+            XrState::Unavailable,
+            XrState::Available,
+            XrState::Idle,
+            XrState::Stopping,
+            XrState::Exiting {
+                should_restart: true,
+            },
+        ] {
+            world.insert_resource(state);
+            assert!(!world.run_system_once(should_run_frame_loop));
+        }
+        for state in [XrState::Ready, XrState::Running] {
+            world.insert_resource(state);
+            assert!(world.run_system_once(should_run_frame_loop));
+        }
+        world.resource_mut::<OxrSessionStarted>().0 = false;
+        assert!(!world.run_system_once(should_run_frame_loop));
+    }
 }

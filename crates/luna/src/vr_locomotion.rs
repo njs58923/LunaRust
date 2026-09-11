@@ -97,6 +97,7 @@ impl Plugin for VrLocomotionPlugin {
                 )
                     .run_if(openxr_session_running)
                     .run_if(crate::permissions::vr_locomotion_enabled)
+                    .run_if(|mode: Res<crate::RenderMode>| mode.is_vr)
                     .run_if(resource_exists::<LunaLocomotionActions>),
             )
             // Snapshot HMD pose: corre siempre en sesión VR (independiente de

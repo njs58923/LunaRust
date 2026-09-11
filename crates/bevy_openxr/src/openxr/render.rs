@@ -51,7 +51,7 @@ impl Plugin for OxrRenderPlugin {
             XrFirst,
             (
                 wait_frame.run_if(should_run_frame_loop),
-                update_cameras.run_if(should_run_frame_loop),
+                update_cameras,
                 init_views.run_if(resource_added::<OxrSession>),
             )
                 .chain()
@@ -175,19 +175,48 @@ pub fn init_views(
     }
 }
 
-pub fn wait_frame(mut frame_waiter: ResMut<OxrFrameWaiter>, mut commands: Commands) {
+pub fn wait_frame(
+    mut frame_waiter: ResMut<OxrFrameWaiter>,
+    mut commands: Commands,
+    mut state: ResMut<bevy_mod_xr::session::XrState>,
+    mut started: ResMut<OxrSessionStarted>,
+    mut changed: EventWriter<bevy_mod_xr::session::XrStateChanged>,
+    mut cameras: Query<&mut Camera, With<XrCamera>>,
+) {
     let _span = info_span!("xr_wait_frame");
-    let state = frame_waiter.wait().expect("Failed to wait frame");
-    commands.insert_resource(OxrFrameState(state));
+    match frame_waiter.wait() {
+        Ok(frame) => {
+            commands.insert_resource(OxrFrameState(frame));
+        }
+        Err(error) => {
+            warn!("XR frame wait failed; recreating session: {error}");
+            started.0 = false;
+            *state = bevy_mod_xr::session::XrState::Exiting {
+                should_restart: true,
+            };
+            changed.send(bevy_mod_xr::session::XrStateChanged(*state));
+            for mut camera in &mut cameras {
+                camera.is_active = false;
+            }
+        }
+    }
 }
 
 pub fn update_cameras(
-    frame_state: Res<OxrFrameState>,
+    frame_state: Option<Res<OxrFrameState>>,
+    started: Option<Res<OxrSessionStarted>>,
+    state: Res<bevy_mod_xr::session::XrState>,
     mut cameras: Query<&mut Camera, With<XrCamera>>,
 ) {
-    if frame_state.is_changed() {
-        for mut camera in &mut cameras {
-            camera.is_active = frame_state.should_render
+    let active = started.is_some_and(|s| s.0)
+        && matches!(
+            *state,
+            bevy_mod_xr::session::XrState::Ready | bevy_mod_xr::session::XrState::Running
+        )
+        && frame_state.is_some_and(|f| f.should_render);
+    for mut camera in &mut cameras {
+        if camera.is_active != active {
+            camera.is_active = active;
         }
     }
 }
@@ -207,13 +236,18 @@ pub fn locate_views(
     } else {
         frame_state.predicted_display_time
     };
-    let (flags, xr_views) = session
-        .locate_views(
-            openxr::ViewConfigurationType::PRIMARY_STEREO,
-            time,
-            &ref_space,
-        )
-        .expect("Failed to locate views");
+    let located = session.locate_views(
+        openxr::ViewConfigurationType::PRIMARY_STEREO,
+        time,
+        &ref_space,
+    );
+    let (flags, xr_views) = match located {
+        Ok(views) => views,
+        Err(error) => {
+            debug!("XR views temporarily unavailable: {error}");
+            return;
+        }
+    };
 
     match (
         flags & ViewStateFlags::ORIENTATION_VALID == ViewStateFlags::ORIENTATION_VALID,
