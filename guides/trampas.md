@@ -398,6 +398,28 @@ dibujándose sobre el mundo.
 
 ---
 
+**Un `<script src>` que se evalúa antes que su biblioteca muere entero, y lo que
+queda parece que anda.** El caso medido: una sala cuyo script principal hacía
+`Sonido.crearEco()` en el nivel superior. Le ganó la carrera a `sonido.js`,
+murió con `ReferenceError`, y la sala siguió **respondiendo al toque** —el host
+reporta el impacto contra un nodo `touchable` sin importarle si alguien lo
+escucha— pero sin hacer nada. Parecía un problema de lógica; era un script que
+nunca corrió.
+
+La regla que sale de ahí: **nada que cruce archivos puede vivir en el nivel
+superior**. Ni una constante. Todo adentro de la espera:
+
+    (function arranque() {
+      if (typeof Otro === "undefined") return void requestAnimationFrame(arranque);
+      // recién acá
+    })();
+
+Y conviene que la espera se rinda: a los pocos segundos, un `console.error` que
+diga **cuál** de los globales falta. Esperar para siempre y callarse es el mismo
+silencio que el error original.
+
+---
+
 ## Patrones
 
 **Delegar navegación con un mapa de ids.** Es lo que hacen las páginas internas

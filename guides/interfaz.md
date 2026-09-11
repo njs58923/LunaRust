@@ -62,8 +62,13 @@ Comandos: `moveTo` / `lineTo` (`x,y`), `quadraticTo` (`cx,cy,x,y`),
 `bezierTo` (`c1x,c1y,c2x,c2y,x,y`) y `close`. **Cada subtrazo arranca con
 `moveTo`.**
 
-- `positions` son pares **XY**. Para una `MeshResource` hay que pasarlos a XYZ —
-  ver [mallas dinámicas](javascript.md).
+- **`positions` es un arreglo de pares, no un arreglo plano**: `[[x,y], [x,y], …]`,
+  una entrada por vértice (`Vec<[f32; 2]>` del lado Rust). Leerlo como plano da
+  `NaN` en el primer valor, y lo que se ve después es
+  `Mesh attributes must be finite and bounded` — un mensaje que no dice cuál
+  valor ni de qué buffer. Para una `MeshResource` hay que pasar cada par a XYZ.
+  `contours` es lo mismo un nivel más adentro: un arreglo de subtrazos, cada uno
+  un arreglo de pares.
 - `strokeWidth: 0` **rellena**, con regla EvenOdd (o sea, los subtrazos internos
   hacen agujeros) o NonZero si se pide `nonZero: true`.
 - `strokeWidth > 0` **traza**, con puntas y uniones redondeadas.
