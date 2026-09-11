@@ -86,11 +86,20 @@ impl Drop for AgentControl {
     }
 }
 
+/// Las secciones de Ajustes. Cada una es un documento aparte, cargado por un
+/// `<include>` desde `luna://settings`, para que cada seccion corra en su propio
+/// isolate y abrir Ajustes no evalue la logica de todas juntas. Como la
+/// autoridad es la URL del documento que pide, cada seccion tiene que estar en
+/// esta lista **exacta**: una subruta cualquiera (`/evil`) sigue sin autoridad.
+pub const SETTINGS_SECTIONS: [&str; 4] = ["general", "personalizar", "dev", "info"];
+
 pub fn is_settings_document(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|u| {
+        let seccion = u.path().strip_prefix('/').unwrap_or("");
+        let es_seccion = u.host_str() == Some("settings") && SETTINGS_SECTIONS.contains(&seccion);
         u.scheme() == "luna"
             && matches!(u.host_str(), Some("settings" | "agent" | "agent_app"))
-            && matches!(u.path(), "" | "/")
+            && (matches!(u.path(), "" | "/") || es_seccion)
             && u.username().is_empty()
             && u.password().is_none()
             && u.port().is_none()
@@ -456,10 +465,15 @@ mod tests {
     #[test]
     fn settings_scope() {
         assert!(is_settings_document("luna://settings"));
+        for seccion in SETTINGS_SECTIONS {
+            assert!(is_settings_document(&format!("luna://settings/{seccion}")), "{seccion}");
+        }
         for url in [
             "https://settings",
             "luna://settings.evil",
             "luna://settings/evil",
+            "luna://settings/general/evil",
+            "luna://agent/general",
             "luna://user@settings",
         ] {
             assert!(!is_settings_document(url));

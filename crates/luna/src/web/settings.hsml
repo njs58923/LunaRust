@@ -6,7 +6,7 @@
      tablero de 5,4 x 2,8 con todo puesto a mano y despues escalado para caber
      en el slot; cambiar una fila de lugar era recalcular las de abajo.
 
-     Tres cosas de este documento no son decoracion:
+     Cuatro cosas de este documento no son decoracion:
 
      1. **La URL tiene que ser `luna://settings`.** Los dos toggles del MCP no
         estan detras de un permiso sino de una lista blanca de URL en el host
@@ -23,7 +23,12 @@
 
      3. **`UI_CFG` va en linea y antes que `ui.js`.** Un script sin `src` no
         espera a la red y se evalua antes que cualquier externo, y el framework
-        lee la configuracion al cargarse. -->
+        lee la configuracion al cargarse.
+
+     4. **Cada seccion es un include.** El detalle no esta en este documento:
+        es luna://settings/<seccion>, en su propio isolate, para que abrir
+        Ajustes no evalue la logica de todas las secciones juntas. Ver
+        settings_section.hsml. -->
 <hsml>
   <head><name>Luna Settings</name></head>
 
@@ -33,6 +38,14 @@
     <group id="settings_content">
       <model id="ui_malla" material-unlit="true"/>
       <group id="ui_nodos"/>
+      <!-- El detalle: UNA seccion a la vez, en su propio isolate. settings_ui.js
+           le cambia el src al elegir otra y le pasa el hueco por props. Las
+           props de aca son el hueco con la ventana a su tamaño de siempre, para
+           que la primera seccion nazca en su lugar sin esperar un cuadro. Va
+           adentro de settings_content para escalarse junto con la ventana
+           cuando esta embebida. -->
+      <include id="seccion" src="luna://settings/general" events="navegar"
+               props='{"x":0.159,"y":1.518,"z":-1.597,"ancho":1.146,"alto":0.75}'/>
     </group>
 
     <script>

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Una seccion de Ajustes: {{SECCION}}.
+
+     Cada seccion es un documento aparte, cargado por un <include> desde
+     luna://settings. Asi corre en su propio isolate: abrir Ajustes evalua la
+     seccion que se mira y no la logica de las cuatro juntas, y lo que una rompa
+     no se lleva puestas a las otras.
+
+     Tres cosas de este documento no son decoracion:
+
+     1. **La URL tiene que ser luna://settings/{{SECCION}}.** La autoridad para
+        guardar y para prender el MCP no es un permiso sino la URL del documento
+        que lo pide (`is_settings_document`, agent.rs), y cada seccion esta ahi
+        por nombre. Servido desde otro lado, esto se dibuja pero no guarda nada.
+
+     2. **No navega.** Desde un include, location.href navega el propio include
+        y la pagina de destino aparece adentro del hueco de la seccion. Pide
+        navegar con component.emit("navegar") y navega el que la aloja.
+
+     3. **Donde se dibuja lo decide el que la aloja**, por props: x, y, z,
+        ancho, alto. Ajustes le da el hueco del detalle y lo actualiza cuando
+        cambia de tamaño; luna://about le da un panel entero. Plantilla generada
+        por routes.rs: no tiene archivo por seccion. -->
+<hsml>
+  <head><name>Ajustes · {{SECCION}}</name></head>
+
+  <space>
+    <model id="ui_malla" material-unlit="true"/>
+    <group id="ui_nodos"/>
+
+    <script>
+      globalThis.SECCION = "{{SECCION}}";
+      globalThis.UI_CFG = {
+        base: "luna://",
+        distancia: 1.6,
+        C: {
+          fondo: "#3A3C42", piso: "#12121A", reja: "#2A2A3A",
+          superficie: "#1B2028C0", superficieAlta: "#2A3038", borde: "#5A6270",
+          texto: "#FFFFFF", textoTenue: "#A8B0BC",
+          azul: "#0A84FF", rojo: "#FF3B30", verde: "#30D158", amarillo: "#FFD60A",
+          violeta: "#BF5AF2", naranja: "#FF9F0A", cian: "#40E0D0"
+        }
+      };
+    </script>
+    <script src="luna://internal/settings_api.js"/>
+    <script src="luna://internal/ui.js"/>
+    <script src="luna://internal/settings_kit.js"/>
+    <script src="luna://internal/settings_{{SECCION}}.js"/>
+  </space>
+</hsml>

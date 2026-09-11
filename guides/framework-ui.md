@@ -308,8 +308,36 @@ no copies esos números si usás otros `y`/`z`.
 Los toques usan `localX`/`localY` calculados con la inversa de la transformación
 del blanco. El origen de las mallas de texto sigue su profundidad real para
 ordenarlas delante del fondo transparente sin mover sus vértices en el mundo.
-MCP y Navegación conservan la raíz y alternan sus contenidos, evitando recrear
-el panel durante cada cambio de sección.
+
+**Cada sección es un `<include>`.** Ajustes dibuja la lista de secciones y un
+hueco; el detalle es `luna://settings/<sección>`, un documento aparte que corre
+en **su propio isolate**. Antes las cuatro secciones vivían en un solo script:
+abrir Ajustes para mirar una evaluaba la lógica de todas, y un error en
+cualquiera se llevaba puesta la ventana entera.
+
+El que aloja la sección le pasa el hueco por props —`x`, `y`, `z`, `ancho`,
+`alto`— y la sección arma ahí su `UI.Aplicacion`; cuando la ventana cambia de
+tamaño, le manda props nuevas y la sección se recoloca. Hay una sola sección
+montada a la vez: elegir otra le cambia el `src` al include, lo que desmonta la
+anterior y su isolate. Lo que las cuatro comparten —la fila, el grupo, la raya,
+el armado— está en `luna://internal/settings_kit.js`.
+
+Dos cosas que hay que saber antes de copiar el patrón:
+
+- **Una sección no navega.** Desde un include, `location.href` navega el propio
+  include y la página de destino aparece dentro del hueco. Pide navegar con
+  `component.emit("navegar", { url })` y navega el que la aloja.
+- **La autoridad va por URL, no se hereda.** Las escrituras de Ajustes y los
+  interruptores del MCP los autoriza el host mirando la URL del documento que
+  pide (`is_settings_document`), así que cada sección está en una lista cerrada
+  en el motor (`agent::SETTINGS_SECTIONS`). Una subruta que no esté ahí se
+  dibuja igual pero no guarda nada.
+
+El costo es que cada sección evalúa su propia copia del framework: son ~140 kB
+por isolate, y se paga al abrir la sección, no al abrir Ajustes.
+
+`luna://about` es esa misma sección de Información, incluida sola: la
+información del navegador vive en un solo lugar.
 
 ---
 

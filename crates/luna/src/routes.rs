@@ -80,6 +80,13 @@ fn dev_web_read(route_path: &str) -> Option<String> {
     None
 }
 
+/// La ruta sin query ni fragmento. `luna://settings?seccion=info` es el mismo
+/// documento que `luna://settings`: la query la lee la pagina. Sin esto la
+/// busqueda en el mapa fallaba y devolvia el 404.
+fn sin_query(route_path: &str) -> &str {
+    route_path.split(['?', '#']).next().unwrap_or("")
+}
+
 impl VirtualRoutes {
     fn init() -> Self {
         let mut routes = HashMap::new();
@@ -147,6 +154,20 @@ impl VirtualRoutes {
             "internal/settings_ui.js".to_string(),
             RouteHandler::Static(SCRIPT_SETTINGS_UI),
         );
+        // Las secciones de Ajustes: un documento por seccion, cada uno cargado
+        // por un <include> desde luna://settings, para que cada seccion corra
+        // en su propio isolate. El documento es el mismo para las cuatro
+        // —cambia el script—, asi que sale de una plantilla. La lista es la de
+        // `agent::SETTINGS_SECTIONS`: una ruta que no este ahi no tendria
+        // autoridad para guardar nada, y es mejor que no exista.
+        for seccion in crate::agent::SETTINGS_SECTIONS {
+            routes.insert(format!("settings/{seccion}"), RouteHandler::Dynamic(settings_section_document));
+        }
+        routes.insert("internal/settings_kit.js".to_string(), RouteHandler::Static(SCRIPT_SETTINGS_KIT));
+        routes.insert("internal/settings_general.js".to_string(), RouteHandler::Static(SCRIPT_SETTINGS_GENERAL));
+        routes.insert("internal/settings_personalizar.js".to_string(), RouteHandler::Static(SCRIPT_SETTINGS_PERSONALIZAR));
+        routes.insert("internal/settings_dev.js".to_string(), RouteHandler::Static(SCRIPT_SETTINGS_DEV));
+        routes.insert("internal/settings_info.js".to_string(), RouteHandler::Static(SCRIPT_SETTINGS_INFO));
         // La interfaz del shell y su máquina de estados. Las cargan los dos
         // controllers con <script src>, no con <include>: un include es otro
         // documento, con su propio isolate, y desde ahí no se podría hablar con
@@ -222,7 +243,7 @@ impl VirtualRoutes {
     }
 
     pub fn resolve(&self, url: &str) -> Option<String> {
-        let route_path = url.strip_prefix("luna://")?.trim_start_matches('/');
+        let route_path = sin_query(url.strip_prefix("luna://")?.trim_start_matches('/'));
 
         println!(
             "[VirtualRoutes] Resolving: '{}' -> route_path: '{}'",
@@ -263,7 +284,7 @@ impl VirtualRoutes {
     /// documento 404 con estado 200, y un decodificador de audio recibiendo un
     /// HSML falla con un error del formato, no con un 404.
     pub fn resolve_bytes(&self, url: &str) -> Option<(Vec<u8>, bool)> {
-        let route_path = url.strip_prefix("luna://")?.trim_start_matches('/');
+        let route_path = sin_query(url.strip_prefix("luna://")?.trim_start_matches('/'));
         if let Some(RouteHandler::Bytes(data)) = self.routes.get(route_path) {
             return Some((data.to_vec(), true));
         }
@@ -781,44 +802,25 @@ const LUNA_SCALE_DEMO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 const LUNA_SETTINGS: &str = include_str!("web/settings.hsml");
 
 const LUNA_ABOUT: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<!-- Acerca de Luna. La informacion vive en Ajustes, seccion Informacion; esta
+     pagina es la misma seccion, incluida, para que luna://about siga llevando a
+     algun lado y no haya dos versiones de lo mismo. -->
 <hsml>
-  <head>
-    <name>Luna About</name>
-    <meta type="position" x="0" y="0" z="0"/>
-    <meta type="scale" x="1" y="1" z="1"/>
-    <meta type="rotation" x="0" y="0" z="0"/>
-  </head>
+  <head><name>Acerca de Luna</name></head>
   <space resources="navigate_self,spawn">
-    <!-- Where the visitor arrives: the origin, which is where this document
-         already assumed they were - all of its content sits at -Z, ahead.
-         The marker does not move anyone; it pins the arrival so that coming
-         from another world does not drop you facing nowhere. -->
     <spawn id="entrada" default="true" x="0" y="0" z="0" ry="0"/>
-  <plane y="1.6" z="-3.58" sx="5.2" sy="2.6" color="#304B43" touchable="false"/>
-  <text x="0.000" y="2.550" z="-3.5" value="About Luna Browser" size="0.240" />
-  <text x="0.000" y="2.310" z="-3.5" value="Spatial 3D Web Browser" size="0.108" />
-
-  <text x="0.000" y="2.070" z="-3.5" value="Version: 0.1.0-alpha" size="0.084" />
-  <text x="0.000" y="1.950" z="-3.5" value="Built with Bevy 0.14 + OpenXR" size="0.072" />
-
-  <text x="0.000" y="1.710" z="-3.5" value="Features:" size="0.090" color="#4CAF50" />
-  <text x="0.000" y="1.590" z="-3.5" value="- HSML (Spatial HTML) Parsing" size="0.060" />
-  <text x="0.000" y="1.470" z="-3.5" value="- JavaScript Runtime (V8 via deno_core)" size="0.060" />
-  <text x="0.000" y="1.350" z="-3.5" value="- Virtual Protocol Handler (luna://)" size="0.060" />
-  <text x="0.000" y="1.230" z="-3.5" value="- HTTP Caching System" size="0.060" />
-  <text x="0.000" y="1.110" z="-3.5" value="- DevTools with Console" size="0.060" />
-
-  <text x="0.000" y="0.870" z="-3.5" value="Project: Luna Browser by Sam" size="0.066" color="#2196F3" />
-
-  <box x="0.000" y="0.550" z="-3.5" sx="1.2" sy="0.3" sz="0.05" color="#4CAF50" id="btn_home" touchable="true"/>
-  <text x="0.000" y="0.550" z="-3.45" value="Back to Home" size="0.060" />
-
-  <script>
-    const btnHome = hiperspace.dimention.getElementById('btn_home');
-    if (btnHome) btnHome.addEventListener('toque', () => { location.href = 'luna://home'; });
-
-    console.log('[luna://about] About page loaded');
-  </script>
+    <include id="informacion" src="luna://settings/info" events="navegar"
+             props='{"x":0,"y":1.55,"z":-1.6,"ancho":1.2,"alto":0.9,"fondo":true}'/>
+    <script>
+      (function enganchar() {
+        const el = hiperspace.dimention.getElementById('informacion');
+        if (!el) return void requestAnimationFrame(enganchar);
+        el.addEventListener('component:navegar', function (e) {
+          const url = e && e.detail && e.detail.url;
+          if (typeof url === 'string' && url.indexOf('luna://') === 0) location.href = url;
+        });
+      })();
+    </script>
   </space>
 </hsml>"##;
 
@@ -880,6 +882,19 @@ const SCRIPT_EMBEDDED_API: &str = include_str!("web/internal/embedded_api.js");
 const SCRIPT_UI_FRAMEWORK: &str = include_str!("web/internal/ui.js");
 const SCRIPT_SETTINGS_API: &str = include_str!("web/internal/settings_api.js");
 const SCRIPT_SETTINGS_UI: &str = include_str!("web/internal/settings_ui.js");
+const SCRIPT_SETTINGS_KIT: &str = include_str!("web/internal/settings_kit.js");
+const SCRIPT_SETTINGS_GENERAL: &str = include_str!("web/internal/settings_general.js");
+const SCRIPT_SETTINGS_PERSONALIZAR: &str = include_str!("web/internal/settings_personalizar.js");
+const SCRIPT_SETTINGS_DEV: &str = include_str!("web/internal/settings_dev.js");
+const SCRIPT_SETTINGS_INFO: &str = include_str!("web/internal/settings_info.js");
+const SETTINGS_SECTION_TEMPLATE: &str = include_str!("web/settings_section.hsml");
+
+/// El documento de una seccion de Ajustes: la plantilla con el nombre de la
+/// seccion puesto. `path` llega como `settings/<seccion>`.
+fn settings_section_document(path: &str) -> String {
+    let seccion = path.rsplit('/').next().unwrap_or("general");
+    SETTINGS_SECTION_TEMPLATE.replace("{{SECCION}}", seccion)
+}
 const SCRIPT_SHELL_UI: &str = include_str!("web/internal/shell_ui.js");
 const SCRIPT_SHELL_APP: &str = include_str!("web/internal/shell_app.js");
 const SCRIPT_SHELL_DRAW: &str = include_str!("web/internal/shell_draw.js");
@@ -2464,6 +2479,23 @@ mod tests {
     fn resolve_settings_returns_hsml() {
         let content = VIRTUAL_ROUTES.resolve("luna://settings").unwrap();
         assert!(content.contains("<hsml>"));
+    }
+
+    #[test]
+    fn settings_sections_resolve_with_their_own_script() {
+        for seccion in crate::agent::SETTINGS_SECTIONS {
+            let doc = VIRTUAL_ROUTES.resolve(&format!("luna://settings/{seccion}")).unwrap();
+            assert!(doc.contains(&format!("luna://internal/settings_{seccion}.js")), "{seccion}");
+            assert!(!doc.contains("{{SECCION}}"), "{seccion}: quedo la plantilla sin reemplazar");
+            let js = VIRTUAL_ROUTES.resolve(&format!("luna://internal/settings_{seccion}.js")).unwrap();
+            assert!(js.contains("AjustesKit"), "{seccion}: el script no es el de la seccion");
+        }
+        // Una seccion que no esta en la lista no existe: no tendria autoridad.
+        assert!(VIRTUAL_ROUTES.resolve("luna://settings/evil").unwrap().contains("404"));
+        // La query no cambia el documento.
+        assert_eq!(VIRTUAL_ROUTES.resolve("luna://settings?seccion=info"), VIRTUAL_ROUTES.resolve("luna://settings"));
+        // luna://about es la seccion de informacion, incluida.
+        assert!(VIRTUAL_ROUTES.resolve("luna://about").unwrap().contains("luna://settings/info"));
     }
 
     #[test]

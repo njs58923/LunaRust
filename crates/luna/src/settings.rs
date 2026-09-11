@@ -194,6 +194,53 @@ pub fn publish(
         "configPath": RootConfig::path().display().to_string(),
         "rootUrl": root_url,
         "permissions": permisos,
+        "about": acerca_de(),
     })
     .to_string()
+}
+
+/** Las bibliotecas que la seccion de informacion nombra, con su version.
+ *
+ *  Estan escritas aca y no leidas de Cargo.lock en tiempo de compilacion
+ *  porque no hay un `env!` para la version de una dependencia. Para que no se
+ *  desactualicen en silencio, `bibliotecas_coinciden_con_cargo_toml` las
+ *  compara contra los Cargo.toml: la pagina vieja de "acerca de" decia
+ *  "0.1.0-alpha" con el workspace en 0.1.1, y nadie se entero. */
+pub const BIBLIOTECAS: [(&str, &str); 3] = [
+    ("Bevy", "0.14"),
+    ("OpenXR", "0.18"),
+    ("V8 (deno_core)", "0.249"),
+];
+
+fn acerca_de() -> serde_json::Value {
+    serde_json::json!({
+        // La version sale del workspace, no de un literal.
+        "version": env!("CARGO_PKG_VERSION"),
+        "perfil": if cfg!(debug_assertions) { "debug" } else { "release" },
+        "sistema": std::env::consts::OS,
+        "arquitectura": std::env::consts::ARCH,
+        "bibliotecas": BIBLIOTECAS.iter()
+            .map(|(nombre, version)| serde_json::json!({ "nombre": nombre, "version": version }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bibliotecas_coinciden_con_cargo_toml() {
+        let raiz = include_str!("../../../Cargo.toml");
+        let luna = include_str!("../Cargo.toml");
+        let js = include_str!("../../js_runtime/Cargo.toml");
+        for (nombre, version, texto, clave) in [
+            ("Bevy", super::BIBLIOTECAS[0].1, raiz, "bevy = { version = \""),
+            ("OpenXR", super::BIBLIOTECAS[1].1, luna, "openxr = { version = \""),
+            ("V8 (deno_core)", super::BIBLIOTECAS[2].1, js, "deno_core = \""),
+        ] {
+            let desde = texto.find(clave).unwrap_or_else(|| panic!("no encuentro {clave}"));
+            let real = &texto[desde + clave.len()..];
+            assert!(real.starts_with(version), "{nombre}: la pagina dice {version}, Cargo.toml dice {}", &real[..8]);
+        }
+    }
 }
