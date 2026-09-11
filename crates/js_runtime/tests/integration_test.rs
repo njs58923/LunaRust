@@ -84,6 +84,30 @@ mod tests {
     }
 
     #[test]
+    fn set_interval_repeats_until_cleared() -> Result<()> {
+        let mut eng = Engine::new();
+        eng.eval(r#"
+            globalThis.n = 0;
+            globalThis.parada = 0;
+            globalThis.id = setInterval(() => {
+                n++;
+                if (n === 3) { clearInterval(id); parada = n; }
+            }, 5);
+        "#)?;
+        for i in 0..12 {
+            std::thread::sleep(Duration::from_millis(15));
+            eng.fire_raf((i as f64) * 16.67);
+        }
+        // Dispara al menos tres veces y ninguna despues de clearInterval. Antes
+        // de este cambio setInterval no existia y el eval de arriba fallaba.
+        eng.eval(r#"
+            if (parada !== 3) throw new Error("no llego a 3: n=" + n);
+            if (n !== 3) throw new Error("siguio despues de clearInterval: n=" + n);
+        "#)?;
+        Ok(())
+    }
+
+    #[test]
     fn test_run_js_string() -> Result<()> {
         let script = r#"
             "hello, world!";

@@ -2242,6 +2242,28 @@ const BOOTSTRAP_JS: &str = r#"
     callbacks.delete(id|0);
   };
 
+  // setInterval sobre setTimeout: cada disparo agenda el siguiente. Faltaba, y
+  // un script que lo usaba moria entero con ReferenceError apenas llegaba a esa
+  // linea. El id es estable aunque cada vuelta use un timeout nuevo; `vivos`
+  // guarda cual es el pendiente para que clearInterval lo encuentre.
+  const vivos = new Map();
+  global.setInterval = (cb, ms = 0, ...args) => {
+    const id = nextId++;
+    const espera = Math.max(1, ms|0);
+    const vuelta = () => {
+      if (!vivos.has(id)) return;
+      vivos.set(id, global.setTimeout(vuelta, espera));
+      cb(...args);
+    };
+    vivos.set(id, global.setTimeout(vuelta, espera));
+    return id;
+  };
+  global.clearInterval = (id) => {
+    const t = vivos.get(id|0);
+    vivos.delete(id|0);
+    if (t !== undefined) global.clearTimeout(t);
+  };
+
   const rafCallbacks = new Map();
   global.requestAnimationFrame = (cb) => {
     const id = nextId++;
