@@ -69,6 +69,11 @@ fn intersect_shape(
     scale: Vec3,
     shape: HitShape,
 ) -> Option<(f32, Vec3)> {
+    let scale = scale.abs();
+    if !ray_origin.is_finite() || !ray_dir.is_finite() || !entity_pos.is_finite()
+        || !scale.is_finite() || !rotation.is_finite() || ray_dir.length_squared() == 0.0 {
+        return None;
+    }
     match shape {
         HitShape::Sphere => {
             let radius = scale.max_element() * 0.5;
@@ -80,7 +85,9 @@ fn intersect_shape(
             if discriminant < 0.0 {
                 return None;
             }
-            let t = (-b - discriminant.sqrt()) / (2.0 * a);
+            let root = discriminant.sqrt();
+            let entry = (-b - root) / (2.0 * a);
+            let t = if entry > 0.0 { entry } else { (-b + root) / (2.0 * a) };
             if t <= 0.0 {
                 return None;
             }
@@ -93,24 +100,23 @@ fn intersect_shape(
             let ld = inv_rot * ray_dir;
             let half = scale * 0.5;
 
-            // Slab method with safe divisions.
-            let safe = |v: f32| if v.abs() > 1e-8 { v } else { 1e-8 };
-            let inv = Vec3::new(1.0 / safe(ld.x), 1.0 / safe(ld.y), 1.0 / safe(ld.z));
-
-            let t1 = (-half - lo) * inv;
-            let t2 = (half - lo) * inv;
-            let tmin = t1.min(t2);
-            let tmax = t1.max(t2);
-            let t_enter = tmin.x.max(tmin.y).max(tmin.z);
-            let t_exit = tmax.x.min(tmax.y).min(tmax.z);
-
-            if t_exit < t_enter.max(0.0) {
-                return None;
+            // Parallel axes constrain membership without invented directions.
+            // This also handles rays exactly on a face without 0 * infinity.
+            let mut t_enter = f32::NEG_INFINITY;
+            let mut t_exit = f32::INFINITY;
+            for axis in 0..3 {
+                if ld[axis] == 0.0 {
+                    if lo[axis].abs() > half[axis] { return None; }
+                    continue;
+                }
+                let t1 = (-half[axis] - lo[axis]) / ld[axis];
+                let t2 = (half[axis] - lo[axis]) / ld[axis];
+                t_enter = t_enter.max(t1.min(t2));
+                t_exit = t_exit.min(t1.max(t2));
+                if t_enter > t_exit { return None; }
             }
-            let t = t_enter.max(0.0);
-            if t <= 0.0 {
-                return None;
-            }
+            let t = if t_enter > 0.0 { t_enter } else { t_exit };
+            if t <= 0.0 || !t.is_finite() { return None; }
             Some((t, ray_origin + ray_dir * t))
         }
         HitShape::Plane => {
@@ -149,6 +155,7 @@ fn contains_point(
     scale: Vec3,
     shape: HitShape,
 ) -> bool {
+    let scale = scale.abs();
     match shape {
         HitShape::Sphere => {
             let radius = scale.max_element() * 0.5;
@@ -294,7 +301,7 @@ pub fn dispatch_hover_events_to_js(
 pub fn desktop_toque_raycast_system(
     mouse_button: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    camera_query: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::agent::SpectatorCamera>)>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<crate::DesktopCamera>>,
     // InheritedVisibility refleja la cadena Visibility::Inherited/Hidden/Visible
     // propagada por Bevy en PostUpdate. Si un ancestro está Hidden, todos los
     // descendientes (incluso con Visible explícito) leen `iv.get() == false`.
@@ -324,6 +331,7 @@ pub fn desktop_toque_raycast_system(
         return;
     };
 
+    if !camera.is_active { return; }
     let Some(ray) = camera.viewport_to_world(camera_transform, cursor_pos) else {
         return;
     };
@@ -739,6 +747,25 @@ pub fn dispatch_posemove_events_to_js(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pointer_shapes_support_mirroring_parallel_rays_and_inside_origins() {
+        use super::*;
+        for shape in [HitShape::Plane, HitShape::Box, HitShape::Sphere] {
+            let positive = intersect_shape(Vec3::Z * 3.0, Vec3::NEG_Z, Vec3::ZERO, Quat::IDENTITY, Vec3::splat(2.0), shape).unwrap();
+            let mirrored = intersect_shape(Vec3::Z * 3.0, Vec3::NEG_Z, Vec3::ZERO, Quat::IDENTITY, Vec3::splat(-2.0), shape).unwrap();
+            assert_eq!(positive, mirrored);
+            assert!(contains_point(Vec3::ZERO, Vec3::ZERO, Quat::IDENTITY, Vec3::splat(-2.0), shape));
+            assert!(intersect_shape(Vec3::Z, Vec3::ZERO, Vec3::ZERO, Quat::IDENTITY, Vec3::ONE, shape).is_none());
+        }
+        for shape in [HitShape::Box, HitShape::Sphere] {
+            let (distance, _) = intersect_shape(Vec3::ZERO, Vec3::X, Vec3::ZERO, Quat::IDENTITY, Vec3::splat(2.0), shape).unwrap();
+            assert!((distance - 1.0).abs() < 1e-6);
+        }
+        assert!(intersect_shape(Vec3::new(2.0, 0.0, 3.0), Vec3::NEG_Z, Vec3::ZERO, Quat::IDENTITY, Vec3::splat(2.0), HitShape::Box).is_none());
+        let (distance, _) = intersect_shape(Vec3::new(1.0, 0.0, 3.0), Vec3::NEG_Z, Vec3::ZERO, Quat::IDENTITY, Vec3::splat(2.0), HitShape::Box).unwrap();
+        assert_eq!(distance, 2.0);
+    }
+
     #[test]
     fn pointer_geometry_cache_only_changes_when_source_changes() {
         use super::*;
