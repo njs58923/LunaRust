@@ -93,8 +93,14 @@ fn invalidate(world: &mut World, sources: &HashSet<String>) {
 }
 
 pub fn apply_commands(world: &mut World, owner: u32, scope: u64, commands: Vec<MeshCommand>) {
-    if commands.is_empty() && !world.contains_resource::<DynamicMeshes>() {
-        return;
+    if commands.is_empty() {
+        // Most isolate ticks have no mesh work. Still process a changed scope:
+        // a restarted isolate must release the previous generation's resources.
+        match world.get_resource::<DynamicMeshes>() {
+            None => return,
+            Some(registry) if registry.scopes.get(&owner) == Some(&scope) => return,
+            _ => {}
+        }
     }
     world.init_resource::<DynamicMeshes>();
     let worker = world.get_non_send_resource::<crate::js::ScriptRuntimeManager>()
@@ -213,4 +219,23 @@ pub fn cleanup_contexts(world: &mut World) {
         }
     });
     invalidate(world, &removed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn empty_mesh_ticks_preserve_change_detection_but_process_scope_changes() {
+        let mut world = World::new();
+        apply_commands(&mut world, 1, 10, Vec::new());
+        assert!(!world.contains_resource::<DynamicMeshes>());
+        world.init_resource::<DynamicMeshes>();
+        apply_commands(&mut world, 1, 10, Vec::new());
+        world.clear_trackers();
+        apply_commands(&mut world, 1, 10, Vec::new());
+        assert!(!world.get_resource_ref::<DynamicMeshes>().unwrap().is_changed());
+        apply_commands(&mut world, 1, 11, Vec::new());
+        assert_eq!(world.resource::<DynamicMeshes>().scopes.get(&1), Some(&11));
+        assert!(world.get_resource_ref::<DynamicMeshes>().unwrap().is_changed());
+    }
 }
