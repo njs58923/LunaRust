@@ -980,9 +980,21 @@ fn sync_space_handle_table(table: &mut SpaceHandleTable, space_id: u32, allowed:
     }
 }
 
+/// Borrow the DOM's existing membership map in production. Tests can provide a
+/// set; neither path needs to copy every attached ID for an incremental update.
+trait AttachedNodeIds {
+    fn contains(&self, id: &u32) -> bool;
+}
+impl AttachedNodeIds for HashSet<u32> {
+    fn contains(&self, id: &u32) -> bool { HashSet::contains(self, id) }
+}
+impl<V> AttachedNodeIds for HashMap<u32, V> {
+    fn contains(&self, id: &u32) -> bool { self.contains_key(id) }
+}
+
 fn build_dom_mirror_from_specs(
     specs_world: &specs::World,
-    attached_node_ids: &HashSet<u32>,
+    attached_node_ids: &impl AttachedNodeIds,
     previous_version: u64,
 ) -> DomMirror {
     let entities = specs_world.entities();
@@ -1209,9 +1221,10 @@ fn mirror_descendants(mirror: &DomMirror, roots: &HashSet<i32>) -> HashSet<i32> 
 }
 
 fn update_space_membership(mirror: &mut DomMirror, affected: &HashSet<i32>, insert: bool) {
+    let mut visited = Vec::new();
     for &id in affected {
         let mut cursor = id;
-        let mut visited = Vec::new();
+        visited.clear();
         while let Some(node) = mirror.nodes.get(&cursor) {
             if visited.contains(&cursor) {
                 break;
@@ -1259,7 +1272,7 @@ fn changed_child_roots(old: &[i32], new: &[i32], roots: &mut HashSet<i32>) {
 fn refresh_dom_mirror_in_place(
     mirror: &mut DomMirror,
     specs_world: &specs::World,
-    attached_node_ids: &HashSet<u32>,
+    attached_node_ids: &impl AttachedNodeIds,
     force_rebuild: bool,
     touched_nodes: &HashSet<u32>,
     removed_nodes: &HashSet<u32>,
@@ -1767,11 +1780,6 @@ pub fn js_update_snapshots_system(world: &mut World) {
         return;
     }
 
-    let attached_node_ids: HashSet<u32> = world
-        .get_resource::<VirtualDomData>()
-        .map(|dom| dom.nodes.keys().copied().collect())
-        .unwrap_or_default();
-
     let (force_mirror_rebuild, touched_mirror_nodes, removed_mirror_nodes) = world
         .get_resource_mut::<DomMirrorDirty>()
         .map(|mut dirty| dirty.take())
@@ -1786,14 +1794,49 @@ pub fn js_update_snapshots_system(world: &mut World) {
         .unwrap_or(true);
     let requires_full_snapshot = force_mirror_rebuild || snapshot_forces_mirror_rebuild;
     world.resource_scope(|world, mut mirror: Mut<DomMirror>| {
+        let requires_full_snapshot = {
+            // El mirror se mantiene INCREMENTAL (touched/removed). Sólo se fuerza
+            // full por motivos genuinos: navegación / bootstrap del recurso. Los
+            // adds entran vía touched (nodo+padre en commit_pending_js_attaches) y
+            // los removes vía removed, así que `node_count_changed` ya NO fuerza
+            // full — antes era O(N) por cada add (10k) aunque sólo cambiaran 25.
+            let empty = HashMap::new();
+            let attached_node_ids = world.get_resource::<VirtualDomData>()
+                .map(|dom| &dom.nodes).unwrap_or(&empty);
+            let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
+                return;
+            };
+            refresh_dom_mirror_in_place(
+                &mut mirror,
+                &specs_world.0,
+                attached_node_ids,
+                requires_full_snapshot,
+                &touched_mirror_nodes,
+                &removed_mirror_nodes,
+            );
+            // Red de seguridad anti-desync: si tras el refresh incremental el conteo
+            // no coincide, algún productor dejó touched/removed incompletos. Full
+            // rebuild UNA vez (correctness > velocidad ante bug). Si esto se queda
+            // pegado en true en el panel, hay un productor que no marca dirty.
+            let desynced = mirror.nodes.len() != attached_node_ids.len();
+            if !requires_full_snapshot && desynced {
+                refresh_dom_mirror_in_place(
+                    &mut mirror,
+                    &specs_world.0,
+                    attached_node_ids,
+                    true,
+                    &HashSet::new(),
+                    &HashSet::new(),
+                );
+            }
+            requires_full_snapshot || desynced
+        };
         sync_snapshots_with_mirror(
             world,
             &mut mirror,
             snapshot_start,
-            &attached_node_ids,
             requires_full_snapshot,
             &touched_mirror_nodes,
-            &removed_mirror_nodes,
         );
     });
 }
@@ -1825,44 +1868,9 @@ fn sync_snapshots_with_mirror(
     world: &mut World,
     mirror: &mut DomMirror,
     snapshot_start: Instant,
-    attached_node_ids: &HashSet<u32>,
     requires_full_snapshot: bool,
     touched_mirror_nodes: &HashSet<u32>,
-    removed_mirror_nodes: &HashSet<u32>,
 ) {
-    // El mirror se mantiene INCREMENTAL (touched/removed). Sólo se fuerza
-    // full por motivos genuinos: navegación / bootstrap del recurso. Los
-    // adds entran vía touched (nodo+padre en commit_pending_js_attaches) y
-    // los removes vía removed, así que `node_count_changed` ya NO fuerza
-    // full — antes era O(N) por cada add (10k) aunque sólo cambiaran 25.
-    let Some(specs_world) = world.get_resource::<ElemenetWorld>() else {
-        return;
-    };
-    refresh_dom_mirror_in_place(
-        mirror,
-        &specs_world.0,
-        attached_node_ids,
-        requires_full_snapshot,
-        touched_mirror_nodes,
-        removed_mirror_nodes,
-    );
-    // Red de seguridad anti-desync: si tras el refresh incremental el conteo
-    // no coincide, algún productor dejó touched/removed incompletos. Full
-    // rebuild UNA vez (correctness > velocidad ante bug). Si esto se queda
-    // pegado en true en el panel, hay un productor que no marca dirty.
-    let desynced = mirror.nodes.len() != attached_node_ids.len();
-    if !requires_full_snapshot && desynced {
-        refresh_dom_mirror_in_place(
-            mirror,
-            &specs_world.0,
-            attached_node_ids,
-            true,
-            &HashSet::new(),
-            &HashSet::new(),
-        );
-    }
-    let requires_full_snapshot = requires_full_snapshot || desynced;
-
     let mut active_space_ids = scripted_space_ids(mirror);
     if let Some(pending) = world.get_resource::<PendingScripts>() {
         active_space_ids.extend(pending.0.iter().map(|(id, _, _)| *id));
@@ -1880,6 +1888,7 @@ fn sync_snapshots_with_mirror(
     let fallback_url = world.get_resource::<crate::CurrentUrl>()
         .map(|u| u.0.as_str()).unwrap_or("");
     let existing_manager = world.get_non_send_resource::<ScriptRuntimeManager>();
+    let Some(specs_world) = world.get_resource::<ElemenetWorld>() else { return; };
     let document_urls: HashMap<u32, String> = active_space_ids.iter()
         .filter(|id| !existing_manager.is_some_and(|m| m.contexts.contains_key(id)))
         .map(|&id| {
@@ -3968,7 +3977,7 @@ mod tests {
         let owners = world.read_storage::<Hierarchy>().get(root).unwrap().children.clone();
         let include = world.read_storage::<Hierarchy>().get(owners[0]).unwrap().children[0];
         let script = world.read_storage::<Hierarchy>().get(owners[1]).unwrap().children[0];
-        let mut attached: HashSet<u32> = world.entities().join().map(|e| e.id()).collect();
+        let mut attached: HashMap<u32, _> = world.entities().join().map(|e| (e.id(), e)).collect();
         let mut mirror = build_dom_mirror_from_specs(&world, &attached, 0);
         assert_eq!(scripted_space_ids(&mirror), HashSet::from([owners[1].id()]));
         world.write_storage::<Attrs>().get_mut(include).unwrap().0.insert("props".into(), "{}".into());
@@ -4095,7 +4104,7 @@ mod tests {
             touched: HashSet<u32>,
             removed: HashSet<u32>,
         ) {
-            let attached = world.entities().join().map(|e| e.id()).collect();
+            let attached: HashSet<u32> = world.entities().join().map(|e| e.id()).collect();
             refresh_dom_mirror_in_place(mirror, world, &attached, false, &touched, &removed);
             let full = build_dom_mirror_from_specs(world, &attached, 0);
             assert_eq!(mirror.space_subtrees, full.space_subtrees);
@@ -4121,7 +4130,7 @@ mod tests {
             .children
             .clone();
         let (left, right) = (children[0], children[1]);
-        let attached = world.entities().join().map(|e| e.id()).collect();
+        let attached: HashSet<u32> = world.entities().join().map(|e| e.id()).collect();
         let mut mirror = build_dom_mirror_from_specs(&world, &attached, 0);
         for iteration in 0..32 {
             let before: HashSet<u32> = world.entities().join().map(|e| e.id()).collect();
