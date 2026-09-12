@@ -4,6 +4,7 @@ use fontdue::layout::{CoordinateSystem, GlyphRasterConfig, Layout, LayoutSetting
 use fontdue::{Font, FontSettings};
 use serde::Serialize;
 use std::{
+    cell::RefCell,
     collections::HashMap,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -96,6 +97,11 @@ impl Atlas {
         Ok(slot)
     }
 }
+thread_local! {
+    // Each isolate/host thread keeps its layout scratch buffers. reset() clears
+    // text and settings while preserving capacity, without a shared layout lock.
+    static TEXT_LAYOUT: RefCell<Layout> = RefCell::new(Layout::new(CoordinateSystem::PositiveYDown));
+}
 pub fn layout(text: &str, size: f32, width: Option<f32>) -> Result<TextLayout, String> {
     if text.len() > 16384
         || !size.is_finite()
@@ -105,39 +111,48 @@ pub fn layout(text: &str, size: f32, width: Option<f32>) -> Result<TextLayout, S
     {
         return Err("Invalid text layout bounds".into());
     }
-    let scale = size / LINE;
-    let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
-    layout.reset(&LayoutSettings {
-        max_width: width.map(|w| w / scale),
-        ..Default::default()
-    });
-    layout.append(&[get_text_font()], &TextStyle::new(text, FONT_PX, 0));
-    let mut atlas = atlas().lock().map_err(|_| "UI atlas lock poisoned")?;
-    let mut out = TextLayout {
-        w: 0.0,
-        h: if text.is_empty() { 0.0 } else { size },
-        glyphs: Vec::new(),
-    };
-    for g in layout.glyphs() {
-        out.w = out.w.max((g.x + g.width as f32) * scale);
-        out.h = out.h.max((g.y + g.height as f32) * scale);
-        if g.width == 0 || g.height == 0 {
-            continue;
-        }
-        let s = atlas.insert(g.key)?;
-        out.glyphs.push(GlyphQuad {
-            x: g.x * scale,
-            y: g.y * scale,
-            w: g.width as f32 * scale,
-            h: g.height as f32 * scale,
-            u: s.x as f32 / SIDE as f32,
-            v: s.y as f32 / SIDE as f32,
-            uw: s.w as f32 / SIDE as f32,
-            vh: s.h as f32 / SIDE as f32,
-            page: s.page,
+    if text.is_empty() {
+        return Ok(TextLayout {
+            w: 0.0,
+            h: 0.0,
+            glyphs: Vec::new(),
         });
     }
-    Ok(out)
+    TEXT_LAYOUT.with(|scratch| {
+        let scale = size / LINE;
+        let mut layout = scratch.borrow_mut();
+        layout.reset(&LayoutSettings {
+            max_width: width.map(|w| w / scale),
+            ..Default::default()
+        });
+        layout.append(&[get_text_font()], &TextStyle::new(text, FONT_PX, 0));
+        let mut atlas = atlas().lock().map_err(|_| "UI atlas lock poisoned")?;
+        let mut out = TextLayout {
+            w: 0.0,
+            h: if text.is_empty() { 0.0 } else { size },
+            glyphs: Vec::new(),
+        };
+        for g in layout.glyphs() {
+            out.w = out.w.max((g.x + g.width as f32) * scale);
+            out.h = out.h.max((g.y + g.height as f32) * scale);
+            if g.width == 0 || g.height == 0 {
+                continue;
+            }
+            let s = atlas.insert(g.key)?;
+            out.glyphs.push(GlyphQuad {
+                x: g.x * scale,
+                y: g.y * scale,
+                w: g.width as f32 * scale,
+                h: g.height as f32 * scale,
+                u: s.x as f32 / SIDE as f32,
+                v: s.y as f32 / SIDE as f32,
+                uw: s.w as f32 / SIDE as f32,
+                vh: s.h as f32 / SIDE as f32,
+                page: s.page,
+            });
+        }
+        Ok(out)
+    })
 }
 #[derive(Clone, Serialize)]
 pub struct GlyphQuad {
@@ -185,6 +200,32 @@ pub fn changed_pages(revisions: &HashMap<usize, u64>) -> Vec<(usize, u64, Vec<u8
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reused_text_layout_resets_wrapping_and_isolates_threads() {
+        let baseline = layout("Ajustes", 0.1, None).unwrap();
+        for _ in 0..8 {
+            let wrapped = layout("muchas palabras para envolver", 0.2, Some(0.3)).unwrap();
+            assert!(wrapped.h > baseline.h);
+            let empty = layout("", 0.2, Some(0.3)).unwrap();
+            assert!(empty.glyphs.is_empty());
+            assert_eq!((empty.w, empty.h), (0.0, 0.0));
+            let other = std::thread::spawn(|| layout("Ajustes", 0.1, None).unwrap())
+                .join()
+                .unwrap();
+            let again = layout("Ajustes", 0.1, None).unwrap();
+            for result in [other, again] {
+                assert_eq!((result.w, result.h), (baseline.w, baseline.h));
+                assert_eq!(result.glyphs.len(), baseline.glyphs.len());
+                for (a, b) in result.glyphs.iter().zip(&baseline.glyphs) {
+                    assert_eq!(
+                        (a.x, a.y, a.w, a.h, a.u, a.v, a.page),
+                        (b.x, b.y, b.w, b.h, b.u, b.v, b.page)
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn ui_text_real_metrics_and_stable_atlas() {
         let narrow = layout("iiii", 0.1, None).unwrap();
