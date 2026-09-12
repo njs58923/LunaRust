@@ -28,6 +28,7 @@ pub struct MeshQueue {
     pub scope: u64,
     next: u64,
     sizes: HashMap<String, usize>,
+    total_bytes: usize,
     pending: HashMap<String, MeshCommand>,
 }
 impl Default for MeshQueue {
@@ -37,6 +38,7 @@ impl Default for MeshQueue {
             scope: NEXT.fetch_add(1, Ordering::Relaxed),
             next: 0,
             sizes: HashMap::new(),
+            total_bytes: 0,
             pending: HashMap::new(),
         }
     }
@@ -50,7 +52,7 @@ impl MeshQueue {
             return Err("Unknown or disposed mesh in this isolate".into());
         }
         if action == "dispose" {
-            self.sizes.remove(src);
+            self.total_bytes -= self.sizes.remove(src).unwrap();
             self.pending
                 .insert(src.into(), MeshCommand::Dispose(src.into()));
             return Ok(src.into());
@@ -75,10 +77,11 @@ impl MeshQueue {
             } else {
                 0
             };
-        if bytes > MAX_BYTES
-            || self.sizes.values().sum::<usize>() - self.sizes.get(src).copied().unwrap_or(0)
-                + bytes
-                > MAX_BYTES
+        // Only an update replaces existing storage. A create must never borrow
+        // another resource's quota, even if a caller supplies its URL.
+        let previous_bytes = if action == "update" { self.sizes[src] } else { 0 };
+        let retained_bytes = self.total_bytes - previous_bytes;
+        if bytes > MAX_BYTES || bytes > MAX_BYTES - retained_bytes
         {
             return Err("Mesh memory quota exceeded".into());
         }
@@ -89,6 +92,7 @@ impl MeshQueue {
         } else {
             src.into()
         };
+        self.total_bytes = retained_bytes + bytes;
         self.sizes.insert(src.clone(), bytes);
         self.pending
             .insert(src.clone(), MeshCommand::Upload(src.clone(), data));
@@ -216,6 +220,35 @@ mod tests {
             .is_err());
         assert_eq!(queue.drain().1.len(), MAX_RESOURCES);
     }
+    #[test]
+    fn mesh_quota_tracks_replacements_failures_and_disposals() {
+        let mut queue = MeshQueue::default();
+        let p = triangle();
+        let buffers = [&p[..], &[][..], &[][..], &[][..], &[][..]];
+        let a = queue.submit("create", "", buffers).unwrap();
+        let bytes = queue.total_bytes;
+        assert_eq!(bytes, p.len() * 2 + p.len() / 3);
+        let b = queue.submit("create", &a, buffers).unwrap();
+        assert_eq!(queue.total_bytes, bytes * 2);
+        queue.submit("update", &a, buffers).unwrap();
+        assert_eq!(queue.total_bytes, bytes * 2);
+        assert!(queue.submit("update", &a, [&[1u8][..], &[], &[], &[], &[]]).is_err());
+        assert_eq!(queue.total_bytes, bytes * 2);
+        queue.drain();
+        assert_eq!(queue.total_bytes, bytes * 2);
+        queue.submit("dispose", &a, buffers).unwrap();
+        assert_eq!(queue.total_bytes, bytes);
+        assert!(queue.submit("dispose", &a, buffers).is_err());
+        queue.submit("dispose", &b, buffers).unwrap();
+        assert_eq!(queue.total_bytes, 0);
+        // Exercise the limit without allocating 64 MiB for a bookkeeping test.
+        queue.sizes.insert(a.clone(), MAX_BYTES);
+        queue.total_bytes = MAX_BYTES;
+        assert!(queue.submit("create", &a, buffers).is_err());
+        queue.submit("update", &a, buffers).unwrap();
+        assert_eq!(queue.total_bytes, bytes);
+    }
+
     #[test]
     fn javascript_typed_upload_copies_and_coalesces_and_revokes() {
         let mut engine = crate::Engine::new();
