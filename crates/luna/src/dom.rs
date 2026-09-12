@@ -1016,8 +1016,6 @@ pub fn apply_attribute_updates(
                         _ => {}
                     }
                 }
-            } else {
-                a.0.insert(key.clone(), val.clone());
             }
         }
 
@@ -1099,6 +1097,13 @@ pub fn apply_attribute_updates(
 
         if is_attached && matches!(key.as_str(), "resources" | "system-space") {
             space_policies.dirty = true;
+        }
+        if val != ATTR_DELETE_SENTINEL {
+            if let Some(a) = attrs_storage.get_mut(ent) {
+                // Derived state has consumed its borrowed views; transfer the
+                // queued strings into the DOM instead of cloning every update.
+                a.0.insert(key, val);
+            }
         }
     }
 }
