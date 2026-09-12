@@ -2057,6 +2057,12 @@ fn sync_snapshots_with_mirror(
             let needs_full = dispatch_full_snapshots
                 || created_contexts.contains(space_id)
                 || !table.bootstrapped;
+            if !needs_full && table.pending_touched_globals.is_empty()
+                && table.pending_removed_locals.is_empty() {
+                // A different space changed. Do not wake this isolate just to
+                // apply an empty patch and acknowledge it on the next frame.
+                continue;
+            }
             let batch = if needs_full {
                 SnapshotBatch::Full(build_local_space_snapshot_from_mirror(
                     *space_id, allowed, table, &mirror,
@@ -5199,6 +5205,36 @@ mod tests {
             matches!(cmd_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
             "without new DOM changes the next frame must not redispatch another snapshot"
         );
+    }
+
+    #[test]
+    fn changing_one_space_does_not_send_empty_patches_to_other_spaces() {
+        let (mut app, spaces) = snapshot_test_app_with_spaces(2);
+        let (a, a_commands, a_events) = fake_worker(false);
+        let (b, b_commands, b_events) = fake_worker(false);
+        {
+            let mut manager = app.world_mut().non_send_resource_mut::<ScriptRuntimeManager>();
+            manager.contexts.insert(spaces[0], a);
+            manager.contexts.insert(spaces[1], b);
+        }
+        js_update_snapshots_system(app.world_mut());
+        assert!(matches!(a_commands.try_recv(), Ok(JsWorkerCommand::UpdateSnapshots(_))));
+        assert!(matches!(b_commands.try_recv(), Ok(JsWorkerCommand::UpdateSnapshots(_))));
+        a_events.send(JsWorkerEvent::SnapshotApplied).unwrap();
+        b_events.send(JsWorkerEvent::SnapshotApplied).unwrap();
+        js_tick_system(app.world_mut());
+        {
+            let dom = app.world().resource::<ElemenetWorld>();
+            let node = dom.0.entities().entity(spaces[0]);
+            dom.0.write_storage::<Attrs>().get_mut(node).unwrap().0.insert("title".into(), "changed".into());
+        }
+        app.world_mut().resource_mut::<DomMirrorDirty>().touch(spaces[0]);
+        app.world_mut().resource_mut::<JsSnapshotState>().dirty = true;
+        js_update_snapshots_system(app.world_mut());
+        assert!(matches!(a_commands.try_recv(), Ok(JsWorkerCommand::PatchSnapshots(_))));
+        assert!(matches!(b_commands.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert!(!app.world().non_send_resource::<ScriptRuntimeManager>().contexts[&spaces[1]].snapshot_in_flight);
+        assert_eq!(app.world().resource::<crate::PerformanceStats>().snapshots_sent, 1);
     }
 
     #[test]
