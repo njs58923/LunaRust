@@ -296,7 +296,9 @@ impl AttributeUpdates {
         let mut keep = vec![false; self.0.len()];
         {
             // Borrow the existing keys: no string cloning for deduplication.
-            let mut seen = HashSet::with_capacity(self.0.len());
+            // Repeated writes commonly collapse to a small set of keys. Avoid
+            // reserving a large hash table for every redundant input write.
+            let mut seen = HashSet::with_capacity(self.0.len().min(256));
             for (index, (node, key, _)) in self.0.iter().enumerate().rev() {
                 keep[index] = seen.insert((*node, key.as_str()));
             }
