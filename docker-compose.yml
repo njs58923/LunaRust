@@ -86,6 +86,81 @@ services:
       NODE_ENV: development
       PORT: "2057"
     command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+  # El puente entre todos los servidores: un directorio con una puerta por sitio,
+  # buscador y estado en vivo. Ver server_puente/README.md.
+  puente-dev:
+    image: oven/bun:1
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_puente:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "2050:2050"
+    environment:
+      NODE_ENV: development
+      PORT: "2050"
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+  # Cuántos otros jugadores entran en una escena: avatares con esqueleto y una
+  # pose que llega por WebSocket. El 8082 es la multitud, no la física.
+  # Ver server_jugadores/README.md.
+  jugadores-dev:
+    image: oven/bun:1
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_jugadores:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "2051:2051"
+      - "8082:8082"
+    environment:
+      NODE_ENV: development
+      PORT: "2051"
+      CROWD_PORT: "8082"
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+  # Las apps de la interfaz: ventanas embebidas del shell. Ver server_ui/README.md.
+  ui-dev:
+    image: oven/bun:1
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_ui:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "2058:2058"
+    environment:
+      NODE_ENV: development
+      PORT: "2058"
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+  # La sala de los ecos: audio espacial sobre el entorno compartido de la arcada.
+  # Ver server_eco/README.md.
+  eco-dev:
+    image: oven/bun:1
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_eco:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "2059:2059"
+    environment:
+      NODE_ENV: development
+      PORT: "2059"
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+  # La arcada: salas de física con el servicio de simulación en el 8081. La
+  # simulación corre en el servidor y el documento sólo dibuja lo que llega.
+  # Ver server_arcada/README.md.
+  arcada-dev:
+    image: oven/bun:1
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_arcada:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "2060:2060"
+      - "8081:8081"
+    environment:
+      NODE_ENV: development
+      PORT: "2060"
+      PHYSICS_PORT: "8081"
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
 volumes:
   caddy_data:
   caddy_config:

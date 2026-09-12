@@ -23,6 +23,9 @@
 		},
 		{
 			"path": "../server_arcada"
+		},
+		{
+			"path": "../server_jugadores"
 		}
 	],
 	"settings": {}
