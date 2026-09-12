@@ -354,3 +354,29 @@ información del navegador vive en un solo lugar.
 ---
 
 Volver al [índice de guías](index.md).
+
+## Bloqueo del puntero entre paneles
+
+La raíz de `Aplicacion` y cada límite `RenderPanel` bloquean por defecto el
+puntero sobre su superficie, incluidos los espacios vacíos entre controles.
+El backend usa planos nativos con `pointer-blocking="true"`, colocados detrás
+de los blancos táctiles; esos planos no tienen listeners ni despiertan al isolate.
+Los paneles transparentes también bloquean.
+
+```xml
+<Border Background="transparent" PointerBlocking="false">
+  <Button Content="Sigo siendo interactivo" Click="accion"/>
+</Border>
+```
+
+En la raíz, `PointerBlocking="false"` permite atravesar las zonas sin controles.
+En un `RenderPanel` desactiva su propia cobertura; un panel ancestro puede seguir
+bloqueando detrás. El atributo no desactiva los botones del árbol y, en un control
+que no sea límite de render, no crea ni elimina una cobertura independiente.
+
+Los popups y diálogos protegen su superficie. Los tooltips no añaden bloqueadores
+para evitar robar el hover que los mantiene abiertos. La cobertura respeta el
+recorte rectangular; las esquinas redondeadas se aproximan con franjas inscritas,
+por lo que no equivale a una prueba exacta de cada píxel del contorno.
+
+Ver [bloqueo nativo y propagación de eventos](eventos.md#bloquear-el-puntero-sin-ejecutar-javascript).

@@ -1,7 +1,8 @@
 # Eventos: toque, hover y pose
 
 Todo lo que el motor le manda al script cuando alguien apunta, toca o mueve una
-mano. El requisito es siempre el mismo: **`touchable="true"` en el objetivo**.
+mano. Para recibir `toque` y hover se requiere **`touchable="true"` en el objetivo**.
+Las zonas de pose tienen su propio mecanismo y permiso.
 
 ---
 
@@ -36,6 +37,38 @@ Para ambos mandos usar `pointer*`. Requiere `touchable="true"` en el objetivo.
 Ver [semántica y ejemplo de hover](eventos.md). No incorpora un motor CSS.
 
 ---
+
+## Bloquear el puntero sin ejecutar JavaScript
+
+`pointer-blocking="true"` hace que una superficie participe en la selección del
+impacto más cercano aunque no tenga `touchable`. Si gana ese impacto y tiene
+`touchable="false"`, no recibe eventos ni permite seleccionar lo que está detrás.
+Afecta tanto a `toque` como a hover, entre documentos e isolates.
+
+```xml
+<plane sx="1.2" sy="0.8" z="-1.6"
+       pointer-blocking="true" touchable="false"
+       color="#00000000" material-alpha="blend"/>
+```
+
+La transparencia visual no desactiva el bloqueo. `visible="false"` sí lo
+retira del picking; el ejemplo mantiene la superficie visible, pero con alfa cero.
+Los botones deben quedar por delante de su fondo bloqueador.
+
+- `touchable="true"`: recibe eventos cuando es el impacto más cercano y ya
+  impide seleccionar otros objetivos detrás de él.
+- `pointer-blocking="true"`, sin `touchable`: bloquea sin listeners ni mensajes JS.
+- Ambos en `false`: no participa en el picking. Poner solo `pointer-blocking`
+  en `false` no vuelve atravesable un elemento que siga siendo `touchable`.
+
+Se usan las formas de impacto nativas: rectángulo para `plane`, caja orientada
+para `box` y esfera para `sphere` (también la aproximación actual de `cylinder`).
+Esto no añade picking por triángulos para GLB ni mallas arbitrarias, y no bloquea
+los eventos `posemove` de los volúmenes de pose.
+
+`stopPropagation()` actúa después, sobre los ancestros del evento dentro del
+isolate. No sustituye el bloqueo geométrico ni requiere esperar a JavaScript para
+decidir si un puntero alcanza otra ventana.
 
 ## Hover, en detalle
 
