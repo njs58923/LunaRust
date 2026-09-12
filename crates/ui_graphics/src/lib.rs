@@ -243,33 +243,62 @@ pub fn parse_color(hex: &str) -> Option<[u8; 4]> {
     if hex.eq_ignore_ascii_case("transparent") {
         return Some([0, 0, 0, 0]);
     }
-    let hex = hex.strip_prefix('#')?;
-    if !hex.is_ascii() {
-        return None;
-    }
-    let expanded;
-    let hex = if matches!(hex.len(), 3 | 4) {
-        expanded = hex.chars().flat_map(|c| [c, c]).collect::<String>();
-        expanded.as_str()
-    } else {
-        hex
+    let digits = hex.strip_prefix('#')?.as_bytes();
+    let nibble = |b: u8| match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
     };
-    if !matches!(hex.len(), 6 | 8) {
-        return None;
+    let mut rgba = [255; 4];
+    match digits.len() {
+        3 | 4 => {
+            for (out, &digit) in rgba.iter_mut().zip(digits) {
+                *out = nibble(digit)? * 17;
+            }
+        }
+        6 | 8 => {
+            for (out, pair) in rgba.iter_mut().zip(digits.chunks_exact(2)) {
+                *out = nibble(pair[0])? * 16 + nibble(pair[1])?;
+            }
+        }
+        _ => return None,
     }
-    Some([
-        u8::from_str_radix(&hex[0..2], 16).ok()?,
-        u8::from_str_radix(&hex[2..4], 16).ok()?,
-        u8::from_str_radix(&hex[4..6], 16).ok()?,
-        if hex.len() == 8 {
-            u8::from_str_radix(&hex[6..8], 16).ok()?
-        } else {
-            255
-        },
-    ])
+    Some(rgba)
 }
 #[cfg(test)]
 mod color_tests {
+    #[test]
+    fn compact_colors_match_expanded_colors() {
+        for value in 0..=0xfffu16 {
+            let short = format!("#{value:03x}");
+            let long = format!(
+                "#{:02x}{:02x}{:02x}",
+                (value >> 8) * 17,
+                ((value >> 4) & 15) * 17,
+                (value & 15) * 17
+            );
+            assert_eq!(super::parse_color(&short), super::parse_color(&long));
+            assert_eq!(
+                super::parse_color(&short.to_uppercase()),
+                super::parse_color(&long)
+            );
+        }
+        for invalid in [
+            "",
+            "#",
+            "#12",
+            "#12345",
+            "#1234567",
+            "#123456789",
+            "#ggg",
+            "#12é",
+            "#12+456",
+        ] {
+            assert!(super::parse_color(invalid).is_none());
+        }
+    }
+
     #[test]
     fn rgba_and_transparent_are_unambiguous() {
         assert_eq!(super::parse_color("#1234"), Some([17, 34, 51, 68]));
