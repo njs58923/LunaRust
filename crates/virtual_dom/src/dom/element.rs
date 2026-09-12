@@ -26,33 +26,59 @@ impl Hierarchy {
         }
     }
     pub fn add_child(world: &mut World, parent: Entity, child: Entity) {
-        // Si el child ya tenía padre, primero lo quitamos de ese padre anterior.
+        let _ = Self::try_add_child(world, parent, child);
+    }
+
+    /// Returns whether the tree changed. Validate before detaching anything.
+    pub fn try_add_child(
+        world: &mut World,
+        parent: Entity,
+        child: Entity,
+    ) -> Result<bool, &'static str> {
+        if parent == child {
+            return Err("a node cannot parent itself");
+        }
+        if !world.entities().is_alive(parent) || !world.entities().is_alive(child) {
+            return Err("cannot attach a dead node");
+        }
         let old_parent = {
-            let hierarchies = world.read_storage::<Hierarchy>();
-            hierarchies.get(child).and_then(|h| h.parent)
-        };
-
-        let mut hierarchies = world.write_storage::<Hierarchy>();
-
-        if let Some(old_parent) = old_parent {
-            if old_parent != parent {
-                if let Some(old_parent_h) = hierarchies.get_mut(old_parent) {
-                    old_parent_h.children.retain(|c| *c != child);
+            let hier = world.read_storage::<Hierarchy>();
+            if hier.get(parent).is_none() {
+                return Err("parent has no hierarchy");
+            }
+            let old = hier.get(child).ok_or("child has no hierarchy")?.parent;
+            if old == Some(parent) {
+                return Ok(false);
+            }
+            // Walk ancestors, not siblings. Floyd's second cursor also protects
+            // against a pre-existing corrupt cycle, without allocating a set.
+            let mut cursor = Some(parent);
+            let mut fast = Some(parent);
+            while let Some(node) = cursor {
+                if node == child {
+                    return Err("attachment would create a cycle");
+                }
+                cursor = hier.get(node).and_then(|h| h.parent);
+                fast = fast
+                    .and_then(|n| hier.get(n).and_then(|h| h.parent))
+                    .and_then(|n| hier.get(n).and_then(|h| h.parent));
+                if cursor.is_some() && cursor == fast {
+                    return Err("parent hierarchy contains a cycle");
                 }
             }
-        }
-
-        // Añadir hijo al nuevo padre si todavía no estaba.
-        if let Some(parent_h) = hierarchies.get_mut(parent) {
-            if !parent_h.children.contains(&child) {
-                parent_h.children.push(child);
+            old
+        };
+        let mut hier = world.write_storage::<Hierarchy>();
+        if let Some(old) = old_parent {
+            if let Some(h) = hier.get_mut(old) {
+                h.children.retain(|n| *n != child);
             }
         }
-
-        // Actualizar padre del hijo
-        if let Some(child_h) = hierarchies.get_mut(child) {
-            child_h.parent = Some(parent);
-        }
+        // The child's authoritative parent proves it is not already in this
+        // sibling list. Re-scanning that list makes wide tree construction O(N²).
+        hier.get_mut(parent).unwrap().children.push(child);
+        hier.get_mut(child).unwrap().parent = Some(parent);
+        Ok(true)
     }
 
     pub fn get_children(world: &World, entity: Entity) -> Option<Vec<Entity>> {
@@ -171,5 +197,65 @@ fn main() {
                 println!("Child Tag: {}", tag.0);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod hierarchy_tests {
+    use super::*;
+    use specs::{Builder, WorldExt};
+    #[test]
+    fn reparenting_is_idempotent_and_rejects_cycles_without_mutation() {
+        let mut world = World::new();
+        world.register::<Hierarchy>();
+        let a = world.create_entity().with(Hierarchy::default()).build();
+        let b = world.create_entity().with(Hierarchy::default()).build();
+        let c = world.create_entity().with(Hierarchy::default()).build();
+        assert_eq!(Hierarchy::try_add_child(&mut world, a, b), Ok(true));
+        assert_eq!(Hierarchy::try_add_child(&mut world, b, c), Ok(true));
+        assert!(Hierarchy::try_add_child(&mut world, c, a).is_err());
+        assert!(Hierarchy::try_add_child(&mut world, a, a).is_err());
+        assert_eq!(Hierarchy::try_add_child(&mut world, a, b), Ok(false));
+        assert_eq!(Hierarchy::get_children(&world, a).unwrap(), vec![b]);
+        assert_eq!(Hierarchy::try_add_child(&mut world, a, c), Ok(true));
+        assert!(Hierarchy::get_children(&world, b).unwrap().is_empty());
+        assert_eq!(Hierarchy::get_children(&world, a).unwrap(), vec![b, c]);
+    }
+    #[test]
+    fn corrupt_parent_chain_and_dead_nodes_are_rejected() {
+        let mut world = World::new();
+        world.register::<Hierarchy>();
+        let a = world.create_entity().with(Hierarchy::default()).build();
+        let b = world.create_entity().with(Hierarchy::default()).build();
+        let child = world.create_entity().with(Hierarchy::default()).build();
+        {
+            let mut hier = world.write_storage::<Hierarchy>();
+            hier.get_mut(a).unwrap().parent = Some(b);
+            hier.get_mut(b).unwrap().parent = Some(a);
+        }
+        assert!(Hierarchy::try_add_child(&mut world, a, child).is_err());
+        assert_eq!(
+            world.read_storage::<Hierarchy>().get(child).unwrap().parent,
+            None
+        );
+        world.delete_entity(b).unwrap();
+        assert!(Hierarchy::try_add_child(&mut world, b, child).is_err());
+    }
+
+    #[test]
+    fn wide_tree_preserves_all_siblings_without_duplicates() {
+        let mut world = World::new();
+        world.register::<Hierarchy>();
+        let root = world.create_entity().with(Hierarchy::default()).build();
+        let children: Vec<_> = (0..10000)
+            .map(|_| world.create_entity().with(Hierarchy::default()).build())
+            .collect();
+        for &child in &children {
+            assert_eq!(Hierarchy::try_add_child(&mut world, root, child), Ok(true));
+        }
+        for &child in &children {
+            assert_eq!(Hierarchy::try_add_child(&mut world, root, child), Ok(false));
+        }
+        assert_eq!(Hierarchy::get_children(&world, root).unwrap(), children);
     }
 }

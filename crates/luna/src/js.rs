@@ -2877,12 +2877,20 @@ pub fn js_tick_system(world: &mut World) {
                     (parent_ent, child_ent, are_alive)
                 };
                 if are_alive {
-                    if let Some(old_parent) = specs_world.0.read_storage::<Hierarchy>()
-                        .get(child_ent).and_then(|h| h.parent) {
+                    let old_parent = specs_world.0.read_storage::<Hierarchy>()
+                        .get(child_ent).and_then(|h| h.parent);
+                    match Hierarchy::try_add_child(&mut specs_world.0, parent_ent, child_ent) {
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        Err(reason) => {
+                            log_messages.push(format!("[JS][space:{space_id}] Blocked appendChild: {reason}"));
+                            continue;
+                        }
+                    }
+                    if let Some(old_parent) = old_parent {
                         changed_parent_ids.insert(old_parent.id());
                     }
                     changed_parent_ids.insert(parent_id);
-                    Hierarchy::add_child(&mut specs_world.0, parent_ent, child_ent);
 
                     if attached_now.contains(&parent_id) {
                         let mut subtree_ids = Vec::new();
