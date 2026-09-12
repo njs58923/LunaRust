@@ -417,24 +417,32 @@ fn publish(
     let Some(desc) = &request.desc else {
         return;
     };
-    let prefix = if desc.image { "image" } else { "texture" };
-    let mut changed = Vec::new();
-    for (key, value) in [
-        (format!("{prefix}-status"), status.into()),
-        (format!("{prefix}-error"), error.into()),
-        (format!("{prefix}-request-source"), desc.raw_source.clone()),
-        (format!("{prefix}-request-revision"), desc.revision.clone()),
-        (format!("{prefix}-width"), size.0.to_string()),
-        (format!("{prefix}-height"), size.1.to_string()),
-    ] {
+    // Most calls while loading repeat the same values. Borrow strings and read
+    // the attribute storage once; allocate only the deltas that will be sent.
+    let keys = if desc.image {
+        ["image-status", "image-error", "image-request-source", "image-request-revision", "image-width", "image-height"]
+    } else {
+        ["texture-status", "texture-error", "texture-request-source", "texture-request-revision", "texture-width", "texture-height"]
+    };
+    let dimension = |n: u32| -> std::borrow::Cow<'static, str> {
+        if n == 0 { std::borrow::Cow::Borrowed("0") }
+        else { std::borrow::Cow::Owned(n.to_string()) }
+    };
+    let width = dimension(size.0);
+    let height = dimension(size.1);
+    let changed = {
         use specs::WorldExt;
         let dom = world.resource::<ElemenetWorld>();
         let attrs = dom.0.read_storage::<virtual_dom::dom::element::Attrs>();
-        if attrs.get(request.node).and_then(|a| a.0.get(&key)) != Some(&value) {
-            changed.push((request.node.id(), key, value));
-        }
+        let current = attrs.get(request.node);
+        keys.into_iter().zip([status, error, desc.raw_source.as_str(), desc.revision.as_str(), &width, &height])
+            .filter(|(key, value)| current.and_then(|a| a.0.get(*key)).map(String::as_str) != Some(*value))
+            .map(|(key, value)| (request.node.id(), key.to_owned(), value.to_owned()))
+            .collect::<Vec<_>>()
+    };
+    if !changed.is_empty() {
+        world.resource_mut::<AttributeUpdates>().0.extend(changed);
     }
-    world.resource_mut::<AttributeUpdates>().0.extend(changed);
 }
 
 fn material(
@@ -608,11 +616,13 @@ pub fn sync_surfaces(world: &mut World) {
     }
     world.resource_scope(|world, mut cache: Mut<SurfaceCache>| {
         let results: Vec<_> = cache.rx.lock().unwrap().try_iter().collect();
+        let mut resident = 0;
+        if !results.is_empty() {
+            let images = world.resource::<Assets<Image>>();
+            cache.allocations.retain(|id, _| images.contains(*id));
+            resident = cache.allocations.values().sum::<usize>();
+        }
         for result in results {
-            cache
-                .allocations
-                .retain(|id, _| world.resource::<Assets<Image>>().contains(*id));
-            let resident: usize = cache.allocations.values().sum();
             let state = match result.data {
                 Ok(data) if resident + data.rgba.len() <= MAX_TEXTURE_MEMORY => {
                     let bytes = data.rgba.len();
@@ -630,6 +640,7 @@ pub fn sync_surfaces(world: &mut World) {
                     image.sampler = ImageSampler::linear();
                     let handle = world.resource_mut::<Assets<Image>>().add(image);
                     cache.allocations.insert(handle.id(), bytes);
+                    resident += bytes;
                     TextureState::Ready {
                         image: handle,
                         width: data.width,
@@ -845,6 +856,42 @@ mod tests {
         );
         image
     }
+    #[test]
+    fn repeated_surface_status_is_idle_and_completion_only_emits_deltas() {
+        for image in [false, true] {
+            let mut world = World::new();
+            let mut dom = virtual_dom::dom::element::build_world();
+            let node = dom.create_entity().with(Attrs(HashMap::new())).build();
+            world.insert_resource(ElemenetWorld(dom));
+            world.init_resource::<AttributeUpdates>();
+            let request = SurfaceRequest { node, model_generation: 0, desc: Some(SurfaceDesc {
+                source: Some("https://example.test/icon.png".into()),
+                raw_source: "icon.png".into(), revision: "1".into(), region: [0; 4],
+                fit: Fit::Contain, padding: 0, front: false, overlay: false,
+                unlit: None, alpha: None, tint: None, image, error: None,
+            }) };
+            publish(&mut world, &request, "loading", "", (0, 0));
+            let initial = std::mem::take(&mut world.resource_mut::<AttributeUpdates>().0);
+            assert_eq!(initial.len(), 6);
+            {
+                let dom = world.resource::<ElemenetWorld>();
+                let mut attrs = dom.0.write_storage::<Attrs>();
+                for (_, key, value) in initial { attrs.get_mut(node).unwrap().0.insert(key, value); }
+            }
+            world.clear_trackers();
+            publish(&mut world, &request, "loading", "", (0, 0));
+            assert!(world.resource::<AttributeUpdates>().0.is_empty());
+            assert!(!world.get_resource_ref::<AttributeUpdates>().unwrap().is_changed());
+            publish(&mut world, &request, "ready", "", (256, 128));
+            let updates = &world.resource::<AttributeUpdates>().0;
+            assert_eq!(updates.len(), 3);
+            let prefix = if image { "image" } else { "texture" };
+            assert!(updates.contains(&(node.id(), format!("{prefix}-status"), "ready".into())));
+            assert!(updates.contains(&(node.id(), format!("{prefix}-width"), "256".into())));
+            assert!(updates.contains(&(node.id(), format!("{prefix}-height"), "128".into())));
+        }
+    }
+
     #[test]
     fn surface_descriptor_validates_regions_and_has_image_defaults() {
         let image = desc("image", &[("src", "icon.png")]);
