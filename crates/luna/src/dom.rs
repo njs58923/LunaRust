@@ -562,22 +562,15 @@ fn finish_flatten(
     let mut dirty = Vec::new();
     let hierarchies = world.read_storage::<Hierarchy>();
 
-    fn flatten_dom(
-        node: SpecEntity,
-        map: &mut HashMap<u32, SpecEntity>,
-        dirty: &mut Vec<u32>,
-        hierarchies: &ReadStorage<Hierarchy>,
-    ) {
+    let mut stack = vec![root_node];
+    while let Some(node) = stack.pop() {
+        let std::collections::hash_map::Entry::Vacant(entry) = map.entry(node.id()) else { continue; };
+        entry.insert(node);
         dirty.push(node.id());
-        map.insert(node.id(), node);
         if let Some(h) = hierarchies.get(node) {
-            for &child in &h.children {
-                flatten_dom(child, map, dirty, hierarchies);
-            }
+            stack.extend(h.children.iter().rev().copied());
         }
     }
-
-    flatten_dom(root_node, &mut map, &mut dirty, &hierarchies);
     dirty.extend(include_dirty.drain(..));
     dirty.sort_unstable();
     dirty.dedup();
@@ -587,11 +580,16 @@ fn finish_flatten(
 }
 
 pub fn collect_subtree_ids(world: &SpecWorld, root: SpecEntity, out: &mut Vec<u32>) {
+    // Keep a single storage borrow and an explicit stack: deep component trees
+    // must not exhaust the native thread stack during attach or removal.
     let hier = world.read_storage::<Hierarchy>();
-    out.push(root.id());
-    if let Some(h) = hier.get(root) {
-        for &c in &h.children {
-            collect_subtree_ids(world, c, out);
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(node) = stack.pop() {
+        if !seen.insert(node) { continue; }
+        out.push(node.id());
+        if let Some(h) = hier.get(node) {
+            stack.extend(h.children.iter().rev().copied());
         }
     }
 }
@@ -606,7 +604,6 @@ fn collect_bevy_subtree_roots_from_bevy(
         .filter_map(|node_id| entity_map.0.get(node_id).copied())
         .collect();
 
-    let mut seen = HashSet::new();
     let mut roots = Vec::new();
 
     for &bevy_ent in &subtree_bevy {
@@ -616,7 +613,7 @@ fn collect_bevy_subtree_roots_from_bevy(
             .map(|p| p.get())
             .is_some_and(|parent| subtree_bevy.contains(&parent));
 
-        if !parent_inside_subtree && seen.insert(bevy_ent) {
+        if !parent_inside_subtree {
             roots.push(bevy_ent);
         }
     }
@@ -4584,5 +4581,28 @@ mod attribute_idle_tests {
         let scale = transforms.get(node).unwrap().scale;
         assert_eq!((scale.x, scale.y, scale.z), (3.0, 4.0, 4.0));
         assert!(app.world().resource::<crate::JsSnapshotState>().dirty);
+    }
+}
+
+#[cfg(test)]
+mod subtree_walk_tests {
+    use super::*;
+    use specs::Builder;
+    #[test]
+    fn deep_subtrees_preserve_preorder_and_terminate_on_corrupt_cycles() {
+        let mut world = virtual_dom::dom::element::build_world();
+        let nodes: Vec<_> = (0..10_000).map(|_| world.create_entity().with(Hierarchy::default()).build()).collect();
+        for i in (0..nodes.len() - 1).rev() {
+            Hierarchy::add_child(&mut world, nodes[i], nodes[i + 1]);
+        }
+        let mut ids = vec![u32::MAX];
+        collect_subtree_ids(&world, nodes[0], &mut ids);
+        assert_eq!(ids[0], u32::MAX);
+        assert_eq!(&ids[1..], &nodes.iter().map(|n| n.id()).collect::<Vec<_>>());
+        // Native code can still corrupt public fields: cleanup must terminate.
+        world.write_storage::<Hierarchy>().get_mut(*nodes.last().unwrap()).unwrap().children.push(nodes[0]);
+        ids.clear();
+        collect_subtree_ids(&world, nodes[0], &mut ids);
+        assert_eq!(ids.len(), nodes.len());
     }
 }
