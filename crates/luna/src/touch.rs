@@ -12,11 +12,10 @@ pub struct Toqueable(pub u32, pub bool);
 // The second field enables event delivery. False is a native-only blocker.
 
 
-type PointerHit = (f32, Option<u32>, Vec3, Vec3);
+type PointerHit = (f32, Option<u32>, Vec3, GlobalTransform);
 fn consider_pointer_hit(closest: &mut Option<PointerHit>, distance: f32, target: &Toqueable, point: Vec3, transform: &GlobalTransform) {
     if closest.as_ref().is_none_or(|hit| distance < hit.0) {
-        *closest = Some((distance, target.1.then_some(target.0), point,
-            transform.affine().inverse().transform_point3(point)));
+        *closest = Some((distance, target.1.then_some(target.0), point, *transform));
     }
 }
 
@@ -35,6 +34,29 @@ pub enum HitShape {
     Sphere,
     Box,
     Plane,
+}
+
+/// Derived once per changed target, shared by the desktop and both VR rays.
+#[derive(Component, Clone, Copy)]
+pub struct PreparedPointerShape {
+    scale: Vec3,
+    rotation: Quat,
+    position: Vec3,
+    shape: HitShape,
+}
+
+pub fn prepare_pointer_shapes(
+    mut commands: Commands,
+    mut targets: Query<(Entity, &GlobalTransform, Option<&HitShape>, Option<&mut PreparedPointerShape>),
+        (With<Toqueable>, Or<(Changed<GlobalTransform>, Changed<HitShape>, Changed<Toqueable>)>)>,
+) {
+    for (entity, transform, shape, cached) in &mut targets {
+        let (scale, rotation, position) = transform.to_scale_rotation_translation();
+        let prepared = PreparedPointerShape { scale, rotation, position,
+            shape: shape.copied().unwrap_or(HitShape::Sphere) };
+        if let Some(mut cached) = cached { *cached = prepared; }
+        else { commands.entity(entity).insert(prepared); }
+    }
 }
 
 /// Returns `(t, hit_point)` if `ray` intersects the given shape, else `None`.
@@ -239,10 +261,12 @@ pub fn dispatch_hover_events_to_js(
     mut manager: NonSendMut<ScriptRuntimeManager>,
     mut sent: Local<HashMap<u32, [Option<i32>; 3]>>,
     mut generation: Local<u64>,
+    mut desired: Local<HashMap<u32, [Option<i32>; 3]>>,
+    mut spaces: Local<Vec<u32>>,
 ) {
     let contexts_changed = *generation != manager.context_generation;
     *generation = manager.context_generation;
-    let mut desired: HashMap<u32, [Option<i32>; 3]> = HashMap::new();
+    desired.clear();
     for (pointer, target) in std::mem::take(&mut targets.0).into_iter().enumerate() {
         let Some(id) = target else { continue };
         let entity = world.0.entities().entity(id);
@@ -252,8 +276,10 @@ pub fn dispatch_hover_events_to_js(
         desired.entry(owner).or_default()[pointer] = Some(*local);
     }
     // At most three active spaces, plus spaces needing a leave/retry.
-    let spaces: std::collections::HashSet<_> = desired.keys().chain(sent.keys()).copied().collect();
-    for space in spaces {
+    spaces.clear();
+    spaces.extend(desired.keys().copied());
+    spaces.extend(sent.keys().filter(|id| !desired.contains_key(id)).copied());
+    for space in spaces.iter().copied() {
         let Some(worker) = manager.contexts.get_mut(&space) else { sent.remove(&space); continue };
         let next = desired.get(&space).copied().unwrap_or_default();
         if !contexts_changed && sent.get(&space).copied().unwrap_or_default() == next { continue; }
@@ -273,7 +299,7 @@ pub fn desktop_toque_raycast_system(
     // propagada por Bevy en PostUpdate. Si un ancestro está Hidden, todos los
     // descendientes (incluso con Visible explícito) leen `iv.get() == false`.
     // Filtramos acá para que un panel oculto no reciba clicks de sus hijos.
-    toqueable_query: Query<(&GlobalTransform, &Toqueable, &InheritedVisibility, Option<&HitShape>)>,
+    toqueable_query: Query<(&GlobalTransform, &Toqueable, &InheritedVisibility, &PreparedPointerShape)>,
     mut toque_hits: ResMut<HostToqueHits>,
     mut hover: ResMut<HostHoverTargets>,
     mut log_panel: ResMut<LogPanel>,
@@ -302,14 +328,13 @@ pub fn desktop_toque_raycast_system(
         return;
     };
 
-    let mut closest: Option<(f32, Option<u32>, Vec3, Vec3)> = None;
+    let mut closest: Option<PointerHit> = None;
 
     for (global_transform, toqueable, inherited_vis, hit_shape) in toqueable_query.iter() {
         if !inherited_vis.get() {
             continue;
         }
-        let (scale, rotation, entity_pos) = global_transform.to_scale_rotation_translation();
-        let shape = hit_shape.copied().unwrap_or(HitShape::Sphere);
+        let PreparedPointerShape { scale, rotation, position: entity_pos, shape } = *hit_shape;
 
         if let Some((t, hit_point)) = intersect_shape(
             ray.origin,
@@ -326,6 +351,7 @@ pub fn desktop_toque_raycast_system(
     hover.0[0] = closest.and_then(|(_, id, _, _)| id);
     if !mouse_button.just_pressed(MouseButton::Left) { return; }
     if let Some((_, Some(node_id), hit_point, local)) = closest {
+        let local = local.affine().inverse().transform_point3(hit_point);
         toque_hits.0.push(HostToqueHit {
             local:local.to_array(),
             node_id,
@@ -353,7 +379,7 @@ pub fn vr_toque_raycast_system(
         ),
     >,
     // Ver doc en desktop_toque_raycast_system para el filtro de InheritedVisibility.
-    toqueable_query: Query<(&GlobalTransform, &Toqueable, &InheritedVisibility, Option<&HitShape>)>,
+    toqueable_query: Query<(&GlobalTransform, &Toqueable, &InheritedVisibility, &PreparedPointerShape)>,
     mut toque_hits: ResMut<HostToqueHits>,
     mut hover: ResMut<HostHoverTargets>,
     mut log_panel: ResMut<LogPanel>,
@@ -389,14 +415,13 @@ pub fn vr_toque_raycast_system(
         return;
     }
 
-    let mut closest: Option<(f32, Option<u32>, Vec3, Vec3)> = None;
+    let mut closest: Option<PointerHit> = None;
 
     for (global_transform, toqueable, inherited_vis, hit_shape) in toqueable_query.iter() {
         if !inherited_vis.get() {
             continue;
         }
-        let (scale, rotation, entity_pos) = global_transform.to_scale_rotation_translation();
-        let shape = hit_shape.copied().unwrap_or(HitShape::Sphere);
+        let PreparedPointerShape { scale, rotation, position: entity_pos, shape } = *hit_shape;
 
         if let Some((t, hit_point)) =
             intersect_shape(ray_origin, ray_dir, entity_pos, rotation, scale, shape)
@@ -410,6 +435,7 @@ pub fn vr_toque_raycast_system(
     hover.0[2] = closest.and_then(|(_, id, _, _)| id);
     if !just_pressed { return; }
     if let Some((_, Some(node_id), hit_point, local)) = closest {
+        let local = local.affine().inverse().transform_point3(hit_point);
         toque_hits.0.push(HostToqueHit {
             local:local.to_array(),
             node_id,
@@ -430,7 +456,7 @@ pub fn vr_left_hover_raycast_system(
     session: Res<bevy_mod_openxr::session::OxrSession>,
     controller: Query<&Transform, With<bevy_xr_utils::tracking_utils::XrTrackedLeftGrip>>,
     root: Query<&Transform, (With<bevy_mod_xr::session::XrTrackingRoot>, Without<bevy_xr_utils::tracking_utils::XrTrackedLeftGrip>)>,
-    shapes: Query<(&GlobalTransform, &Toqueable, &InheritedVisibility, Option<&HitShape>)>,
+    shapes: Query<(&GlobalTransform, &Toqueable, &InheritedVisibility, &PreparedPointerShape)>,
     mut hover: ResMut<HostHoverTargets>,
 ) {
     if !actions.left_trigger.state(&session, openxr::Path::NULL).map(|state| state.is_active).unwrap_or(false) { return; }
@@ -441,8 +467,8 @@ pub fn vr_left_hover_raycast_system(
     let mut nearest = None;
     for (transform, target, visible, shape) in &shapes {
         if !visible.get() { continue; }
-        let (scale, rotation, position) = transform.to_scale_rotation_translation();
-        if let Some((distance, point)) = intersect_shape(origin, direction, position, rotation, scale, shape.copied().unwrap_or(HitShape::Sphere)) {
+        let PreparedPointerShape { scale, rotation, position, shape } = *shape;
+        if let Some((distance, point)) = intersect_shape(origin, direction, position, rotation, scale, shape) {
             if distance < 20.0 { consider_pointer_hit(&mut nearest, distance, target, point, transform); }
         }
     }
@@ -713,6 +739,21 @@ pub fn dispatch_posemove_events_to_js(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pointer_geometry_cache_only_changes_when_source_changes() {
+        use super::*;
+        let mut app = App::new();
+        app.add_systems(Update, prepare_pointer_shapes);
+        let entity = app.world_mut().spawn((GlobalTransform::from_translation(Vec3::X), Toqueable(7, true), HitShape::Plane)).id();
+        app.update();
+        assert_eq!(app.world().get::<PreparedPointerShape>(entity).unwrap().position, Vec3::X);
+        app.update();
+        assert!(!app.world().entity(entity).get_ref::<PreparedPointerShape>().unwrap().is_changed());
+        *app.world_mut().get_mut::<GlobalTransform>(entity).unwrap() = GlobalTransform::from_translation(Vec3::Y);
+        app.update();
+        assert_eq!(app.world().get::<PreparedPointerShape>(entity).unwrap().position, Vec3::Y);
+    }
+
     #[test]
     fn pointer_blocking_stops_both_click_and_hover_without_event_target() {
         use super::*;

@@ -335,6 +335,10 @@ fn main() {
             .run_if(permissions::desktop_camera_control_enabled),
     );
     app.add_systems(Update, xr_session_handler);
+    app.add_systems(Update, touch::prepare_pointer_shapes
+        .before(touch::desktop_toque_raycast_system)
+        .before(touch::vr_toque_raycast_system)
+        .before(touch::vr_left_hover_raycast_system));
     app.add_systems(
         Update,
         touch::desktop_toque_raycast_system
