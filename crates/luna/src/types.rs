@@ -284,15 +284,25 @@ pub struct ReloadTrigger(pub bool);
 pub struct AttributeUpdates(pub Vec<(u32, String, String)>);
 
 impl AttributeUpdates {
+    /// Keep the last assignment per attribute in its original execution order.
+    /// Different keys can interact (for example `s` and `sx`), so HashMap
+    /// iteration order is not a valid order for applying the surviving writes.
     pub fn drain_coalesced(&mut self) -> Vec<(u32, String, String)> {
-        let mut last_values: HashMap<(u32, String), String> = HashMap::new();
-        for (ent_id, key, value) in self.0.drain(..) {
-            last_values.insert((ent_id, key), value);
+        match self.0.len() {
+            0 => return Vec::new(),
+            1 => return vec![self.0.pop().unwrap()],
+            _ => {}
         }
-        last_values
-            .into_iter()
-            .map(|((ent_id, key), value)| (ent_id, key, value))
-            .collect()
+        let mut keep = vec![false; self.0.len()];
+        {
+            // Borrow the existing keys: no string cloning for deduplication.
+            let mut seen = HashSet::with_capacity(self.0.len());
+            for (index, (node, key, _)) in self.0.iter().enumerate().rev() {
+                keep[index] = seen.insert((*node, key.as_str()));
+            }
+        }
+        self.0.drain(..).zip(keep)
+            .filter_map(|(update, keep)| keep.then_some(update)).collect()
     }
 }
 #[derive(Resource, Default)]
@@ -1015,4 +1025,26 @@ pub struct DocumentCommitParams<'w> {
     pub transform_only_dirty: ResMut<'w, TransformOnlyDirtyNodes>,
     pub pending_js_attaches: ResMut<'w, PendingJsAttachNodes>,
     pub pending_js_first_render: ResMut<'w, PendingJsFirstRenderNodes>,
+}
+
+#[cfg(test)]
+mod attribute_update_tests {
+    use super::AttributeUpdates;
+    #[test]
+    fn coalescing_preserves_last_write_order_for_interacting_attributes() {
+        let mut updates = AttributeUpdates(vec![
+            (1, "s".into(), "2".into()),
+            (2, "s".into(), "9".into()),
+            (1, "sx".into(), "3".into()),
+            (1, "s".into(), "4".into()),
+        ]);
+        assert_eq!(updates.drain_coalesced(), vec![
+            (2, "s".into(), "9".into()),
+            (1, "sx".into(), "3".into()),
+            (1, "s".into(), "4".into()),
+        ]);
+        assert!(updates.drain_coalesced().is_empty());
+        updates.0.push((1, "color".into(), "#fff".into()));
+        assert_eq!(updates.drain_coalesced(), vec![(1, "color".into(), "#fff".into())]);
+    }
 }
