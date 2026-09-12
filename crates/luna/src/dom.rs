@@ -965,8 +965,6 @@ pub fn apply_attribute_updates(
         return;
     }
 
-    js_snapshot_state.dirty = true;
-
     let entities = world.0.entities();
     let mut attrs_storage = world.0.write_storage::<Attrs>();
     let mut tr_storage = world.0.write_storage::<Transform2>();
@@ -991,6 +989,15 @@ pub fn apply_attribute_updates(
         if !entities.is_alive(ent) {
             continue;
         }
+        // Transform aliases can overwrite each other (`s` then `sx`), and src
+        // also maintains typed components. Preserve their derived-state writes.
+        if !matches!(key.as_str(), "src" | "x" | "y" | "z" | "rx" | "ry" | "rz" | "s" | "sx" | "sy" | "sz") {
+            let previous = attrs_storage.get(ent).and_then(|a| a.0.get(&key));
+            if previous == Some(&val) || (val == ATTR_DELETE_SENTINEL && previous.is_none()) {
+                continue;
+            }
+        }
+        js_snapshot_state.dirty = true;
         let is_attached = dom_data.nodes.contains_key(&ent_id);
         transform_only_dirty.0.remove(&ent_id);
 
@@ -4538,5 +4545,44 @@ mod pointer_blocking_tests {
         assert!(node_pointer_target(&world.read_storage::<Attrs>(), node).unwrap().1);
         world.write_storage::<Attrs>().get_mut(node).unwrap().0.clear();
         assert!(node_pointer_target(&world.read_storage::<Attrs>(), node).is_none());
+    }
+}
+
+#[cfg(test)]
+mod attribute_idle_tests {
+    use super::*;
+    #[test]
+    fn unchanged_attributes_keep_render_idle_without_skipping_scale_overrides() {
+        let mut dom = virtual_dom::dom::element::build_world();
+        let node = virtual_dom::parse_xml(&mut dom, "<box color='#fff' sx='3'/>").unwrap();
+        let mut app = App::new();
+        app.insert_resource(ElemenetWorld(dom));
+        app.insert_resource(VirtualDomData { nodes: HashMap::from([(node.id(), node)]) });
+        app.init_resource::<AttributeUpdates>();
+        app.init_resource::<DirtyNodes>();
+        app.init_resource::<crate::JsSnapshotState>();
+        app.init_resource::<crate::permissions::SpacePolicies>();
+        app.init_resource::<crate::TransformOnlyDirtyNodes>();
+        app.init_resource::<crate::js::DomMirrorDirty>();
+        app.world_mut().resource_mut::<crate::JsSnapshotState>().dirty = false;
+        app.world_mut().resource_mut::<AttributeUpdates>().0.extend([
+            (node.id(), "color".into(), "#fff".into()),
+            (node.id(), "absent".into(), ATTR_DELETE_SENTINEL.into()),
+        ]);
+        app.add_systems(Update, apply_attribute_updates);
+        app.update();
+        assert!(app.world().resource::<DirtyNodes>().0.is_empty());
+        assert!(!app.world().resource::<crate::JsSnapshotState>().dirty);
+        assert!(app.world().resource::<crate::js::DomMirrorDirty>().touched_nodes.is_empty());
+        app.world_mut().resource_mut::<AttributeUpdates>().0.extend([
+            (node.id(), "s".into(), "4".into()),
+            (node.id(), "sx".into(), "3".into()),
+        ]);
+        app.update();
+        let dom = app.world().resource::<ElemenetWorld>();
+        let transforms = dom.0.read_storage::<Transform2>();
+        let scale = transforms.get(node).unwrap().scale;
+        assert_eq!((scale.x, scale.y, scale.z), (3.0, 4.0, 4.0));
+        assert!(app.world().resource::<crate::JsSnapshotState>().dirty);
     }
 }
