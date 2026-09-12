@@ -75,6 +75,8 @@ pub struct DomMirror {
     pub version: u64,
     pub nodes: HashMap<i32, DomMirrorNode>,
     pub space_subtrees: HashMap<u32, HashSet<i32>>,
+    /// Nodes which can require an isolate; updated alongside mirror deltas.
+    script_candidates: HashSet<i32>,
 }
 
 #[derive(Resource, Default)]
@@ -1082,10 +1084,13 @@ fn build_dom_mirror_from_specs(
         space_subtrees.insert(node_id as u32, set);
     }
 
+    let script_candidates = nodes.iter()
+        .filter_map(|(&id, node)| node_requires_script_owner(node).then_some(id)).collect();
     DomMirror {
         version: previous_version.saturating_add(1),
         nodes,
         space_subtrees,
+        script_candidates,
     }
 }
 
@@ -1317,6 +1322,7 @@ fn refresh_dom_mirror_in_place(
     let mut changed = !updates.is_empty();
     for id in &removed {
         changed |= mirror.nodes.remove(id).is_some();
+        mirror.script_candidates.remove(id);
     }
     // Known deletions only change their parents. Preserve the repair fallback
     // for a stale ID referenced by a node whose parent can no longer be found.
@@ -1329,6 +1335,10 @@ fn refresh_dom_mirror_in_place(
             node.children.retain(|child| !removed.contains(child));
             changed |= before != node.children.len();
         }
+    }
+    for (&id, node) in &updates {
+        if node_requires_script_owner(node) { mirror.script_candidates.insert(id); }
+        else { mirror.script_candidates.remove(&id); }
     }
     mirror.nodes.extend(updates);
     affected.extend(mirror_descendants(mirror, &roots));
@@ -1788,9 +1798,15 @@ pub fn js_update_snapshots_system(world: &mut World) {
     });
 }
 
+fn node_requires_script_owner(node: &DomMirrorNode) -> bool {
+    node.tag == "script" || (node.tag == "include"
+        && (node.attrs.contains_key("props") || node.attrs.contains_key("events")))
+}
+
 fn scripted_space_ids(mirror: &DomMirror) -> HashSet<u32> {
     let mut spaces = HashSet::new();
-    for node in mirror.nodes.values().filter(|node| node.tag == "script" || (node.tag == "include" && (node.attrs.contains_key("props") || node.attrs.contains_key("events")))) {
+    for id in &mirror.script_candidates {
+        let Some(node) = mirror.nodes.get(id) else { continue; };
         let mut parent = node.parent;
         // Only the nearest space owns execution, not every containing space.
         for _ in 0..mirror.nodes.len() {
@@ -3942,6 +3958,35 @@ mod tests {
         assert_eq!(manager.contexts.len(),1);
         assert!(manager.contexts.contains_key(&owner.id()));
         assert_eq!(world.resource::<SpaceHandleTables>().by_space.len(),1);
+    }
+
+    #[test]
+    fn script_candidate_index_tracks_props_reparent_and_removal() {
+        let mut world = build_world();
+        let root = virtual_dom::parse_xml(&mut world,
+            "<space><space><include src='ui.hsml'/></space><space><script/></space></space>").unwrap();
+        let owners = world.read_storage::<Hierarchy>().get(root).unwrap().children.clone();
+        let include = world.read_storage::<Hierarchy>().get(owners[0]).unwrap().children[0];
+        let script = world.read_storage::<Hierarchy>().get(owners[1]).unwrap().children[0];
+        let mut attached: HashSet<u32> = world.entities().join().map(|e| e.id()).collect();
+        let mut mirror = build_dom_mirror_from_specs(&world, &attached, 0);
+        assert_eq!(scripted_space_ids(&mirror), HashSet::from([owners[1].id()]));
+        world.write_storage::<Attrs>().get_mut(include).unwrap().0.insert("props".into(), "{}".into());
+        refresh_dom_mirror_in_place(&mut mirror, &world, &attached, false,
+            &HashSet::from([include.id()]), &HashSet::new());
+        assert_eq!(scripted_space_ids(&mirror), HashSet::from([owners[0].id(), owners[1].id()]));
+        Hierarchy::add_child(&mut world, owners[0], script);
+        refresh_dom_mirror_in_place(&mut mirror, &world, &attached, false,
+            &HashSet::from([script.id(), owners[0].id(), owners[1].id()]), &HashSet::new());
+        assert_eq!(scripted_space_ids(&mirror), HashSet::from([owners[0].id()]));
+        world.write_storage::<Attrs>().get_mut(include).unwrap().0.remove("props");
+        attached.remove(&script.id());
+        refresh_dom_mirror_in_place(&mut mirror, &world, &attached, false,
+            &HashSet::from([include.id()]), &HashSet::from([script.id()]));
+        assert!(mirror.script_candidates.is_empty());
+        assert!(scripted_space_ids(&mirror).is_empty());
+        let full = build_dom_mirror_from_specs(&world, &attached, 0);
+        assert_eq!(mirror.script_candidates, full.script_candidates);
     }
 
     // Measures only the mirror phase; not GPU frame time or HTTP/parse latency.
