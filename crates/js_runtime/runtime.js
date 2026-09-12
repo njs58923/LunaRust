@@ -629,6 +629,20 @@
       core.ops.op_hsml_set_transform_batch(updates);
     }
 
+    // Local absolute poses; indices and binding come from animation-joints.
+    setJointBatch(nodeId, updates, options) {
+      if (!Number.isInteger(nodeId) || nodeId <= 0) throw new TypeError('setJointBatch: invalid nodeId');
+      if (!options || typeof options.binding !== 'string' || !options.binding) throw new TypeError('setJointBatch: binding is required');
+      const format = options.format || 'rotation';
+      if (format !== 'rotation' && format !== 'trs') throw new TypeError('setJointBatch: format must be rotation or trs');
+      if (!(updates instanceof Float32Array) && !Array.isArray(updates)) throw new TypeError('setJointBatch: expected Float32Array or Array');
+      const stride = format === 'trs' ? 11 : 5;
+      if (updates.length % stride || updates.length / stride > 4096) throw new RangeError('setJointBatch: invalid batch length');
+      const data = updates instanceof Float32Array ? updates : new Float32Array(updates);
+      core.ops.op_set_joint_batch(nodeId, options.binding,
+        new Uint8Array(data.buffer, data.byteOffset, data.byteLength), format === 'trs');
+    }
+
     // Captura el frame renderizado a un PNG. Requiere la cap CAPTURE_FRAME en
     // este space; sin ella el host rechaza y la promesa falla.
     //

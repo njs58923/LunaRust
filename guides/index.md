@@ -140,3 +140,8 @@ Estas guías son sobre **cómo usar** la plataforma. Lo demás vive aparte:
 - `docs/deuda_tecnica/` — lo que se sabe que está mal y todavía no se arregló;
 - `CORE_PERFORMANCE.md`, `ENGINE_DENSITY_OPTIMIZATION.md`,
   `PLATFORM_DIAGNOSTICS_FETCH.md` — trabajo sobre el motor, no sobre su uso.
+
+## Poses y trabajo pendiente
+
+- [Poses locales y setJointBatch](poses.md).
+- [Deuda técnica: carga masiva de modelos](deuda-carga-modelos.md).

@@ -94,3 +94,8 @@ compartición de recursos y reemplazo de `src`.
 ---
 
 Volver al [índice de guías](index.md).
+
+## Fuente de poses
+
+`pose-source="clip"` conserva este comportamiento. Para controlar nodos del
+esqueleto directamente, consultar [Poses y setJointBatch](poses.md).

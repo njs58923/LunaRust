@@ -119,6 +119,7 @@ impl DomMirrorDirty {
 
 pub struct JsTickData {
     pub audio_commands: Vec<js_runtime::audio::SharedPlayback>,
+    pub pose_batches: Vec<js_runtime::pose::PoseBatch>,
     pub mesh_commands: (u64, Vec<js_runtime::mesh::MeshCommand>),
     pub needs_continuous_ticks: bool,
     pub logs: Vec<(String, String)>,
@@ -692,6 +693,7 @@ fn spawn_space_worker_configured(
                         let tick_data = JsTickData {
                             audio_commands: ctx.engine.drain_audio_commands(),
                             mesh_commands: ctx.engine.drain_mesh_commands(),
+                            pose_batches: ctx.engine.drain_pose_batches(),
                             needs_continuous_ticks: ctx.engine.needs_continuous_ticks(),
                             logs: ctx.engine.drain_logs(),
                             attr_updates: ctx.engine.drain_attr_updates(),
@@ -2567,6 +2569,14 @@ pub fn js_tick_system(world: &mut World) {
     let capabilities_by_space = space_capabilities_snapshot(world);
 
     for (space_id, data) in tick_batches {
+        for mut batch in data.pose_batches {
+            let target = world.get_resource::<SpaceHandleTables>()
+                .and_then(|tables| resolve_global_id(tables, space_id, batch.node));
+            if let Some(target) = target {
+                batch.node = target as i32;
+                crate::model_pose::submit(world, batch);
+            }
+        }
         crate::audio::apply_commands(world, space_id, data.audio_commands);
         crate::dynamic_mesh::apply_commands(world, space_id, data.mesh_commands.0, data.mesh_commands.1);
         if !data.logs.is_empty() {
@@ -4800,6 +4810,7 @@ mod tests {
             .send(JsWorkerEvent::TickData(JsTickData {
                 audio_commands: Vec::new(),
                 mesh_commands: (0, Vec::new()),
+                pose_batches: Vec::new(),
                 needs_continuous_ticks: false,
                 logs: Vec::new(),
                 attr_updates: Vec::new(),
@@ -5465,6 +5476,7 @@ mod tests {
         events.send(JsWorkerEvent::TickData(JsTickData {
                 audio_commands: Vec::new(),
                 mesh_commands: (0, Vec::new()),
+                pose_batches: Vec::new(),
                 needs_continuous_ticks: false,
                 logs: Vec::new(),
                 attr_updates: Vec::new(),
@@ -5522,6 +5534,7 @@ mod tests {
         events.send(JsWorkerEvent::TickData(JsTickData {
                 audio_commands: Vec::new(),
                 mesh_commands: (0, Vec::new()),
+                pose_batches: Vec::new(),
                 needs_continuous_ticks: false,
                 logs: Vec::new(),
                 attr_updates: Vec::new(),

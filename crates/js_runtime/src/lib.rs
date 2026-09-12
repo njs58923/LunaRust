@@ -24,6 +24,7 @@ pub mod fetch;
 pub use fetch::{FetchRequest, FetchResponse};
 use deno_core::Op;
 pub mod mesh;
+pub mod pose;
 
 pub use cache::{CacheStats, CachedResponse, CachedScript, FetchCache, ScriptCache};
 pub use csp::{ContentSecurityPolicy, CorsValidation, CorsValidator};
@@ -1492,6 +1493,7 @@ impl Engine {
                 location::op_query_parse::DECL,
                 location::op_query_encode::DECL,
                 mesh::op_mesh_resource::decl(),
+                pose::op_set_joint_batch::decl(),
                 op_set_timeout::decl(),
                 op_clear_timeout::decl(),
                 op_timers_poll::decl(),
@@ -1571,6 +1573,7 @@ impl Engine {
                     updates: attr_updates_for_state.updates.clone(),
                 });
                 state.put(mesh::MeshQueue::default());
+                state.put(pose::PoseQueue::default());
                 state.put(audio::AudioQueue::default());
                 state.put(settings::SettingsInbox::default());
                 state.put(std::sync::Arc::new(components::ComponentPort::default()));
@@ -1818,6 +1821,10 @@ impl Engine {
 
     pub fn drain_audio_commands(&mut self) -> Vec<audio::SharedPlayback> {
         self.rt.op_state().borrow_mut().borrow_mut::<audio::AudioQueue>().drain()
+    }
+
+    pub fn drain_pose_batches(&mut self) -> Vec<pose::PoseBatch> {
+        self.rt.op_state().borrow_mut().borrow_mut::<pose::PoseQueue>().drain()
     }
 
     pub fn drain_mesh_commands(&mut self) -> (u64, Vec<mesh::MeshCommand>) {

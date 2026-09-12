@@ -173,10 +173,19 @@ fn set_source_impl(
     // A replacement scene must bind its own players, even when controls did not change.
     commands
         .entity(entity)
+        .remove::<crate::model_pose::ModelPoseBinding>()
+        .remove::<crate::model_pose::PendingPose>()
+        .insert(crate::model_pose::PendingJointBinding)
         .remove::<crate::model_animation::ModelPlayback>()
         .remove::<crate::model_animation::WaitingClipCompletion>()
         .insert(crate::model_animation::PendingModelAnimation);
-    for (key, value) in [("animation-clips", "[]"), ("animation-error", "")] {
+    for (key, value) in [
+        ("animation-clips", "[]"),
+        ("animation-error", ""),
+        ("animation-joints", ""),
+        ("pose-error", ""),
+        ("pose-status", "loading"),
+    ] {
         updates.0.push((node_id, key.into(), value.into()));
     }
     updates.0.push((

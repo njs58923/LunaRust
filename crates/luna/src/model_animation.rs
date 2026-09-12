@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct ModelAnimationConfig {
+    pub(crate) pose_source: String,
     clip: String,
     state: String,
     looping: bool,
@@ -52,6 +53,10 @@ impl ModelAnimationConfig {
             }
         };
         Self {
+            pose_source: get("pose-source")
+                .filter(|s| !s.is_empty())
+                .unwrap_or("clip")
+                .into(),
             clip: get("animation-clip").unwrap_or("").into(),
             state,
             looping,
@@ -343,6 +348,24 @@ pub fn sync_model_animations(
                 selected: None,
             }
         };
+        if config.pose_source != "clip" {
+            // Removing the graph prevents paused clips and transitions from writing
+            // transforms. Keep player state so returning to clips is explicit.
+            for id in &playback.players {
+                commands.entity(*id).remove::<Handle<AnimationGraph>>();
+            }
+            playback.applied = None;
+            commands
+                .entity(entity)
+                .insert(playback)
+                .remove::<PendingModelAnimation>()
+                .remove::<WaitingClipCompletion>();
+            emit("animation-status", "idle".into());
+            continue;
+        }
+        for id in &playback.players {
+            commands.entity(*id).insert(playback.graph.handle.clone());
+        }
         let selection = config
             .error
             .clone()
@@ -540,6 +563,7 @@ mod tests {
             ScenePlugin,
             AnimationPlugin,
             GltfPlugin::default(),
+            crate::model_pose::ModelPosePlugin,
         ))
         .init_asset::<Mesh>()
         .init_asset::<StandardMaterial>()
@@ -549,6 +573,7 @@ mod tests {
         .register_type::<InheritedVisibility>()
         .register_type::<ViewVisibility>()
         .init_resource::<AttributeUpdates>()
+        .init_resource::<crate::EntityMap>()
         .insert_resource(TimeUpdateStrategy::ManualDuration(
             std::time::Duration::from_millis(100),
         ))
@@ -556,6 +581,8 @@ mod tests {
             Update,
             (
                 crate::models::poll_model_instances,
+                crate::model_pose::sync_bindings,
+                crate::model_pose::sync_pose_control,
                 sync_model_animations,
                 report_clip_completion,
             )
@@ -699,6 +726,83 @@ mod tests {
             ]),
         );
         assert!((app.world().get::<Transform>(wing_b).unwrap().translation.x - 1.0).abs() < 0.001);
+        // Real GLB: a paused player must not overwrite script poses on later frames.
+        update_control(
+            &mut app,
+            b,
+            config(&[
+                ("animation-clip", "Fly"),
+                ("animation-state", "paused"),
+                ("pose-source", "script"),
+            ]),
+        );
+        let catalog: serde_json::Value = serde_json::from_str(
+            &app.world()
+                .resource::<AttributeUpdates>()
+                .0
+                .iter()
+                .rev()
+                .find(|(id, k, _)| *id == b.index() && k == "animation-joints")
+                .unwrap()
+                .2,
+        )
+        .unwrap();
+        let joint_index = catalog["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["name"] == "Wing")
+            .unwrap()["index"]
+            .as_u64()
+            .unwrap() as usize;
+        app.world_mut()
+            .resource_mut::<crate::EntityMap>()
+            .0
+            .insert(b.index(), b);
+        crate::model_pose::submit(
+            app.world_mut(),
+            js_runtime::pose::PoseBatch {
+                node: b.index() as i32,
+                binding: catalog["binding"].as_str().unwrap().into(),
+                joints: vec![js_runtime::pose::JointPose {
+                    index: joint_index,
+                    rotation: [0., 0., 0., 1.],
+                    translation: Some([9., 0., 0.]),
+                    scale: None,
+                }],
+            },
+        );
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(
+            app.world().get::<Transform>(wing_b).unwrap().translation.x,
+            9.
+        );
+        assert!(
+            (app.world()
+                .get::<GlobalTransform>(wing_b)
+                .unwrap()
+                .translation()
+                .x
+                - 9.)
+                .abs()
+                < 0.001
+        );
+        assert!(app
+            .world()
+            .get::<Handle<AnimationGraph>>(pb.players[0])
+            .is_none());
+        update_control(
+            &mut app,
+            b,
+            config(&[
+                ("animation-clip", "Fly"),
+                ("animation-state", "paused"),
+                ("animation-time", "0.25"),
+            ]),
+        );
+        assert!((app.world().get::<Transform>(wing_b).unwrap().translation.x - 0.5).abs() < 0.001);
         // Bad selections leave the previous playback intact and report a useful error.
         update_control(&mut app, b, config(&[("animation-clip", "Missing")]));
         assert!(app

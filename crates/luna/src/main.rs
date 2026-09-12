@@ -275,10 +275,13 @@ fn main() {
             .chain()
             .in_set(LunaUpdatePhase::Permissions),
     );
+    app.add_plugins(luna::model_pose::ModelPosePlugin);
     app.add_systems(
         Update,
         (dom::dom_sync_system.run_if(|d: Res<DirtyNodes>| !d.0.is_empty()),
             luna::models::poll_model_instances,
+            luna::model_pose::sync_bindings,
+            luna::model_pose::sync_pose_control,
             luna::surface::sync_surfaces,
             luna::model_animation::sync_model_animations,
             luna::model_animation::report_clip_completion,

@@ -19,6 +19,7 @@ mod http_fetch;
 pub mod models;
 pub mod diagnostics;
 pub mod model_animation;
+pub mod model_pose;
 pub mod dynamic_mesh;
 pub mod surface;
 pub mod js;
