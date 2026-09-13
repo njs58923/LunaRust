@@ -184,7 +184,9 @@
         // Dos banderas, no una. La barra sobrevive al panel a propósito.
         panelVisible: shouldShowBookmarks(),
         barVisible: shouldShowBottomBar(),
-        bookmarks: BOOKMARKS.map(function (b) { return { name: b.name }; }),
+        // `glyph` sólo si el marcador lo trae: un `undefined` no cruza de
+        // isolate y la excepción corta el montaje entero del shell.
+        bookmarks: BOOKMARKS.map(function (b) { return b.glyph ? { name: b.name, glyph: b.glyph } : { name: b.name }; }),
         windows: windows,
       };
       const firma = JSON.stringify(next);

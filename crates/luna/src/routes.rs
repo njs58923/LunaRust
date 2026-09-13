@@ -2166,7 +2166,7 @@ mod tests {
             function hostOpened(id) { shell.message({fromTabId:0,payload:JSON.stringify({type:'tabopened',tabId:id})}); }
             function ready(id) { shell.message({fromTabId:id,payload:JSON.stringify({type:'ready'})}); }
             const items = shell.items();
-            check(items.length === 9, 'missing dashboard shortcuts');
+            check(items.length === 5, 'missing dashboard shortcuts');
             for (const item of items) {
                 check(item.box.tag === 'plane', 'icon must be a flat textured surface');
                 check(item.box.attrs.texture === 'luna://icons/menu.png', 'shared atlas lost');

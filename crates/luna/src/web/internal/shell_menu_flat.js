@@ -161,7 +161,8 @@ function armar() {
 
   // ── Render ───────────────────────────────────────────────────────────────
   function render(props) {
-    ultimosBookmarks = (props.bookmarks || []).map(function (b) { return { name: b.name }; });
+    // `glyph` sólo si viene: un `undefined` no cruza al include de la sección.
+    ultimosBookmarks = (props.bookmarks || []).map(function (b) { return b.glyph ? { name: b.name, glyph: b.glyph } : { name: b.name }; });
     ultimasWindows = props.windows || [];
     quiereVisible = !!props.panelVisible;
 

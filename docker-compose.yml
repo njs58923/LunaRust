@@ -96,9 +96,14 @@ services:
       - /usr/src/app/node_modules
     ports:
       - "2050:2050"
+    # Dentro del contenedor `localhost` es el puente mismo: a los demás se llega
+    # por el host, donde cada servicio de este compose publica su puerto.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       NODE_ENV: development
       PORT: "2050"
+      DESTINO_HOST: host.docker.internal
     command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
   # Cuántos otros jugadores entran en una escena: avatares con esqueleto y una
   # pose que llega por WebSocket. El 8082 es la multitud, no la física.

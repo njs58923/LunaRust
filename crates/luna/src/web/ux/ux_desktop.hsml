@@ -40,11 +40,8 @@
         { name: 'Ajustes',   url: 'luna://settings',      kind: 'app-embedded' },
         { name: 'Demos',     url: 'luna://demos',         kind: 'spatial' },
         { name: 'Demo App',  url: 'luna://demo_embedded', kind: 'app-embedded' },
-        { name: 'Acerca de', url: 'luna://about',         kind: 'app' },
-        { name: 'Scale',     url: 'luna://scale_demo',    kind: 'spatial' },
-        { name: 'Fire',      url: 'luna://fire_demo',     kind: 'spatial' },
-        { name: 'Target',    url: 'luna://target_demo',   kind: 'spatial' },
-        { name: 'Range',     url: 'luna://range_demo',    kind: 'spatial' },
+        // El directorio del taller (server_puente): una puerta a cada proyecto.
+        { name: 'Taller',    url: 'http://localhost:2050/', kind: 'spatial', glyph: 'app' },
       ];
 
       // El menú plano mide ~2,4 m de ancho. En un visor eso se recorre girando

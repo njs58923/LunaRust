@@ -91,7 +91,8 @@ function armar() {
       const it = D.piece(tile, {
         x: 0, y: 0, size: M.SIZE_APP, corner: M.CORNER,
         color: D.PALETTE[i % D.PALETTE.length],
-        glyph: D.GLYPHS[i] || 'app', padding: 0.24,
+        // El marcador puede nombrar su glifo; si no, el del slot de su índice.
+        glyph: bm.glyph || D.GLYPHS[i] || 'app', padding: 0.24,
         name: 'open-' + (bm.name || i),
         // Lo único que sale de acá es «tocaron el índice i». Qué URL es eso, y
         // si abre una pestaña o una app embebida, lo sabe el controller.
