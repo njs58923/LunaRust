@@ -169,18 +169,28 @@ services:
   # Backrooms, Nivel !: «Run for Your Life!». En Go y sin dependencias: el nivel
   # por HTTP en el 2061 y la persecución por WebSocket en el 8083.
   # Ver server_corre/README.md.
+  #
+  # dev.sh recompila cuando cambia un .go, como el nodemon de los servicios de
+  # Bun. Con `go run .` a secas el binario quedaba viejo mientras public/ se
+  # servía nuevo, y el nivel se desarmaba a medias (la puerta de la salida dejó
+  # de responder así). Los cachés de Go van en volúmenes para que recompilar
+  # tarde segundos y no minutos.
   corre-dev:
     image: golang:1.22
     working_dir: /usr/src/app
     volumes:
       - ../server_corre:/usr/src/app
+      - corre_gocache:/root/.cache/go-build
+      - corre_gomod:/go/pkg/mod
     ports:
       - "2061:2061"
       - "8083:8083"
     environment:
       PORT: "2061"
       WS_PORT: "8083"
-    command: ["go", "run", "."]
+    command: ["sh", "dev.sh"]
 volumes:
   caddy_data:
   caddy_config:
+  corre_gocache:
+  corre_gomod:
