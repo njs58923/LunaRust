@@ -88,12 +88,17 @@ services:
     command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
   # El puente entre todos los servidores: un directorio con una puerta por sitio,
   # buscador y estado en vivo. Ver server_puente/README.md.
+  #
+  # Monta su carpeta en /taller/server_puente y, al lado, la de la arcada:
+  # atrio.ts importa ../../server_arcada/src/entorno.ts, y con sólo su carpeta
+  # en /usr/src/app ese import no existía y el contenedor no arrancaba nunca.
   puente-dev:
     image: oven/bun:1
-    working_dir: /usr/src/app
+    working_dir: /taller/server_puente
     volumes:
-      - ../server_puente:/usr/src/app
-      - /usr/src/app/node_modules
+      - ../server_puente:/taller/server_puente
+      - /taller/server_puente/node_modules
+      - ../server_arcada:/taller/server_arcada:ro
     ports:
       - "2050:2050"
     # Dentro del contenedor `localhost` es el puente mismo: a los demás se llega
@@ -137,12 +142,14 @@ services:
     command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
   # La sala de los ecos: audio espacial sobre el entorno compartido de la arcada.
   # Ver server_eco/README.md.
+  # Como el puente: sala.ts importa el entorno de la arcada por ruta relativa.
   eco-dev:
     image: oven/bun:1
-    working_dir: /usr/src/app
+    working_dir: /taller/server_eco
     volumes:
-      - ../server_eco:/usr/src/app
-      - /usr/src/app/node_modules
+      - ../server_eco:/taller/server_eco
+      - /taller/server_eco/node_modules
+      - ../server_arcada:/taller/server_arcada:ro
     ports:
       - "2059:2059"
     environment:
@@ -189,6 +196,21 @@ services:
       PORT: "2061"
       WS_PORT: "8083"
     command: ["sh", "dev.sh"]
+  # El taller de las manos: un atrio y dos escenas para los mandos de VR (el
+  # manipulador y el arco). Las páginas las genera src/; lo que corre en el
+  # visor es estático en public/. Ver server_manipulador/README.md.
+  manipulador-dev:
+    image: oven/bun:1
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_manipulador:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "2062:2062"
+    environment:
+      NODE_ENV: development
+      PORT: "2062"
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
 volumes:
   caddy_data:
   caddy_config:

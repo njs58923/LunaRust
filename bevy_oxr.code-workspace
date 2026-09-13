@@ -26,6 +26,9 @@
 		},
 		{
 			"path": "../server_jugadores"
+		},
+		{
+			"path": "../server_manipulador"
 		}
 	],
 	"settings": {}

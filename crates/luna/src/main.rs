@@ -604,8 +604,16 @@ fn spawn_controllers(
     mut materials: ResMut<Assets<StandardMaterial>>,
     root: Query<Entity, With<bevy_mod_xr::session::XrTrackingRoot>>,
 ) {
-    let mesh = meshes.add(Cuboid::new(0.1, 0.1, 0.05));
-    let mat = materials.add(Color::srgb_u8(124, 144, 255));
+    // Una esfera blanca por mando, sin iluminar: se lee igual de blanca bajo
+    // cualquier cielo y no tiene caras que delaten para dónde gira el control,
+    // que en una escena que dibuja su propio objeto en la mano (un arco) sólo
+    // estorba.
+    let mesh = meshes.add(Sphere::new(0.035).mesh().uv(24, 12));
+    let mat = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        unlit: true,
+        ..default()
+    });
     let left = cmds
         .spawn((
             PbrBundle {
