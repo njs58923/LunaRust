@@ -96,7 +96,7 @@ function armar() {
         name: 'open-' + (bm.name || i),
         // Lo único que sale de acá es «tocaron el índice i». Qué URL es eso, y
         // si abre una pestaña o una app embebida, lo sabe el controller.
-        onTap: (function (idx) { return function () { emit('open', { index: idx }); }; })(i),
+        onTap: (function (idx, id) { return function () { emit('open', { index: idx, id: id || null }); }; })(i, bm.id),
       });
       const text = D.caption(tile, bm.name || '', M.LABEL_DY, M.LABEL_SIZE);
       itemRefs.push({ group: tile, piece: it, text: text, idx: i });
@@ -309,7 +309,7 @@ function armar() {
 
     // La grilla se rehace sólo si cambiaron los marcadores: es lo caro —una
     // pieza son tres nodos— y lo que más se repite es un cambio de ventanas.
-    const firma = JSON.stringify(bookmarks.map(b => b.name));
+    const firma = JSON.stringify(bookmarks);
     if (firma !== dibujadas) {
       dibujadas = firma;
       buildBookmarks(bookmarks);

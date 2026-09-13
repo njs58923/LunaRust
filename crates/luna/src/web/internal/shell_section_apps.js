@@ -53,7 +53,7 @@ function armar() {
       // Lo único que sale de acá es «tocaron el marcador i». Qué URL es eso, y
       // si abre una pestaña o una app embebida, lo sabe el controller — dos
       // isolates más arriba.
-      onOpen: function (app) { emit('open', { index: app.__idx }); },
+      onOpen: function (app) { emit('open', { index: app.__idx, id: app.id || null }); },
     });
   }
 
@@ -135,10 +135,10 @@ function armar() {
       // El índice viaja con el marcador: es lo que devuelve `open`, y el
       // paginador reordena las celdas sin que deje de valer. El glifo sale del
       // índice si el marcador no trae uno.
-      return { name: b.name, glyph: b.glyph || UI.GLYPHS[i], __idx: i };
+      return { id: b.id || null, name: b.name, glyph: b.glyph || UI.GLYPHS[i], __idx: i };
     });
 
-    const firma = JSON.stringify(bookmarks.map(function (b) { return b.name; }));
+    const firma = JSON.stringify(bookmarks);
     if (firma !== dibujadas) {
       dibujadas = firma;
       buildBoard(bookmarks);

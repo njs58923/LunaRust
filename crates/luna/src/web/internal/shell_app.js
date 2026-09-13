@@ -21,7 +21,8 @@
 //
 // `cfg`:
 //   root, menuInclude, focusZone, anchoredZone   — nodos
-//   bookmarks   — [{ name, url, kind }]
+//   bookmarks   — [{ id?, name, url, kind }] para montajes independientes
+//   sharedItems — usar el catálogo publicado por el root en component.props
 //   tabs        — { open(url, opts), close(id), setVisible(id, visible) }
 //   send(tabId, payload) / poll()   — mensajería con las apps
 //   viewerPose()                    — { px, py, pz, yaw } o null
@@ -40,7 +41,7 @@
     const menuInclude = cfg.menuInclude;
     const focusZone = cfg.focusZone;
     const anchoredZone = cfg.anchoredZone;
-    const BOOKMARKS = cfg.bookmarks || [];
+    let BOOKMARKS = cfg.bookmarks || [];
 
     // ── Puentes al host ──────────────────────────────────────────────────
     // Envueltos en funciones tolerantes en vez de usarse directo: el shell se
@@ -186,7 +187,7 @@
         barVisible: shouldShowBottomBar(),
         // `glyph` sólo si el marcador lo trae: un `undefined` no cruza de
         // isolate y la excepción corta el montaje entero del shell.
-        bookmarks: BOOKMARKS.map(function (b) { return b.glyph ? { name: b.name, glyph: b.glyph } : { name: b.name }; }),
+        bookmarks: BOOKMARKS.map(function (b) { return { id: b.id || null, name: b.name, glyph: b.glyph || null }; }),
         windows: windows,
       };
       const firma = JSON.stringify(next);
@@ -201,7 +202,8 @@
       if (!menuInclude) return;
       menuInclude.addEventListener('component:open', function (e) {
         const idx = e.detail && e.detail.index;
-        const bm = BOOKMARKS[idx];
+        const id = e.detail && e.detail.id;
+        const bm = typeof id === 'string' ? BOOKMARKS.find(b => b.id === id) : BOOKMARKS[idx];
         if (bm) openBookmark(bm);
       });
       menuInclude.addEventListener('component:menu', onTapBarMenu);
@@ -831,6 +833,19 @@
     }
 
     // ── Arranque ─────────────────────────────────────────────────────────
+    // Suscripción al catálogo del root, sin polling ni storage del controller.
+    // Otros consumidores pueden representar todos los campos como prefieran.
+    if (cfg.sharedItems && globalThis.component) {
+      function readSharedItems() {
+        const catalog = component.props && component.props.shellItems;
+        if (!catalog || !Array.isArray(catalog.items)) return;
+        BOOKMARKS = catalog.items.filter(item => typeof item.name === 'string' && typeof item.url === 'string');
+        pushMenuProps();
+      }
+      component.addEventListener('propschange', readSharedItems);
+      component.addEventListener('connect', readSharedItems);
+      readSharedItems();
+    }
     wireMenuEvents();
     pollInbox();
     applyVisibility();

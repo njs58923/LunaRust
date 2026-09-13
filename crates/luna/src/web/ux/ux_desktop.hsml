@@ -33,16 +33,7 @@
     <script src="luna://internal/shell_draw.js"/>
     <script src="luna://internal/shell_app.js"/>
     <script>
-      // ── Marcadores ───────────────────────────────────────────────────────
-      // TODO(persistence): mover a storage cuando exista API.
-      const BOOKMARKS = [
-        { name: 'Inicio',    url: 'luna://home',          kind: 'spatial' },
-        { name: 'Ajustes',   url: 'luna://settings',      kind: 'app-embedded' },
-        { name: 'Demos',     url: 'luna://demos',         kind: 'spatial' },
-        { name: 'Demo App',  url: 'luna://demo_embedded', kind: 'app-embedded' },
-        // El directorio del taller (server_puente): una puerta a cada proyecto.
-        { name: 'Taller',    url: 'http://localhost:2050/', kind: 'spatial', glyph: 'app' },
-      ];
+      // El root publica y persiste el catálogo común mediante component.props.
 
       // El menú plano mide ~2,4 m de ancho. En un visor eso se recorre girando
       // la cabeza; en una pantalla hay que alejarlo o no entra de alto.
@@ -65,7 +56,7 @@
           menuInclude: root.getElementById('ux_desktop_menu'),
           focusZone: root.getElementById('ux_desktop_focus_zone'),
           anchoredZone: root.getElementById('ux_desktop_anchored_zone'),
-          bookmarks: BOOKMARKS,
+          sharedItems: true,
           distance: DISTANCIA,
           // El menú plano mide ~2,4 m y se planta a 2,6: una ventana de un
           // metro ahí se ve la mitad de lo que se veía la grilla y queda
@@ -99,7 +90,7 @@
         // El shell arranca escondido, igual que en VR: se abre con el gesto. Una
         // pantalla ya tiene el panel de egui a mano, así que abrirlo solo taparía
         // lo que el usuario estaba mirando.
-        console.log('[ux_desktop] shell montado — ' + BOOKMARKS.length + ' marcadores');
+        console.log('[ux_desktop] shell montado con catálogo del root');
       }
     </script>
   </space>

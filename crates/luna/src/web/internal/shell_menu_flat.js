@@ -113,7 +113,7 @@ function armar() {
 
   if (seccion) {
     seccion.addEventListener('component:open', function (e) {
-      emit('open', { index: e.detail && e.detail.index });
+      emit('open', e.detail || {});
     });
     // El shell espera este aviso para revelar la ventana de una app, así que
     // tiene que llegarle desde dos isolates más abajo sin perderse.
@@ -162,7 +162,7 @@ function armar() {
   // ── Render ───────────────────────────────────────────────────────────────
   function render(props) {
     // `glyph` sólo si viene: un `undefined` no cruza al include de la sección.
-    ultimosBookmarks = (props.bookmarks || []).map(function (b) { return b.glyph ? { name: b.name, glyph: b.glyph } : { name: b.name }; });
+    ultimosBookmarks = (props.bookmarks || []).map(function (b) { return { id: b.id || null, name: b.name, glyph: b.glyph || null }; });
     ultimasWindows = props.windows || [];
     quiereVisible = !!props.panelVisible;
 

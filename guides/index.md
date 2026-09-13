@@ -1,5 +1,7 @@
 # Guías de Luna (HSML + JS)
 
+Controllers: [catálogo compartido del shell](catalogo-shell.md).
+
 Cómo **escribir documentos espaciales** que corran en Luna. Todo lo de acá está
 verificado contra el código, no contra el README; cuando algo cambió en el motor,
 la página lo dice.

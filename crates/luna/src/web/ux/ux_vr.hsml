@@ -41,17 +41,7 @@
     <script src="luna://internal/shell_draw.js"/>
     <script src="luna://internal/shell_app.js"/>
     <script>
-      // ── Marcadores ───────────────────────────────────────────────────────
-      // TODO(persistence): mover a storage cuando exista API.
-      // kind: 'spatial' (default) | 'app' | 'app-embedded'
-      const BOOKMARKS = [
-        { name: 'Inicio',    url: 'luna://home',          kind: 'spatial' },
-        { name: 'Ajustes',   url: 'luna://settings',      kind: 'app-embedded' },
-        { name: 'Demos',     url: 'luna://demos',         kind: 'spatial' },
-        { name: 'Demo App',  url: 'luna://demo_embedded', kind: 'app-embedded' },
-        // El directorio del taller (server_puente): una puerta a cada proyecto.
-        { name: 'Taller',    url: 'http://localhost:2050/', kind: 'spatial', glyph: 'app' },
-      ];
+      // El root publica y persiste el catálogo común mediante component.props.
 
       // Los scripts externos llegan asincrónicos y el motor no garantiza el
       // orden. Esperar a que los dos existan es más barato que ordenarlos, y
@@ -73,7 +63,7 @@
           menuInclude: root.getElementById('ux_vr_menu'),
           focusZone: root.getElementById('ux_vr_focus_zone'),
           anchoredZone: root.getElementById('ux_vr_anchored_zone'),
-          bookmarks: BOOKMARKS,
+          sharedItems: true,
           distance: 1.5,
           // El lienzo de una app, en metros. Va con la distancia: acá el menú
           // está cerca, así que una ventana de un metro ocupa más o menos lo
@@ -103,7 +93,7 @@
           if (evt.action === 'shell') shell.toggle();
         });
 
-        console.log('[ux_vr] shell montado — ' + BOOKMARKS.length + ' marcadores');
+        console.log('[ux_vr] shell montado con catálogo del root');
       }
     </script>
   </space>

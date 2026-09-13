@@ -1978,6 +1978,7 @@ mod tests {
                     this.parent = null;
                 }
                 createElement(tag) { return new NativeNode(tag); }
+                addEventListener() {}
             }
             globalThis.__nativeTestRoot = new NativeNode('space');
             function frame() { const batch = frames.splice(0); batch.forEach(fn => fn()); }

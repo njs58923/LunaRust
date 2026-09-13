@@ -15,6 +15,92 @@
   const dimension = global.dimension || (global.dimension = {});
   const registry = new Map();
   let nextPublicId = 1;
+  // El catálogo pertenece al root, no al origen ni al diseño de cada controller.
+  const SHELL_ITEMS_KEY = 'luna.shell.items.v1';
+  const defaultShellItems = [
+    { id: 'home', name: 'Inicio', url: 'luna://home', kind: 'spatial' },
+    { id: 'settings', name: 'Ajustes', url: 'luna://settings', kind: 'app-embedded' },
+    { id: 'demos', name: 'Demos', url: 'luna://demos', kind: 'spatial' },
+    { id: 'demo-app', name: 'Demo App', url: 'luna://demo_embedded', kind: 'app-embedded' },
+    { id: 'workshop', name: 'Taller', url: 'http://localhost:2050/', kind: 'spatial', glyph: 'app' },
+  ];
+  function validateShellItems(items) {
+    if (!Array.isArray(items) || items.length > 128) throw new Error('invalid-items');
+    const ids = new Set();
+    for (const item of items) {
+      if (!item || typeof item !== 'object' || Array.isArray(item) ||
+          typeof item.id !== 'string' || !item.id.trim() || item.id.length > 128 || ids.has(item.id)) {
+        throw new Error('invalid-or-duplicate-id');
+      }
+      ids.add(item.id);
+      // Campos de presentación adicionales se conservan: el root no impone una UI.
+      for (const key of ['name', 'url', 'kind', 'glyph']) {
+        if (key in item && typeof item[key] !== 'string') throw new Error('invalid-' + key);
+      }
+    }
+    const json = JSON.stringify(items);
+    // Margen para props y respuestas dentro del límite del canal (64 KiB UTF-8).
+    if (json.length > 8000) throw new Error('items-too-large');
+    const copy = JSON.parse(json);
+    function checkDepth(value, depth) {
+      if (depth > 24) throw new Error('items-too-deep');
+      if (value && typeof value === 'object') {
+        for (const child of Object.values(value)) checkDepth(child, depth + 1);
+      }
+    }
+    checkDepth(copy, 0);
+    return copy;
+  }
+  let shellItems = defaultShellItems;
+  let shellItemsRevision = 0;
+  try {
+    const saved = global.localStorage.getItem(SHELL_ITEMS_KEY);
+    if (saved !== null) shellItems = validateShellItems(JSON.parse(saved));
+    else global.localStorage.setItem(SHELL_ITEMS_KEY, JSON.stringify(shellItems));
+  } catch (error) {
+    console.warn('[root] No se pudo leer el catálogo del shell:', String(error));
+  }
+  function shellItemsSnapshot() {
+    return { version: 1, revision: shellItemsRevision, items: shellItems };
+  }
+  function bindShellItems(entry) {
+    const include = entry.include;
+    include.setAttribute('events', 'shell-items-get,shell-items-update,shell-items-push');
+    include.props = { shellItems: shellItemsSnapshot() };
+    entry.shellItemsChannel = true;
+    function reply(payload) {
+      include.send('shell-items-result', payload).catch(error => {
+        console.warn('[root] Respuesta de catálogo no entregada:', String(error));
+      });
+    }
+    for (const action of ['get', 'update', 'push']) {
+      include.addEventListener('component:shell-items-' + action, function (event) {
+        // Una referencia desmontada nunca puede modificar el catálogo.
+        if (!isDirectRootChild(entry.space)) return;
+        const request = event.detail || {};
+        const requestId = typeof request.requestId === 'string' ? request.requestId.slice(0, 128) : null;
+        try {
+          if (action !== 'get') {
+            if (request.revision !== shellItemsRevision) throw new Error('revision-conflict');
+            const incoming = validateShellItems(request.items);
+            const next = validateShellItems(action === 'push' ? shellItems.concat(incoming) : incoming);
+            // Persistir antes de publicar; un fallo de cuota no simula un guardado.
+            global.localStorage.setItem(SHELL_ITEMS_KEY, JSON.stringify(next));
+            shellItems = next;
+            shellItemsRevision++;
+            for (const mounted of registry.values()) {
+              if (mounted.shellItemsChannel && isDirectRootChild(mounted.space)) {
+                mounted.include.props = { shellItems: shellItemsSnapshot() };
+              }
+            }
+          }
+          reply({ requestId, ok: true, ...shellItemsSnapshot() });
+        } catch (error) {
+          reply({ requestId, ok: false, error: String(error.message || error), ...shellItemsSnapshot() });
+        }
+      });
+    }
+  }
   const nativePages = new Set([
     'home', 'demos', 'settings', 'about', 'cache-stats', 'error/404',
     'scale_demo', 'fire_demo', 'target_demo', 'range_demo',
@@ -308,6 +394,7 @@
       console.log('[root] mountSpace url=', url, 'kind=', kind,
         'grants=', Array.isArray(grants) ? grants.join(',') : '(none)');
       const include = ensureInclude(entry);
+      if (options.systemShell) bindShellItems(entry);
       if (Array.isArray(grants) && grants.length) {
         include.setAttribute('resources', grants.join(','));
       }
