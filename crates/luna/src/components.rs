@@ -376,6 +376,14 @@ mod tests {
             .component_port
             .clone();
         assert_eq!(parent.drain()[0].origin, "https://components.test");
+        parent.send(old.local_id, "reset".into(), r#"{"value":123}"#).unwrap();
+        let child_port = world.non_send_resource::<ScriptRuntimeManager>().contexts[&ids["child"]]
+            .component_port.clone();
+        assert!(child_port.take_wake());
+        let messages = child_port.drain_messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].detail["value"], 123);
+        assert!(child_port.validate_message(&messages[0].generation));
         // No UX_EMBED or root permission was required; only the declared event.
         evaluate(&mut world,ids["child"],"let denied=false;try{Deno.core.ops.op_component_emit('navigate','{}')}catch(e){denied=true}if(!denied)throw Error('undeclared event')");
         {

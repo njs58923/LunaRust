@@ -101,6 +101,8 @@ struct ChannelState {
     closed: bool,
     queue: VecDeque<Queued>,
     sequence: u64,
+    messages: VecDeque<Queued>,
+    message_sequence: u64,
 }
 pub struct Channel {
     pub generation: String,
@@ -143,6 +145,8 @@ impl Channel {
                 closed: false,
                 queue: VecDeque::new(),
                 sequence: 0,
+                messages: VecDeque::new(),
+                message_sequence: 0,
             }),
         });
         children.insert(local_id, channel.clone());
@@ -167,7 +171,8 @@ impl Channel {
             return;
         }
         s.closed = true;
-        let bytes = s.queue.drain(..).map(|q| q.bytes).sum::<usize>();
+        let bytes = s.queue.drain(..).map(|q| q.bytes).sum::<usize>()
+            + s.messages.drain(..).map(|q| q.bytes).sum::<usize>();
         if let Some(p) = self.parent.upgrade() {
             p.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
         }
@@ -240,6 +245,47 @@ pub struct ComponentPort {
     queued_bytes: AtomicUsize,
 }
 impl ComponentPort {
+    pub fn send(&self, id: i32, name: String, text: &str) -> Result<(), String> {
+        if self.closed.load(Ordering::Acquire) { return Err("Component worker closed".into()); }
+        if !event_name(&name) { return Err("Invalid component message name".into()); }
+        let data = parse_json(text, false)?;
+        let channel = self.children.lock().unwrap().get(&id).cloned()
+            .ok_or("Include component channel is not connected")?;
+        let mut s = channel.state.lock().unwrap();
+        if s.closed { return Err("Component channel disconnected".into()); }
+        let child = channel.child.upgrade().ok_or("Component child unavailable")?;
+        if child.closed.load(Ordering::Acquire) { return Err("Component child closed".into()); }
+        if s.messages.len() >= MAX_PENDING { return Err("Component message queue full (64 pending)".into()); }
+        let bytes = text.len() + name.len() + 64;
+        self.queued_bytes.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+            |n| n.checked_add(bytes).filter(|n| *n <= MAX_QUEUED_BYTES))
+            .map_err(|_| "Component parent queue exceeds 1 MiB")?;
+        s.message_sequence += 1;
+        let sequence = s.message_sequence;
+        s.messages.push_back(Queued { name, data, bytes, sequence });
+        child.wake.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    pub fn validate_message(&self, generation: &str) -> bool {
+        self.incoming.lock().unwrap().as_ref()
+            .is_some_and(|c| c.generation == generation && c.is_open())
+    }
+
+    pub fn drain_messages(&self) -> Vec<MessageDelivery> {
+        let Some(c) = self.incoming.lock().unwrap().clone() else { return Vec::new(); };
+        let mut s = c.state.lock().unwrap();
+        if s.closed { return Vec::new(); }
+        let mut out = Vec::with_capacity(s.messages.len());
+        while let Some(q) = s.messages.pop_front() {
+            if let Some(parent) = c.parent.upgrade() {
+                parent.queued_bytes.fetch_sub(q.bytes, Ordering::AcqRel);
+            }
+            out.push(MessageDelivery { kind:format!("message:{}", q.name), detail:q.data,
+                generation:c.generation.clone(), sequence:q.sequence });
+        }
+        out
+    }
     pub fn take_wake(&self) -> bool {
         self.wake.swap(false, Ordering::AcqRel)
     }
@@ -321,6 +367,30 @@ impl ComponentPort {
         }
         out
     }
+}
+
+#[derive(Serialize)]
+pub struct MessageDelivery {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub detail: Value,
+    pub generation: String,
+    pub sequence: u64,
+}
+
+#[op2(fast)]
+pub fn op_component_send(state: &mut OpState, #[smi] id: i32,
+    #[string] name: String, #[string] payload: String) -> Result<(), anyhow::Error> {
+    state.borrow::<Arc<ComponentPort>>().send(id, name, &payload).map_err(anyhow::Error::msg)
+}
+#[op2]
+#[serde]
+pub fn op_component_poll_messages(state: &mut OpState) -> Vec<MessageDelivery> {
+    state.borrow::<Arc<ComponentPort>>().drain_messages()
+}
+#[op2(fast)]
+pub fn op_component_validate_message(state: &mut OpState, #[string] generation: String) -> bool {
+    state.borrow::<Arc<ComponentPort>>().validate_message(&generation)
 }
 #[op2]
 #[serde]

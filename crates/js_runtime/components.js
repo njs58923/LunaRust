@@ -23,6 +23,14 @@
     if(new TextEncoder().encode(text).length>65536)throw new RangeError('Component payload exceeds 64 KiB');return text;
   }
   const optimistic=new WeakMap();
+  Object.defineProperty(HSMLElement.prototype,'send',{
+    value:async function(name,detail=null){
+      if(this.tagName!=='include')throw new TypeError('send belongs to include elements');
+      if(!this._isResolved())throw new Error('Include is not connected yet');
+      if(typeof name!=='string')throw new TypeError('Component message name must be a string');
+      ops.op_component_send(this.nodeId,name,serialize(detail));
+    }
+  });
   Object.defineProperty(HSMLElement.prototype,'props',{
     get(){
       if(this.tagName!=='include')throw new TypeError('props belongs to include elements');
@@ -58,6 +66,12 @@
         const changedKeys=[...keys].filter(k=>JSON.stringify(previous.props[k])!==JSON.stringify(current.props[k]));
         notify('propschange',freeze({props:current.props,previous:previous.props,revision:current.revision,changedKeys}));
       }
+    }
+    for(const event of ops.op_component_poll_messages()){
+      if(!ops.op_component_validate_message(event.generation))continue;
+      event.detail=freeze(event.detail);event.target=api;event.isTrusted=false;event.bubbles=false;
+      Object.freeze(event);
+      for(const fn of [...(listeners.get(event.type)||[])]){try{fn(event);}catch(e){console.error(e);}}
     }
     for(const event of ops.op_component_poll()){
       if(!ops.op_component_validate(event.nodeId,event.generation))continue;

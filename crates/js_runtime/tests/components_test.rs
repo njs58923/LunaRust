@@ -17,6 +17,56 @@ fn engine(port: Arc<ComponentPort>) -> Engine {
     );
     e
 }
+
+#[test]
+fn parent_messages_reach_child_once_with_frozen_data() {
+    let parent = Arc::new(ComponentPort::default());
+    let child = Arc::new(ComponentPort::default());
+    let _channel = Channel::new(&parent, &child, 1, "https://child.test".into(),
+        serde_json::json!({}), parse_events("").unwrap()).unwrap();
+    {
+        let mut p = engine(parent.clone());
+        p.eval("globalThis.data={value:123};hiperspace.dimention.getElementById('child').send('talcosa',data);data.value=999;").unwrap();
+    }
+    assert!(child.take_wake());
+    assert!(parent.drain().is_empty());
+    let mut c = engine(child.clone());
+    c.eval("globalThis.messages=[];component.addEventListener('message:talcosa', e=>messages.push(e));").unwrap();
+    c.fire_raf(1.);
+    c.eval("if(messages.length!==1||messages[0].detail.value!==123||!Object.isFrozen(messages[0].detail)||messages[0].target!==component||messages[0].isTrusted!==false||messages[0].bubbles!==false)throw Error('message delivery');").unwrap();
+    c.fire_raf(2.);
+    c.eval("if(messages.length!==1)throw Error('duplicate');").unwrap();
+}
+
+#[test]
+fn parent_messages_are_bounded_isolated_and_cancelled_on_rebind() {
+    let parent = Arc::new(ComponentPort::default());
+    let child = Arc::new(ComponentPort::default());
+    let c = Channel::new(&parent,&child,1,"https://child.test".into(),serde_json::json!({}),parse_events("change").unwrap()).unwrap();
+    assert!(parent.send(2,"reset".into(),"{}").is_err());
+    assert!(child.send(1,"reset".into(),"{}").is_err());
+    assert!(parent.send(1,"*".into(),"{}").is_err());
+    assert!(parent.send(1,"reset".into(),"{oops}").is_err());
+    for i in 0..64 { parent.send(1,"reset".into(),&i.to_string()).unwrap(); }
+    assert!(parent.send(1,"reset".into(),"65").is_err());
+    let events=child.drain_messages();
+    for (i,e) in events.iter().enumerate() { assert_eq!(e.detail,serde_json::json!(i)); assert_eq!(e.sequence,i as u64+1); }
+    assert_eq!(events.len(),64);
+    assert!(child.validate_message(&events[0].generation));
+    let big=serde_json::to_string(&"a".repeat(MAX_MESSAGE-20)).unwrap();
+    for _ in 0..8 { parent.send(1,"reset".into(),&big).unwrap(); child.emit("change".into(),&big).ok(); }
+    assert!(parent.send(1,"reset".into(),&big).is_err());
+    c.close();
+    assert!(child.drain_messages().is_empty());
+    assert!(!child.validate_message(&events[0].generation));
+    parent.remove_child(1,&c.generation);
+    let next=Arc::new(ComponentPort::default());
+    let _next=Channel::new(&parent,&next,1,"https://next.test".into(),serde_json::json!({}),parse_events("").unwrap()).unwrap();
+    // Closing frees both directions' shared byte budget.
+    parent.send(1,"reset".into(),&big).unwrap();
+    assert!(child.drain_messages().is_empty());
+    assert_eq!(next.drain_messages().len(),1);
+}
 #[test]
 fn component_initial_props_updates_events_and_disconnect() {
     let parent = Arc::new(ComponentPort::default());

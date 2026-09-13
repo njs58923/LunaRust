@@ -6,8 +6,8 @@ podía ver sus nodos con `getElementById` y escribirles atributos, pero **el toq
 nunca cruza el borde** —se despacha sólo al espacio dueño del nodo— así que el
 hijo no tenía forma de avisar nada hacia arriba.
 
-El canal cierra eso con dos atributos: **`props`** baja datos y **`events`**
-declara qué puede emitir el hijo.
+El canal usa dos atributos: **`props`** baja estado y **`events`** declara qué
+puede emitir el hijo. Además, `include.send()` envía mensajes puntuales al hijo.
 
 ```xml
 <include id="puerta_cueva" src="./puerta.hsml" events="abrir"
@@ -19,7 +19,7 @@ declara qué puede emitir el hijo.
 const p = hiperspace.dimention.getElementById('puerta_cueva');
 p.addEventListener('component:abrir', () => {
   p.props = { ...p.props, estado: 'abriendo' };   // la vuelta
-  location.href = './cueva.hsml';                 // lo que el hijo no puede hacer
+  location.href = './cueva.hsml';                 // el padre decide navegar
 });
 ```
 
@@ -30,10 +30,10 @@ component.addEventListener('propschange', e => render(e.detail.props));
 component.emit('abrir', { id: 'cueva' });
 ```
 
-**Lo que el canal no arregla: un include sigue sin poder navegar** el documento
-que lo contiene. `location.href` adentro de un include navega el include, y el
-destino aparece dentro del marco. Por eso el patrón es siempre el mismo — el
-componente avisa, el padre actúa.
+Para navegar directamente el mundo desde una puerta existe ahora
+[`hiperspace.world.navigate()`](navegacion-mundo.md), con `navigate_world`
+delegado. `location.href` dentro de un include conserva la navegación local.
+El callback hacia el padre sigue sirviendo cuando éste necesita decidir la acción.
 
 > Un caso entero, con veintiocho instancias del mismo archivo: las puertas del
 > atrio en `server_noche` (`public/puerta.hsml` + `src/atrio.ts`). Antes los datos
@@ -83,6 +83,53 @@ await component.emit('volumechange', {volume:0.5});
 - El padre escucha `component:nombre` **en ese include**. El evento contiene `detail`, `origin`, `generation`, `sequence`, `isTrusted:false` y `bubbles:false`. El host establece los metadatos; los datos del hijo quedan dentro de `detail`, congelados. No hay burbujeo ni activación de usuario implícita.
 - Ambos objetos admiten `addEventListener`/`removeEventListener`; en `component` se reciben callbacks de función.
 
+## Mensajes del padre al hijo
+
+Para órdenes puntuales, incluso repetidas con los mismos datos, usar `send`:
+
+```xml
+<!-- props vacío activa el canal aunque sólo se necesiten mensajes. -->
+<include id="contador" src="./contador.hsml" props='{}'/>
+```
+
+```js
+// Padre: una vez cargado y conectado el include.
+const includeRef = hiperspace.dimention.getElementById('contador');
+await includeRef.send('talcosa', { value: 123 });
+```
+
+```js
+// Dentro de contador.hsml: registrar el listener al iniciar el script.
+component.addEventListener('message:talcosa', event => {
+  actualizarContador(event.detail.value);
+});
+```
+
+`send(nombre, datos = null)` devuelve una Promise que confirma **encolado**, no
+ejecución del callback. No transporta funciones ni devuelve el resultado del
+handler. Rechaza si el elemento no es un include, aún no está conectado, el
+nombre o los datos son inválidos, o se agotó la cuota. Los nombres usan el mismo
+formato que `emit`: `[a-z][a-z0-9_-]{0,63}`, sin el prefijo `message:` al enviar.
+
+No requiere otro permiso ni listar estos nombres en `events`: el padre ya decide
+qué datos entrega al hijo. El include necesita el canal existente, activado por
+`props` o `events`; para mensajes solos basta `props='{}'`. El receptor decide
+qué nombres atiende y debe validar los datos antes de actuar.
+
+El evento del hijo contiene `type`, `detail`, `target: component`, `generation`,
+`sequence`, `isTrusted: false` y `bubbles: false`. El evento y su `detail` están
+congelados; la secuencia es creciente e independiente de los eventos hacia el
+padre. No modifica props ni genera `propschange`. Si no hay listener cuando se
+entrega, el mensaje se descarta, como un evento normal.
+
+Cada dirección conserva hasta 64 eventos pendientes, en orden FIFO, y ambas
+comparten el presupuesto de 1 MiB por padre. Los mensajes usan los mismos límites
+JSON y de tamaño que `emit`. Al recargar/desmontar el include o cerrar el canal se
+cancelan los mensajes pendientes; la generación vuelve a validarse al entregarlos.
+El host despierta al hijo mediante el scheduler existente, sin un timer por include.
+
+`includeRef.dispatchEvent(...)` sigue despachando en el padre. No cruza el canal.
+
 ## Declaración y permisos
 
 El canal se activa declarando `props` o `events`. No requiere `ux_embed` ni un permiso global. El mismo origen y los orígenes externos siguen las mismas reglas:
@@ -103,7 +150,7 @@ Cambiar `src`, la declaración `events`, el padre directo del include o sus work
 V1 transporta JSON estricto: objetos de datos, arrays densos, strings, números finitos, booleanos y null. Props exige un objeto raíz. No admite funciones, undefined, símbolos, accessors, ciclos, Date, Blob, buffers ni handles nativos. Para audio/PCM usar las APIs de audio/IO; este canal configura al reproductor, no transporta muestras.
 
 - 64 KiB UTF-8 por props/evento; profundidad máxima 32.
-- 64 eventos pendientes por canal, FIFO dentro de cada instancia/generación.
+- 64 eventos pendientes por dirección y canal, FIFO dentro de cada instancia/generación.
 - 1 MiB agregado por padre de datos serializados y coste de sobre estimado; no representa una medida exacta del heap.
 - 128 canales hijos por worker. Cola llena produce rechazo explícito; no hay reintentos automáticos.
 - Props conserva el último estado, sin acumular una cola de reemplazos.
