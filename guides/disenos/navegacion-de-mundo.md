@@ -1,6 +1,9 @@
 # navigate_world — propuesta
 
-> **Estado: propuesta. Nada de este contrato está implementado.**
+> **Estado: propuesta histórica.** Ya existe la forma básica
+> `hiperspace.world.navigate(url)` con permiso delegable `navigate_world`.
+> El contrato vigente está en [Navegación de mundo](../navegacion-mundo.md).
+> Las opciones, retorno e historial de esta propuesta siguen pendientes.
 > Lo que sí está verificado en Luna se marca como **medido**; lo que sale de leer
 > el código, como **en el código**. El resto es diseño y se puede discutir entero.
 >

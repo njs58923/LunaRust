@@ -1032,6 +1032,13 @@
     __luna_set_global_dimention(global.hiperspace.dimention);
   }
 
+  global.hiperspace.world = Object.freeze({
+    navigate(url) {
+      if (typeof url !== 'string') throw new TypeError('world.navigate expects a URL string');
+      core.ops.op_navigate_world(url);
+    }
+  });
+
   console.log('[Luna Runtime] Loaded successfully');
 
 })(globalThis);

@@ -143,5 +143,7 @@ Estas guías son sobre **cómo usar** la plataforma. Lo demás vive aparte:
 
 ## Poses y trabajo pendiente
 
+- [Navegar el mundo desde una puerta/include](navegacion-mundo.md).
+
 - [Poses locales y setJointBatch](poses.md).
 - [Deuda técnica: carga masiva de modelos](deuda-carga-modelos.md).

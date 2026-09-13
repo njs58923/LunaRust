@@ -14,6 +14,7 @@ reales (`permissions.rs`), los que un documento normal puede pedir:
 | Bundle | Habilita |
 |---|---|
 | `navigate_self` | cambiar la URL del propio espacio (`location.href`) |
+| `navigate_world` | navegar el montaje espacial desde un include: [world.navigate](navegacion-mundo.md) |
 | `navigate_global` | navegar el shell entero |
 | `fetch_text` | `fetch()` GET/HEAD con respuestas HTTP reales |
 | `fetch_http` | `fetch()` con métodos, cabeceras y cuerpo de texto/JSON/formulario/binario |
@@ -29,7 +30,7 @@ reales (`permissions.rs`), los que un documento normal puede pedir:
 
 > **Ojo con esta tabla**: lista lo que un documento *puede pedir*, no lo que va a
 > *recibir*. Lo efectivo es la intersección con lo que el shell concede según el
-> tipo de página. Una `spatial` remota hoy recibe `navigate_self`,
+> tipo de página. Una `spatial` remota hoy recibe `navigate_self`, `navigate_world`,
 > `read_pose_stream`, `read_camera_pose`, `skybox`, `fetch_text`, `fetch_http`,
 > `spawn` y `audio` como concesiones predeterminadas. Una `app` recibe
 > `navigate_self`, `fetch_text` y `audio`; una `app-embedded`, esas tres más

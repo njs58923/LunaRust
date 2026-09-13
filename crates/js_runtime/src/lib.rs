@@ -25,6 +25,7 @@ pub use fetch::{FetchRequest, FetchResponse};
 use deno_core::Op;
 pub mod mesh;
 pub mod pose;
+pub mod world_navigation;
 
 pub use cache::{CacheStats, CachedResponse, CachedScript, FetchCache, ScriptCache};
 pub use csp::{ContentSecurityPolicy, CorsValidation, CorsValidator};
@@ -1538,6 +1539,7 @@ impl Engine {
                 settings::op_settings_read::decl(),
                 op_capture_poll::decl(),
                 op_navigate::decl(),
+                world_navigation::op_navigate_world::decl(),
                 op_tab_open::decl(),
                 op_tab_close::decl(),
                 op_tab_set_visible::decl(),
@@ -1574,6 +1576,7 @@ impl Engine {
                 });
                 state.put(mesh::MeshQueue::default());
                 state.put(pose::PoseQueue::default());
+                state.put(world_navigation::WorldNavigationQueue::default());
                 state.put(audio::AudioQueue::default());
                 state.put(settings::SettingsInbox::default());
                 state.put(std::sync::Arc::new(components::ComponentPort::default()));
@@ -1877,6 +1880,11 @@ impl Engine {
 
     pub fn drain_navigate_queue(&self) -> Vec<String> {
         take_vec(&self.navigate_queue)
+    }
+
+    pub fn drain_world_navigation(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.rt.op_state().borrow_mut()
+            .borrow_mut::<world_navigation::WorldNavigationQueue>().0)
     }
 
     pub fn drain_tab_action_queue(&self) -> Vec<TabAction> {

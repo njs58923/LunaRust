@@ -41,6 +41,7 @@ bitflags! {
         const SPAWN                = 1 << 19;
         const FETCH_HTTP           = 1 << 20;
         const AUDIO                = 1 << 21;
+        const NAVIGATE_WORLD       = 1 << 22;
     }
 }
 
@@ -292,6 +293,12 @@ lazy_static! {
             },
         );
 
+        m.insert("navigate_world", ResourceBundleDef {
+            capabilities: CapabilityBits::NAVIGATE_WORLD,
+            native_services: NativeServiceBits::empty(),
+            auto_scripts: &[],
+        });
+
         m.insert(
             "fetch_text",
             ResourceBundleDef {
@@ -501,6 +508,7 @@ pub fn capability_labels(bits: CapabilityBits) -> Vec<&'static str> {
         ("READ_TOQUE_RAW", CapabilityBits::READ_TOQUE_RAW),
         ("READ_POSE_STREAM", CapabilityBits::READ_POSE_STREAM),
         ("NAVIGATE_SELF", CapabilityBits::NAVIGATE_SELF),
+        ("NAVIGATE_WORLD", CapabilityBits::NAVIGATE_WORLD),
         ("NAVIGATE_GLOBAL", CapabilityBits::NAVIGATE_GLOBAL),
         ("FETCH_TEXT", CapabilityBits::FETCH_TEXT),
         ("LIST_ROOT_SPACES", CapabilityBits::LIST_ROOT_SPACES),
@@ -1548,6 +1556,23 @@ mod tests {
             .unwrap()
             .effective_caps
             .contains(CapabilityBits::NAVIGATE_SELF));
+    }
+
+    #[test]
+    fn world_navigation_requires_delegation_through_each_include() {
+        let mut app = build_app_with_xml(r#"<hsml><space system-space="root" resources="root">
+          <space managed-by="dimension.luna" resources="navigate_world">
+            <include resources="navigate_world"><hsml><space resources="navigate_world">
+              <include resources="navigate_world"><hsml><space id="allowed" resources="navigate_world"/></hsml></include>
+              <include><hsml><space id="blocked" resources="navigate_world"/></hsml></include>
+            </space></hsml></include>
+          </space>
+        </space></hsml>"#);
+        app.update();
+        let world = app.world().resource::<crate::ElemenetWorld>();
+        let policies = app.world().resource::<SpacePolicies>();
+        assert!(policies.by_space[&find_space_id_by_attr_id(world,"allowed")].effective_caps.contains(CapabilityBits::NAVIGATE_WORLD));
+        assert!(!policies.by_space[&find_space_id_by_attr_id(world,"blocked")].effective_caps.contains(CapabilityBits::NAVIGATE_WORLD));
     }
 
     #[test]

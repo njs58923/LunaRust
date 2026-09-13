@@ -133,6 +133,7 @@ pub struct JsTickData {
     pub fetch_queue: Vec<(i32, js_runtime::FetchRequest)>,
     pub capture_queue: Vec<(i32, String)>,
     pub navigate_queue: Vec<String>,
+    pub world_navigation: Vec<String>,
     pub tab_action_queue: Vec<js_runtime::TabAction>,
     pub shell_outbox: Vec<js_runtime::ShellMessage>,
     pub ws_connect_queue: Vec<(i32, String)>,
@@ -706,6 +707,7 @@ fn spawn_space_worker_configured(
                             fetch_queue: ctx.engine.drain_fetch_queue(),
                             capture_queue: ctx.engine.drain_capture_queue(),
                             navigate_queue: ctx.engine.drain_navigate_queue(),
+                            world_navigation: ctx.engine.drain_world_navigation(),
                             tab_action_queue: ctx.engine.drain_tab_action_queue(),
                             shell_outbox: ctx.engine.drain_shell_outbox(),
                             ws_connect_queue: ctx.engine.drain_ws_connect_queue(),
@@ -1531,6 +1533,49 @@ enum NavigationPlan {
     SelfNav { include_id: u32, url: String },
     GlobalNav { url: String },
     Blocked { url: String, reason: String },
+}
+
+/// Resolve the spatial mount owned directly by the trusted shell, never a
+/// remote lookalike with forged attributes or a neighboring tab/app.
+fn world_include(world: &specs::World, space_id: u32) -> Option<u32> {
+    let entities = world.entities();
+    let hierarchy = world.read_storage::<Hierarchy>();
+    let tags = world.read_storage::<Tag>();
+    let attrs = world.read_storage::<Attrs>();
+    let mut cursor = entities.entity(space_id);
+    let mut visited = HashSet::new();
+    while entities.is_alive(cursor) && visited.insert(cursor) {
+        let parent = hierarchy.get(cursor)?.parent?;
+        if tags.get(cursor)?.0 == "include" && tags.get(parent)?.0 == "space" {
+            if let Some(root) = hierarchy.get(parent).and_then(|h| h.parent) {
+                if let Some(hsml) = hierarchy.get(root).and_then(|h| h.parent) {
+                    let trusted = tags.get(hsml).is_some_and(|t| t.0 == "hsml")
+                        && hierarchy.get(hsml).is_some_and(|h| h.parent.is_none())
+                        && attrs.get(root).and_then(|a| a.0.get("system-space")).is_some_and(|s| s == "root");
+                    if trusted {
+                        let a = &attrs.get(parent)?.0;
+                        return (a.get("managed-by").is_some_and(|s| s == "dimension.luna")
+                            && a.get("data-luna-kind").is_some_and(|s| s == "spatial"))
+                            .then_some(cursor.id());
+                    }
+                }
+            }
+        }
+        cursor = parent;
+    }
+    None
+}
+
+fn plan_world_navigation(world: &specs::World, current_url: &str, space_id: u32,
+    requested_url: &str, caps: CapabilityBits) -> NavigationPlan {
+    if caps.contains(CapabilityBits::NAVIGATE_WORLD) {
+        if let Some(include_id) = world_include(world, space_id) {
+            let url = resolve_node_relative_url(world, world.entities().entity(space_id), current_url, requested_url)
+                .unwrap_or_else(|| requested_url.into());
+            return NavigationPlan::SelfNav { include_id, url };
+        }
+    }
+    NavigationPlan::Blocked { url: requested_url.into(), reason: "world navigation requires navigate_world and a spatial mount".into() }
 }
 
 fn prepare_include_reload(world: &mut World, include_id: u32, url: &str) {
@@ -2559,6 +2604,7 @@ pub fn js_tick_system(world: &mut World) {
     let mut fetch_batches = Vec::new();
     let mut capture_batches: Vec<(u32, Vec<(i32, String)>)> = Vec::new();
     let mut navigate_batches = Vec::new();
+    let mut world_navigation_batches = Vec::new();
     let mut tab_action_batches: Vec<(u32, Vec<js_runtime::TabAction>)> = Vec::new();
     let mut shell_message_batches: Vec<(u32, Vec<js_runtime::ShellMessage>)> = Vec::new();
     let mut ws_connect_batches: Vec<(u32, Vec<(i32, String)>)> = Vec::new();
@@ -2569,6 +2615,9 @@ pub fn js_tick_system(world: &mut World) {
     let capabilities_by_space = space_capabilities_snapshot(world);
 
     for (space_id, data) in tick_batches {
+        if !data.world_navigation.is_empty() {
+            world_navigation_batches.push((space_id, data.world_navigation));
+        }
         for mut batch in data.pose_batches {
             let target = world.get_resource::<SpaceHandleTables>()
                 .and_then(|tables| resolve_global_id(tables, space_id, batch.node));
@@ -3466,6 +3515,12 @@ pub fn js_tick_system(world: &mut World) {
                 ));
             }
         }
+        for (space_id, urls) in world_navigation_batches {
+            let caps = capabilities_by_space.get(&space_id).copied().unwrap_or_default();
+            for url in urls {
+                plans.push((space_id, plan_world_navigation(&specs_world.0, &current_url, space_id, &url, caps)));
+            }
+        }
         plans
     };
 
@@ -3924,6 +3979,43 @@ pub fn js_tick_system(world: &mut World) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn world_navigation_targets_own_spatial_mount_and_keeps_self_semantics() {
+        let mut world = virtual_dom::dom::element::build_world();
+        virtual_dom::parse_xml(&mut world, r#"<hsml><space system-space="root">
+          <space managed-by="dimension.luna" data-luna-kind="spatial">
+            <include id="world"><hsml><space><include id="door"><hsml><space id="caller"/></hsml></include></space></hsml></include>
+          </space>
+          <space managed-by="dimension.luna" data-luna-kind="app-embedded">
+            <include><hsml><space id="app"><hsml><space system-space="root">
+              <space managed-by="dimension.luna" data-luna-kind="spatial"><include><space id="forged"/></include></space>
+            </space></hsml></space></hsml></include>
+          </space>
+        </space></hsml>"#).unwrap();
+        let find = |id: &str| {
+            let attrs = world.read_storage::<Attrs>();
+            (&world.entities(), &attrs).join().find(|(_,a)| a.0.get("id").is_some_and(|s| s == id)).unwrap().0.id()
+        };
+        let (caller, target, door, app) = (find("caller"), find("world"), find("door"), find("app"));
+        let forged = find("forged");
+        let both = CapabilityBits::NAVIGATE_SELF | CapabilityBits::NAVIGATE_WORLD;
+        let url = "https://example.test/next#entry=door";
+        assert!(matches!(super::plan_world_navigation(&world, "luna://root", caller, url, both),
+            super::NavigationPlan::SelfNav {include_id, url: u} if include_id == target && u == url));
+        assert!(matches!(super::plan_navigation_for_space(&world, "luna://root", caller, url, both),
+            super::NavigationPlan::SelfNav {include_id, ..} if include_id == door));
+        assert!(matches!(super::plan_world_navigation(&world, "luna://root", caller, url, CapabilityBits::NAVIGATE_SELF),
+            super::NavigationPlan::Blocked {..}));
+        assert!(matches!(super::plan_world_navigation(&world, "luna://root", app, url, CapabilityBits::all()),
+            super::NavigationPlan::Blocked {..}));
+        assert!(matches!(super::plan_world_navigation(&world, "luna://root", forged, url, CapabilityBits::all()),
+            super::NavigationPlan::Blocked {..}));
+        world.write_storage::<virtual_dom::dom::element::BaseUrl>().insert(world.entities().entity(caller),
+            virtual_dom::dom::element::BaseUrl("https://doors.test/components/door.hsml?to=x".into())).unwrap();
+        assert!(matches!(super::plan_world_navigation(&world, "luna://root", caller, "../room.hsml#entry=back", both),
+            super::NavigationPlan::SelfNav {url, ..} if url == "https://doors.test/room.hsml#entry=back"));
+    }
+
     #[test]
     fn same_url_navigation_reloads_committed_include_without_restarting_inflight() {
         let mut world = bevy::prelude::World::new();
@@ -4822,6 +4914,7 @@ mod tests {
                 remove_queue: Vec::new(),
                 fetch_queue: Vec::new(),
                 navigate_queue: Vec::new(),
+                world_navigation: Vec::new(),
                 tab_action_queue: Vec::new(),
                 capture_queue: Vec::new(),
                 shell_outbox: Vec::new(),
@@ -5488,6 +5581,7 @@ mod tests {
                 remove_queue: vec![local],
                 fetch_queue: Vec::new(),
                 navigate_queue: Vec::new(),
+                world_navigation: Vec::new(),
                 tab_action_queue: Vec::new(),
                 capture_queue: Vec::new(),
                 shell_outbox: Vec::new(),
@@ -5546,6 +5640,7 @@ mod tests {
                 remove_queue: vec![local],
                 fetch_queue: Vec::new(),
                 navigate_queue: Vec::new(),
+                world_navigation: Vec::new(),
                 tab_action_queue: Vec::new(),
                 capture_queue: Vec::new(),
                 shell_outbox: Vec::new(),
