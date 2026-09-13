@@ -166,6 +166,21 @@ services:
       PORT: "2060"
       PHYSICS_PORT: "8081"
     command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+  # Backrooms, Nivel !: «Run for Your Life!». En Go y sin dependencias: el nivel
+  # por HTTP en el 2061 y la persecución por WebSocket en el 8083.
+  # Ver server_corre/README.md.
+  corre-dev:
+    image: golang:1.22
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_corre:/usr/src/app
+    ports:
+      - "2061:2061"
+      - "8083:8083"
+    environment:
+      PORT: "2061"
+      WS_PORT: "8083"
+    command: ["go", "run", "."]
 volumes:
   caddy_data:
   caddy_config:
