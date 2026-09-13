@@ -251,7 +251,13 @@ fn handle_smooth_locomotion(
     if magnitude < 0.01 { return; }
 
     let Ok(mut root_tf) = root.get_single_mut() else { return };
-    let max_speed = 3.0;
+    const WALK_SPEED: f32 = 3.0;
+    const RUN_MULTIPLIER: f32 = 2.0;
+    let running = actions
+        .left_stick_click
+        .state(&session, Path::NULL)
+        .is_ok_and(|click| click.current_state);
+    let max_speed = WALK_SPEED * if running { RUN_MULTIPLIER } else { 1.0 };
 
     // view.pose.orientation is in tracking space; root rotation is tracking→world.
     // Compose both so locomotion follows where the player is actually looking.

@@ -480,7 +480,8 @@ fn camera_keyboard_movement_system(
     let forward = transform.forward().as_vec3();
     let right = transform.right().as_vec3();
     let up = Vec3::Y;
-    let speed = 5.0;
+    const WALK_SPEED: f32 = 5.0;
+    const RUN_MULTIPLIER: f32 = 2.0;
 
     if keyboard.pressed(KeyCode::KeyW) {
         direction += forward;
@@ -503,6 +504,12 @@ fn camera_keyboard_movement_system(
 
     if direction.length_squared() > 0.0 {
         direction = direction.normalize();
+        // Correr es una intención de avance: Shift no acelera el retroceso ni
+        // el desplazamiento lateral/vertical cuando W no está presionada.
+        let running = keyboard.pressed(KeyCode::KeyW)
+            && (keyboard.pressed(KeyCode::ShiftLeft)
+                || keyboard.pressed(KeyCode::ShiftRight));
+        let speed = WALK_SPEED * if running { RUN_MULTIPLIER } else { 1.0 };
         transform.translation += direction * speed * time.delta_seconds();
     }
 }

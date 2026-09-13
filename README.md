@@ -202,7 +202,9 @@ npm run build:release   # solo compilar
 ```
 
 > En VR, asegúrate de tener el runtime OpenXR activo antes de lanzar. En escritorio,
-> muévete con `WASD` + `Q`/`E` (subir/bajar) y mira con el ratón.
+> muévete con `WASD` + `Q`/`E` (subir/bajar), corre hacia adelante con
+> `Shift` + `W` y mira con el ratón. En VR, presiona el stick izquierdo mientras
+> te mueves para correr.
 
 ### Servir contenido HSML
 

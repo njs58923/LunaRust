@@ -143,7 +143,9 @@ cargo run -p luna --profile release-fast
 ```
 
 Dentro de Luna, escribí `http://localhost:2052/demo.hsml` en la barra de direcciones.
-En escritorio: WASD + Q/E para moverse, mouse para mirar, click para `toque`.
+En escritorio: WASD + Q/E para moverse, Shift + W para correr hacia adelante,
+mouse para mirar y click para `toque`. En VR, presionar el stick izquierdo
+mientras se mueve activa la carrera.
 En VR: gatillo derecho para `toque`.
 
 ---
