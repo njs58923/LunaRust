@@ -522,7 +522,7 @@ pub fn request_include_load(
     io_service: &IoService,
     parent_node_id: u32,
     url: String,
-) {
+) -> u64 {
     let network_id = io_service.begin_request(
         NetworkRequestKind::Include,
         url.clone(),
@@ -539,6 +539,7 @@ pub fn request_include_load(
             result,
         }).await;
     });
+    network_id
 }
 
 pub fn request_model_prepare(rt: &Runtime, io_service: &IoService, url: String) -> u64 {
@@ -1174,6 +1175,11 @@ pub fn poll_io_results_system(
                 };
                 let detail = result.as_ref().err().cloned();
                 io_service.finish_request(network_id, status, detail);
+                // Includes can be removed/recreated or reloaded at the same URL.
+                // An obsolete success or failure must not touch the new mount.
+                if !include_load_states.is_current_request(parent_node_id, &url, network_id) {
+                    continue;
+                }
                 match result {
                     Ok(xml) => {
                         log_panel.push_info(format!(
@@ -1181,6 +1187,7 @@ pub fn poll_io_results_system(
                         ));
                         pending_includes.0.push(crate::PendingInclude {
                             parent_node_id,
+                            request_id: network_id,
                             url,
                             xml,
                         });
@@ -1203,6 +1210,46 @@ pub fn poll_io_results_system(
 #[cfg(test)]
 mod backpressure_tests {
     use super::*;
+
+    #[test]
+    fn obsolete_include_results_cannot_replace_current_request_or_revive_removed_node() {
+        let mut app = App::new();
+        app.insert_resource(ElemenetWorld(virtual_dom::dom::element::build_world()))
+            .insert_resource(CurrentUrl("luna://test".into()))
+            .init_resource::<IoService>()
+            .init_resource::<PendingDocumentLoads>()
+            .init_resource::<LogPanel>()
+            .init_resource::<PendingScripts>()
+            .init_resource::<ScriptLoadStates>()
+            .init_resource::<PendingModelLoads>()
+            .init_resource::<ModelLoadStates>()
+            .init_resource::<crate::SkyboxEntity>()
+            .init_resource::<DirtyNodes>()
+            .init_resource::<crate::PendingIncludes>()
+            .init_resource::<crate::IncludeLoadStates>()
+            .insert_non_send_resource(ScriptRuntimeManager::default())
+            .add_systems(Update, poll_io_results_system);
+        let url = "https://example.test/component.hsml";
+        app.world_mut().resource_mut::<crate::IncludeLoadStates>().0.insert(7,
+            crate::IncludeLoadState::Loading { url: url.into(), request_id: 2 });
+        let sender = app.world().resource::<IoService>().sender();
+        for (id, result) in [(1, Ok("<space/>".into())), (1, Err("obsolete failure".into())), (2, Ok("<space id='new'/>".into()))] {
+            sender.try_send(IoResult::IncludeLoaded {
+                network_id: id, parent_node_id: 7, url: url.into(), result,
+            }).unwrap();
+        }
+        app.update();
+        assert!(app.world().resource::<crate::IncludeLoadStates>().is_current_request(7, url, 2));
+        let pending = &app.world().resource::<crate::PendingIncludes>().0;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].request_id, 2);
+        app.world_mut().resource_mut::<crate::IncludeLoadStates>().0.remove(&7);
+        sender.try_send(IoResult::IncludeLoaded {
+            network_id: 2, parent_node_id: 7, url: url.into(), result: Err("removed".into()),
+        }).unwrap();
+        app.update();
+        assert!(!app.world().resource::<crate::IncludeLoadStates>().0.contains_key(&7));
+    }
 
     #[test]
     fn deferred_fetch_results_are_bounded_and_cleared_per_space() {

@@ -946,6 +946,7 @@ pub struct DeferredSpaceMounts(pub Vec<DeferredSpaceMount>);
 #[derive(Debug, Clone)]
 pub struct PendingInclude {
     pub parent_node_id: u32,
+    pub request_id: u64,
     pub url: String,
     pub xml: String,
 }
@@ -959,9 +960,16 @@ pub struct IncludeLoadStates(pub HashMap<u32, IncludeLoadState>);
 
 #[derive(Debug, Clone)]
 pub enum IncludeLoadState {
-    Loading { url: String },
+    Loading { url: String, request_id: u64 },
     Loaded { url: String },
     Failed { url: String },
+}
+
+impl IncludeLoadStates {
+    pub(crate) fn is_current_request(&self, node: u32, url: &str, request: u64) -> bool {
+        matches!(self.0.get(&node), Some(IncludeLoadState::Loading { url: current_url, request_id })
+            if current_url == url && *request_id == request)
+    }
 }
 
 #[derive(PartialEq, Eq)]

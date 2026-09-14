@@ -319,7 +319,7 @@ fn status(world: &mut World) -> Value {
         .iter()
         .map(|(id, state)| {
             let (state, url) = match state {
-                crate::IncludeLoadState::Loading { url } => ("loading", url),
+                crate::IncludeLoadState::Loading { url, .. } => ("loading", url),
                 crate::IncludeLoadState::Loaded { url } => ("loaded", url),
                 crate::IncludeLoadState::Failed { url } => ("failed", url),
             };

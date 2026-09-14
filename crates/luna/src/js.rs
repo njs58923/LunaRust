@@ -4031,7 +4031,7 @@ mod tests {
 
         world.resource_mut::<crate::DirtyNodes>().0.clear();
         world.resource_mut::<crate::IncludeLoadStates>().0.insert(7,
-            crate::IncludeLoadState::Loading { url: url.into() });
+            crate::IncludeLoadState::Loading { url: url.into(), request_id: 1 });
         super::prepare_include_reload(&mut world, 7, url);
         assert!(world.resource::<crate::IncludeLoadStates>().0.contains_key(&7));
         assert!(world.resource::<crate::DirtyNodes>().0.is_empty());

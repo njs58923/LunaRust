@@ -440,6 +440,7 @@ mod tests {
         {
             *state = crate::IncludeLoadState::Loading {
                 url: "https://world.test/new.hsml".into(),
+                request_id: 1,
             };
         }
         app.update();

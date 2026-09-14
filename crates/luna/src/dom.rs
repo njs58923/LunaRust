@@ -1174,19 +1174,20 @@ fn queue_include_load_if_needed(
     // Check if already loading/loaded for this URL
     if let Some(state) = include_load_states.0.get(&node_id) {
         match state {
-            crate::IncludeLoadState::Loading { url } if *url == final_url => return,
+            crate::IncludeLoadState::Loading { url, .. } if *url == final_url => return,
             crate::IncludeLoadState::Loaded { url } if *url == final_url => return,
             _ => {} // URL changed or failed, re-request
         }
     }
 
+    let request_id = request_include_load(&tokio_rt.0, io_service, node_id, final_url.clone());
     include_load_states.0.insert(
         node_id,
         crate::IncludeLoadState::Loading {
             url: final_url.clone(),
+            request_id,
         },
     );
-    request_include_load(&tokio_rt.0, io_service, node_id, final_url.clone());
     log_panel.push_info(format!("Include load queued: {final_url} (node {node_id})"));
 }
 
@@ -1222,10 +1223,7 @@ pub fn commit_pending_includes_system(
             continue;
         }
 
-        let is_current_request = matches!(
-            include_load_states.0.get(&inc.parent_node_id),
-            Some(crate::IncludeLoadState::Loading { url }) if *url == inc.url
-        );
+        let is_current_request = include_load_states.is_current_request(inc.parent_node_id, &inc.url, inc.request_id);
         if !is_current_request {
             log_panel.push_info(format!(
                 "Dropping stale include result: {} (parent {})",
@@ -2816,12 +2814,19 @@ mod tests {
             outer_include.id(),
             IncludeLoadState::Loading {
                 url: "http://localhost:2052/demo/index.hsml".to_string(),
+                request_id: 2,
             },
         );
         app.insert_resource(include_states);
 
         app.insert_resource(PendingIncludes(vec![PendingInclude {
             parent_node_id: outer_include.id(),
+            request_id: 1,
+            url: "http://localhost:2052/demo/index.hsml".to_string(),
+            xml: "<space/>".into(), // Obsolete same-URL completion must not win.
+        }, PendingInclude {
+            parent_node_id: outer_include.id(),
+            request_id: 2,
             url: "http://localhost:2052/demo/index.hsml".to_string(),
             xml: r#"
                 <hsml>
