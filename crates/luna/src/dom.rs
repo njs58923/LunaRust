@@ -16,7 +16,7 @@ use virtual_dom::{
 };
 
 use crate::io::{
-    clear_async_node_state, request_document_load, request_include_load, request_model_prepare,
+    request_document_load, request_include_load, request_model_prepare,
     request_script_load, request_skybox_prepare,
 };
 use crate::render::{
@@ -670,15 +670,13 @@ fn remove_dom_subtree(
     // Copying every ID in the document made small include removals O(scene).
     let mut attached = Vec::with_capacity(subtree_ids.len());
     let mut skipped_orphan = 0usize;
+    let removed_ids: HashSet<u32> = subtree_ids.iter().copied().collect();
+    pending_model_loads.remove_nodes(&removed_ids);
 
     for &node_id in &subtree_ids {
         mirror_dirty.remove(node_id);
-        clear_async_node_state(
-            node_id,
-            script_load_states,
-            pending_model_loads,
-            model_load_states,
-        );
+        script_load_states.0.remove(&node_id);
+        model_load_states.0.remove(&node_id);
         skybox.clear_node(node_id);
         include_load_states.0.remove(&node_id);
         if let Some(entity) = dom_data.nodes.remove(&node_id) {

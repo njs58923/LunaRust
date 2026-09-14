@@ -411,6 +411,20 @@ impl PendingModelLoads {
         });
         self.1.retain(|url, _| self.0.contains_key(url));
     }
+
+    /// Teardown visits the pending URL table once, not once per removed node.
+    pub fn remove_nodes(&mut self, node_ids: &HashSet<u32>) {
+        if node_ids.is_empty() { return; }
+        self.0.retain(|_, waiters| {
+            if node_ids.len() < waiters.len() {
+                for id in node_ids { waiters.remove(id); }
+            } else {
+                waiters.retain(|id| !node_ids.contains(id));
+            }
+            !waiters.is_empty()
+        });
+        self.1.retain(|url, _| self.0.contains_key(url));
+    }
 }
 
 pub fn clear_async_node_state(
@@ -1217,6 +1231,48 @@ mod backpressure_tests {
 #[cfg(test)]
 mod model_resource_tests {
     use super::*;
+    #[test]
+    fn include_teardown_batches_waiters_without_cancelling_shared_models() {
+        let mut pending = PendingModelLoads::default();
+        for url in ["shared", "removed", "unrelated"] {
+            pending.1.insert(url.into(), 1);
+        }
+        for id in 0..100 { pending.enqueue("shared", id); }
+        pending.enqueue("removed", 1);
+        pending.enqueue("unrelated", 200);
+        pending.remove_nodes(&[1, 2].into_iter().collect());
+        assert!(!pending.0.contains_key("removed"));
+        assert!(!pending.1.contains_key("removed"));
+        assert_eq!(pending.0["shared"].len(), 98);
+        assert_eq!(pending.0["unrelated"], [200].into_iter().collect());
+        pending.remove_nodes(&(0..100).collect());
+        assert!(!pending.0.contains_key("shared"));
+        assert!(!pending.1.contains_key("shared"));
+        assert_eq!(pending.finish("unrelated", 1), vec![200]);
+    }
+
+    #[test]
+    #[ignore = "manual teardown benchmark"]
+    fn benchmark_include_teardown_pending_models() {
+        let mut single = PendingModelLoads::default();
+        for i in 0..1000 {
+            let url = format!("model-{i}");
+            single.enqueue(&url, i);
+            single.enqueue(&url, i + 10_000);
+            single.1.insert(url, i as u64);
+        }
+        let mut batch = PendingModelLoads(single.0.clone(), single.1.clone());
+        let ids: HashSet<_> = (0..5000).collect();
+        let start = std::time::Instant::now();
+        for &id in &ids { single.remove_node(id); }
+        let single_time = start.elapsed();
+        let start = std::time::Instant::now();
+        batch.remove_nodes(&ids);
+        let batch_time = start.elapsed();
+        assert_eq!(single.0, batch.0);
+        assert_eq!(single.1, batch.1);
+        eprintln!("5000 removed nodes / 1000 pending models: per-node={single_time:?}, batch={batch_time:?}");
+    }
     #[test]
     fn obsolete_completion_cannot_consume_replacement_waiters() {
         let mut pending = PendingModelLoads::default();

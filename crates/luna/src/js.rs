@@ -3243,9 +3243,7 @@ pub fn js_tick_system(world: &mut World) {
         }
         {
             let mut pending_models = world.resource_mut::<crate::PendingModelLoads>();
-            for &nid in &all_removed_ids {
-                pending_models.remove_node(nid);
-            }
+            pending_models.remove_nodes(&all_removed_ids.iter().copied().collect());
         }
         {
             let mut model_loads = world.resource_mut::<crate::ModelLoadStates>();
