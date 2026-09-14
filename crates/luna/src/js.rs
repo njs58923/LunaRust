@@ -3073,17 +3073,12 @@ pub fn js_tick_system(world: &mut World) {
     // panic-ea en debug_assert de Generation::die(). HashSet vive a lo largo
     // de todos los batches del frame.
     let mut frame_deleted_global: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    // Snapshot ONE-TIME del set "attached" para todo el frame. Si hay 5 workers
-    // que piden removes, el snapshot vale para los 5 (dom_data.nodes no se
-    // modifica dentro de este sistema — el cleanup definitivo lo hace
-    // dom_sync_system después, en otro pase).
-    let attached_nodes: std::collections::HashSet<u32> = if remove_batches.is_empty() {
+    // Only snapshot pending, detached nodes. Attached membership is borrowed
+    // from VirtualDomData below, avoiding an O(scene) copy for a small removal.
+    let detached_nodes: std::collections::HashSet<u32> = if remove_batches.is_empty() {
         std::collections::HashSet::new()
     } else {
-        let mut known: std::collections::HashSet<u32> = world
-            .get_resource::<crate::VirtualDomData>()
-            .map(|d| d.nodes.keys().copied().collect())
-            .unwrap_or_default();
+        let mut known = std::collections::HashSet::new();
         // Created nodes already have valid handles but are not in VirtualDomData
         // until the deferred attach commits. Removing them in that interval must
         // delete them too, otherwise replaced menus leave orphaned geometry.
@@ -3113,30 +3108,15 @@ pub fn js_tick_system(world: &mut World) {
             (allowed_remove_ids, rejected_logs)
         };
 
-        if let Some(mut script_load_states) = world.get_resource_mut::<ScriptLoadStates>() {
-            for node_id in &allowed_remove_ids {
-                script_load_states.0.remove(node_id);
-            }
-        }
-        if let Some(mut pending_model_loads) = world.get_resource_mut::<PendingModelLoads>() {
-            for node_id in &allowed_remove_ids {
-                pending_model_loads.remove_node(*node_id);
-            }
-        }
-        if let Some(mut model_load_states) = world.get_resource_mut::<ModelLoadStates>() {
-            for node_id in &allowed_remove_ids {
-                model_load_states.0.remove(node_id);
-            }
-        }
-
-        let (log_messages, all_removed_ids) = {
-            let Some(mut specs_world) = world.get_resource_mut::<ElemenetWorld>() else {
-                return;
-            };
+        if !world.contains_resource::<ElemenetWorld>() { return; }
+        let (log_messages, all_removed_ids) = world.resource_scope(|world, mut specs_world: Mut<ElemenetWorld>| {
+            let attached = world.get_resource::<crate::VirtualDomData>();
+            let is_known = |id: &u32| attached.is_some_and(|dom| dom.nodes.contains_key(id))
+                || detached_nodes.contains(id);
             let mut log_messages = Vec::new();
             let mut all_removed_ids: Vec<u32> = Vec::new();
             for &node_id in &allowed_remove_ids {
-                if !attached_nodes.contains(&node_id) {
+                if !is_known(&node_id) || frame_deleted_global.contains(&node_id) {
                     // Stale id de cola JS — el delete causaría panic por
                     // false-positive de is_alive sobre slot virginal.
                     continue;
@@ -3158,14 +3138,14 @@ pub fn js_tick_system(world: &mut World) {
                             continue;
                         }
                         // Sólo procesar nodos realmente attached.
-                        if !attached_nodes.contains(&id) {
+                        if !is_known(&id) || frame_deleted_global.contains(&id) {
                             continue;
                         }
                         to_delete.push(id);
                         if let Some(h) = hier.get(ent) {
                             for &child in &h.children {
                                 let cid = child.id();
-                                if !attached_nodes.contains(&cid) {
+                                if !is_known(&cid) {
                                     continue;
                                 }
                                 let child_ent = entities.entity(cid);
@@ -3209,7 +3189,7 @@ pub fn js_tick_system(world: &mut World) {
                 }
             }
             (log_messages, all_removed_ids)
-        };
+        });
         let removed_ids: HashSet<u32> = all_removed_ids.iter().copied().collect();
         // Collect Bevy entities to despawn, then despawn them
         let bevy_entities_to_despawn: Vec<Entity> = {
@@ -5604,6 +5584,11 @@ mod tests {
         app.init_resource::<crate::PendingModelLoads>();
         app.init_resource::<crate::ModelLoadStates>();
         app.init_resource::<crate::SkyboxEntity>();
+        {
+            let mut models = app.world_mut().resource_mut::<crate::PendingModelLoads>();
+            models.enqueue("shared-model", child_id);
+            models.enqueue("shared-model", 9000);
+        }
         let bevy_entity = app.world_mut().spawn_empty().id();
         app.world_mut().resource_mut::<crate::EntityMap>().0.insert(child_id, bevy_entity);
         {
@@ -5635,7 +5620,7 @@ mod tests {
                 scale_updates: Vec::new(),
                 creation_queue: Vec::new(),
                 hierarchy_queue: Vec::new(),
-                remove_queue: vec![local],
+                remove_queue: vec![local, local],
                 fetch_queue: Vec::new(),
                 navigate_queue: Vec::new(),
                 world_navigation: Vec::new(),
@@ -5653,6 +5638,7 @@ mod tests {
         assert!(!sky.pending.contains_key("old-sky"));
         assert!(sky.pending.contains_key("other-sky"));
         assert!(app.world().get_entity(bevy_entity).is_none());
+        assert_eq!(app.world().resource::<crate::PendingModelLoads>().0["shared-model"], [9000].into_iter().collect());
     }
 
     #[test]
