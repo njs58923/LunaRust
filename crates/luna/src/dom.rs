@@ -3942,6 +3942,38 @@ mod tests {
         (app, ids, entities)
     }
 
+    #[test]
+    fn existing_text_visibility_updates_with_transform_without_replacement() {
+        let (mut app, ids, entities) = dynamic_test_app(1);
+        let id = ids[0];
+        let entity = entities[0];
+        {
+            let world = &app.world().resource::<ElemenetWorld>().0;
+            let node = world.entities().entity(id);
+            world.write_storage::<Tag>().insert(node, Tag("text".into())).unwrap();
+        }
+        let shared = app.world().resource::<SharedResources>();
+        let mesh = shared.plane_mesh.clone();
+        let material = shared.default_material.clone();
+        app.world_mut().entity_mut(entity).insert((mesh, material));
+        app.add_systems(Update, apply_attribute_updates.after(apply_transform_updates).before(dom_sync_system));
+
+        // Exercise the JS attribute queue and the transform fast path together.
+        for (index, (value, expected)) in [
+            ("false", Visibility::Hidden),
+            ("true", Visibility::Visible),
+            ("false", Visibility::Hidden),
+            ("inherit", Visibility::Inherited),
+            (ATTR_DELETE_SENTINEL, Visibility::Inherited),
+        ].into_iter().enumerate() {
+            queue_dynamic_frame(&mut app, &ids, index as f32 + 1.0);
+            app.world_mut().resource_mut::<AttributeUpdates>().0.push((id, "visible".into(), value.into()));
+            app.update();
+            assert_eq!(app.world().resource::<EntityMap>().0[&id], entity, "text must update in place");
+            assert_eq!(*app.world().get::<Visibility>(entity).unwrap(), expected, "visible={value}");
+        }
+    }
+
     fn queue_dynamic_frame(app: &mut App, ids: &[u32], x: f32) {
         let mut updates = app.world_mut().resource_mut::<crate::TransformUpdates>();
         for &id in ids {
