@@ -1,3 +1,8 @@
+# Los servicios de Bun reinician con nodemon, y en Docker Desktop sobre Windows
+# tiene que ser por sondeo (--legacy-watch): los cambios de un volumen montado
+# no llegan como eventos. El sondeo por defecto es cada 100 ms y costaba entre
+# 1 y 3% de CPU por contenedor sin hacer nada; --polling-interval 5000 lo lleva
+# a cada 5 s. Un cambio en src/ tarda hasta 5 s en reiniciar el servidor.
 services:
   caddy:
     image: caddy:2
@@ -21,7 +26,7 @@ services:
     environment:
       NODE_ENV: development
       PHYSICS_PORT: "8080"
-    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
       interval: 10s
@@ -40,7 +45,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: "2053"
-    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
   # Backrooms procedurales e infinitas. La geometría sale de un hash de las
   # coordenadas de celda, así que no hay nada persistido: el mismo chunk se
   # regenera igual siempre.
@@ -55,7 +60,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: "2055"
-    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
   # Banco de pruebas de carga: escenas que cargan un eje a la vez (figuras,
   # includes, isolates animados, modelos, montaje) y una tabla de resultados
   # que arma el propio cliente. Ver server_stress/README.md.
@@ -70,7 +75,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: "2056"
-    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
   # Bestiario nocturno: la isla de la home de noche, con cinco criaturas en
   # pedestales. Demo de animación dentro del .glb y de malla dinámica
   # (el cielo estrellado). Ver server_noche/README.md.
@@ -85,7 +90,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: "2057"
-    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
   # El puente entre todos los servidores: un directorio con una puerta por sitio,
   # buscador y estado en vivo. Ver server_puente/README.md.
   #
@@ -109,7 +114,7 @@ services:
       NODE_ENV: development
       PORT: "2050"
       DESTINO_HOST: host.docker.internal
-    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
   # Cuántos otros jugadores entran en una escena: avatares con esqueleto y una
   # pose que llega por WebSocket. El 8082 es la multitud, no la física.
   # Ver server_jugadores/README.md.
@@ -126,7 +131,7 @@ services:
       NODE_ENV: development
       PORT: "2051"
       CROWD_PORT: "8082"
-    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
   # Las apps de la interfaz: ventanas embebidas del shell. Ver server_ui/README.md.
   ui-dev:
     image: oven/bun:1
@@ -139,7 +144,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: "2058"
-    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
   # La sala de los ecos: audio espacial sobre el entorno compartido de la arcada.
   # Ver server_eco/README.md.
   # Como el puente: sala.ts importa el entorno de la arcada por ruta relativa.
@@ -155,7 +160,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: "2059"
-    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
   # La arcada: salas de física con el servicio de simulación en el 8081. La
   # simulación corre en el servidor y el documento sólo dibuja lo que llega.
   # Ver server_arcada/README.md.
@@ -172,7 +177,7 @@ services:
       NODE_ENV: development
       PORT: "2060"
       PHYSICS_PORT: "8081"
-    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
   # Backrooms, Nivel !: «Run for Your Life!». En Go y sin dependencias: el nivel
   # por HTTP en el 2061 y la persecución por WebSocket en el 8083.
   # Ver server_corre/README.md.
@@ -210,7 +215,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: "2062"
-    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
 volumes:
   caddy_data:
   caddy_config:
