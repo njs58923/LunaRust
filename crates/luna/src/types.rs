@@ -421,6 +421,67 @@ pub struct SpaceHandleTables {
     pub by_space: HashMap<u32, SpaceHandleTable>,
 }
 
+impl SpaceHandleTable {
+    /// Keep deletion notifications until the isolate acknowledges its patch.
+    /// For large removals, inspect this table rather than all removed world IDs.
+    pub(crate) fn remove_globals(&mut self, removed: &std::collections::HashSet<u32>) {
+        if removed.is_empty() { return; }
+        if removed.len() < self.global_to_local.len() {
+            for id in removed {
+                if let Some(local) = self.global_to_local.remove(id) {
+                    self.local_to_global.remove(&local);
+                    self.pending_removed_locals.insert(local);
+                }
+            }
+        } else {
+            self.global_to_local.retain(|id, local| {
+                if !removed.contains(id) { return true; }
+                self.local_to_global.remove(local);
+                self.pending_removed_locals.insert(*local);
+                false
+            });
+        }
+        if removed.len() < self.detached_globals.len() {
+            for id in removed { self.detached_globals.remove(id); }
+        } else {
+            self.detached_globals.retain(|id| !removed.contains(id));
+        }
+        if removed.len() < self.pending_touched_globals.len() {
+            for id in removed { self.pending_touched_globals.remove(id); }
+        } else {
+            self.pending_touched_globals.retain(|id| !removed.contains(id));
+        }
+    }
+}
+
+#[cfg(test)]
+mod include_handle_tests {
+    use super::*;
+    #[test]
+    fn include_teardown_keeps_patch_removals_and_clears_pending_touches() {
+        for count in [1, 1000] {
+            let mut table = SpaceHandleTable::default();
+            for id in 0..20 {
+                table.global_to_local.insert(id, id as i32 + 10);
+                table.local_to_global.insert(id as i32 + 10, id);
+                table.pending_touched_globals.insert(id);
+                table.detached_globals.insert(id);
+            }
+            let removed = (1..=count).collect();
+            table.remove_globals(&removed);
+            table.remove_globals(&removed); // Duplicate cleanup must be harmless.
+            for id in 0..20 {
+                let survives = id == 0 || id > count;
+                assert_eq!(table.global_to_local.contains_key(&id), survives);
+                assert_eq!(table.local_to_global.contains_key(&(id as i32 + 10)), survives);
+                assert_eq!(table.pending_touched_globals.contains(&id), survives);
+                assert_eq!(table.detached_globals.contains(&id), survives);
+                assert_eq!(table.pending_removed_locals.contains(&(id as i32 + 10)), !survives);
+            }
+        }
+    }
+}
+
 #[derive(Resource)]
 pub struct SharedResources {
     pub cube_mesh: Handle<Mesh>,

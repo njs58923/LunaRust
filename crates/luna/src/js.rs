@@ -3210,6 +3210,7 @@ pub fn js_tick_system(world: &mut World) {
             }
             (log_messages, all_removed_ids)
         };
+        let removed_ids: HashSet<u32> = all_removed_ids.iter().copied().collect();
         // Collect Bevy entities to despawn, then despawn them
         let bevy_entities_to_despawn: Vec<Entity> = {
             let mut to_despawn = Vec::new();
@@ -3243,7 +3244,7 @@ pub fn js_tick_system(world: &mut World) {
         }
         {
             let mut pending_models = world.resource_mut::<crate::PendingModelLoads>();
-            pending_models.remove_nodes(&all_removed_ids.iter().copied().collect());
+            pending_models.remove_nodes(&removed_ids);
         }
         {
             let mut model_loads = world.resource_mut::<crate::ModelLoadStates>();
@@ -3273,13 +3274,7 @@ pub fn js_tick_system(world: &mut World) {
         // Clean up handle table entries for ALL subtree nodes
         if let Some(mut space_handle_tables) = world.get_resource_mut::<SpaceHandleTables>() {
             for table in space_handle_tables.by_space.values_mut() {
-                for &nid in &all_removed_ids {
-                    if let Some(local_id) = table.global_to_local.remove(&nid) {
-                        table.local_to_global.remove(&local_id);
-                        table.pending_removed_locals.insert(local_id);
-                    }
-                    table.detached_globals.remove(&nid);
-                }
+                table.remove_globals(&removed_ids);
             }
         }
         if let Some(mut mirror_dirty) = world.get_resource_mut::<DomMirrorDirty>() {

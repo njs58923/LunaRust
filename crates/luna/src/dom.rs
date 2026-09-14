@@ -672,6 +672,9 @@ fn remove_dom_subtree(
     let mut skipped_orphan = 0usize;
     let removed_ids: HashSet<u32> = subtree_ids.iter().copied().collect();
     pending_model_loads.remove_nodes(&removed_ids);
+    for table in space_handle_tables.by_space.values_mut() {
+        table.remove_globals(&removed_ids);
+    }
 
     for &node_id in &subtree_ids {
         mirror_dirty.remove(node_id);
@@ -686,12 +689,6 @@ fn remove_dom_subtree(
         }
         entity_map.0.remove(&node_id);
 
-        for table in space_handle_tables.by_space.values_mut() {
-            if let Some(local_id) = table.global_to_local.remove(&node_id) {
-                table.local_to_global.remove(&local_id);
-            }
-            table.detached_globals.remove(&node_id);
-        }
     }
 
     for bevy_root in bevy_roots {
@@ -3970,6 +3967,13 @@ mod tests {
             app.world_mut().entity_mut(child).set_parent(entities[0]);
         }
         app.add_systems(Update, process_delete_requests.before(dom_sync_system));
+        let mut table = crate::SpaceHandleTable::default();
+        for i in 0..4 {
+            table.global_to_local.insert(ids[i], i as i32);
+            table.local_to_global.insert(i as i32, ids[i]);
+            table.pending_touched_globals.insert(ids[i]);
+        }
+        app.world_mut().resource_mut::<SpaceHandleTables>().by_space.insert(ids[3], table);
         app.world_mut().resource_mut::<DeleteRequests>().0.extend([ids[0], ids[1], ids[0]]);
         app.update();
         assert_eq!(app.world().resource::<VirtualDomData>().nodes.len(), 997);
@@ -3982,6 +3986,9 @@ mod tests {
         let dirty = app.world().resource::<crate::js::DomMirrorDirty>();
         for id in &ids[..3] { assert!(dirty.removed_nodes.contains(id)); }
         assert!(dirty.touched_nodes.contains(&ids[3]));
+        let table = &app.world().resource::<SpaceHandleTables>().by_space[&ids[3]];
+        assert_eq!(table.pending_removed_locals, [0, 1, 2].into_iter().collect());
+        assert_eq!(table.pending_touched_globals, [ids[3]].into_iter().collect());
     }
 
     fn queue_dynamic_frame(app: &mut App, ids: &[u32], x: f32) {
