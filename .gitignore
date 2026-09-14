@@ -11,3 +11,4 @@ codigo-completo.txt
 assets/cache
 docs
 .claude
+*.log
