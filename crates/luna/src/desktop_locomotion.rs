@@ -1,7 +1,7 @@
 use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorMoved, PrimaryWindow, WindowMode};
-use crate::remote_mouse::{AbsolutePointer, RemoteMouse, refresh_remote_mouse};
+use crate::remote_mouse::{AbsolutePointer, RemoteMouse};
 
 use crate::{DesktopCamera, DevtoolVisible, GlobalDevtoolVisible};
 
@@ -31,7 +31,6 @@ impl Plugin for DesktopLocomotionPlugin {
             .insert_resource(DesktopCameraPitch::default())
             .init_resource::<RemoteMouse>()
             .add_systems(Update, desktop_fullscreen_toggle_system)
-            .add_systems(Update, refresh_remote_mouse.before(desktop_shooter_toggle_system))
             .add_systems(
                 Update,
                 (

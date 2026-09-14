@@ -1,12 +1,9 @@
 //! Remote pointer input: absolute samples with filtered cursor recentering.
 use bevy::prelude::*;
-use std::time::{Duration, Instant};
 
 #[derive(Resource)]
 pub(crate) struct RemoteMouse {
     pub absolute: bool,
-    forced: Option<bool>,
-    next_check: Instant,
 }
 
 impl Default for RemoteMouse {
@@ -20,42 +17,15 @@ impl Default for RemoteMouse {
         if absolute {
             info!("Remote mouse: captured absolute input; right click to look, Escape to release");
         }
-        Self {
-            absolute,
-            forced,
-            next_check: Instant::now() + Duration::from_secs(2),
-        }
+        // Detect once during plugin initialization, never in the frame loop.
+        Self { absolute }
     }
 }
 
 #[cfg(test)]
 impl RemoteMouse {
     pub fn forced(absolute: bool) -> Self {
-        Self {
-            absolute,
-            forced: Some(absolute),
-            next_check: Instant::now(),
-        }
-    }
-}
-
-pub(crate) fn refresh_remote_mouse(mut mode: ResMut<RemoteMouse>) {
-    // Query periodically: RDP can attach to an already running application.
-    if mode.forced.is_some() || Instant::now() < mode.next_check {
-        return;
-    }
-    let absolute = remote_session();
-    mode.bypass_change_detection().next_check = Instant::now() + Duration::from_secs(2);
-    if mode.absolute != absolute {
-        mode.absolute = absolute;
-        info!(
-            "Mouse input switched to {}",
-            if absolute {
-                "remote absolute (captured)"
-            } else {
-                "local raw"
-            }
-        );
+        Self { absolute }
     }
 }
 

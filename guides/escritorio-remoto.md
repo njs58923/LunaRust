@@ -1,7 +1,8 @@
 # Mouse en escritorio remoto
 
-Luna detecta sesiones RDP de Windows mediante WTS y vuelve a consultar cada
-dos segundos para reconocer conexiones a una aplicación ya abierta. Usa
+Luna detecta sesiones RDP de Windows mediante WTS una sola vez al iniciar.
+No hay sondeo periódico ni comprobación del reloj por frame. Si se cambia entre
+sesión local y remota, hay que reiniciar Luna para actualizar el modo. Usa
 `WTSIsRemoteSession`, con `WTSClientProtocolType` y `SM_REMOTESESSION` como
 alternativas. Las APIs se consultan para la sesión del proceso; no se depende
 de una variable de entorno capturada al iniciar.
