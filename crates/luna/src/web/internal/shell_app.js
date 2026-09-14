@@ -833,6 +833,41 @@
     }
 
     // ── Arranque ─────────────────────────────────────────────────────────
+    // Controller layout and physical device are independent.
+    if (globalThis.keyboard) {
+      let virtualKeyboard = null, shown = false;
+      function updateKeyboard(state) {
+        const show = !!(state.vr && state.editable && state.hasTarget);
+        if (show && !virtualKeyboard) {
+          virtualKeyboard = root.createElement('include');
+          virtualKeyboard.setAttribute('events','key,close');
+          virtualKeyboard.props = { revision: state.revision };
+          virtualKeyboard.setAttribute('src',cfg.keyboardUrl || 'luna://keyboard');
+          root.appendChild(virtualKeyboard);
+          virtualKeyboard.addEventListener('component:key', e => {
+            if(shown && e.detail && e.detail.revision===keyboard.state.revision) keyboard.send(e.detail.packet,e.detail.revision);
+          });
+          virtualKeyboard.addEventListener('component:close', e => {
+            if(!shown || e.detail.revision!==keyboard.state.revision)return;
+            shown=false; virtualKeyboard.setAttribute('visible','false');
+            keyboard.send({type:'keydown',key:'Escape',code:'Escape',text:''});
+          });
+        }
+        if(virtualKeyboard) {
+          virtualKeyboard.props={revision:state.revision};
+          if(show&&!shown) {
+            const pose=viewerPose();
+            // Keep the keyboard upright; only rotate around the vertical axis.
+            if(pose){virtualKeyboard.position={x:pose.px-Math.sin(pose.yaw)*0.85,y:pose.py-0.55,z:pose.pz-Math.cos(pose.yaw)*0.85};virtualKeyboard.rotation={x:0,y:pose.yaw,z:0};}
+          }
+          virtualKeyboard.setAttribute('visible',show?'inherit':'false');
+        }
+        shown=show;
+      }
+      keyboard.addEventListener('deviceinput', event => keyboard.send(event.packet,event.revision));
+      keyboard.addEventListener('statechange', updateKeyboard);
+      updateKeyboard(keyboard.state);
+    }
     // Suscripción al catálogo del root, sin polling ni storage del controller.
     // Otros consumidores pueden representar todos los campos como prefieran.
     if (cfg.sharedItems && globalThis.component) {

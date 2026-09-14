@@ -45,6 +45,7 @@ impl Plugin for DesktopLocomotionPlugin {
 // ─── Toggle: right-click enters shooter mode, Escape exits ───────────────────
 
 fn desktop_shooter_toggle_system(
+    focus: Res<crate::keyboard::KeyboardFocus>,
     mouse_button: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     devtool_visible: Res<DevtoolVisible>,
@@ -61,6 +62,7 @@ fn desktop_shooter_toggle_system(
     }
 
     // Escape: si shooter activo → consume y sale (preserva comportamiento).
+    if focus.editable { shooter.0 = false; return; }
     // Si shooter inactivo → dispatcha systeminput (shell open via UX).
     if keyboard.just_pressed(KeyCode::Escape) {
         if shooter.0 {

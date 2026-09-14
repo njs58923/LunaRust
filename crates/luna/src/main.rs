@@ -167,6 +167,11 @@ fn main() {
     app.init_resource::<touch::HostHoverTargets>();
     app.insert_resource(touch::HostPoseMoveEvents::default());
     app.insert_resource(luna::system_input::HostSystemInputEvents::default());
+    app.init_resource::<luna::keyboard::KeyboardFocus>();
+    app.add_systems(Update, luna::keyboard::focus_from_hits
+        .after(touch::desktop_toque_raycast_system).after(touch::vr_toque_raycast_system)
+        .before(touch::dispatch_toque_events_to_js));
+    app.add_systems(Update, luna::keyboard::keyboard_system.after(luna::keyboard::focus_from_hits).after(ui::ui_system));
     app.insert_resource(luna::viewer_pose::ViewerPoseGlobalSnapshot::default());
     app.insert_resource(PermissionDecisionStore::load());
     app.insert_resource(PermissionPromptQueue::default());
@@ -469,10 +474,12 @@ fn update_fps_counter(time: Res<Time>, mut f: ResMut<FpsCounter>) {
 }
 
 fn camera_keyboard_movement_system(
+    focus: Res<luna::keyboard::KeyboardFocus>,
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mut query: Query<&mut Transform, With<DesktopCamera>>,
 ) {
+    if focus.editable { return; }
     let Ok(mut transform) = query.get_single_mut() else {
         return;
     };

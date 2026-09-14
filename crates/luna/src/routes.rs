@@ -228,6 +228,8 @@ impl VirtualRoutes {
 
         // UX routes
         routes.insert("ux_desktop".to_string(), RouteHandler::Static(LUNA_UX_DESKTOP));
+        routes.insert("keyboard".to_string(), RouteHandler::Static(include_str!("web/ux/keyboard.hsml")));
+        routes.insert("internal/keyboard_virtual.js".to_string(), RouteHandler::Static(include_str!("web/internal/keyboard_virtual.js")));
         routes.insert("ux_vr".to_string(), RouteHandler::Static(LUNA_UX_VR));
         // Banco de pruebas de la interfaz, con datos de mentira y sin escena
         // alrededor. No se llega desde ningún lado: se abre a mano.

@@ -78,7 +78,7 @@ mismo documento, proporcionar contenedores distintos mediante las opciones
 | **paneles** | `StackPanel`, `Grid`, `DockPanel`, `WrapPanel`, `Canvas` |
 | **decoradores** | `Border`, `RenderPanel`, `ScrollViewer`, `Separator` |
 | **texto e imagen** | `TextBlock` (con `TextWrapping="Wrap"`), `Image` |
-| **controles** | `Button`, `CheckBox`, `RadioButton`, `ToggleSwitch`, `Slider`, `ProgressBar` |
+| **controles** | `TextBox`, `Button`, `CheckBox`, `RadioButton`, `ToggleSwitch`, `Slider`, `ProgressBar` |
 | **capa de arriba** | `ComboBox`, atributo `ToolTip`, y `app.superponer()` para diálogos modales |
 | **vectores** | `Path` (`M L Q C Z`), `Ellipse` |
 | **listas** | `ItemsControl` con plantilla, reciclado y virtualización |
@@ -105,12 +105,12 @@ intersectadas todavía pueden mostrar limitaciones de ordenación.
 
 ## Lo que no hay
 
-- **No hay entrada de texto.** Ni `TextBox` ni IME. Una URL se elige de un
-  `ComboBox`, no se escribe.
+- **Entrada de una línea.** `TextBox` admite selección, edición y composición;
+  aún no hay editor multilínea ni texto enriquecido. Ver [teclado](teclado.md).
 - **No hay `ListBox` con selección.** `ItemsControl` dibuja la lista; la
   selección la lleva la aplicación. Un control adentro de la plantilla sabe de
   qué fila es con `itemDeLista()`.
-- No hay sombras, recortes arbitrarios, foco de teclado, captura de puntero ni
+- No hay sombras, recortes arbitrarios, captura de puntero ni
   drag continuo. `CornerRadius` no recorta automáticamente los hijos con una
   máscara redondeada.
 - La tipografía usa Fira Sans y atlas bitmap compartido. No hay shaping complejo,

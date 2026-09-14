@@ -28,6 +28,7 @@ pub mod settings;
 pub mod render;
 pub mod routes;
 pub mod system_input;
+pub mod keyboard;
 pub mod touch;
 pub mod viewer_pose;
 pub mod player_spawn;

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head><name>Teclado virtual</name></head>
+  <space>
+    <box sx="1.20" sy="0.49" sz="0.014" color="#171C24" border-radius="0.025" pointer-blocking="true"/>
+    <group id="keys"/>
+    <script src="luna://internal/keyboard_virtual.js"/>
+  </space>
+</hsml>

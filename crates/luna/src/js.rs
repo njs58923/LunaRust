@@ -118,6 +118,7 @@ impl DomMirrorDirty {
 }
 
 pub struct JsTickData {
+    pub keyboard_commands: Vec<serde_json::Value>,
     pub audio_commands: Vec<js_runtime::audio::SharedPlayback>,
     pub pose_batches: Vec<js_runtime::pose::PoseBatch>,
     pub mesh_commands: (u64, Vec<js_runtime::mesh::MeshCommand>),
@@ -183,6 +184,7 @@ pub enum JsWorkerCommand {
     /// configuración raíz, en un JSON. Reemplaza al `EvalScript` que le escribía
     /// atributos a nodos de ids fijos. Ver `js_runtime::settings`.
     PushSettings(String),
+    PushKeyboard(Vec<serde_json::Value>),
     PushFetchResults(Vec<(i32, std::result::Result<js_runtime::FetchResponse, String>)>),
     /// Resultado de una captura de frame: Ok(ruta del PNG) o Err(motivo).
     PushCaptureResults(Vec<(i32, std::result::Result<String, String>)>),
@@ -581,6 +583,7 @@ fn spawn_space_worker_configured(
                     break;
                 }
                 match cmd {
+                    JsWorkerCommand::PushKeyboard(events) => ctx.engine.push_keyboard_events(events),
                     JsWorkerCommand::SetCapabilities(bits) => {
                         ctx.capabilities_bits = bits;
                     }
@@ -695,6 +698,7 @@ fn spawn_space_worker_configured(
                             audio_commands: ctx.engine.drain_audio_commands(),
                             mesh_commands: ctx.engine.drain_mesh_commands(),
                             pose_batches: ctx.engine.drain_pose_batches(),
+                            keyboard_commands: ctx.engine.drain_keyboard_commands(),
                             needs_continuous_ticks: ctx.engine.needs_continuous_ticks(),
                             logs: ctx.engine.drain_logs(),
                             attr_updates: ctx.engine.drain_attr_updates(),
@@ -2615,6 +2619,7 @@ pub fn js_tick_system(world: &mut World) {
     let capabilities_by_space = space_capabilities_snapshot(world);
 
     for (space_id, data) in tick_batches {
+        crate::keyboard::apply_commands(world, space_id, data.keyboard_commands);
         if !data.world_navigation.is_empty() {
             world_navigation_batches.push((space_id, data.world_navigation));
         }
@@ -4902,7 +4907,7 @@ mod tests {
             .send(JsWorkerEvent::TickData(JsTickData {
                 audio_commands: Vec::new(),
                 mesh_commands: (0, Vec::new()),
-                pose_batches: Vec::new(),
+                keyboard_commands: Vec::new(), pose_batches: Vec::new(),
                 needs_continuous_ticks: false,
                 logs: Vec::new(),
                 attr_updates: Vec::new(),
@@ -5569,7 +5574,7 @@ mod tests {
         events.send(JsWorkerEvent::TickData(JsTickData {
                 audio_commands: Vec::new(),
                 mesh_commands: (0, Vec::new()),
-                pose_batches: Vec::new(),
+                keyboard_commands: Vec::new(), pose_batches: Vec::new(),
                 needs_continuous_ticks: false,
                 logs: Vec::new(),
                 attr_updates: Vec::new(),
@@ -5628,7 +5633,7 @@ mod tests {
         events.send(JsWorkerEvent::TickData(JsTickData {
                 audio_commands: Vec::new(),
                 mesh_commands: (0, Vec::new()),
-                pose_batches: Vec::new(),
+                keyboard_commands: Vec::new(), pose_batches: Vec::new(),
                 needs_continuous_ticks: false,
                 logs: Vec::new(),
                 attr_updates: Vec::new(),

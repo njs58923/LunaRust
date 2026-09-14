@@ -9,14 +9,10 @@
   const K = AjustesKit, C = K.C();
   const ajustes = hiperspace.dimention.settings;
 
-  /** Las URLs que se ofrecen como inicio. Es una lista y no un campo de texto
-   *  porque el framework no tiene entrada de texto; la que este configurada se
-   *  agrega sola, asi que una puesta a mano en el archivo se ve igual. */
-  const INICIOS = ["luna://home", "luna://demos", "luna://about"];
 
   const datos = {
     inicioAuto: true,
-    inicios: INICIOS.slice(), inicioElegido: 0,
+    inicioUrl: '', errorInicio: '',
     modos: ["Escritorio", "VR"], modoElegido: 0,
     rutaConfig: "—", urlRaiz: "—",
     permisos: [],
@@ -41,17 +37,16 @@
                        Changed="cambiarInicioAuto" Accent="${C.verde}" VerticalAlignment="Center"/>`) +
       K.raya() +
       K.fila("Página de inicio", null,
-        `<ComboBox Grid.Column="1" Items="{Binding inicios}"
-                   SelectedIndex="{Binding inicioElegido, Mode=TwoWay}"
-                   SelectionChanged="cambiarInicio" VerticalAlignment="Center"/>`) +
+        `<TextBox Name="inicioUrl" Grid.Column="1" Text="{Binding inicioUrl, Mode=TwoWay}"
+                  Width="0.59" MaxLength="2048" Placeholder="https://…"
+                  Changed="cambiarInicio" VerticalAlignment="Center"/>`) +
+      `<TextBlock Text="{Binding errorInicio}" FontSize="0.021" Foreground="${C.rojo}" TextWrapping="Wrap"/>` +
       K.raya() +
       K.fila("Modo preferido", "se aplica al próximo arranque",
         `<ComboBox Grid.Column="1" Items="{Binding modos}"
                    SelectedIndex="{Binding modoElegido, Mode=TwoWay}"
                    SelectionChanged="cambiarModo" VerticalAlignment="Center"/>`),
-      "Cada cambio se guarda solo, en el acto. La página de inicio se elige de una " +
-      "lista porque todavía no hay entrada de texto: la que esté configurada aparece " +
-      "igual, aunque no sea una de estas.") +
+      "La dirección se guarda con Enter o al salir del campo. En VR, tocá el campo para abrir el teclado.") +
     K.encabezado("Permisos por sitio") +
     `<StackPanel Orientation="Vertical" Spacing="0.008">
       <Border Background="${C.superficie}" CornerRadius="0.016" Padding="0.004">
@@ -73,8 +68,14 @@
     manejadores: {
       cambiarInicioAuto: function () { if (ajustes) ajustes.set({ autoLoadHome: !!datos.inicioAuto }); },
       cambiarInicio: function () {
-        const url = datos.inicios[datos.inicioElegido];
-        if (url && ajustes) ajustes.set({ homeUrl: url });
+        const url = String(datos.inicioUrl || '').trim();
+        try {
+          const parsed = new URL(url);
+          if (!['luna:', 'http:', 'https:'].includes(parsed.protocol)) throw new Error('scheme');
+          datos.errorInicio = ''; datos.inicioUrl = url;
+          if (ajustes) ajustes.set({ homeUrl: url });
+        } catch (_) { datos.errorInicio = 'Usá una dirección luna://, http:// o https:// válida.'; }
+        app.invalidar();
       },
       cambiarModo: function () {
         if (ajustes) ajustes.set({ renderMode: datos.modoElegido === 1 ? "vr" : "desktop" });
@@ -96,10 +97,7 @@
     datos.inicioAuto = cfg.autoLoadHome !== false;
     datos.modoElegido = cfg.renderMode === "vr" ? 1 : 0;
     const url = String(cfg.homeUrl || "");
-    const inicios = INICIOS.slice();
-    if (url && inicios.indexOf(url) < 0) inicios.unshift(url);
-    datos.inicios = inicios;
-    datos.inicioElegido = Math.max(0, inicios.indexOf(url));
+    if (!app.buscar('inicioUrl')?._focused) datos.inicioUrl = url;
     datos.permisos = (Array.isArray(cfg.permissions) ? cfg.permissions : []).map(function (p) {
       const permitido = p.decision === "allow";
       return {

@@ -20,6 +20,7 @@ pub mod ui_text;
 pub mod audio;
 pub mod binary;
 pub mod settings;
+pub mod keyboard;
 pub mod fetch;
 pub use fetch::{FetchRequest, FetchResponse};
 use deno_core::Op;
@@ -1540,6 +1541,8 @@ impl Engine {
                 op_luna_mcp_auto_start::decl(),
                 op_luna_root_settings::decl(),
                 settings::op_settings_read::decl(),
+                keyboard::op_keyboard_command::decl(),
+                keyboard::op_keyboard_read::decl(),
                 op_capture_poll::decl(),
                 op_navigate::decl(),
                 world_navigation::op_navigate_world::decl(),
@@ -1582,6 +1585,7 @@ impl Engine {
                 state.put(world_navigation::WorldNavigationQueue::default());
                 state.put(audio::AudioQueue::default());
                 state.put(settings::SettingsInbox::default());
+                state.put(keyboard::KeyboardQueue::default());
                 state.put(std::sync::Arc::new(components::ComponentPort::default()));
                 state.put::<AttrSnapshot>(AttrSnapshot {
                     data: attr_snapshot_for_state.data.clone(),
@@ -1691,6 +1695,8 @@ impl Engine {
             .expect("location bootstrap failed");
         rt.execute_script("<runtime>", FastString::Static(RUNTIME_JS))
             .expect("runtime.js failed");
+        rt.execute_script("<keyboard>", FastString::Static(include_str!("../keyboard.js")))
+            .expect("keyboard bootstrap failed");
         rt.execute_script("<mesh>", FastString::Static(include_str!("../mesh.js")))
             .expect("mesh bootstrap failed");
         rt.execute_script("<binary>", FastString::Static(include_str!("../binary.js"))).expect("binary bootstrap failed");
@@ -1793,7 +1799,7 @@ impl Engine {
 
         if let Err(e) = self
             .rt
-            .execute_script("<pump>", FastString::Static("__luna_component_pump(); __luna_pump()"))
+            .execute_script("<pump>", FastString::Static("__luna_component_pump(); __luna_keyboard_pump(); __luna_pump()"))
         {
             eprintln!("[js_runtime] Error calling pump: {:?}", e);
         }
@@ -1883,6 +1889,19 @@ impl Engine {
 
     pub fn drain_navigate_queue(&self) -> Vec<String> {
         take_vec(&self.navigate_queue)
+    }
+
+    pub fn drain_keyboard_commands(&mut self) -> Vec<serde_json::Value> {
+        std::mem::take(&mut self.rt.op_state().borrow_mut().borrow_mut::<keyboard::KeyboardQueue>().outgoing)
+    }
+
+    pub fn push_keyboard_events(&mut self, events: Vec<serde_json::Value>) {
+        let state = self.rt.op_state();
+        let mut state = state.borrow_mut();
+        let queue = state.borrow_mut::<keyboard::KeyboardQueue>();
+        // Never retain an unbounded stream while an isolate is stalled.
+        if queue.incoming.len() + events.len() > 256 { queue.incoming.clear(); }
+        queue.incoming.extend(events.into_iter().take(256));
     }
 
     pub fn drain_world_navigation(&mut self) -> Vec<String> {
