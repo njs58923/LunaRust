@@ -634,8 +634,9 @@ fn remove_dom_subtree(
     skybox: &mut crate::SkyboxEntity,
     space_handle_tables: &mut crate::SpaceHandleTables,
     bevy_parents: &Query<&Parent>,
+    mirror_dirty: &mut crate::js::DomMirrorDirty,
 ) -> usize {
-    if !world.entities().is_alive(root) {
+    if dom_data.nodes.get(&root.id()) != Some(&root) || !world.entities().is_alive(root) {
         return 0;
     }
 
@@ -644,6 +645,7 @@ fn remove_dom_subtree(
         hierarchies.get(root).and_then(|h| h.parent)
     };
     if let Some(parent) = parent_id {
+        mirror_dirty.touch(parent.id());
         let mut hierarchies = world.write_storage::<Hierarchy>();
         if let Some(parent_hierarchy) = hierarchies.get_mut(parent) {
             parent_hierarchy.children.retain(|child| *child != root);
@@ -664,12 +666,13 @@ fn remove_dom_subtree(
     // y sin pagar el costo de despawnear entidad por entidad.
     let bevy_roots = collect_bevy_subtree_roots_from_bevy(&subtree_ids, entity_map, bevy_parents);
 
-    // Snapshot del set "attached" ANTES del cleanup. Usado abajo para skip
-    // node_ids que no estaban realmente attached (stale → causaría panic en
-    // delete_entity al pegar contra un slot virginal de specs).
-    let attached: HashSet<u32> = dom_data.nodes.keys().copied().collect();
+    // Capture only removed, attached entities, including their generation.
+    // Copying every ID in the document made small include removals O(scene).
+    let mut attached = Vec::with_capacity(subtree_ids.len());
+    let mut skipped_orphan = 0usize;
 
     for &node_id in &subtree_ids {
+        mirror_dirty.remove(node_id);
         clear_async_node_state(
             node_id,
             script_load_states,
@@ -678,7 +681,11 @@ fn remove_dom_subtree(
         );
         skybox.clear_node(node_id);
         include_load_states.0.remove(&node_id);
-        dom_data.nodes.remove(&node_id);
+        if let Some(entity) = dom_data.nodes.remove(&node_id) {
+            attached.push(entity);
+        } else {
+            skipped_orphan += 1;
+        }
         entity_map.0.remove(&node_id);
 
         for table in space_handle_tables.by_space.values_mut() {
@@ -693,30 +700,11 @@ fn remove_dom_subtree(
         commands.entity(bevy_root).despawn_recursive();
     }
 
-    // Dedup defensivo + check contra dom_data.nodes (snapshot pre-cleanup).
-    // `world.entities().entity(stale_id)` para un slot virginal devuelve un
-    // Entity gen=1 que PASA is_alive (false-positive), y luego delete_entity
-    // llama die() en un slot None → debug_assert panic en specs.
-    let mut seen_ids: HashSet<u32> = HashSet::new();
+    // Removing from the attached map already deduplicates IDs. Do not recreate
+    // entities from raw IDs: virgin slots can pass Specs' is_alive check.
     let mut deleted = 0usize;
     let mut skipped_dead = 0usize;
-    let mut skipped_dup = 0usize;
-    let mut skipped_orphan = 0usize;
-    for &node_id in &subtree_ids {
-        if !seen_ids.insert(node_id) {
-            skipped_dup += 1;
-            continue;
-        }
-        // Antes de borrar, nos cercioramos de que el node_id estaba realmente
-        // attached al DOM activo. Si no, era stale (slot virginal o nodo de
-        // otro subtree ya removido).
-        // dom_data.nodes ya se limpió arriba (línea 588) — usamos snapshot
-        // pre-cleanup capturado al inicio.
-        if !attached.contains(&node_id) {
-            skipped_orphan += 1;
-            continue;
-        }
-        let ent = world.entities().entity(node_id);
+    for ent in attached {
         if !world.entities().is_alive(ent) {
             skipped_dead += 1;
             continue;
@@ -725,19 +713,18 @@ fn remove_dom_subtree(
             Ok(()) => deleted += 1,
             Err(e) => {
                 eprintln!(
-                    "[dom][remove_subtree] delete_entity failed node_id={node_id}: {e:?}"
+                    "[dom][remove_subtree] delete_entity failed node_id={}: {e:?}", ent.id()
                 );
             }
         }
     }
 
-    if skipped_dup > 0 || skipped_dead > 0 || skipped_orphan > 0 {
+    if skipped_dead > 0 || skipped_orphan > 0 {
         eprintln!(
-            "[dom][remove_subtree] root={} subtree_len={} deleted={} skipped_dup={} skipped_dead={} skipped_orphan={}",
+            "[dom][remove_subtree] root={} subtree_len={} deleted={} skipped_dead={} skipped_orphan={}",
             root.id(),
             subtree_ids.len(),
             deleted,
-            skipped_dup,
             skipped_dead,
             skipped_orphan,
         );
@@ -1135,7 +1122,6 @@ pub fn process_delete_requests(
             continue;
         }
 
-        mark_removed_subtree(&world.0, sp_ent, &mut mirror_dirty);
         let deleted = remove_dom_subtree(
             &mut world.0,
             sp_ent,
@@ -1149,6 +1135,7 @@ pub fn process_delete_requests(
             &mut cleanup.skybox,
             &mut cleanup.space_handle_tables,
             &bevy_parents,
+            &mut mirror_dirty,
         );
 
         if deleted == 0 {
@@ -1225,15 +1212,6 @@ fn queue_include_load_if_needed(
     log_panel.push_info(format!("Include load queued: {final_url} (node {node_id})"));
 }
 
-fn mark_removed_subtree(world: &SpecWorld, root: SpecEntity, dirty: &mut crate::js::DomMirrorDirty) {
-    let mut removed = Vec::new();
-    collect_subtree_ids(world, root, &mut removed);
-    if let Some(parent) = world.read_storage::<Hierarchy>().get(root).and_then(|h| h.parent) {
-        dirty.touch(parent.id());
-    }
-    for id in removed { dirty.remove(id); }
-}
-
 pub fn commit_pending_includes_system(
     mut world: ResMut<ElemenetWorld>,
     mut pending_includes: ResMut<crate::PendingIncludes>,
@@ -1307,7 +1285,6 @@ pub fn commit_pending_includes_system(
                 };
                 let mut replaced_nodes = 0usize;
                 for previous_child in previous_children {
-                    mark_removed_subtree(&world.0, previous_child, &mut mirror_dirty);
                     replaced_nodes += remove_dom_subtree(
                         &mut world.0,
                         previous_child,
@@ -1321,6 +1298,7 @@ pub fn commit_pending_includes_system(
                         &mut cleanup.skybox,
                         &mut cleanup.space_handle_tables,
                         &bevy_parents,
+                        &mut mirror_dirty,
                     );
                 }
 
@@ -3972,6 +3950,40 @@ mod tests {
             assert_eq!(app.world().resource::<EntityMap>().0[&id], entity, "text must update in place");
             assert_eq!(*app.world().get::<Visibility>(entity).unwrap(), expected, "visible={value}");
         }
+    }
+
+    #[test]
+    fn include_teardown_preserves_unrelated_nodes_and_handles_duplicate_requests() {
+        let (mut app, ids, entities) = dynamic_test_app(1000);
+        let removed: Vec<_> = ids[..3].iter()
+            .map(|id| app.world().resource::<VirtualDomData>().nodes[id]).collect();
+        {
+            let mut world = app.world_mut().resource_mut::<ElemenetWorld>();
+            let parent = world.0.entities().entity(ids[3]);
+            let root = world.0.entities().entity(ids[0]);
+            Hierarchy::add_child(&mut world.0, parent, root);
+            for &id in &ids[1..3] {
+                let child = world.0.entities().entity(id);
+                Hierarchy::add_child(&mut world.0, root, child);
+            }
+        }
+        app.world_mut().entity_mut(entities[0]).set_parent(entities[3]);
+        for &child in &entities[1..3] {
+            app.world_mut().entity_mut(child).set_parent(entities[0]);
+        }
+        app.add_systems(Update, process_delete_requests.before(dom_sync_system));
+        app.world_mut().resource_mut::<DeleteRequests>().0.extend([ids[0], ids[1], ids[0]]);
+        app.update();
+        assert_eq!(app.world().resource::<VirtualDomData>().nodes.len(), 997);
+        assert_eq!(app.world().resource::<EntityMap>().0.len(), 997);
+        for i in 0..3 {
+            assert!(app.world().get_entity(entities[i]).is_none());
+            assert!(!app.world().resource::<ElemenetWorld>().0.entities().is_alive(removed[i]));
+        }
+        for &entity in &entities[3..] { assert!(app.world().get_entity(entity).is_some()); }
+        let dirty = app.world().resource::<crate::js::DomMirrorDirty>();
+        for id in &ids[..3] { assert!(dirty.removed_nodes.contains(id)); }
+        assert!(dirty.touched_nodes.contains(&ids[3]));
     }
 
     fn queue_dynamic_frame(app: &mut App, ids: &[u32], x: f32) {
