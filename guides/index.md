@@ -2,6 +2,7 @@
 
 Controllers: [catálogo compartido del shell](catalogo-shell.md).
 Entrada y edición: [teclado físico, virtual y TextBox](teclado.md).
+Control remoto: [mouse en sesiones RDP](escritorio-remoto.md).
 
 Cómo **escribir documentos espaciales** que corran en Luna. Todo lo de acá está
 verificado contra el código, no contra el README; cuando algo cambió en el motor,

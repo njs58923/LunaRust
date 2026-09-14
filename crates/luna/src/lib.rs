@@ -12,6 +12,7 @@ mod density_tests;
 pub mod agent;
 mod agent_capture;
 pub mod desktop_locomotion;
+mod remote_mouse;
 pub mod dom;
 pub mod embedded;
 pub mod io;

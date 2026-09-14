@@ -1980,6 +1980,13 @@ pub fn dom_sync_system(
                     }
                 }
                 if updated_in_place {
+                    // `visible` también, antes del continue. Esta rama sale
+                    // antes de la sincronización genérica del final, y sin
+                    // esto un texto que un script ocultaba con visible="false"
+                    // seguía a la vista para siempre (los "+10" del arco).
+                    if let Ok(mut visibility) = visibility_query.get_mut(bevy_ent) {
+                        *visibility = node_visibility(&attrs_storage, *node);
+                    }
                     continue;
                 }
 
@@ -1991,6 +1998,7 @@ pub fn dom_sync_system(
                             mesh: shared_resources.plane_mesh.clone(),
                             material: text_material,
                             transform: text_transform,
+                            visibility: node_visibility(&attrs_storage, *node),
                             ..Default::default()
                         },
                         Dirty,
