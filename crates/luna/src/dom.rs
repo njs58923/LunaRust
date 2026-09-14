@@ -764,66 +764,49 @@ fn expand_includes_with_loader<F>(
 where
     F: FnMut(&str, &mut LogPanel) -> anyhow::Result<Option<String>>,
 {
+    // Seed once; parsing only introduces nodes beneath the new child root.
+    // A queue avoids rescanning every previous include at each nesting level.
+    let mut targets: std::collections::VecDeque<(SpecEntity, String)> = {
+        let entities = world.entities();
+        let includes = world.read_storage::<Include>();
+        (&entities, &includes).join()
+            .filter_map(|(entity, include)| include.src.as_ref().map(|src| (entity, src.clone())))
+            .collect()
+    };
     let mut processed = HashSet::new();
     let mut new_dirty = Vec::new();
 
-    loop {
-        let targets: Vec<(SpecEntity, String)> = {
-            let entities = world.entities();
-            let includes_r = world.read_storage::<Include>();
-            let mut v = Vec::new();
-            for (ent, inc) in (&entities, &includes_r).join() {
-                if processed.contains(&ent.id()) {
-                    continue;
-                }
-                if let Some(ref src) = inc.src {
-                    v.push((ent, src.clone()));
-                }
-            }
-            v
+    while let Some((parent_ent, src)) = targets.pop_front() {
+        if !processed.insert(parent_ent) { continue; }
+        let Some(final_url) = resolve_node_relative_url(world, parent_ent, base_url, &src) else {
+            log.push_warn(format!("include: cannot resolve src='{src}' against base='{base_url}'"));
+            continue;
         };
-
-        if targets.is_empty() {
-            break;
+        if include_would_cycle(world, parent_ent, &final_url, base_url) {
+            log.push_warn(format!("include cycle blocked: {} -> parent {}", final_url, parent_ent.id()));
+            continue;
         }
-
-        for (parent_ent, src) in targets {
-            processed.insert(parent_ent.id());
-            let Some(final_url) =
-                resolve_node_relative_url(world, parent_ent, base_url, &src)
-            else {
-                log.push_warn(format!(
-                    "include: cannot resolve src='{src}' against base='{base_url}'"
-                ));
-                continue;
-            };
-            if include_would_cycle(world, parent_ent, &final_url, base_url) {
-                log.push_warn(format!(
-                    "include cycle blocked: {} -> parent {}",
-                    final_url,
-                    parent_ent.id()
-                ));
+        let Some(xml) = load(&final_url, log)? else { continue; };
+        let child_root = match parse_xml(world, &xml) {
+            Ok(root) => root,
+            Err(error) => {
+                log.push_error(format!("include: parse error {} -> {error}", final_url));
                 continue;
             }
-
-            let Some(xml) = load(&final_url, log)? else {
-                continue;
-            };
-
-            let child_root = match parse_xml(world, &xml) {
-                Ok(r) => r,
-                Err(e) => {
-                    log.push_error(format!("include: parse error {} -> {e}", final_url));
-                    continue;
-                }
-            };
-            set_node_base_url(world, child_root, &final_url);
-
-            Hierarchy::add_child(world, parent_ent, child_root);
-            collect_subtree_ids(world, child_root, &mut new_dirty);
+        };
+        set_node_base_url(world, child_root, &final_url);
+        Hierarchy::add_child(world, parent_ent, child_root);
+        let first_new = new_dirty.len();
+        collect_subtree_ids(world, child_root, &mut new_dirty);
+        let entities = world.entities();
+        let includes = world.read_storage::<Include>();
+        for &id in &new_dirty[first_new..] {
+            let entity = entities.entity(id);
+            if let Some(src) = includes.get(entity).and_then(|include| include.src.as_ref()) {
+                targets.push_back((entity, src.clone()));
+            }
         }
     }
-
     Ok(new_dirty)
 }
 
@@ -1224,12 +1207,11 @@ pub fn commit_pending_includes_system(
     mut space_policies: ResMut<crate::permissions::SpacePolicies>,
 ) {
     let _profile = crate::profiling::span("commit_pending_includes_system");
-    let pending: Vec<_> = pending_includes.0.drain(..).collect();
-    if pending.is_empty() {
+    if pending_includes.0.is_empty() {
         return;
     }
 
-    for inc in pending {
+    for inc in pending_includes.0.drain(..) {
         let parent_ent = world.0.entities().entity(inc.parent_node_id);
         if !world.0.entities().is_alive(parent_ent) {
             log_panel.push_warn(format!(
@@ -2687,6 +2669,48 @@ mod tests {
     };
     use crate::{IncludeLoadState, IncludeLoadStates, JsSnapshotState, PendingInclude, PendingIncludes, SpaceHandleTables};
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn include_expansion_queue_preserves_instances_relative_urls_and_cycle_guard() {
+        let mut world = build_world();
+        let root = parse_xml(&mut world, r#"<space><include src="parts/a.hsml"/><include src="parts/a.hsml"/><include src="parts/missing.hsml"/></space>"#).unwrap();
+        let mut loaded = Vec::new();
+        let dirty = expand_includes_with_loader(&mut world, "https://example.test/index.hsml", &mut LogPanel::default(), |url, _| {
+            loaded.push(url.to_string());
+            Ok(match url {
+                "https://example.test/parts/a.hsml" => Some(r#"<space><include src="nested/b.hsml"/></space>"#.into()),
+                "https://example.test/parts/nested/b.hsml" => Some(r#"<space><include src="../a.hsml"/></space>"#.into()),
+                "https://example.test/parts/missing.hsml" => None,
+                other => panic!("unexpected URL: {other}"),
+            })
+        }).unwrap();
+        assert_eq!(loaded, [
+            "https://example.test/parts/a.hsml",
+            "https://example.test/parts/a.hsml",
+            "https://example.test/parts/missing.hsml",
+            "https://example.test/parts/nested/b.hsml",
+            "https://example.test/parts/nested/b.hsml",
+        ]);
+        assert_eq!(dirty.len(), 8);
+        assert_eq!(dirty.iter().copied().collect::<HashSet<_>>().len(), dirty.len());
+        let mut all = Vec::new();
+        collect_subtree_ids(&world, root, &mut all);
+        assert_eq!(all.len(), 12);
+    }
+
+    #[test]
+    fn include_expansion_queue_discovers_deeply_nested_documents() {
+        let mut world = build_world();
+        parse_xml(&mut world, r#"<space><include src="0.hsml"/></space>"#).unwrap();
+        let mut count = 0;
+        let dirty = expand_includes_with_loader(&mut world, "https://example.test/index.hsml", &mut LogPanel::default(), |url, _| {
+            assert_eq!(url, format!("https://example.test/{count}.hsml"));
+            count += 1;
+            Ok(Some(if count < 128 { format!(r#"<space><include src="{count}.hsml"/></space>"#) } else { "<space/>".into() }))
+        }).unwrap();
+        assert_eq!(count, 128);
+        assert_eq!(dirty.len(), 255);
+    }
 
     #[test]
     fn skybox_pattern_expands_to_all_six_faces_in_render_order() {
