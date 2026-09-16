@@ -82,6 +82,12 @@ fn main() {
     println!("Assets dir: {}", assets_dir.display());
 
     let default_plugins = DefaultPlugins
+        // Luna owns its output stream so VR can use Quest Link independently
+        // of Windows' default device. Do not open a second, unused Bevy mixer.
+        // `disable` belongs to PluginGroupBuilder, not to the group itself, so
+        // the group has to be built first; `set` then works on the builder too.
+        .build()
+        .disable::<bevy::audio::AudioPlugin>()
         .set(AssetPlugin {
             file_path: assets_dir.to_string_lossy().into_owned(),
             watch_for_changes_override: Some(false),

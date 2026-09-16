@@ -3109,12 +3109,13 @@ pub fn js_tick_system(world: &mut World) {
         };
 
         if !world.contains_resource::<ElemenetWorld>() { return; }
-        let (log_messages, all_removed_ids) = world.resource_scope(|world, mut specs_world: Mut<ElemenetWorld>| {
+        let (log_messages, all_removed_ids, surviving_parents) = world.resource_scope(|world, mut specs_world: Mut<ElemenetWorld>| {
             let attached = world.get_resource::<crate::VirtualDomData>();
             let is_known = |id: &u32| attached.is_some_and(|dom| dom.nodes.contains_key(id))
                 || detached_nodes.contains(id);
             let mut log_messages = Vec::new();
             let mut all_removed_ids: Vec<u32> = Vec::new();
+            let mut affected_parents = HashSet::new();
             for &node_id in &allowed_remove_ids {
                 if !is_known(&node_id) || frame_deleted_global.contains(&node_id) {
                     // Stale id de cola JS — el delete causaría panic por
@@ -3127,6 +3128,9 @@ pub fn js_tick_system(world: &mut World) {
                     let root_ent = entities.entity(node_id);
                     if !entities.is_alive(root_ent) {
                         continue;
+                    }
+                    if let Some(parent) = hier.get(root_ent).and_then(|h| h.parent) {
+                        affected_parents.insert(parent);
                     }
                     let mut to_delete = Vec::new();
                     let mut stack = vec![root_ent];
@@ -3188,7 +3192,18 @@ pub fn js_tick_system(world: &mut World) {
                     ));
                 }
             }
-            (log_messages, all_removed_ids)
+            // Deleting a Specs component does not unlink it from its parent.
+            // Clean each surviving sibling list once per batch, rather than
+            // retaining stale children across repeated include replacements.
+            let mut surviving_parents = Vec::new();
+            let mut hier = specs_world.0.write_storage::<Hierarchy>();
+            for parent in affected_parents {
+                if let Some(h) = hier.get_mut(parent) {
+                    h.children.retain(|child| !frame_deleted_global.contains(&child.id()));
+                    surviving_parents.push(parent.id());
+                }
+            }
+            (log_messages, all_removed_ids, surviving_parents)
         });
         let removed_ids: HashSet<u32> = all_removed_ids.iter().copied().collect();
         // Collect Bevy entities to despawn, then despawn them
@@ -3258,6 +3273,7 @@ pub fn js_tick_system(world: &mut World) {
             }
         }
         if let Some(mut mirror_dirty) = world.get_resource_mut::<DomMirrorDirty>() {
+            for parent in surviving_parents { mirror_dirty.touch(parent); }
             for &nid in &all_removed_ids {
                 mirror_dirty.remove(nid);
             }
@@ -5639,6 +5655,10 @@ mod tests {
         assert!(sky.pending.contains_key("other-sky"));
         assert!(app.world().get_entity(bevy_entity).is_none());
         assert_eq!(app.world().resource::<crate::PendingModelLoads>().0["shared-model"], [9000].into_iter().collect());
+        let specs = &app.world().resource::<ElemenetWorld>().0;
+        let parent = specs.entities().entity(space_id);
+        assert!(!specs.read_storage::<Hierarchy>().get(parent).unwrap().children
+            .iter().any(|child| child.id() == child_id));
     }
 
     #[test]

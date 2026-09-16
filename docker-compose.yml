@@ -216,6 +216,23 @@ services:
       NODE_ENV: development
       PORT: "2062"
     command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+  # La mosca: el conectoma entero (Lulzx/fly-brain, MIT) en un cuerpo de MuJoCo.
+  # Node y no Bun: el simulador es WebAssembly con memoria compartida y MuJoCo en
+  # WASM, probado en Node. traer.mjs baja el simulador y sus datos (~75 MB) a
+  # vendor/ la primera vez. Sólo simula con alguien conectado, y entonces ocupa
+  # un núcleo entero. Ver server_mosca/README.md.
+  mosca-dev:
+    image: node:22
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_mosca:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "2063:2063"
+    environment:
+      NODE_ENV: development
+      PORT: "2063"
+    command: ["sh", "-c", "node scripts/traer.mjs && npm install --no-audit --no-fund && npx -y nodemon --legacy-watch --polling-interval 5000 --watch src --ext mjs,json src/index.mjs"]
 volumes:
   caddy_data:
   caddy_config:

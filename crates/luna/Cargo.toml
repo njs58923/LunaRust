@@ -18,6 +18,7 @@ bevy_mod_xr = { path = "../bevy_xr" }
 bevy_xr_utils = { path = "../bevy_xr_utils" }
 virtual-dom = { path = "../virtual_dom" }
 js_runtime = { path = "../js_runtime" }
+rodio = { version = "0.18.1", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 tokio-tungstenite = "0.21"
 futures-util = "0.3"

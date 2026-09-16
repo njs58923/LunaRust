@@ -6,6 +6,33 @@ El sonido no está posicionado en el espacio: sale por la mezcla del shell.
 
 Pide `resources="audio"`.
 
+## Salida de escritorio y visor
+
+En escritorio, Luna usa la salida predeterminada del sistema. Con una sesión VR
+activa, selecciona la salida de **Quest Link / Air Link** cuyo nombre contiene
+`Oculus Virtual Audio Device`. Solo cambia la salida de Luna, no la configuración
+global de Windows. Si no encuentra una salida única o no puede abrirla, intenta
+la predeterminada y deja un aviso en el log.
+
+La selección se realiza al arrancar y al entrar/salir de una sesión VR. No hay
+sondeo periódico de dispositivos. Al cambiar, las voces existentes continúan
+desde su estado actual, conservando volumen, pausa y bucle; puede haber una
+breve interrupción y perderse audio ya almacenado en los buffers del dispositivo.
+Esto también se aplica a `AudioStream`.
+
+Para otro visor o un dispositivo con nombre distinto, se puede indicar el nombre
+completo de la salida antes de iniciar Luna:
+
+```powershell
+$env:LUNA_VR_AUDIO_DEVICE = 'Auriculares (Oculus Virtual Audio Device)'
+```
+
+La comparación ignora mayúsculas pero exige el nombre completo. Esta opción
+solo se aplica en VR; el log `[Audio] VR output: ...` confirma la salida elegida.
+Si conectás una salida después de que falló la selección, salí de VR y volvé a
+entrar para repetirla. Si no había ninguna salida disponible, una nueva petición
+de audio también vuelve a intentarlo.
+
 ```xml
 <space resources="audio,fetch_text">
   <script src="./sonido.js"/>

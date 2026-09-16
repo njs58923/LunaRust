@@ -4020,6 +4020,44 @@ mod tests {
         assert_eq!(table.pending_touched_globals, [ids[3]].into_iter().collect());
     }
 
+    #[test]
+    fn include_repeated_mount_and_unmount_keeps_entity_counts_bounded() {
+        let (mut app, ids, entities) = dynamic_test_app(1);
+        let host = ids[0];
+        {
+            let world = &app.world().resource::<ElemenetWorld>().0;
+            let node = world.entities().entity(host);
+            world.write_storage::<Tag>().insert(node, Tag("include".into())).unwrap();
+        }
+        app.add_systems(Update, (commit_pending_includes_system, process_delete_requests)
+            .chain().before(dom_sync_system));
+        let url = "https://example.test/component.hsml";
+        for request_id in 1..=50 {
+            let previous: Vec<_> = app.world().resource::<EntityMap>().0.iter()
+                .filter_map(|(&id, &entity)| (id != host).then_some(entity)).collect();
+            app.world_mut().resource_mut::<IncludeLoadStates>().0.insert(host,
+                IncludeLoadState::Loading { url: url.into(), request_id });
+            app.world_mut().resource_mut::<PendingIncludes>().0.push(PendingInclude {
+                parent_node_id: host, request_id, url: url.into(),
+                xml: "<space><box/><space><box/><box/></space></space>".into(),
+            });
+            app.update();
+            assert_eq!(app.world().resource::<VirtualDomData>().nodes.len(), 6);
+            assert_eq!(app.world().resource::<EntityMap>().0.len(), 6);
+            assert_eq!(app.world().resource::<ElemenetWorld>().0.entities().join().count(), 6);
+            assert_eq!(app.world().entities().len(), 6);
+            for old in previous { assert!(app.world().get_entity(old).is_none()); }
+            assert!(app.world().get_entity(entities[0]).is_some());
+        }
+        app.world_mut().resource_mut::<DeleteRequests>().0.push(host);
+        app.update();
+        assert!(app.world().resource::<EntityMap>().0.is_empty());
+        assert!(app.world().resource::<VirtualDomData>().nodes.is_empty());
+        assert_eq!(app.world().resource::<ElemenetWorld>().0.entities().join().count(), 0);
+        assert_eq!(app.world().entities().len(), 0);
+        assert!(app.world().resource::<IncludeLoadStates>().0.is_empty());
+    }
+
     fn queue_dynamic_frame(app: &mut App, ids: &[u32], x: f32) {
         let mut updates = app.world_mut().resource_mut::<crate::TransformUpdates>();
         for &id in ids {
