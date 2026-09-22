@@ -10,24 +10,34 @@ if (!Number.isFinite(timeout) || timeout <= 0) throw new Error("Invalid LUNA_AGE
 const bridge = new Bridge(timeout);
 let listenError: string | null = null;
 let listener: ReturnType<typeof Bun.serve> | undefined;
-try {
-  listener = Bun.serve({
-    hostname: "127.0.0.1", port,
-    fetch(request, server) {
-      // Native clients only; browser pages send Origin.
-      if (request.headers.has("origin") || new URL(request.url).pathname !== "/") return new Response("Forbidden", { status: 403 });
-      if (server.upgrade(request, { data: undefined })) return;
-      return new Response("Luna MCP WebSocket endpoint", { status: 426 });
-    },
-    websocket: {
-      maxPayloadLength: 24_000_000,
-      open(socket) { bridge.open(socket); },
-      close(socket) { bridge.close(socket); },
-      message(socket, raw) { bridge.message(socket, String(raw)); },
-    },
-  });
-  console.error(`[luna-mcp] ws://127.0.0.1:${listener.port}`);
-} catch (error) { listenError = String(error); console.error(listenError); }
+
+// Escuchar puede fallar al arrancar si otra sesión todavía tiene el puerto (dos
+// ventanas de Claude, o una que quedó abierta). Antes se intentaba una sola vez
+// y el adaptador quedaba mudo para siempre aunque el otro se cerrara; ahora cada
+// llamada a una herramienta vuelve a probar mientras no esté escuchando.
+function escuchar(): void {
+  if (listener) return;
+  try {
+    listener = Bun.serve({
+      hostname: "127.0.0.1", port,
+      fetch(request, server) {
+        // Native clients only; browser pages send Origin.
+        if (request.headers.has("origin") || new URL(request.url).pathname !== "/") return new Response("Forbidden", { status: 403 });
+        if (server.upgrade(request, { data: undefined })) return;
+        return new Response("Luna MCP WebSocket endpoint", { status: 426 });
+      },
+      websocket: {
+        maxPayloadLength: 24_000_000,
+        open(socket) { bridge.open(socket); },
+        close(socket) { bridge.close(socket); },
+        message(socket, raw) { bridge.message(socket, String(raw)); },
+      },
+    });
+    listenError = null;
+    console.error(`[luna-mcp] ws://127.0.0.1:${listener.port}`);
+  } catch (error) { listenError = String(error); console.error(listenError); }
+}
+escuchar();
 
 const camera = { type: "string", enum: ["auto", "desktop", "spectator"], description: "auto: spectator in VR, desktop otherwise" };
 const vector = { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 };
@@ -45,7 +55,8 @@ function text(value: unknown, isError = false) { return { content: [{ type: "tex
 server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
   const args = params.arguments ?? {};
   try {
-    if (listenError) throw new Error(`Local listener unavailable: ${listenError}`);
+    escuchar();
+    if (listenError) throw new Error(`Local listener unavailable: ${listenError} (otra sesión puede tener el puerto ${port}; se reintenta en cada llamada)`);
     const selected = args.camera ?? "auto";
     if (!["auto", "desktop", "spectator"].includes(selected as string)) throw new Error("Invalid camera");
     switch (params.name) {
