@@ -420,6 +420,28 @@ silencio que el error original.
 
 ---
 
+**`el.globalPosition` se queda con el primer valor que leyó.** El getter
+devuelve un `ProxyVec3` que guarda en `_cache` lo que le dio la op la primera
+vez y no la vuelve a pedir (`runtime.js`, `ProxyVec3.get x`). Para un nodo que
+no se mueve da igual; para saber dónde quedó algo que se mueve —un objeto que
+alguien lleva con un manipulador, por ejemplo— hay que ir a la op cada vez:
+`Deno.core.ops.op_hsml_get_global_position(el.nodeId)` devuelve `[x, y, z]`
+fresco. Con cuatro nodos propios (el origen y uno a un metro sobre cada eje)
+sale el marco entero del documento en el mundo, giro y escala incluidos: es lo
+que hace falta para pasar las poses de los mandos, que llegan en coordenadas
+de mundo, a coordenadas del documento. Está hecho así en
+`server_expo/public/objetos/_base.js` (`Obj.marco()`).
+
+**El `toque` trae el punto también en coordenadas del nodo tocado.** Además de
+`x, y, z` en el mundo, el evento tiene `local`: `[x, y, z]` con la inversa de la
+transformación global del nodo aplicada (`touch.rs`), o sea en unidades del
+nodo — en un `plane` de `sx="1.2"`, `local[0]` va de -0.5 a 0.5. Para dibujar
+sobre una pizarra o apuntar en un tablero no hace falta saber dónde quedó el
+documento: `local[0] * ancho` es la x en la pizarra. Ver
+`server_expo/public/objetos/pizarra.js` y `dardos.js`.
+
+---
+
 ## Patrones
 
 **Delegar navegación con un mapa de ids.** Es lo que hacen las páginas internas

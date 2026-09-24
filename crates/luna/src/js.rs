@@ -166,6 +166,9 @@ pub struct PoseMoveEventData {
     pub qy: f32,
     pub qz: f32,
     pub qw: f32,
+    pub local: [f32; 3],
+    pub local_dir: [f32; 3],
+    pub local_rot: [f32; 4],
 }
 
 pub enum JsWorkerCommand {
@@ -782,6 +785,7 @@ fn spawn_space_worker_configured(
                                 evt.qz,
                                 evt.qw,
                             );
+                            ctx.engine.set_last_posemove_local(evt.local, evt.local_dir, evt.local_rot);
                         }
                     }
                     JsWorkerCommand::PushToqueRawEvents(events) => {
@@ -1375,6 +1379,35 @@ fn refresh_dom_mirror_in_place(
     }
 }
 
+/// La posición de un nodo en el mundo, componiendo la cadena de padres del
+/// mirror (que cruza includes: llega hasta el documento que los aloja). Antes
+/// se mandaba la posición local, y `globalPosition` de un nodo adentro de un
+/// include daba lo mismo estuviera donde estuviera el include.
+fn mirror_global_position(mirror: &DomMirror, id: i32) -> js_runtime::Vec3 {
+    let mut chain = Vec::new();
+    let mut current = id;
+    while current >= 0 && chain.len() < 256 {
+        let Some(node) = mirror.nodes.get(&current) else { break };
+        chain.push(node);
+        current = node.parent;
+    }
+    let mut affine = bevy::math::Affine3A::IDENTITY;
+    for node in chain.iter().rev() {
+        let t = bevy::math::Affine3A::from_scale_rotation_translation(
+            bevy::math::Vec3::new(node.scale.x, node.scale.y, node.scale.z),
+            bevy::math::Quat::from_euler(EulerRot::XYZ, node.rotation.x, node.rotation.y, node.rotation.z),
+            bevy::math::Vec3::new(node.position.x, node.position.y, node.position.z),
+        );
+        affine = affine * t;
+    }
+    let p = affine.translation;
+    if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
+        let own = chain.first().map(|n| n.position.clone()).unwrap_or_default();
+        return own;
+    }
+    js_runtime::Vec3 { x: p.x, y: p.y, z: p.z }
+}
+
 fn build_local_space_snapshot_from_mirror(
     space_id: u32,
     allowed: &HashSet<i32>,
@@ -1405,7 +1438,7 @@ fn build_local_space_snapshot_from_mirror(
         local_positions.insert(local_id, node.position.clone());
         local_rotations.insert(local_id, node.rotation.clone());
         local_scales.insert(local_id, node.scale.clone());
-        local_global_positions.insert(local_id, node.position.clone());
+        local_global_positions.insert(local_id, mirror_global_position(mirror, global_node_id_i32));
 
         let parent_local = if node.parent < 0 {
             -1
@@ -1482,7 +1515,7 @@ fn build_local_space_patch_from_mirror(
         patch.scales.insert(local_id, node.scale.clone());
         patch
             .global_positions
-            .insert(local_id, node.position.clone());
+            .insert(local_id, mirror_global_position(mirror, global_node_id_i32));
 
         let parent_local = if node.parent < 0 {
             -1

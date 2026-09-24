@@ -250,6 +250,13 @@ pub struct HostPoseMoveHit {
     pub qy: f32,
     pub qz: f32,
     pub qw: f32,
+    // La misma pose en el marco del padre del posezone: las coordenadas de
+    // quien lo puso. Un include no puede leer la transformación de quien lo
+    // aloja, así que sin esto no hay forma de saber dónde quedó la mano
+    // respecto de sus piezas.
+    pub local: [f32; 3],
+    pub local_dir: [f32; 3],
+    pub local_rot: [f32; 4],
 }
 
 /// posemove detectado por el host; se despacha como DOM event si el space tiene permiso.
@@ -492,6 +499,7 @@ fn push_pose_events_for_hand(
     posezone_query: &Query<(Entity, &GlobalTransform, &PoseZone, Option<&HitShape>)>,
     parent_query: &Query<&Parent>,
     visibility_query: &Query<&Visibility>,
+    global_query: &Query<&GlobalTransform>,
     pose_events: &mut HostPoseMoveEvents,
 ) {
     let (point, controller_rot) = compose_tracking_pose(root_tf, controller_tf);
@@ -508,6 +516,8 @@ fn push_pose_events_for_hand(
         let shape = hit_shape.copied().unwrap_or(HitShape::Box);
 
         if contains_point(point, entity_pos, rotation, scale, shape) {
+            let (local, local_dir, local_rot) =
+                pose_in_parent_frame(entity, point, dir, controller_rot, parent_query, global_query);
             pose_events.0.push(HostPoseMoveHit {
                 node_id: posezone.0,
                 hand: hand.to_string(),
@@ -523,9 +533,44 @@ fn push_pose_events_for_hand(
                 qy: controller_rot.y,
                 qz: controller_rot.z,
                 qw: controller_rot.w,
+                local,
+                local_dir,
+                local_rot,
             });
         }
     }
+}
+
+/// La pose del mando en el marco del padre del posezone (escala incluida:
+/// un objeto agrandado al doble ve la mano a la mitad de distancia). En JS
+/// llega como `localX..localZ` (posición), `ldx..ldz` (hacia dónde apunta;
+/// su largo es 1/escala) y `lqx..lqw` (giro). Sin padre, el mundo.
+fn pose_in_parent_frame(
+    entity: Entity,
+    point: Vec3,
+    dir: Vec3,
+    rot: Quat,
+    parent_query: &Query<&Parent>,
+    global_query: &Query<&GlobalTransform>,
+) -> ([f32; 3], [f32; 3], [f32; 4]) {
+    let parent_gt = parent_query
+        .get(entity)
+        .ok()
+        .and_then(|p| global_query.get(p.get()).ok());
+    let Some(gt) = parent_gt else {
+        return (point.to_array(), dir.to_array(), rot.to_array());
+    };
+    let inv = gt.affine().inverse();
+    let (_, parent_rot, _) = gt.to_scale_rotation_translation();
+    let local = inv.transform_point3(point);
+    // Sin normalizar: con escala uniforme su largo es 1/escala del padre, y
+    // así quien lo recibe puede rearmar el marco entero de un solo evento.
+    let local_dir = inv.transform_vector3(dir);
+    let local_rot = (parent_rot.inverse() * rot).normalize();
+    if !local.is_finite() || !local_dir.is_finite() || !local_rot.is_finite() {
+        return (point.to_array(), dir.to_array(), rot.to_array());
+    }
+    (local.to_array(), local_dir.to_array(), local_rot.to_array())
 }
 
 pub fn vr_posemove_system(
@@ -550,6 +595,7 @@ pub fn vr_posemove_system(
     posezone_query: Query<(Entity, &GlobalTransform, &PoseZone, Option<&HitShape>)>,
     parent_query: Query<&Parent>,
     visibility_query: Query<&Visibility>,
+    global_query: Query<&GlobalTransform>,
     mut pose_events: ResMut<HostPoseMoveEvents>,
 ) {
     if posezone_query.is_empty() {
@@ -590,6 +636,7 @@ pub fn vr_posemove_system(
             &posezone_query,
             &parent_query,
             &visibility_query,
+            &global_query,
             &mut pose_events,
         );
     }
@@ -603,6 +650,7 @@ pub fn vr_posemove_system(
             &posezone_query,
             &parent_query,
             &visibility_query,
+            &global_query,
             &mut pose_events,
         );
     }
@@ -732,6 +780,9 @@ pub fn dispatch_posemove_events_to_js(
                 qy: evt.qy,
                 qz: evt.qz,
                 qw: evt.qw,
+                local: evt.local,
+                local_dir: evt.local_dir,
+                local_rot: evt.local_rot,
             });
     }
 

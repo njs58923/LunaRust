@@ -20,6 +20,13 @@ Eventos que emite el host:
 | `pointerover`, `pointerout` | cambio de objetivo; burbujean dentro del isolate | mismos campos |
 | `posemove` | mano/mando dentro de un `<posezone>` (requiere `read_pose_stream`) | `hand`, `px py pz`, `dx dy dz`, `trigger`, `grip`, `qx qy qz qw` |
 
+`posemove` trae la pose dos veces. `px..qw` están en world space. `localX localY localZ` (posición),
+`ldx ldy ldz` (hacia dónde apunta; su largo es 1/escala del padre) y `lqx lqy lqz lqw`
+(giro) están **en el marco del padre del posezone**. Dentro de un include eso es lo único
+confiable: el documento no puede leer dónde lo puso quien lo aloja, así que para saber
+dónde está la mano respecto de sus piezas conviene poner el posezone como hijo directo
+del `<space>` y usar `localX..`.
+
 `toque` es *el* click en Luna. No existe `click` nativo: `el.click()` sólo despacha
 un evento sintético `click` a tus propios listeners.
 

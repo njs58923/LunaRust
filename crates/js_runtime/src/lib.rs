@@ -518,6 +518,10 @@ impl Default for WsCloseQueue {
 #[derive(Clone, Debug)]
 pub struct DomEvent {
     pub local: Option<[f32;3]>,
+    // posemove: dirección y giro del mando en el marco del padre del posezone
+    // (la posición va en `local`).
+    pub local_d: Option<[f32;3]>,
+    pub local_q: Option<[f32;4]>,
     pub event_type: String,
     pub node_id: i32,
     pub x: Option<f32>,
@@ -1207,6 +1211,13 @@ fn op_poll_dom_events(state: &mut OpState) -> serde_json::Value {
                 "localX": evt.local.map(|p|p[0]),
                 "localY": evt.local.map(|p|p[1]),
                 "localZ": evt.local.map(|p|p[2]),
+                "ldx": evt.local_d.map(|p|p[0]),
+                "ldy": evt.local_d.map(|p|p[1]),
+                "ldz": evt.local_d.map(|p|p[2]),
+                "lqx": evt.local_q.map(|p|p[0]),
+                "lqy": evt.local_q.map(|p|p[1]),
+                "lqz": evt.local_q.map(|p|p[2]),
+                "lqw": evt.local_q.map(|p|p[3]),
                 "trigger": evt.trigger,
                 "grip": evt.grip,
                 "qx": evt.qx,
@@ -2073,6 +2084,8 @@ impl Engine {
     ) {
         self.dom_events.borrow_mut().push(DomEvent {
             local: None,
+            local_d: None,
+            local_q: None,
             event_type: event_type.into(),
             node_id,
             x,
@@ -2107,6 +2120,19 @@ impl Engine {
         }
     }
 
+    /// Completa el último posemove con la pose en el marco del padre del
+    /// posezone: `localX..Z`, `ldx..ldz` y `lqx..lqw` del lado de JS.
+    pub fn set_last_posemove_local(&self, local: [f32; 3], dir: [f32; 3], rot: [f32; 4]) {
+        if let Some(event) = self.dom_events.borrow_mut().last_mut() {
+            if event.event_type != "posemove" {
+                return;
+            }
+            if local.iter().all(|v| v.is_finite()) { event.local = Some(local); }
+            if dir.iter().all(|v| v.is_finite()) { event.local_d = Some(dir); }
+            if rot.iter().all(|v| v.is_finite()) { event.local_q = Some(rot); }
+        }
+    }
+
     pub fn push_posemove_event(
         &self,
         node_id: i32,
@@ -2126,6 +2152,8 @@ impl Engine {
     ) {
         self.dom_events.borrow_mut().push(DomEvent {
             local: None,
+            local_d: None,
+            local_q: None,
             event_type: "posemove".to_string(),
             node_id,
             x: None,
@@ -2159,6 +2187,8 @@ impl Engine {
     ) {
         self.dom_events.borrow_mut().push(DomEvent {
             local: None,
+            local_d: None,
+            local_q: None,
             event_type: "systeminput".to_string(),
             node_id: 0,
             x: None,

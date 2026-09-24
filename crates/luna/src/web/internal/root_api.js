@@ -171,6 +171,23 @@
     return null;
   }
 
+  /** Los grants que recibe un espacio montado sin grants explícitos. Los usa
+   *  mountSpace al montar y regrantMountedSpaces al cambiar de modo: si no
+   *  fueran los mismos, cambiar de escritorio a VR le sacaría permisos a lo
+   *  que ya estaba montado. */
+  function grantsPorDefecto(kind) {
+    if ((kind || 'spatial') === 'spatial') {
+      // read_camera_pose da la posición del visitante, no su mirada. Va
+      // por defecto porque read_pose_stream ya la entrega igual vía la
+      // pose de los mandos: negarla sólo rompía escritorio, donde no hay
+      // mandos, sin proteger nada.
+      return ['navigate_self', 'navigate_world', 'read_pose_stream', 'read_camera_pose', 'skybox', 'fetch_text', 'fetch_http', 'spawn', 'audio'];
+    }
+    if (kind === 'app') return ['navigate_self', 'fetch_text', 'audio'];
+    if (kind === 'app-embedded') return ['navigate_self', 'ux_embed', 'fetch_text', 'audio'];
+    return undefined;
+  }
+
   function registerSpace(space, kind) {
     for (const [publicId, entry] of registry) {
       if (entry.space.nodeId === space.nodeId) {
@@ -315,19 +332,7 @@
 
       // Default grants por kind si el caller no especificó.
       let grants = options.grants;
-      if (!Array.isArray(grants)) {
-        if (kind === 'spatial') {
-          // read_camera_pose da la posición del visitante, no su mirada. Va
-          // por defecto porque read_pose_stream ya la entrega igual vía la
-          // pose de los mandos: negarla sólo rompía escritorio, donde no hay
-          // mandos, sin proteger nada.
-          grants = ['navigate_self', 'navigate_world', 'read_pose_stream', 'read_camera_pose', 'skybox', 'fetch_text', 'fetch_http', 'spawn', 'audio'];
-        } else if (kind === 'app') {
-          grants = ['navigate_self', 'fetch_text', 'audio'];
-        } else if (kind === 'app-embedded') {
-          grants = ['navigate_self', 'ux_embed', 'fetch_text', 'audio'];
-        }
-      }
+      if (!Array.isArray(grants)) grants = grantsPorDefecto(kind);
 
       const initialVisible = options.visible !== false && kind !== 'app-embedded';
 
@@ -358,6 +363,7 @@
           if (Array.isArray(grants) && grants.length) {
             previa.space.setAttribute('resources', grants.join(','));
             inc.setAttribute('resources', grants.join(','));
+            previa.grants = grants.slice();
           }
           applySpaceOptions(previa, {
             ...options,
@@ -375,6 +381,8 @@
       const publicId = registerSpace(space, kind);
       const entry = registry.get(publicId);
       if (!entry) return -1;
+      // Se guardan para volver a aplicarlos al cambiar de modo.
+      if (Array.isArray(grants)) entry.grants = grants.slice();
 
       space.setAttribute('visible', initialVisible ? 'inherit' : 'false');
       space.setAttribute('managed-by', 'dimension.luna');
@@ -471,7 +479,14 @@
       // Tiene que incluir read_camera_pose o cambiar de modo se lo saca a
       // todo lo montado: justo el caso donde más falta hace, porque en
       // escritorio es la única fuente de posición que hay.
-      const grants = ['navigate_self', 'read_pose_stream', 'read_camera_pose'];
+      //
+      // Y no alcanza con eso: antes esta lista de tres **reemplazaba** los
+      // grants de cada espacio montado, así que al pasar de escritorio a VR un
+      // mundo perdía navigate_world, audio, skybox, spawn y fetch —las puertas
+      // dejaban de llevar a ningún lado y todo quedaba mudo—. Ahora se vuelve a
+      // aplicar lo que el espacio recibió al montarse (o lo de su kind), más
+      // estos tres.
+      const base = ['navigate_self', 'read_pose_stream', 'read_camera_pose'];
 
       discoverDirectSpaces();
       cleanupRegistry();
@@ -480,6 +495,8 @@
         if (publicId === this._uxSpaceId) continue;
         if (!isDirectRootChild(entry.space)) continue;
         const include = ensureInclude(entry);
+        const propios = Array.isArray(entry.grants) ? entry.grants : (grantsPorDefecto(entry.kind) || []);
+        const grants = [...new Set([...propios, ...base])];
         include.setAttribute('resources', grants.join(','));
       }
 
