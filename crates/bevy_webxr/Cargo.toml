@@ -16,7 +16,7 @@ thiserror = "1.0.57"
 wgpu = "0.19.3"
 wgpu-hal = "0.19.3"
 
-bevy_mod_xr = { path = "../bevy_xr", version = "0.1.0-rc1" }
+bevy_mod_xr = { path = "../bevy_xr", version = "0.2.0" }
 
 [lints.clippy]
 too_many_arguments = "allow"

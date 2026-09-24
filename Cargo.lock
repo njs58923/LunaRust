@@ -876,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_mod_openxr"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "ash",
  "bevy",
@@ -907,14 +907,14 @@ dependencies = [
 
 [[package]]
 name = "bevy_mod_xr"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "bevy",
 ]
 
 [[package]]
 name = "bevy_openxr_android"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "bevy",
  "bevy_mod_openxr",
@@ -1287,7 +1287,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_xr_utils"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "bevy",
  "bevy_mod_openxr",
@@ -3268,7 +3268,7 @@ dependencies = [
 
 [[package]]
 name = "js_runtime"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "deno_core",
@@ -3450,7 +3450,7 @@ dependencies = [
 
 [[package]]
 name = "lua_exps"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bevy",
@@ -3469,7 +3469,7 @@ dependencies = [
 
 [[package]]
 name = "luna"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -4889,7 +4889,7 @@ dependencies = [
 
 [[package]]
 name = "rust_exps"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "specs",
  "specs-derive",
@@ -5979,7 +5979,7 @@ checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
 
 [[package]]
 name = "ui_graphics"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "fontdue",
  "lyon_tessellation",
@@ -6103,7 +6103,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "virtual-dom"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "lazy_static",
