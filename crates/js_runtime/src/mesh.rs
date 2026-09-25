@@ -1,5 +1,6 @@
 //! Validated, bounded mesh uploads. Geometry crosses the isolate as binary buffers.
 use deno_core::{op2, OpState};
+use glam::Vec3;
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicU64, Ordering},
@@ -19,16 +20,46 @@ pub struct MeshData {
     pub colors: Vec<[f32; 4]>,
 }
 
+impl MeshData {
+    /// Area-weighted normals, matching the renderer's original implementation.
+    pub fn generate_missing_normals(&mut self) {
+        if !self.normals.is_empty() {
+            return;
+        }
+        let mut normals = vec![Vec3::ZERO; self.positions.len()];
+        for triangle in self.indices.chunks_exact(3) {
+            let [a, b, c] = [triangle[0] as usize, triangle[1] as usize, triangle[2] as usize];
+            let normal = (Vec3::from(self.positions[b]) - Vec3::from(self.positions[a]))
+                .cross(Vec3::from(self.positions[c]) - Vec3::from(self.positions[a]));
+            for i in [a, b, c] {
+                normals[i] += normal;
+            }
+        }
+        self.normals = normals.into_iter()
+            .map(|n| n.normalize_or_zero().to_array()).collect();
+    }
+}
+
 #[derive(Debug)]
 pub struct MeshUpload {
     pub data: MeshData,
     pub fingerprint: [u8; 32],
+    pub bounds_min: [f32; 3],
+    pub bounds_max: [f32; 3],
 }
 
 impl MeshUpload {
-    /// Prepare immutable upload metadata on the isolate worker. Deduplication
-    /// must not hash large vertex buffers on the application's rendering thread.
-    pub fn new(data: MeshData) -> Self {
+    /// Prepare validated uploads on the isolate worker. Hashing, bounds and
+    /// normal generation must not scan buffers on the rendering thread.
+    pub fn new(mut data: MeshData) -> Self {
+        data.generate_missing_normals();
+        let mut positions = data.positions.iter().copied().map(Vec3::from);
+        let mut minimum = positions.next().expect("validated mesh has positions");
+        let mut maximum = minimum;
+        for position in positions {
+            minimum = minimum.min(position);
+            maximum = maximum.max(position);
+        }
         let mut hasher = blake3::Hasher::new();
         // The cache is local to this process: native-endian POD bytes need no
         // conversion. Lengths distinguish missing attributes and buffer layouts.
@@ -45,6 +76,8 @@ impl MeshUpload {
         Self {
             data,
             fingerprint: *hasher.finalize().as_bytes(),
+            bounds_min: minimum.to_array(),
+            bounds_max: maximum.to_array(),
         }
     }
 }

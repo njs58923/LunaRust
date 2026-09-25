@@ -59,26 +59,8 @@ impl DynamicMeshes {
     }
 }
 
-fn build_mesh(mut data: MeshData) -> Mesh {
-    if data.normals.is_empty() {
-        let mut normals = vec![Vec3::ZERO; data.positions.len()];
-        for triangle in data.indices.chunks_exact(3) {
-            let [a, b, c] = [
-                triangle[0] as usize,
-                triangle[1] as usize,
-                triangle[2] as usize,
-            ];
-            let normal = (Vec3::from(data.positions[b]) - Vec3::from(data.positions[a]))
-                .cross(Vec3::from(data.positions[c]) - Vec3::from(data.positions[a]));
-            for i in [a, b, c] {
-                normals[i] += normal;
-            }
-        }
-        data.normals = normals
-            .into_iter()
-            .map(|n| n.normalize_or_zero().to_array())
-            .collect();
-    }
+fn build_mesh(data: MeshData) -> Mesh {
+    debug_assert_eq!(data.positions.len(), data.normals.len());
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         // Generated geometry has no CPU readers after upload: bounds live in
@@ -201,8 +183,8 @@ pub fn apply_commands(world: &mut World, owner: u32, scope: u64, commands: Vec<M
                             shared.owners += 1;
                             (shared.mesh.clone(), shared.aabb)
                         } else {
+                            let aabb = Aabb::from_min_max(upload.bounds_min.into(), upload.bounds_max.into());
                             let mesh = build_mesh(upload.data);
-                            let aabb = mesh.compute_aabb().expect("validated mesh has positions");
                             let mut assets = world.resource_mut::<Assets<Mesh>>();
                             let handle = if let Some(handle) = reusable {
                                 // Animated meshes keep their allocation when no other resource

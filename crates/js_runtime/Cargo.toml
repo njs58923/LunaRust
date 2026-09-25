@@ -9,6 +9,7 @@ anyhow = "1.0"
 serde_bytes = "=0.11.15"
 blake3 = "1"
 bytemuck = "1"
+glam = "0.27"
 rodio = { version = "0.18.1", default-features = false, features = ["wav", "vorbis", "mp3"] }
 deno_core = "0.249.0"
 futures = "0.3"

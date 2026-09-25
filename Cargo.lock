@@ -3275,6 +3275,7 @@ dependencies = [
  "bytemuck",
  "deno_core",
  "futures",
+ "glam",
  "rodio",
  "rusqlite",
  "serde",
