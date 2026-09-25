@@ -1606,14 +1606,16 @@ pub fn find_owner_space_id(world: &specs::World, mut node: specs::Entity) -> Opt
     }
 }
 
-fn space_capabilities_snapshot(world: &World) -> HashMap<u32, CapabilityBits> {
+fn space_capabilities_snapshot(
+    world: &World,
+    space_ids: impl Iterator<Item = u32>,
+) -> HashMap<u32, CapabilityBits> {
     world
         .get_resource::<SpacePolicies>()
         .map(|policies| {
-            policies
-                .by_space
-                .iter()
-                .map(|(&space_id, policy)| (space_id, policy.effective_caps))
+            space_ids
+                .filter_map(|space_id| policies.by_space.get(&space_id)
+                    .map(|policy| (space_id, policy.effective_caps)))
                 .collect::<HashMap<_, _>>()
         })
         .unwrap_or_default()
@@ -2687,6 +2689,11 @@ pub fn js_tick_system(world: &mut World) {
         }
     }
 
+    if tick_batches.is_empty() {
+        finish_js_snapshot_sync(world, contexts_removed || pending_snapshot_in_flight, snapshot_acks);
+        return;
+    }
+
     let mut logs_by_context = Vec::new();
     let mut attr_update_batches = Vec::new();
     let mut pos_update_batches = Vec::new();
@@ -2706,7 +2713,9 @@ pub fn js_tick_system(world: &mut World) {
     let mut ws_close_batches: Vec<(u32, Vec<i32>)> = Vec::new();
     let mut snapshot_dirty = false;
 
-    let capabilities_by_space = space_capabilities_snapshot(world);
+    // A few active scripts must not clone policies for every static isolate.
+    let capabilities_by_space = space_capabilities_snapshot(
+        world, tick_batches.iter().map(|(space_id, _)| *space_id));
 
     for (space_id, data) in tick_batches {
         crate::keyboard::apply_commands(world, space_id, data.keyboard_commands);
@@ -3965,8 +3974,9 @@ pub fn js_tick_system(world: &mut World) {
                 if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&msg.payload) {
                     if payload.get("type").and_then(|v| v.as_str()) == Some("slot")
                         && payload.get("coordinateSpace").and_then(|v| v.as_str()) == Some("window-local") {
-                        if !is_shell || !capabilities_by_space.get(&target_space_id)
-                            .copied().unwrap_or_default().contains(CapabilityBits::UX_EMBED)
+                        if !is_shell || !world.get_resource::<SpacePolicies>()
+                            .and_then(|policies| policies.by_space.get(&target_space_id))
+                            .is_some_and(|policy| policy.effective_caps.contains(CapabilityBits::UX_EMBED))
                             || !bind_embedded_slot(world, sender_space_id, target_space_id, &payload) {
                             continue;
                         }
@@ -4023,7 +4033,26 @@ pub fn js_tick_system(world: &mut World) {
         }
     }
 
-    if snapshot_dirty || contexts_removed || pending_snapshot_in_flight {
+    finish_js_snapshot_sync(world,
+        snapshot_dirty || contexts_removed || pending_snapshot_in_flight, snapshot_acks);
+
+    if dom_structure_changed || dom_removals_changed {
+        if let Some(mut policies) = world.get_resource_mut::<SpacePolicies>() {
+            policies.dirty = true;
+        }
+    }
+
+    // NOTA: antes acá se forzaba `mirror_force_rebuild` + `force_rebuild()` ante
+    // CUALQUIER cambio estructural → full rebuild O(N) del mirror por cada add
+    // (25 cubos sobre 10k = full de 10k). Ahora el mirror se actualiza
+    // incremental: newly_attached vía commit_pending_js_attaches (nodo+padre),
+    // re-parents vía el touch de `dirty_ids_vec` arriba, y removes vía
+    // `mirror_dirty.remove`. La red de seguridad anti-desync en
+    // `js_update_snapshots_system` reconstruye full si algo quedó incompleto.
+}
+
+fn finish_js_snapshot_sync(world: &mut World, dirty: bool, snapshot_acks: usize) {
+    if dirty {
         if let Some(mut snapshot_state) = world.get_resource_mut::<JsSnapshotState>() {
             snapshot_state.dirty = true;
         }
@@ -4046,19 +4075,6 @@ pub fn js_tick_system(world: &mut World) {
         }
     }
 
-    if dom_structure_changed || dom_removals_changed {
-        if let Some(mut policies) = world.get_resource_mut::<SpacePolicies>() {
-            policies.dirty = true;
-        }
-    }
-
-    // NOTA: antes acá se forzaba `mirror_force_rebuild` + `force_rebuild()` ante
-    // CUALQUIER cambio estructural → full rebuild O(N) del mirror por cada add
-    // (25 cubos sobre 10k = full de 10k). Ahora el mirror se actualiza
-    // incremental: newly_attached vía commit_pending_js_attaches (nodo+padre),
-    // re-parents vía el touch de `dirty_ids_vec` arriba, y removes vía
-    // `mirror_dirty.remove`. La red de seguridad anti-desync en
-    // `js_update_snapshots_system` reconstruye full si algo quedó incompleto.
 }
 
 #[cfg(test)]
@@ -4812,6 +4828,65 @@ mod tests {
             cmd_rx,
             event_tx,
         )
+    }
+
+    #[test]
+    fn idle_tick_leaves_host_mutation_resources_unchanged() {
+        let (mut app, space_id) = snapshot_test_app();
+        let (worker, commands, _events) = fake_worker(false);
+        app.world_mut().non_send_resource_mut::<ScriptRuntimeManager>()
+            .contexts.insert(space_id, worker);
+        app.world_mut().clear_trackers();
+        js_tick_system(app.world_mut());
+        assert!(matches!(commands.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert!(!app.world().get_resource_ref::<AttributeUpdates>().unwrap().is_changed());
+        assert!(!app.world().get_resource_ref::<TransformUpdates>().unwrap().is_changed());
+    }
+
+    #[test]
+    fn sleeping_worker_only_ticks_when_its_timer_is_due() {
+        let (mut app, space_id) = snapshot_test_app();
+        let (mut worker, commands, _events) = fake_worker(false);
+        worker.next_timer_deadline = Some(Instant::now() + Duration::from_secs(3600));
+        app.world_mut().non_send_resource_mut::<ScriptRuntimeManager>()
+            .contexts.insert(space_id, worker);
+        for _ in 0..100 {
+            js_tick_system(app.world_mut());
+        }
+        assert!(matches!(commands.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        app.world_mut().non_send_resource_mut::<ScriptRuntimeManager>()
+            .contexts.get_mut(&space_id).unwrap().next_timer_deadline = Some(Instant::now());
+        js_tick_system(app.world_mut());
+        assert!(matches!(commands.try_recv(), Ok(JsWorkerCommand::Tick { .. })));
+        js_tick_system(app.world_mut());
+        assert!(matches!(commands.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "a due timer must not enqueue a second pump while its first tick is in flight");
+    }
+
+    #[test]
+    #[ignore = "manual static isolate host dispatch benchmark"]
+    fn benchmark_static_isolate_dispatch() {
+        for count in [100, 1000, 2000] {
+            let (mut app, spaces) = snapshot_test_app_with_spaces(count);
+            let mut channels = Vec::new();
+            let mut policies = SpacePolicies::default();
+            for space in spaces {
+                let (worker, commands, events) = fake_worker(false);
+                app.world_mut().non_send_resource_mut::<ScriptRuntimeManager>()
+                    .contexts.insert(space, worker);
+                channels.push((commands, events));
+                policies.by_space.insert(space, crate::permissions::SpacePolicy::default());
+            }
+            app.insert_resource(policies);
+            let started = Instant::now();
+            for _ in 0..1000 {
+                js_tick_system(app.world_mut());
+            }
+            eprintln!("static_isolate_dispatch isolates={count} mean_us={:.3}",
+                started.elapsed().as_secs_f64() * 1000.0);
+            assert!(channels.iter().all(|(commands, _)|
+                matches!(commands.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        }
     }
 
     #[test]

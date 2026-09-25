@@ -287,7 +287,9 @@ impl ComponentPort {
         out
     }
     pub fn take_wake(&self) -> bool {
-        self.wake.swap(false, Ordering::AcqRel)
+        // Idle ports are polled by the host each frame. Avoid an atomic write
+        // (and exclusive cache-line ownership) unless a producer requested work.
+        self.wake.load(Ordering::Acquire) && self.wake.swap(false, Ordering::AcqRel)
     }
     pub fn close(&self) {
         self.closed.store(true, Ordering::Release);
