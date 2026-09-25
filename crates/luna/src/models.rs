@@ -4,6 +4,7 @@ use bevy::{
     asset::LoadState,
     gltf::Gltf,
     prelude::*,
+    render::primitives::Aabb,
     scene::{SceneInstance, SceneSpawner},
 };
 
@@ -21,6 +22,7 @@ pub struct ModelResource {
 pub struct GeneratedModel {
     pub mesh: Handle<Mesh>,
     pub material: Handle<StandardMaterial>,
+    pub aabb: Option<Aabb>,
 }
 impl ModelResource {
     fn load(server: &AssetServer, path: &str) -> Self {
@@ -149,11 +151,15 @@ fn set_source_impl(
     let resource = generated.or_else(|| path.map(|p| ModelResource::load(server, p)));
     let content = resource.as_ref().map(|resource| {
         let mut child = if let Some(generated) = &resource.generated {
-            commands.spawn(PbrBundle {
+            let mut child = commands.spawn(PbrBundle {
                 mesh: generated.mesh.clone(),
                 material: generated.material.clone(),
                 ..default()
-            })
+            });
+            if let Some(aabb) = generated.aabb {
+                child.insert(aabb);
+            }
+            child
         } else {
             commands.spawn(SceneBundle {
                 scene: resource.scene.clone(),
@@ -312,6 +318,7 @@ mod tests {
             generated: Some(GeneratedModel {
                 mesh: Handle::default(),
                 material: Handle::default(),
+                aabb: Some(Aabb::from_min_max(Vec3::ZERO, Vec3::ONE)),
             }),
         };
         set_generated_source(
@@ -330,6 +337,7 @@ mod tests {
         assert!(app.world().get::<PendingModelInstance>(root).is_none());
         let content = instance.content.unwrap();
         assert!(app.world().get::<Handle<Mesh>>(content).is_some());
+        assert!(app.world().get::<Aabb>(content).is_some());
         assert!(app.world().get::<Handle<Scene>>(content).is_none());
         assert!(app.world().get::<Children>(content).is_none());
         assert_eq!(app.world().get::<Parent>(content).unwrap().get(), root);
