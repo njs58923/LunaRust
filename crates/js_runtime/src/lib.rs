@@ -2,6 +2,7 @@ use std::{
     cell::RefCell,
     collections::{BTreeSet, HashMap, HashSet},
     rc::Rc,
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
@@ -1401,6 +1402,10 @@ impl ExecutionHandle {
 
 impl Engine {
     pub fn new() -> Self {
+        Self::new_with_bootstrap_cache(true)
+    }
+
+    fn new_with_bootstrap_cache(use_cache: bool) -> Self {
         let timers = Timers::default();
         let raf_state = RafState::default();
         let console = ConsoleState::default();
@@ -1724,39 +1729,19 @@ impl Engine {
             })
             .build();
 
-        eprintln!("[js_runtime] Creating JsRuntime...");
         let mut rt = JsRuntime::new(RuntimeOptions {
             extensions: vec![ext],
             ..Default::default()
         });
 
-        eprintln!("[js_runtime] Injecting bootstrap...");
-        rt.execute_script("<bootstrap>", FastString::Static(BOOTSTRAP_JS))
-            .expect("bootstrap failed");
-
-        rt.execute_script("<storage>", FastString::Static(include_str!("../storage.js")))
-            .expect("storage bootstrap failed");
-
-        eprintln!("[js_runtime] Injecting runtime.js...");
-        rt.execute_script("<location>", FastString::Static(include_str!("../location.js")))
-            .expect("location bootstrap failed");
-        rt.execute_script("<runtime>", FastString::Static(RUNTIME_JS))
-            .expect("runtime.js failed");
-        rt.execute_script("<keyboard>", FastString::Static(include_str!("../keyboard.js")))
-            .expect("keyboard bootstrap failed");
-        rt.execute_script("<mesh>", FastString::Static(include_str!("../mesh.js")))
-            .expect("mesh bootstrap failed");
-        rt.execute_script("<binary>", FastString::Static(include_str!("../binary.js"))).expect("binary bootstrap failed");
-        rt.execute_script("<fetch>", FastString::Static(include_str!("../fetch.js")))
-            .expect("fetch bootstrap failed");
-        rt.execute_script("<audio>", FastString::Static(include_str!("../audio.js"))).expect("audio bootstrap failed");
-
-        rt.execute_script("<ui-path>",FastString::Static("globalThis.PathGeometry=Object.freeze({tessellate(commands,{tolerance=0.0001,strokeWidth=0,nonZero=false}={}){return Deno.core.ops.op_ui_path({commands,tolerance,strokeWidth,nonZero});}});")).expect("UI path bootstrap failed");
-        rt.execute_script("<ui-text>", FastString::Static("globalThis.TextLayout = Object.freeze({create(text,size,width=0){return Deno.core.ops.op_ui_text(String(text),Number(size),Number(width));}});")).expect("UI text bootstrap failed");
-
-        rt.execute_script("<components>", FastString::Static(include_str!("../components.js"))).expect("components bootstrap failed");
-
-        eprintln!("[js_runtime] Engine created successfully");
+        for script in &BOOTSTRAP_SCRIPTS {
+            let result = if use_cache {
+                script.execute(&mut rt)
+            } else {
+                rt.execute_script(script.name, FastString::Static(script.code)).map(|_| ())
+            };
+            result.unwrap_or_else(|error| panic!("{} bootstrap failed: {error}", script.name));
+        }
 
         Self {
             rt,
@@ -2425,6 +2410,169 @@ const BOOTSTRAP_JS: &str = r#"
 // ---------------------------------------------------------------------------
 
 const RUNTIME_JS: &str = include_str!("../runtime.js");
+
+/// Only compilation bytes are shared. Each isolate still executes these scripts
+/// against its own globals and native op state, including independent callbacks.
+struct CachedBootstrap {
+    name: &'static str,
+    code: &'static str,
+    cache: OnceLock<Box<[u8]>>,
+}
+
+impl CachedBootstrap {
+    const fn new(name: &'static str, code: &'static str) -> Self {
+        Self { name, code, cache: OnceLock::new() }
+    }
+
+    fn execute(&self, runtime: &mut JsRuntime) -> AnyResult<()> {
+        use deno_core::v8::{self, script_compiler};
+        let scope = &mut runtime.handle_scope();
+        let source = if self.code.is_ascii() {
+            v8::String::new_external_onebyte_static(scope, self.code.as_bytes())
+        } else {
+            v8::String::new(scope, self.code)
+        }.ok_or_else(|| anyhow::anyhow!("could not allocate bootstrap source"))?;
+        let name = v8::String::new_external_onebyte_static(scope, self.name.as_bytes()).unwrap();
+        let source_map_url = v8::String::empty(scope);
+        // Match JsRuntime::execute_script's origin, preserving stack traces.
+        let origin = v8::ScriptOrigin::new(scope, name.into(), 0, 0, false, 123,
+            source_map_url.into(), true, false, false);
+        let cached = self.cache.get();
+        let (source, options) = match cached {
+            Some(bytes) => (script_compiler::Source::new_with_cached_data(source,
+                Some(&origin), v8::CachedData::new(bytes)),
+                script_compiler::CompileOptions::ConsumeCodeCache),
+            None => (script_compiler::Source::new(source, Some(&origin)),
+                script_compiler::CompileOptions::NoCompileOptions),
+        };
+        let scope = &mut v8::TryCatch::new(scope);
+        let result = script_compiler::compile(scope, source, options,
+            script_compiler::NoCacheReason::NoReason);
+        let script = match result {
+            Some(script) => script,
+            None => return Err(bootstrap_exception(scope)),
+        };
+        if script.run(scope).is_none() {
+            return Err(bootstrap_exception(scope));
+        }
+        if cached.is_none() {
+            // Capture after execution to include bootstrap functions that ran,
+            // while preserving V8's lazy compilation for unused API methods.
+            if let Some(bytes) = script.get_unbound_script(scope).create_code_cache() {
+                let _ = self.cache.set(bytes.to_vec().into_boxed_slice());
+            }
+        }
+        Ok(())
+    }
+}
+
+fn bootstrap_exception(scope: &mut deno_core::v8::TryCatch<deno_core::v8::HandleScope>) -> anyhow::Error {
+    match scope.exception() {
+        Some(exception) => deno_core::error::JsError::from_v8_exception(scope, exception).into(),
+        None => anyhow::anyhow!("bootstrap execution terminated"),
+    }
+}
+
+static BOOTSTRAP_SCRIPTS: [CachedBootstrap; 12] = [
+    CachedBootstrap::new("<bootstrap>", BOOTSTRAP_JS),
+    CachedBootstrap::new("<storage>", include_str!("../storage.js")),
+    CachedBootstrap::new("<location>", include_str!("../location.js")),
+    CachedBootstrap::new("<runtime>", RUNTIME_JS),
+    CachedBootstrap::new("<keyboard>", include_str!("../keyboard.js")),
+    CachedBootstrap::new("<mesh>", include_str!("../mesh.js")),
+    CachedBootstrap::new("<binary>", include_str!("../binary.js")),
+    CachedBootstrap::new("<fetch>", include_str!("../fetch.js")),
+    CachedBootstrap::new("<audio>", include_str!("../audio.js")),
+    CachedBootstrap::new("<ui-path>", "globalThis.PathGeometry=Object.freeze({tessellate(commands,{tolerance=0.0001,strokeWidth=0,nonZero=false}={}){return Deno.core.ops.op_ui_path({commands,tolerance,strokeWidth,nonZero});}});"),
+    CachedBootstrap::new("<ui-text>", "globalThis.TextLayout = Object.freeze({create(text,size,width=0){return Deno.core.ops.op_ui_text(String(text),Number(size),Number(width));}});"),
+    CachedBootstrap::new("<components>", include_str!("../components.js")),
+];
+
+#[cfg(test)]
+mod bootstrap_cache_tests {
+    use super::*;
+
+    #[test]
+    fn cached_bootstrap_preserves_isolate_globals_callbacks_and_native_state() {
+        let mut first = Engine::new();
+        first.eval(r#"
+            globalThis.onlyInFirst = 123;
+            HSMLElement.prototype.onlyInFirst = true;
+            setTimeout(() => console.log('FIRST_TIMER'), 0);
+            console.log('FIRST_LOG');
+        "#).unwrap();
+        let mut second = Engine::new();
+        second.eval(r#"
+            if (typeof onlyInFirst !== 'undefined' || HSMLElement.prototype.onlyInFirst)
+                throw new Error('bootstrap cache shared JavaScript state');
+            console.log('SECOND_LOG');
+        "#).unwrap();
+        assert!(second.next_timer_deadline().is_none());
+        second.fire_raf(16.0);
+        let second_logs = second.drain_logs();
+        assert!(second_logs.iter().any(|(_, message)| message == "SECOND_LOG"));
+        assert!(!second_logs.iter().any(|(_, message)| message.starts_with("FIRST_")));
+        // V8 isolates are entered in stack order on this thread.
+        drop(second);
+        first.fire_raf(16.0);
+        assert!(first.drain_logs().iter().any(|(_, message)| message == "FIRST_TIMER"));
+        assert!(BOOTSTRAP_SCRIPTS.iter().all(|script| script.cache.get().is_some()));
+    }
+
+    #[test]
+    fn bootstrap_cache_preserves_compile_and_runtime_errors() {
+        let mut runtime = JsRuntime::new(RuntimeOptions::default());
+        let invalid = CachedBootstrap::new("<invalid-bootstrap>", "function (");
+        assert!(invalid.execute(&mut runtime).unwrap_err().to_string().contains("SyntaxError"));
+        assert!(invalid.cache.get().is_none());
+        let throws = CachedBootstrap::new("<throwing-bootstrap>", "throw new Error('EXPECTED_BOOTSTRAP_ERROR');");
+        assert!(throws.execute(&mut runtime).unwrap_err().to_string().contains("EXPECTED_BOOTSTRAP_ERROR"));
+        assert!(throws.cache.get().is_none());
+    }
+
+    #[test]
+    fn bootstrap_cache_rejection_falls_back_to_compiling_source() {
+        let script = CachedBootstrap::new("<rejected-cache>", "globalThis.cacheFallback = 42;");
+        script.cache.set(vec![0; 128].into_boxed_slice()).unwrap();
+        let mut runtime = JsRuntime::new(RuntimeOptions::default());
+        script.execute(&mut runtime).unwrap();
+        runtime.execute_script("<verify>", FastString::Static(
+            "if (cacheFallback !== 42) throw new Error('cache fallback did not execute');"
+        )).unwrap();
+    }
+
+    #[test]
+    #[ignore = "manual cold-isolate bootstrap compilation benchmark"]
+    fn benchmark_bootstrap_compilation_cache() {
+        drop(Engine::new());
+        let mut uncached_samples = Vec::new();
+        let mut cached_samples = Vec::new();
+        let mut uncached_heap = 0;
+        let mut cached_heap = 0;
+        for sample in 0..24 {
+            for use_cache in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+                let started = Instant::now();
+                let mut engine = Engine::new_with_bootstrap_cache(use_cache);
+                let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+                let mut heap = deno_core::v8::HeapStatistics::default();
+                engine.rt.v8_isolate().get_heap_statistics(&mut heap);
+                if use_cache {
+                    cached_samples.push(elapsed);
+                    cached_heap += heap.used_heap_size();
+                } else {
+                    uncached_samples.push(elapsed);
+                    uncached_heap += heap.used_heap_size();
+                }
+            }
+        }
+        uncached_samples.sort_by(f64::total_cmp);
+        cached_samples.sort_by(f64::total_cmp);
+        let cache_bytes: usize = BOOTSTRAP_SCRIPTS.iter()
+            .filter_map(|script| script.cache.get()).map(|bytes| bytes.len()).sum();
+        eprintln!("bootstrap_cache uncached_median_ms={:.3} cached_median_ms={:.3} uncached_heap_bytes={} cached_heap_bytes={} shared_cache_bytes={cache_bytes}",
+            uncached_samples[12], cached_samples[12], uncached_heap / 24, cached_heap / 24);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Standalone run_js
