@@ -22,7 +22,8 @@ pub struct ModelResource {
 pub struct GeneratedModel {
     pub mesh: Handle<Mesh>,
     pub material: Handle<StandardMaterial>,
-    pub aabb: Option<Aabb>,
+    /// Available even after the CPU mesh data has moved to the render world.
+    pub aabb: Aabb,
 }
 impl ModelResource {
     fn load(server: &AssetServer, path: &str) -> Self {
@@ -156,9 +157,7 @@ fn set_source_impl(
                 material: generated.material.clone(),
                 ..default()
             });
-            if let Some(aabb) = generated.aabb {
-                child.insert(aabb);
-            }
+            child.insert(generated.aabb);
             child
         } else {
             commands.spawn(SceneBundle {
@@ -318,7 +317,7 @@ mod tests {
             generated: Some(GeneratedModel {
                 mesh: Handle::default(),
                 material: Handle::default(),
-                aabb: Some(Aabb::from_min_max(Vec3::ZERO, Vec3::ONE)),
+                aabb: Aabb::from_min_max(Vec3::ZERO, Vec3::ONE),
             }),
         };
         set_generated_source(

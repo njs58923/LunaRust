@@ -24,7 +24,7 @@ struct Entry {
 
 struct SharedGeometry {
     mesh: Handle<Mesh>,
-    aabb: Option<Aabb>,
+    aabb: Aabb,
     owners: usize,
 }
 #[derive(Resource, Default)]
@@ -99,7 +99,10 @@ fn build_mesh(mut data: MeshData) -> Mesh {
     }
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
+        // Generated geometry has no CPU readers after upload: bounds live in
+        // the registry and updates submit complete replacement buffers. Bevy
+        // moves this mesh to extraction instead of retaining/cloning its data.
+        RenderAssetUsages::RENDER_WORLD,
     );
     let indices = if data.positions.len() <= usize::from(u16::MAX) + 1 {
         Indices::U16(data.indices.into_iter().map(|i| i as u16).collect())
@@ -217,7 +220,7 @@ pub fn apply_commands(world: &mut World, owner: u32, scope: u64, commands: Vec<M
                             (shared.mesh.clone(), shared.aabb)
                         } else {
                             let mesh = build_mesh(data);
-                            let aabb = mesh.compute_aabb();
+                            let aabb = mesh.compute_aabb().expect("validated mesh has positions");
                             let mut assets = world.resource_mut::<Assets<Mesh>>();
                             let handle = if let Some(handle) = reusable {
                                 // Animated meshes keep their allocation when no other resource
@@ -301,12 +304,7 @@ pub fn apply_commands(world: &mut World, owner: u32, scope: u64, commands: Vec<M
         }
         for (content, mesh, aabb) in contents {
             if let Some(mut entity) = world.get_entity_mut(content) {
-                entity.insert(mesh);
-                if let Some(aabb) = aabb {
-                    entity.insert(aabb);
-                } else {
-                    entity.remove::<Aabb>();
-                }
+                entity.insert((mesh, aabb));
             }
         }
     }
@@ -392,7 +390,7 @@ mod tests {
                     transform: Transform::from_xyz(4., 5., 6.),
                     ..default()
                 },
-                generated.aabb.unwrap(),
+                generated.aabb,
             ))
             .id();
         let root = world
@@ -490,6 +488,81 @@ mod tests {
             vec![MeshCommand::Dispose("mesh://2/1".into())],
         );
         assert!(world.resource::<DynamicMeshes>().geometry.is_empty());
+    }
+
+    #[test]
+    fn render_only_meshes_can_be_shared_updated_and_released_after_extraction() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_resource::<DirtyNodes>();
+        let world = app.world_mut();
+        upload(world, 1, "mesh://1/1", 1.);
+        let (root_a, a) = mount(world, "mesh://1/1", 1);
+        let original = world.get::<Handle<Mesh>>(a).unwrap().clone();
+        // Bevy 0.14 extraction moves RENDER_WORLD-only data with Assets::remove;
+        // handles remain alive and refer to the prepared mesh in RenderAssets.
+        let extracted = world
+            .resource_mut::<Assets<Mesh>>()
+            .remove(original.id())
+            .unwrap();
+        assert_eq!(extracted.asset_usage, RenderAssetUsages::RENDER_WORLD);
+        drop(extracted);
+        world.clear_trackers();
+        upload(world, 1, "mesh://1/1", 1.);
+        assert!(!world
+            .get_resource_ref::<Assets<Mesh>>()
+            .unwrap()
+            .is_changed());
+        upload(world, 2, "mesh://2/1", 1.);
+        assert!(world.resource::<Assets<Mesh>>().is_empty());
+        let (root_b, b) = mount(world, "mesh://2/1", 2);
+        assert_eq!(world.get::<Handle<Mesh>>(b).unwrap(), &original);
+        assert_eq!(world.get::<Aabb>(b).unwrap().half_extents.x, 0.5);
+
+        upload(world, 1, "mesh://1/1", 2.);
+        let detached = world.get::<Handle<Mesh>>(a).unwrap().clone();
+        assert_ne!(detached, original);
+        assert_eq!(world.get::<Handle<Mesh>>(b).unwrap(), &original);
+        assert_eq!(world.get::<Aabb>(a).unwrap().half_extents.x, 1.);
+        world
+            .resource_mut::<Assets<Mesh>>()
+            .remove(detached.id())
+            .unwrap();
+        upload(world, 1, "mesh://1/1", 3.);
+        assert_eq!(world.get::<Handle<Mesh>>(a).unwrap(), &detached);
+        assert!(world.resource::<Assets<Mesh>>().contains(detached.id()));
+        assert_eq!(world.get::<Aabb>(a).unwrap().half_extents.x, 1.5);
+        world
+            .resource_mut::<Assets<Mesh>>()
+            .remove(detached.id())
+            .unwrap();
+
+        apply_commands(world, 1, 1, vec![MeshCommand::Dispose("mesh://1/1".into())]);
+        assert!(world.resource::<DirtyNodes>().0.contains(&1));
+        assert_eq!(world.resource::<DynamicMeshes>().geometry.len(), 1);
+        apply_commands(world, 2, 2, vec![MeshCommand::Dispose("mesh://2/1".into())]);
+        assert!(world.resource::<DirtyNodes>().0.contains(&2));
+        assert!(world.resource::<DynamicMeshes>().geometry.is_empty());
+        // Removing document instances releases the final handles, even though
+        // neither mesh has a CPU asset left for the asset tracker to remove.
+        for entity in [root_a, root_b, a, b] {
+            world.despawn(entity);
+        }
+        let ids = [original.id(), detached.id()];
+        drop((original, detached));
+        app.update();
+        let unused: HashSet<_> = app
+            .world_mut()
+            .resource_mut::<Events<AssetEvent<Mesh>>>()
+            .drain()
+            .filter_map(|event| match event {
+                AssetEvent::Unused { id } => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert!(ids.iter().all(|id| unused.contains(id)));
     }
 
     #[test]

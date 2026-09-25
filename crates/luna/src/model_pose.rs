@@ -473,7 +473,7 @@ mod tests {
                 generated: Some(crate::models::GeneratedModel {
                     mesh: Handle::default(),
                     material: Handle::default(),
-                    aabb: None,
+                    aabb: default(),
                 }),
             }),
         };
