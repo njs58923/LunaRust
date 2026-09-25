@@ -6,6 +6,62 @@ fn make_world() -> specs::World {
     build_world()
 }
 
+#[test]
+fn parse_mixed_scripts_keeps_all_boundaries_and_attributes() {
+    use specs::Join;
+    use virtual_dom::dom::hsml::Script;
+    let mut world = make_world();
+    let xml = r#"<hsml><space><script src="before.js"/>
+      <script><![CDATA[const before = '<box/>';]]></script>
+      <script>const raw = 1 &lt; 2 &amp;&amp; 3 > 2;</script>
+      <box id="kept" x="3" sx="2" title="A &amp; B"/>
+      <script><![CDATA[const after = ']]><![CDATA[>';]]></script>
+      <script>const second = ']]>';</script>
+      <script src="after.js"/></space></hsml>"#;
+    parse_xml(&mut world, xml).unwrap();
+    let scripts = world.read_storage::<Script>();
+    let scripts: Vec<_> = (&scripts).join().collect();
+    assert_eq!(scripts.len(), 6);
+    assert_eq!(scripts[0].src.as_deref(), Some("before.js"));
+    assert_eq!(scripts[1].inline.as_deref(), Some("const before = '<box/>';"));
+    assert_eq!(scripts[2].inline.as_deref(), Some("const raw = 1 < 2 && 3 > 2;"));
+    assert_eq!(scripts[3].inline.as_deref(), Some("const after = '>';"));
+    assert_eq!(scripts[4].inline.as_deref(), Some("const second = ']]>';"));
+    assert_eq!(scripts[5].src.as_deref(), Some("after.js"));
+    let attrs = world.read_storage::<Attrs>();
+    let transforms = world.read_storage::<Transform2>();
+    let (attrs, transform) = (&attrs, &transforms).join()
+        .find(|(attrs, _)| attrs.0.get("id").is_some_and(|id| id == "kept")).unwrap();
+    assert_eq!(attrs.0["title"], "A & B");
+    assert_eq!((transform.position.x, transform.scale.x, transform.scale.y), (3.0, 2.0, 1.0));
+}
+
+#[test]
+#[ignore = "manual CPU parser benchmark; no rendering or network"]
+fn benchmark_static_document_parse() {
+    use std::time::Instant;
+    for count in [1_000, 10_000] {
+        let mut xml = String::from("<hsml><space><script src='facade.js'/>");
+        for i in 0..count {
+            use std::fmt::Write;
+            write!(&mut xml, "<model id='mesh_{i}' src='mesh://1/{i}' x='{i}' y='1' material-unlit='true' touchable='false'/>").unwrap();
+        }
+        xml.push_str("</space></hsml>");
+        let mut samples = Vec::new();
+        for sample in 0..24 {
+            let mut world = make_world();
+            let start = Instant::now();
+            let root = parse_xml(&mut world, &xml).unwrap();
+            if sample >= 4 { samples.push(start.elapsed().as_secs_f64() * 1000.0); }
+            let hierarchy = world.read_storage::<Hierarchy>();
+            let space = hierarchy.get(root).unwrap().children[0];
+            assert_eq!(hierarchy.get(space).unwrap().children.len(), count + 1);
+        }
+        samples.sort_by(f64::total_cmp);
+        println!("static_parse models={count} bytes={} median_ms={:.4} p95_ms={:.4}", xml.len(), samples[10], samples[19]);
+    }
+}
+
 // ─── parse_xml ───────────────────────────────────────────────────────────────
 
 #[test]

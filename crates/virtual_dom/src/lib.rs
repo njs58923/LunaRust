@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 use anyhow::Result;
 use dom::{
@@ -63,21 +63,20 @@ fn cdata_safe(input: &str) -> String {
 /// - Si no es self-closing, envuelve el cuerpo en CDATA
 /// - Además decodifica entidades XML comunes para mantener compatibilidad
 ///   con scripts viejos escritos como XML puro (&lt;, &amp;&amp;, etc.)
-fn normalize_inline_script_blocks(xml: &str) -> String {
-    let mut out = String::with_capacity(xml.len() + 64);
+fn normalize_inline_script_blocks(xml: &str) -> Cow<'_, str> {
+    // Most includes use external scripts or existing CDATA. Keep their XML
+    // borrowed; allocate a replacement only when a raw script needs wrapping.
+    let mut out: Option<String> = None;
     let mut cursor = 0usize;
+    let mut copied = 0usize;
 
     while let Some(rel_start) = xml[cursor..].find("<script") {
         let start = cursor + rel_start;
-        out.push_str(&xml[cursor..start]);
-
         let Some(open_end) = find_tag_end(xml, start) else {
-            out.push_str(&xml[start..]);
-            return out;
+            break;
         };
 
         let open_tag = &xml[start..=open_end];
-        out.push_str(open_tag);
 
         let is_self_closing = open_tag.trim_end().ends_with("/>");
         if is_self_closing {
@@ -87,28 +86,32 @@ fn normalize_inline_script_blocks(xml: &str) -> String {
 
         let body_start = open_end + 1;
         let Some(rel_close) = xml[body_start..].find("</script>") else {
-            out.push_str(&xml[body_start..]);
-            return out;
+            break;
         };
         let close_start = body_start + rel_close;
         let body = &xml[body_start..close_start];
         let trimmed = body.trim();
 
-        if trimmed.starts_with("<![CDATA[") {
-            out.push_str(body);
-        } else {
+        if !trimmed.starts_with("<![CDATA[") {
+            let out = out.get_or_insert_with(|| String::with_capacity(xml.len() + 64));
+            out.push_str(&xml[copied..body_start]);
             let normalized = decode_basic_xml_entities(body);
             out.push_str("<![CDATA[");
             out.push_str(&cdata_safe(&normalized));
             out.push_str("]]>");
+            copied = close_start;
         }
 
-        out.push_str("</script>");
         cursor = close_start + "</script>".len();
     }
 
-    out.push_str(&xml[cursor..]);
-    out
+    match out {
+        Some(mut out) => {
+            out.push_str(&xml[copied..]);
+            Cow::Owned(out)
+        }
+        None => Cow::Borrowed(xml),
+    }
 }
 
 /// Carga el XML desde una URL y retorna el contenido como String.
@@ -137,17 +140,20 @@ fn read_vec3(attributes: &HashMap<String, String>, x: &str, y: &str, z: &str, d:
     return Vec3 {
         x: attributes
             .get(x)
-            .unwrap_or(&d.to_owned())
+            .map(String::as_str)
+            .unwrap_or(d)
             .parse::<f32>()
             .unwrap_or(0.0),
         y: attributes
             .get(y)
-            .unwrap_or(&d.to_owned())
+            .map(String::as_str)
+            .unwrap_or(d)
             .parse::<f32>()
             .unwrap_or(0.0),
         z: attributes
             .get(z)
-            .unwrap_or(&d.to_owned())
+            .map(String::as_str)
+            .unwrap_or(d)
             .parse::<f32>()
             .unwrap_or(0.0),
     };
@@ -184,83 +190,82 @@ pub fn parse_xml(world: &mut World, xml_content: &str) -> Result<Entity> {
     let mut buf: Vec<u8> = Vec::new();
     let mut text_accum: String = String::new();
 
-    fn apply(
-        world: &mut World,
-        tag: &String,
-        attributes: &HashMap<String, String>,
-    ) -> Option<Entity> {
+    fn apply(world: &mut World, tag: &str, attributes: HashMap<String, String>) -> Option<Entity> {
+        let node_list = TAGS_VALUES.get(tag)?;
         let mut node_build = world.create_entity();
+        let mut has_attrs = false;
 
         // println!("T: {:?}", &tag);
-        if let Some(node_list) = TAGS_VALUES.get(&tag as &str) {
-            for element in node_list.iter() {
-                match element {
-                    ElementType::Node => {
-                        node_build = node_build.with(Tag(tag.to_string()));
-                        node_build = node_build.with(Hierarchy::default());
-                        if tag == "[TEXT]" {
-                            node_build = node_build.with(Text(tag.to_string()));
-                        }
-                        node_build = node_build.with(Attrs(attributes.clone()));
+        for element in node_list.iter() {
+            match element {
+                ElementType::Node => {
+                    node_build = node_build.with(Tag(tag.to_string()));
+                    node_build = node_build.with(Hierarchy::default());
+                    if tag == "[TEXT]" {
+                        node_build = node_build.with(Text(tag.to_string()));
                     }
-                    ElementType::Element => {
-                        let scale_value: Vec3;
+                    has_attrs = true;
+                }
+                ElementType::Element => {
+                    let scale_value: Vec3;
 
-                        if let Some(value) = attributes.get("s") {
-                            scale_value = Vec3 {
-                                x: value.parse::<f32>().unwrap_or(1.0),
-                                y: value.parse::<f32>().unwrap_or(1.0),
-                                z: value.parse::<f32>().unwrap_or(1.0),
-                            }
-                        } else {
-                            scale_value = read_vec3(
-                                &attributes,
-                                TRANSFORM_SCALE[0],
-                                TRANSFORM_SCALE[1],
-                                TRANSFORM_SCALE[2],
-                                "1",
-                            )
+                    if let Some(value) = attributes.get("s") {
+                        let value = value.parse::<f32>().unwrap_or(1.0);
+                        scale_value = Vec3 {
+                            x: value,
+                            y: value,
+                            z: value,
                         }
+                    } else {
+                        scale_value = read_vec3(
+                            &attributes,
+                            TRANSFORM_SCALE[0],
+                            TRANSFORM_SCALE[1],
+                            TRANSFORM_SCALE[2],
+                            "1",
+                        )
+                    }
 
-                        node_build = node_build.with(Transform2 {
-                            position: read_vec3(
-                                &attributes,
-                                TRANSFORM_POSITION[0],
-                                TRANSFORM_POSITION[1],
-                                TRANSFORM_POSITION[2],
-                                "0",
-                            ),
-                            rotation: read_vec3(
-                                &attributes,
-                                TRANSFORM_ROTATION[0],
-                                TRANSFORM_ROTATION[1],
-                                TRANSFORM_ROTATION[2],
-                                "0",
-                            ),
-                            scale: scale_value,
+                    node_build = node_build.with(Transform2 {
+                        position: read_vec3(
+                            &attributes,
+                            TRANSFORM_POSITION[0],
+                            TRANSFORM_POSITION[1],
+                            TRANSFORM_POSITION[2],
+                            "0",
+                        ),
+                        rotation: read_vec3(
+                            &attributes,
+                            TRANSFORM_ROTATION[0],
+                            TRANSFORM_ROTATION[1],
+                            TRANSFORM_ROTATION[2],
+                            "0",
+                        ),
+                        scale: scale_value,
+                    });
+                }
+                ElementType::HSMLElement => {
+                    if tag == "model" {
+                        node_build = node_build.with(Model {
+                            src: read_some_str(&attributes, "src", ""),
                         });
-                    }
-                    ElementType::HSMLElement => {
-                        if tag == "model" {
-                            node_build = node_build.with(Model {
-                                src: read_some_str(&attributes, "src", ""),
-                            });
-                        } else if tag == "script" {
-                            node_build = node_build.with(Script {
-                                src: read_some_str(&attributes, "src", ""),
-                                inline: None,
-                            });
-                        } else if tag == "include" {
-                            node_build = node_build.with(Include {
-                                src: read_some_str(&attributes, "src", ""),
-                            });
-                        }
+                    } else if tag == "script" {
+                        node_build = node_build.with(Script {
+                            src: read_some_str(&attributes, "src", ""),
+                            inline: None,
+                        });
+                    } else if tag == "include" {
+                        node_build = node_build.with(Include {
+                            src: read_some_str(&attributes, "src", ""),
+                        });
                     }
                 }
             }
-            return Some(node_build.build());
         }
-        return None;
+        if has_attrs {
+            node_build = node_build.with(Attrs(attributes));
+        }
+        return Some(node_build.build());
     }
 
     loop {
@@ -269,7 +274,7 @@ pub fn parse_xml(world: &mut World, xml_content: &str) -> Result<Entity> {
                 let tag = String::from_utf8_lossy(e.name().as_ref()).into_owned();
                 let attributes = read_attributes(e.attributes());
 
-                let entity = apply(world, &tag, &attributes);
+                let entity = apply(world, &tag, attributes);
                 if let Some(entity) = entity {
                     node_stack.push(entity);
                 }
@@ -278,10 +283,11 @@ pub fn parse_xml(world: &mut World, xml_content: &str) -> Result<Entity> {
             }
             Ok(Event::Empty(ref e)) => {
                 // Manejo de etiquetas autocontenidas.
-                let tag = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+                let name = e.name();
+                let tag = String::from_utf8_lossy(name.as_ref());
                 let attributes = read_attributes(e.attributes());
 
-                if let Some(entity) = apply(world, &tag, &attributes) {
+                if let Some(entity) = apply(world, &tag, attributes) {
                     let parent = node_stack.last_mut();
                     if let Some(parent) = parent {
                         Hierarchy::add_child(world, parent.clone(), entity);
