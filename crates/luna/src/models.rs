@@ -13,6 +13,14 @@ pub struct ModelResource {
     pub asset_path: String,
     pub scene: Handle<Scene>,
     pub gltf: Option<Handle<Gltf>>,
+    /// Generated geometry has no scene hierarchy to instantiate or poll.
+    pub generated: Option<GeneratedModel>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GeneratedModel {
+    pub mesh: Handle<Mesh>,
+    pub material: Handle<StandardMaterial>,
 }
 impl ModelResource {
     fn load(server: &AssetServer, path: &str) -> Self {
@@ -25,6 +33,7 @@ impl ModelResource {
                 path.into()
             }),
             gltf: gltf.then(|| server.load(path.to_string())),
+            generated: None,
         }
     }
 }
@@ -139,18 +148,23 @@ fn set_source_impl(
     let generation = previous.map_or(1, |old| old.generation.wrapping_add(1));
     let resource = generated.or_else(|| path.map(|p| ModelResource::load(server, p)));
     let content = resource.as_ref().map(|resource| {
-        let child = commands
-            .spawn((
-                SceneBundle {
-                    scene: resource.scene.clone(),
-                    ..default()
-                },
-                ModelContent {
-                    owner: entity,
-                    generation,
-                },
-            ))
-            .id();
+        let mut child = if let Some(generated) = &resource.generated {
+            commands.spawn(PbrBundle {
+                mesh: generated.mesh.clone(),
+                material: generated.material.clone(),
+                ..default()
+            })
+        } else {
+            commands.spawn(SceneBundle {
+                scene: resource.scene.clone(),
+                ..default()
+            })
+        };
+        child.insert(ModelContent {
+            owner: entity,
+            generation,
+        });
+        let child = child.id();
         commands.entity(entity).add_child(child);
         child
     });
@@ -158,6 +172,8 @@ fn set_source_impl(
         ModelStatus::Empty
     } else if let Some(error) = error {
         ModelStatus::Error(error.into())
+    } else if resource.as_ref().is_some_and(|r| r.generated.is_some()) {
+        ModelStatus::Ready
     } else {
         ModelStatus::Loading
     };
@@ -198,7 +214,7 @@ fn set_source_impl(
         }
         .into(),
     ));
-    if content.is_some() {
+    if content.is_some() && instance.status == ModelStatus::Loading {
         commands.entity(entity).insert(PendingModelInstance);
     } else {
         commands.entity(entity).remove::<PendingModelInstance>();
@@ -282,6 +298,52 @@ mod tests {
             .0
             .extend(updates.0);
     }
+    #[test]
+    fn generated_models_mount_immediately_without_scenes_or_pending_work() {
+        let mut app = app();
+        let root = app.world_mut().spawn(SpatialBundle::default()).id();
+        let server = app.world().resource::<AssetServer>().clone();
+        let mut queue = CommandQueue::default();
+        let mut updates = AttributeUpdates::default();
+        let resource = ModelResource {
+            asset_path: "mesh://1/1".into(),
+            scene: Handle::default(),
+            gltf: None,
+            generated: Some(GeneratedModel {
+                mesh: Handle::default(),
+                material: Handle::default(),
+            }),
+        };
+        set_generated_source(
+            &mut Commands::new(&mut queue, app.world()),
+            &server,
+            root,
+            7,
+            &resource.asset_path,
+            Some(&resource),
+            None,
+            &mut updates,
+        );
+        queue.apply(app.world_mut());
+        let instance = app.world().get::<ModelInstance>(root).unwrap();
+        assert_eq!(instance.status, ModelStatus::Ready);
+        assert!(app.world().get::<PendingModelInstance>(root).is_none());
+        let content = instance.content.unwrap();
+        assert!(app.world().get::<Handle<Mesh>>(content).is_some());
+        assert!(app.world().get::<Handle<Scene>>(content).is_none());
+        assert!(app.world().get::<Children>(content).is_none());
+        assert_eq!(app.world().get::<Parent>(content).unwrap().get(), root);
+        assert!(updates
+            .0
+            .iter()
+            .any(|(_, k, v)| k == "model-state" && v == "ready"));
+        app.update();
+        assert_eq!(
+            app.world().get::<ModelInstance>(root).unwrap().content,
+            Some(content)
+        );
+    }
+
     #[test]
     fn resource_changes_preserve_instance_pose_and_authored_children() {
         let mut app = app();

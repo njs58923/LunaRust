@@ -1,6 +1,6 @@
 //! Isolate-owned generated resources mounted through the common model lifecycle.
 use crate::{
-    models::{ModelInstance, ModelResource},
+    models::{GeneratedModel, ModelInstance, ModelResource},
     DirtyNodes, TransformOnlyDirtyNodes,
 };
 use bevy::{
@@ -103,8 +103,11 @@ pub fn apply_commands(world: &mut World, owner: u32, scope: u64, commands: Vec<M
         }
     }
     world.init_resource::<DynamicMeshes>();
-    let worker = world.get_non_send_resource::<crate::js::ScriptRuntimeManager>()
-        .and_then(|m| m.contexts.get(&owner)).and_then(|w| w.join.as_ref()).map(|j| j.thread().id());
+    let worker = world
+        .get_non_send_resource::<crate::js::ScriptRuntimeManager>()
+        .and_then(|m| m.contexts.get(&owner))
+        .and_then(|w| w.join.as_ref())
+        .map(|j| j.thread().id());
     let mut changed = HashSet::new();
     let mut bounds = HashMap::new();
     world.resource_scope(|world, mut registry: Mut<DynamicMeshes>| {
@@ -156,24 +159,21 @@ pub fn apply_commands(world: &mut World, owner: u32, scope: u64, commands: Vec<M
                                 )
                             })
                             .clone();
-                        let mut scene = World::new();
-                        scene.spawn(PbrBundle {
-                            mesh: handle.clone(),
-                            material,
-                            ..default()
-                        });
-                        let scene = world.resource_mut::<Assets<Scene>>().add(Scene::new(scene));
                         registry.entries.insert(
                             src.clone(),
                             Entry {
                                 owner,
                                 scope,
                                 worker,
-                                mesh: handle,
+                                mesh: handle.clone(),
                                 model: ModelResource {
                                     asset_path: src.clone(),
-                                    scene,
+                                    scene: Handle::default(),
                                     gltf: None,
+                                    generated: Some(GeneratedModel {
+                                        mesh: handle,
+                                        material,
+                                    }),
                                 },
                             },
                         );
@@ -205,7 +205,11 @@ pub fn cleanup_contexts(world: &mut World) {
         return;
     }
     let generation = manager.context_generation;
-    let live: HashMap<_, _> = manager.contexts.iter().map(|(id, w)| (*id, w.join.as_ref().map(|j| j.thread().id()))).collect();
+    let live: HashMap<_, _> = manager
+        .contexts
+        .iter()
+        .map(|(id, w)| (*id, w.join.as_ref().map(|j| j.thread().id())))
+        .collect();
     let mut removed = HashSet::new();
     let mut registry = world.resource_mut::<DynamicMeshes>();
     registry.context_generation = Some(generation);
@@ -233,9 +237,15 @@ mod tests {
         apply_commands(&mut world, 1, 10, Vec::new());
         world.clear_trackers();
         apply_commands(&mut world, 1, 10, Vec::new());
-        assert!(!world.get_resource_ref::<DynamicMeshes>().unwrap().is_changed());
+        assert!(!world
+            .get_resource_ref::<DynamicMeshes>()
+            .unwrap()
+            .is_changed());
         apply_commands(&mut world, 1, 11, Vec::new());
         assert_eq!(world.resource::<DynamicMeshes>().scopes.get(&1), Some(&11));
-        assert!(world.get_resource_ref::<DynamicMeshes>().unwrap().is_changed());
+        assert!(world
+            .get_resource_ref::<DynamicMeshes>()
+            .unwrap()
+            .is_changed());
     }
 }

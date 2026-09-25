@@ -53,6 +53,23 @@ fn build_binding(
     model: &ModelInstance,
 ) -> Result<(ModelPoseBinding, String), String> {
     let resource = model.resource.as_ref().ok_or("Model has no scene")?;
+    if resource.generated.is_some() {
+        // Generated meshes mount directly on the content entity. Preserve the
+        // same one-node pose catalog without manufacturing a Bevy Scene.
+        let content = model.content.ok_or("Model has no content")?;
+        if world.get::<Transform>(content).is_none() {
+            return Err("Instance hierarchy changed".into());
+        }
+        return Ok(finish_binding(
+            model,
+            vec![(content, Transform::IDENTITY)],
+            vec![
+                serde_json::json!({"index":0,"name":null,"parent":null,"path":[],
+                "translation":[0.,0.,0.],"rotation":[0.,0.,0.,1.],"scale":[1.,1.,1.]}),
+            ],
+            Vec::new(),
+        ));
+    }
     let scene = world
         .resource::<Assets<Scene>>()
         .get(&resource.scene)
@@ -119,6 +136,15 @@ fn build_binding(
         }
     }
     skins.sort_by_key(|s| s["node"].as_u64());
+    Ok(finish_binding(model, nodes, catalog, skins))
+}
+
+fn finish_binding(
+    model: &ModelInstance,
+    nodes: Vec<(Entity, Transform)>,
+    catalog: Vec<serde_json::Value>,
+    skins: Vec<serde_json::Value>,
+) -> (ModelPoseBinding, String) {
     let mut description = serde_json::json!({"version":1,"nodes":catalog,"skins":skins});
     let schema = blake3::hash(description.to_string().as_bytes())
         .to_hex()
@@ -131,7 +157,7 @@ fn build_binding(
     );
     description["schema"] = schema.into();
     description["binding"] = token.clone().into();
-    Ok((
+    (
         ModelPoseBinding {
             generation: model.generation,
             token,
@@ -141,7 +167,7 @@ fn build_binding(
             pending: HashMap::new(),
         },
         description.to_string(),
-    ))
+    )
 }
 
 /// Called in RenderSync after scene readiness and before snapshots.
@@ -403,6 +429,7 @@ mod tests {
                     asset_path: "fixture.glb".into(),
                     scene,
                     gltf: None,
+                    generated: None,
                 }),
             },
         ));
@@ -427,6 +454,37 @@ mod tests {
                 scale: Some([2., 2., 2.]),
             }],
         }
+    }
+
+    #[test]
+    fn generated_pose_binding_needs_no_scene_and_uses_identity_rest_pose() {
+        let mut world = World::new();
+        let content = world.spawn(Transform::from_xyz(8., 9., 10.)).id();
+        let model = ModelInstance {
+            node_id: 7,
+            source: "mesh://1/1".into(),
+            generation: 1,
+            content: Some(content),
+            status: ModelStatus::Ready,
+            resource: Some(crate::models::ModelResource {
+                asset_path: "mesh://1/1".into(),
+                scene: Handle::default(),
+                gltf: None,
+                generated: Some(crate::models::GeneratedModel {
+                    mesh: Handle::default(),
+                    material: Handle::default(),
+                }),
+            }),
+        };
+        let (binding, catalog) = build_binding(&world, &model).unwrap();
+        assert_eq!(binding.nodes, vec![(content, Transform::IDENTITY)]);
+        let catalog: serde_json::Value = serde_json::from_str(&catalog).unwrap();
+        assert_eq!(catalog["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(catalog["skins"], serde_json::json!([]));
+        assert_eq!(
+            catalog["nodes"][0]["translation"],
+            serde_json::json!([0., 0., 0.])
+        );
     }
 
     #[test]
