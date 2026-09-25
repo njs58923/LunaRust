@@ -1,8 +1,9 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    cmp::Reverse,
+    collections::{BinaryHeap, HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc, Arc, Mutex, OnceLock, Weak,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -123,6 +124,7 @@ pub struct JsTickData {
     pub pose_batches: Vec<js_runtime::pose::PoseBatch>,
     pub mesh_commands: (u64, Vec<js_runtime::mesh::MeshCommand>),
     pub needs_continuous_ticks: bool,
+    pub next_timer_deadline: Option<Instant>,
     pub logs: Vec<(String, String)>,
     pub attr_updates: Vec<(i32, String, String)>,
     pub pos_updates: Vec<(i32, js_runtime::Vec3)>,
@@ -259,6 +261,7 @@ pub struct SpaceScriptWorker {
     pub snapshot_in_flight: bool,
     pub tick_in_flight: bool,
     pub needs_tick: bool,
+    next_timer_deadline: Option<Instant>,
     pub join: Option<JoinHandle<()>>,
     termination: WorkerTermination,
     pub bootstrap_scripts_enqueued: HashSet<String>,
@@ -373,88 +376,134 @@ impl Default for WorkerExecutionLimits {
     }
 }
 
-enum WatchdogCommand {
-    Arm(Duration),
-    Complete(mpsc::SyncSender<bool>),
-    Shutdown,
+struct WatchdogState {
+    execution_handle: js_runtime::ExecutionHandle,
+    deadline: Option<Instant>,
+    queued_deadline: Option<Instant>,
+    timed_out: bool,
 }
 
+struct WatchdogDeadline {
+    deadline: Instant,
+    state: Weak<Mutex<WatchdogState>>,
+}
+
+impl PartialEq for WatchdogDeadline {
+    fn eq(&self, other: &Self) -> bool { self.deadline == other.deadline }
+}
+impl Eq for WatchdogDeadline {}
+impl PartialOrd for WatchdogDeadline {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for WatchdogDeadline {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.deadline.cmp(&other.deadline)
+    }
+}
+
+/// One sleeping watchdog thread serves every isolate. Completed ticks only
+/// clear their own deadline; they need no channel round trip or thread wakeup.
 struct ExecutionWatchdog {
-    tx: mpsc::Sender<WatchdogCommand>,
-    join: Option<JoinHandle<()>>,
+    tx: mpsc::Sender<WatchdogDeadline>,
+    state: Arc<Mutex<WatchdogState>>,
 }
 
 impl ExecutionWatchdog {
     fn spawn(
-        space_id: u32,
+        _space_id: u32,
         execution_handle: js_runtime::ExecutionHandle,
     ) -> std::result::Result<Self, String> {
-        let (tx, rx) = mpsc::channel();
-        let join = thread::Builder::new()
-            .name(format!("js-watchdog-{space_id}"))
-            .spawn(move || watchdog_loop(rx, execution_handle))
-            .map_err(|err| format!("failed to spawn JS watchdog for space {space_id}: {err}"))?;
+        static SCHEDULER: OnceLock<std::result::Result<mpsc::Sender<WatchdogDeadline>, String>> = OnceLock::new();
+        let tx = SCHEDULER.get_or_init(|| {
+            let (tx, rx) = mpsc::channel();
+            thread::Builder::new()
+                .name("js-watchdog".to_string())
+                .spawn(move || watchdog_loop(rx))
+                .map_err(|err| format!("failed to spawn shared JS watchdog: {err}"))?;
+            Ok(tx)
+        }).clone()?;
         Ok(Self {
             tx,
-            join: Some(join),
+            state: Arc::new(Mutex::new(WatchdogState {
+                execution_handle,
+                deadline: None,
+                queued_deadline: None,
+                timed_out: false,
+            })),
         })
     }
 
     fn arm(&self, budget: Duration) -> bool {
-        self.tx.send(WatchdogCommand::Arm(budget)).is_ok()
+        let Ok(mut state) = self.state.lock() else { return false; };
+        let deadline = Instant::now() + budget;
+        state.deadline = Some(deadline);
+        state.timed_out = false;
+        // An earlier queued check will observe and reschedule this deadline.
+        // A shorter new budget must enqueue an earlier check immediately.
+        if state.queued_deadline.is_some_and(|queued| queued <= deadline) {
+            return true;
+        }
+        state.queued_deadline = Some(deadline);
+        self.tx.send(WatchdogDeadline {
+            deadline,
+            state: Arc::downgrade(&self.state),
+        }).is_ok()
     }
 
     fn complete(&self) -> std::result::Result<bool, String> {
-        let (reply_tx, reply_rx) = mpsc::sync_channel(0);
-        self.tx
-            .send(WatchdogCommand::Complete(reply_tx))
-            .map_err(|_| "JS watchdog disconnected".to_string())?;
-        reply_rx
-            .recv_timeout(Duration::from_secs(1))
-            .map_err(|_| "JS watchdog did not acknowledge completion".to_string())
+        let mut state = self.state.lock()
+            .map_err(|_| "JS watchdog state poisoned".to_string())?;
+        // Synchronizes with termination, so a completed evaluation cannot be
+        // terminated later by a stale deadline belonging to that evaluation.
+        state.deadline = None;
+        Ok(state.timed_out)
     }
 
-    fn shutdown(mut self) {
-        let _ = self.tx.send(WatchdogCommand::Shutdown);
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
-        }
+    fn shutdown(self) {
+        let _ = self.complete();
     }
 }
 
-fn watchdog_loop(
-    rx: mpsc::Receiver<WatchdogCommand>,
-    execution_handle: js_runtime::ExecutionHandle,
-) {
-    'watchdog: while let Ok(command) = rx.recv() {
-        match command {
-            WatchdogCommand::Arm(budget) => match rx.recv_timeout(budget) {
-                Ok(WatchdogCommand::Complete(reply)) => {
-                    let _ = reply.send(false);
+fn watchdog_loop(rx: mpsc::Receiver<WatchdogDeadline>) {
+    let mut deadlines: BinaryHeap<Reverse<WatchdogDeadline>> = BinaryHeap::new();
+    loop {
+        let now = Instant::now();
+        while deadlines.peek().is_some_and(|entry| entry.0.deadline <= now) {
+            let Reverse(mut entry) = deadlines.pop().unwrap();
+            let Some(shared) = entry.state.upgrade() else { continue; };
+            let Ok(mut state) = shared.lock() else { continue; };
+            if state.queued_deadline != Some(entry.deadline) {
+                continue; // Replaced by a shorter budget.
+            }
+            match state.deadline {
+                Some(deadline) if deadline > now => {
+                    state.queued_deadline = Some(deadline);
+                    entry.deadline = deadline;
+                    deadlines.push(Reverse(entry));
                 }
-                Ok(WatchdogCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    break;
+                Some(_) => {
+                    state.deadline = None;
+                    state.queued_deadline = None;
+                    state.timed_out = true;
+                    state.execution_handle.terminate_execution();
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    execution_handle.terminate_execution();
-                    loop {
-                        match rx.recv() {
-                            Ok(WatchdogCommand::Complete(reply)) => {
-                                let _ = reply.send(true);
-                                break;
-                            }
-                            Ok(WatchdogCommand::Shutdown) | Err(_) => break 'watchdog,
-                            Ok(WatchdogCommand::Arm(_)) => {}
-                        }
-                    }
-                }
-                Ok(WatchdogCommand::Arm(_)) => {}
-            },
-            WatchdogCommand::Shutdown => break,
-            WatchdogCommand::Complete(reply) => {
-                let _ = reply.send(false);
+                None => state.queued_deadline = None,
             }
         }
+        let command = match deadlines.peek() {
+            Some(entry) => match rx.recv_timeout(entry.0.deadline.saturating_duration_since(Instant::now())) {
+                Ok(command) => command,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            },
+            None => match rx.recv() {
+                Ok(command) => command,
+                Err(_) => break,
+            },
+        };
+        deadlines.push(Reverse(command));
     }
 }
 
@@ -577,10 +626,12 @@ fn spawn_space_worker_configured(
                 if worker_termination.shutdown_requested.load(Ordering::Acquire) {
                     break;
                 }
-                let cmd = match cmd_rx.recv_timeout(Duration::from_millis(50)) {
+                // Shutdown either wakes this receive or finds a full queue,
+                // in which case the atomic flag is checked before its next item.
+                // Static isolates do not need periodic OS wakeups.
+                let cmd = match cmd_rx.recv() {
                     Ok(cmd) => cmd,
-                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(_) => break,
                 };
                 if worker_termination.shutdown_requested.load(Ordering::Acquire) {
                     break;
@@ -702,7 +753,8 @@ fn spawn_space_worker_configured(
                             mesh_commands: ctx.engine.drain_mesh_commands(),
                             pose_batches: ctx.engine.drain_pose_batches(),
                             keyboard_commands: ctx.engine.drain_keyboard_commands(),
-                            needs_continuous_ticks: ctx.engine.needs_continuous_ticks(),
+                            needs_continuous_ticks: ctx.engine.has_pending_animation_frames(),
+                            next_timer_deadline: ctx.engine.next_timer_deadline(),
                             logs: ctx.engine.drain_logs(),
                             attr_updates: ctx.engine.drain_attr_updates(),
                             pos_updates: ctx.engine.drain_transform_position_updates(),
@@ -831,6 +883,7 @@ fn spawn_space_worker_configured(
         snapshot_in_flight: false,
         tick_in_flight: false,
         needs_tick: true,
+        next_timer_deadline: None,
         join: Some(join),
         termination,
         bootstrap_scripts_enqueued: HashSet::new(),
@@ -2485,6 +2538,7 @@ pub fn js_tick_system(world: &mut World) {
     let mut snapshot_acks = 0usize;
     let mut contexts_removed = false;
     let pending_snapshot_in_flight;
+    let tick_now = Instant::now();
 
     {
         let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() else {
@@ -2500,7 +2554,8 @@ pub fn js_tick_system(world: &mut World) {
                 broken_contexts.push(*space_id);
                 continue;
             }
-            worker.needs_tick |= worker.component_port.take_wake();
+            worker.needs_tick |= worker.component_port.take_wake()
+                || worker.next_timer_deadline.is_some_and(|deadline| deadline <= tick_now);
             if worker.tick_in_flight || !worker.needs_tick {
                 continue;
             }
@@ -2510,6 +2565,7 @@ pub fn js_tick_system(world: &mut World) {
                     // Consume only the wakeup covered by this tick. Events queued
                     // while it runs can request another tick independently.
                     worker.needs_tick = false;
+                    worker.next_timer_deadline = None;
                 }
                 Err(err) if err.is_full() => {}
                 Err(_) => broken_contexts.push(*space_id),
@@ -2537,6 +2593,7 @@ pub fn js_tick_system(world: &mut World) {
                         worker.snapshot_in_flight = false;
                         worker.tick_in_flight = false;
                         worker.needs_tick |= data.needs_continuous_ticks;
+                        worker.next_timer_deadline = data.next_timer_deadline;
                         tick_batches.push((*space_id, data));
                     }
                     Ok(JsWorkerEvent::DebugState {
@@ -4005,6 +4062,9 @@ pub fn js_tick_system(world: &mut World) {
 }
 
 #[cfg(test)]
+pub(crate) use tests::fake_worker;
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn world_navigation_targets_own_spatial_mount_and_keeps_self_semantics() {
@@ -4721,7 +4781,7 @@ mod tests {
         );
     }
 
-    fn fake_worker(
+    pub(crate) fn fake_worker(
         needs_tick: bool,
     ) -> (
         SpaceScriptWorker,
@@ -4741,6 +4801,7 @@ mod tests {
                 snapshot_in_flight: false,
                 tick_in_flight: false,
                 needs_tick,
+                next_timer_deadline: None,
                 join: None,
                 termination: WorkerTermination::default(),
                 bootstrap_scripts_enqueued: HashSet::new(),
@@ -4931,6 +4992,7 @@ mod tests {
                 mesh_commands: (0, Vec::new()),
                 keyboard_commands: Vec::new(), pose_batches: Vec::new(),
                 needs_continuous_ticks: false,
+                next_timer_deadline: None,
                 logs: Vec::new(),
                 attr_updates: Vec::new(),
                 pos_updates: Vec::new(),
@@ -5018,6 +5080,91 @@ mod tests {
             JsWorkerEvent::WorkerError(error) => panic!("{error}"),
             _ => panic!("tick failed"),
         }
+    }
+
+    #[test]
+    fn worker_reports_sleeping_timer_deadline_and_rearms_after_callback() {
+        let mut worker = spawn_space_worker(90_016).unwrap();
+        worker_eval(&mut worker, r#"
+            globalThis.timer = setTimeout(() => console.log('LATER'), 3600000);
+        "#.into());
+        let sleeping = worker_tick(&mut worker, 16.0);
+        assert!(!sleeping.needs_continuous_ticks);
+        assert!(sleeping.next_timer_deadline.is_some_and(|at| at > Instant::now()));
+        worker_eval(&mut worker, r#"
+            clearTimeout(timer);
+            setTimeout(() => {
+                console.log('NOW');
+                setTimeout(() => console.log('NEXT'), 0);
+            }, 0);
+        "#.into());
+        let first = worker_tick(&mut worker, 32.0);
+        assert!(first.logs.iter().any(|(_, message)| message.contains("NOW")));
+        assert!(!first.needs_continuous_ticks);
+        assert!(first.next_timer_deadline.is_some_and(|at| at <= Instant::now()));
+        let second = worker_tick(&mut worker, 48.0);
+        assert!(second.logs.iter().any(|(_, message)| message.contains("NEXT")));
+        assert!(second.next_timer_deadline.is_none());
+        stop_space_worker(&mut worker);
+    }
+
+    #[test]
+    fn static_worker_sleeps_then_handles_input_and_stops() {
+        let mut worker = spawn_space_worker(90_012).unwrap();
+        worker_eval(&mut worker, r#"
+            hiperspace.dimention.addEventListener('toque', () => console.log('AWAKE'));
+        "#.into());
+        assert!(!worker_tick(&mut worker, 16.0).needs_continuous_ticks);
+        assert!(matches!(worker.event_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        worker.try_send(JsWorkerCommand::PushDomToqueEvents(vec![(0, 0.0, 0.0, 0.0)])).unwrap();
+        let next = worker_tick(&mut worker, 32.0);
+        assert!(next.logs.iter().any(|(_, message)| message.contains("AWAKE")));
+        assert!(!next.needs_continuous_ticks);
+        stop_space_worker(&mut worker);
+        assert!(matches!(
+            worker.event_rx.recv_timeout(Duration::from_secs(2)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ), "a worker blocked waiting for commands must still stop promptly");
+    }
+
+    #[test]
+    fn shared_watchdog_keeps_worker_deadlines_independent() {
+        let mut first_engine = JsEngine::new();
+        let first = ExecutionWatchdog::spawn(90_013, first_engine.execution_handle()).unwrap();
+        let mut second_engine = JsEngine::new();
+        let second = ExecutionWatchdog::spawn(90_014, second_engine.execution_handle()).unwrap();
+        assert!(first.arm(Duration::from_millis(20)));
+        assert!(second.arm(Duration::from_secs(10)));
+        let wait_until = Instant::now() + Duration::from_secs(5);
+        while !first.state.lock().unwrap().timed_out && Instant::now() < wait_until {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(first.complete().unwrap());
+        assert!(!second.complete().unwrap());
+
+        // A completed long deadline must not hide a later, shorter budget.
+        assert!(second.arm(Duration::from_millis(20)));
+        let wait_until = Instant::now() + Duration::from_secs(5);
+        while !second.state.lock().unwrap().timed_out && Instant::now() < wait_until {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(second.complete().unwrap());
+        first.shutdown();
+        second.shutdown();
+    }
+
+    #[test]
+    fn shared_watchdog_discards_completed_deadlines() {
+        let mut engine = JsEngine::new();
+        let watchdog = ExecutionWatchdog::spawn(90_015, engine.execution_handle()).unwrap();
+        assert!(watchdog.arm(Duration::from_millis(20)));
+        assert!(!watchdog.complete().unwrap());
+        // The queued check for the first eval must follow the new deadline.
+        assert!(watchdog.arm(Duration::from_secs(5)));
+        thread::sleep(Duration::from_millis(50));
+        engine.eval("globalThis.__still_alive = true;").unwrap();
+        assert!(!watchdog.complete().unwrap());
+        watchdog.shutdown();
     }
 
     #[test]
@@ -5598,6 +5745,7 @@ mod tests {
                 mesh_commands: (0, Vec::new()),
                 keyboard_commands: Vec::new(), pose_batches: Vec::new(),
                 needs_continuous_ticks: false,
+                next_timer_deadline: None,
                 logs: Vec::new(),
                 attr_updates: Vec::new(),
                 pos_updates: Vec::new(),
@@ -5662,6 +5810,7 @@ mod tests {
                 mesh_commands: (0, Vec::new()),
                 keyboard_commands: Vec::new(), pose_batches: Vec::new(),
                 needs_continuous_ticks: false,
+                next_timer_deadline: None,
                 logs: Vec::new(),
                 attr_updates: Vec::new(),
                 pos_updates: Vec::new(),

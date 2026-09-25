@@ -84,6 +84,30 @@ mod tests {
     }
 
     #[test]
+    fn timers_expose_sleep_deadlines_without_requiring_animation_frames() -> Result<()> {
+        let mut eng = Engine::new();
+        eng.eval(r#"
+            globalThis.calls = 0;
+            globalThis.delayed = setTimeout(() => { calls++; }, 3600000);
+            setTimeout(() => {
+                calls++;
+                setTimeout(() => { calls++; }, 0);
+            }, 0);
+        "#)?;
+        assert!(eng.next_timer_deadline().is_some_and(|at| at <= Instant::now()));
+        assert!(!eng.has_pending_animation_frames());
+        eng.fire_raf(16.0);
+        eng.eval("if (calls !== 1) throw new Error('new timers must wait for the next pump');")?;
+        eng.fire_raf(32.0);
+        eng.eval("if (calls !== 2) throw new Error('nested timer was lost');")?;
+        assert!(eng.next_timer_deadline().is_some_and(|at| at > Instant::now()));
+        eng.eval("clearTimeout(delayed);")?;
+        assert!(eng.next_timer_deadline().is_none());
+        assert!(!eng.needs_continuous_ticks());
+        Ok(())
+    }
+
+    #[test]
     fn set_interval_repeats_until_cleared() -> Result<()> {
         let mut eng = Engine::new();
         eng.eval(r#"

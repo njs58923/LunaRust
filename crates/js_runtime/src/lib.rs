@@ -1,9 +1,7 @@
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     rc::Rc,
-    sync::{Arc, Mutex},
-    thread,
     time::{Duration, Instant},
 };
 
@@ -91,18 +89,86 @@ where
 // State structs for OpState
 // ---------------------------------------------------------------------------
 
-// Timers sí son cross-thread: setTimeout usa thread::spawn.
+// Timer callbacks already run only during the isolate's pump. Keeping deadlines
+// here avoids a sleeping OS thread per timeout and retains nothing after cancel.
+#[derive(Default)]
+struct TimerQueue {
+    deadlines: BTreeSet<(Instant, i32)>,
+    scheduled: HashMap<i32, Instant>,
+}
+
+impl TimerQueue {
+    fn schedule(&mut self, id: i32, deadline: Instant) {
+        self.cancel(id);
+        self.scheduled.insert(id, deadline);
+        self.deadlines.insert((deadline, id));
+    }
+
+    fn cancel(&mut self, id: i32) {
+        if let Some(deadline) = self.scheduled.remove(&id) {
+            self.deadlines.remove(&(deadline, id));
+        }
+    }
+
+    fn drain_ready(&mut self, now: Instant) -> Vec<i32> {
+        let mut ready = Vec::new();
+        while self.deadlines.first().is_some_and(|(deadline, _)| *deadline <= now) {
+            let (_, id) = self.deadlines.pop_first().unwrap();
+            self.scheduled.remove(&id);
+            ready.push(id);
+        }
+        ready
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        self.deadlines.first().map(|(deadline, _)| *deadline)
+    }
+}
+
+#[cfg(test)]
+mod timer_tests {
+    use super::*;
+
+    #[test]
+    fn timer_queue_orders_deadlines_and_drops_cancelled_entries() {
+        let now = Instant::now();
+        let mut queue = TimerQueue::default();
+        queue.schedule(1, now + Duration::from_secs(2));
+        queue.schedule(2, now + Duration::from_secs(1));
+        queue.schedule(3, now);
+        queue.cancel(2);
+        assert_eq!(queue.drain_ready(now), vec![3]);
+        assert_eq!(queue.next_deadline(), Some(now + Duration::from_secs(2)));
+        assert!(queue.drain_ready(now + Duration::from_secs(1)).is_empty());
+        assert_eq!(queue.drain_ready(now + Duration::from_secs(2)), vec![1]);
+        assert!(queue.scheduled.is_empty());
+        assert!(queue.deadlines.is_empty());
+    }
+
+    #[test]
+    fn timer_queue_reuses_ids_and_retains_no_cancelled_timers() {
+        let now = Instant::now();
+        let mut queue = TimerQueue::default();
+        for id in 0..10000 {
+            queue.schedule(id, now + Duration::from_secs(3600));
+            queue.cancel(id);
+        }
+        assert!(queue.scheduled.is_empty());
+        assert!(queue.deadlines.is_empty());
+        queue.schedule(7, now);
+        queue.schedule(7, now + Duration::from_secs(1));
+        assert!(queue.drain_ready(now).is_empty());
+        assert_eq!(queue.drain_ready(now + Duration::from_secs(1)), vec![7]);
+    }
+}
+
 struct Timers {
-    ready: Arc<Mutex<Vec<i32>>>,
-    cancelled: Arc<Mutex<HashSet<i32>>>,
-    scheduled: Arc<Mutex<HashSet<i32>>>,
+    queue: Shared<TimerQueue>,
 }
 impl Default for Timers {
     fn default() -> Self {
         Self {
-            ready: Arc::new(Mutex::new(Vec::new())),
-            cancelled: Arc::new(Mutex::new(HashSet::new())),
-            scheduled: Arc::new(Mutex::new(HashSet::new())),
+            queue: shared(TimerQueue::default()),
         }
     }
 }
@@ -617,47 +683,21 @@ fn op_now(state: &mut OpState) -> f64 {
 #[op2(fast)]
 fn op_set_timeout(state: &mut OpState, #[smi] id: i32, #[smi] ms: i32) {
     let timers = state.borrow::<Timers>();
-    let ready = timers.ready.clone();
-    let cancelled = timers.cancelled.clone();
-    let scheduled = timers.scheduled.clone();
-
-    scheduled.lock().unwrap().insert(id);
-
-    if ms <= 0 {
-        if !cancelled.lock().unwrap().contains(&id) {
-            ready.lock().unwrap().push(id);
-        }
-        return;
-    }
-
-    thread::spawn(move || {
-        thread::sleep(Duration::from_millis(ms as u64));
-        if cancelled.lock().unwrap().contains(&id) {
-            return;
-        }
-        ready.lock().unwrap().push(id);
-    });
+    timers.queue.borrow_mut().schedule(id,
+        Instant::now() + Duration::from_millis(ms.max(0) as u64));
 }
 
 #[op2(fast)]
 fn op_clear_timeout(state: &mut OpState, #[smi] id: i32) {
     let timers = state.borrow::<Timers>();
-    timers.cancelled.lock().unwrap().insert(id);
-    timers.scheduled.lock().unwrap().remove(&id);
+    timers.queue.borrow_mut().cancel(id);
 }
 
 #[op2]
 #[serde]
 fn op_timers_poll(state: &mut OpState) -> serde_json::Value {
     let timers = state.borrow::<Timers>();
-    let mut ready = timers.ready.lock().unwrap();
-    let ids: Vec<i32> = ready.drain(..).collect();
-    if !ids.is_empty() {
-        let mut scheduled = timers.scheduled.lock().unwrap();
-        for id in &ids {
-            scheduled.remove(id);
-        }
-    }
+    let ids = timers.queue.borrow_mut().drain_ready(Instant::now());
     serde_json::Value::from(ids)
 }
 
@@ -1271,7 +1311,7 @@ pub struct Engine {
     rt: JsRuntime,
 
     // Timers
-    timers_scheduled: Arc<Mutex<HashSet<i32>>>,
+    timers: Shared<TimerQueue>,
 
     // RAF
     raf_pending: Shared<Vec<i32>>,
@@ -1392,9 +1432,7 @@ impl Engine {
         let touch_event_queue = TouchEventQueue::default();
 
         let timers_for_state = Timers {
-            ready: timers.ready.clone(),
-            cancelled: timers.cancelled.clone(),
-            scheduled: timers.scheduled.clone(),
+            queue: timers.queue.clone(),
         };
         let raf_for_state = RafState {
             pending: raf_state.pending.clone(),
@@ -1577,9 +1615,7 @@ impl Engine {
                 state.put::<PerfState>(PerfState::default());
                 state.put(location::DocumentLocation("about:blank".into()));
                 state.put::<Timers>(Timers {
-                    ready: timers_for_state.ready.clone(),
-                    cancelled: timers_for_state.cancelled.clone(),
-                    scheduled: timers_for_state.scheduled.clone(),
+                    queue: timers_for_state.queue.clone(),
                 });
                 state.put::<RafState>(RafState {
                     pending: raf_for_state.pending.clone(),
@@ -1724,7 +1760,7 @@ impl Engine {
 
         Self {
             rt,
-            timers_scheduled: timers.scheduled,
+            timers: timers.queue,
             raf_pending: raf_state.pending,
             raf_ready: raf_state.ready,
             console_logs: console.logs,
@@ -1817,10 +1853,16 @@ impl Engine {
     }
 
     pub fn needs_continuous_ticks(&self) -> bool {
-        if !self.raf_pending.borrow().is_empty() || !self.raf_ready.borrow().is_empty() {
-            return true;
-        }
-        !self.timers_scheduled.lock().unwrap().is_empty()
+        self.has_pending_animation_frames() || self.next_timer_deadline().is_some()
+    }
+
+    /// RAF needs the next frame. Timers can instead sleep until their deadline.
+    pub fn has_pending_animation_frames(&self) -> bool {
+        !self.raf_pending.borrow().is_empty() || !self.raf_ready.borrow().is_empty()
+    }
+
+    pub fn next_timer_deadline(&self) -> Option<Instant> {
+        self.timers.borrow().next_deadline()
     }
 
     // --- Drain methods ---
