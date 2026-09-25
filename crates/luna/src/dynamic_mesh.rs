@@ -59,24 +59,6 @@ impl DynamicMeshes {
     }
 }
 
-/// Hash the validated upload before building normals or allocating a GPU asset.
-/// Length-prefix each attribute so different layouts cannot alias. These are
-/// in-memory keys, so native-endian POD slices avoid packing or copying uploads.
-fn mesh_fingerprint(data: &MeshData) -> blake3::Hash {
-    let mut hasher = blake3::Hasher::new();
-    for bytes in [
-        bytemuck::cast_slice(&data.positions),
-        bytemuck::cast_slice(&data.indices),
-        bytemuck::cast_slice(&data.normals),
-        bytemuck::cast_slice(&data.uvs),
-        bytemuck::cast_slice(&data.colors),
-    ] {
-        hasher.update(&(bytes.len() as u64).to_le_bytes());
-        hasher.update(bytes);
-    }
-    hasher.finalize()
-}
-
 fn build_mesh(mut data: MeshData) -> Mesh {
     if data.normals.is_empty() {
         let mut normals = vec![Vec3::ZERO; data.positions.len()];
@@ -191,13 +173,13 @@ pub fn apply_commands(world: &mut World, owner: u32, scope: u64, commands: Vec<M
                         changed.insert(src);
                     }
                 }
-                MeshCommand::Upload(src, data) => {
+                MeshCommand::Upload(src, upload) => {
                     if let Some(entry) = registry.entries.get(&src) {
                         if entry.owner != owner || entry.scope != scope {
                             continue;
                         }
                     }
-                    let fingerprint = mesh_fingerprint(&data);
+                    let fingerprint = blake3::Hash::from_bytes(upload.fingerprint);
                     if registry
                         .entries
                         .get(&src)
@@ -219,7 +201,7 @@ pub fn apply_commands(world: &mut World, owner: u32, scope: u64, commands: Vec<M
                             shared.owners += 1;
                             (shared.mesh.clone(), shared.aabb)
                         } else {
-                            let mesh = build_mesh(data);
+                            let mesh = build_mesh(upload.data);
                             let aabb = mesh.compute_aabb().expect("validated mesh has positions");
                             let mut assets = world.resource_mut::<Assets<Mesh>>();
                             let handle = if let Some(handle) = reusable {
@@ -348,6 +330,7 @@ pub fn cleanup_contexts(world: &mut World) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use js_runtime::mesh::MeshUpload;
 
     fn triangle(width: f32) -> MeshData {
         MeshData {
@@ -371,7 +354,10 @@ mod tests {
             world,
             owner,
             u64::from(owner),
-            vec![MeshCommand::Upload(src.into(), triangle(width))],
+            vec![MeshCommand::Upload(
+                src.into(),
+                MeshUpload::new(triangle(width)),
+            )],
         );
     }
 
@@ -567,20 +553,20 @@ mod tests {
 
     #[test]
     fn fingerprint_includes_all_attributes_and_indices_choose_safe_width() {
-        let base = mesh_fingerprint(&triangle(1.));
-        assert_ne!(base, mesh_fingerprint(&triangle(2.)));
+        let base = MeshUpload::new(triangle(1.)).fingerprint;
+        assert_ne!(base, MeshUpload::new(triangle(2.)).fingerprint);
         let mut changed = triangle(1.);
         changed.colors = vec![[1., 0., 0., 1.]; 3];
-        assert_ne!(base, mesh_fingerprint(&changed));
+        assert_ne!(base, MeshUpload::new(changed).fingerprint);
         let mut changed = triangle(1.);
         changed.normals = vec![[0., 0., 1.]; 3];
-        assert_ne!(base, mesh_fingerprint(&changed));
+        assert_ne!(base, MeshUpload::new(changed).fingerprint);
         let mut changed = triangle(1.);
         changed.uvs = vec![[0., 0.]; 3];
-        assert_ne!(base, mesh_fingerprint(&changed));
+        assert_ne!(base, MeshUpload::new(changed).fingerprint);
         let mut changed = triangle(1.);
         changed.indices.reverse();
-        assert_ne!(base, mesh_fingerprint(&changed));
+        assert_ne!(base, MeshUpload::new(changed).fingerprint);
         assert!(matches!(
             build_mesh(triangle(1.)).indices(),
             Some(Indices::U16(_))
@@ -607,8 +593,9 @@ mod tests {
     }
 
     /// CPU upload benchmark; excludes fixture construction, DOM/JS execution,
-    /// rendering and GPU submission. The reference builds/adds exactly the same
-    /// meshes and computes the bounds required for rendering, without sharing.
+    /// rendering and GPU submission. Worker hashing is timed separately from
+    /// the rendering thread; its total is reported without claiming a CPU saving.
+    /// The reference builds/adds identical meshes and computes their bounds.
     #[test]
     #[ignore = "manual CPU benchmark: run with --ignored --nocapture"]
     fn benchmark_static_mesh_uploads() {
@@ -671,7 +658,10 @@ mod tests {
                 let mut world = world();
                 let data = fixtures();
                 let start = Instant::now();
-                for (i, data) in data.into_iter().enumerate() {
+                let uploads: Vec<_> = data.into_iter().map(MeshUpload::new).collect();
+                let worker_hash_ms = start.elapsed().as_secs_f64() * 1000.;
+                let start = Instant::now();
+                for (i, upload) in uploads.into_iter().enumerate() {
                     let owner = if case == "animated_exclusive" {
                         1
                     } else {
@@ -681,7 +671,7 @@ mod tests {
                         &mut world,
                         owner,
                         u64::from(owner),
-                        vec![MeshCommand::Upload(format!("mesh://{owner}/1"), data)],
+                        vec![MeshCommand::Upload(format!("mesh://{owner}/1"), upload)],
                     );
                 }
                 let shared_ms = start.elapsed().as_secs_f64() * 1000.;
@@ -694,7 +684,7 @@ mod tests {
                         1
                     }
                 );
-                eprintln!("mesh_upload case={case} normals={normals} copies={COPIES} vertices=32768 indices=147456 reference_ms={reference_ms:.3} optimized_ms={shared_ms:.3} ratio={:.3} assets={assets}", shared_ms / reference_ms);
+                eprintln!("mesh_upload case={case} normals={normals} copies={COPIES} vertices=32768 indices=147456 reference_ms={reference_ms:.3} worker_hash_ms={worker_hash_ms:.3} optimized_ms={shared_ms:.3} main_ratio={:.3} combined_ms={:.3} assets={assets}", shared_ms / reference_ms, worker_hash_ms + shared_ms);
             }
         }
     }

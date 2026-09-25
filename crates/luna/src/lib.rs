@@ -9,6 +9,8 @@ pub mod capture;
 mod profiling;
 #[cfg(test)]
 mod density_tests;
+#[cfg(test)]
+mod street_tests;
 pub mod agent;
 mod agent_capture;
 pub mod desktop_locomotion;

@@ -19,8 +19,38 @@ pub struct MeshData {
     pub colors: Vec<[f32; 4]>,
 }
 
+#[derive(Debug)]
+pub struct MeshUpload {
+    pub data: MeshData,
+    pub fingerprint: [u8; 32],
+}
+
+impl MeshUpload {
+    /// Prepare immutable upload metadata on the isolate worker. Deduplication
+    /// must not hash large vertex buffers on the application's rendering thread.
+    pub fn new(data: MeshData) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        // The cache is local to this process: native-endian POD bytes need no
+        // conversion. Lengths distinguish missing attributes and buffer layouts.
+        for bytes in [
+            bytemuck::cast_slice(&data.positions),
+            bytemuck::cast_slice(&data.indices),
+            bytemuck::cast_slice(&data.normals),
+            bytemuck::cast_slice(&data.uvs),
+            bytemuck::cast_slice(&data.colors),
+        ] {
+            hasher.update(&(bytes.len() as u64).to_le_bytes());
+            hasher.update(bytes);
+        }
+        Self {
+            data,
+            fingerprint: *hasher.finalize().as_bytes(),
+        }
+    }
+}
+
 pub enum MeshCommand {
-    Upload(String, MeshData),
+    Upload(String, MeshUpload),
     Dispose(String),
 }
 
@@ -79,10 +109,13 @@ impl MeshQueue {
             };
         // Only an update replaces existing storage. A create must never borrow
         // another resource's quota, even if a caller supplies its URL.
-        let previous_bytes = if action == "update" { self.sizes[src] } else { 0 };
+        let previous_bytes = if action == "update" {
+            self.sizes[src]
+        } else {
+            0
+        };
         let retained_bytes = self.total_bytes - previous_bytes;
-        if bytes > MAX_BYTES || bytes > MAX_BYTES - retained_bytes
-        {
+        if bytes > MAX_BYTES || bytes > MAX_BYTES - retained_bytes {
             return Err("Mesh memory quota exceeded".into());
         }
         let data = decode(buffers)?;
@@ -94,8 +127,10 @@ impl MeshQueue {
         };
         self.total_bytes = retained_bytes + bytes;
         self.sizes.insert(src.clone(), bytes);
-        self.pending
-            .insert(src.clone(), MeshCommand::Upload(src.clone(), data));
+        self.pending.insert(
+            src.clone(),
+            MeshCommand::Upload(src.clone(), MeshUpload::new(data)),
+        );
         Ok(src)
     }
 }
@@ -232,7 +267,9 @@ mod tests {
         assert_eq!(queue.total_bytes, bytes * 2);
         queue.submit("update", &a, buffers).unwrap();
         assert_eq!(queue.total_bytes, bytes * 2);
-        assert!(queue.submit("update", &a, [&[1u8][..], &[], &[], &[], &[]]).is_err());
+        assert!(queue
+            .submit("update", &a, [&[1u8][..], &[], &[], &[], &[]])
+            .is_err());
         assert_eq!(queue.total_bytes, bytes * 2);
         queue.drain();
         assert_eq!(queue.total_bytes, bytes * 2);
@@ -247,6 +284,21 @@ mod tests {
         assert!(queue.submit("create", &a, buffers).is_err());
         queue.submit("update", &a, buffers).unwrap();
         assert_eq!(queue.total_bytes, bytes);
+    }
+
+    #[test]
+    fn upload_fingerprint_matches_decoded_geometry_and_implicit_indices() {
+        let p = triangle();
+        let implicit = MeshUpload::new(decode([&p, &[], &[], &[], &[]]).unwrap());
+        let indices: Vec<_> = [0u32, 1, 2]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        let explicit = MeshUpload::new(decode([&p, &indices, &[], &[], &[]]).unwrap());
+        assert_eq!(implicit.fingerprint, explicit.fingerprint);
+        let mut changed = explicit.data;
+        changed.positions[0][0] = 0.5;
+        assert_ne!(implicit.fingerprint, MeshUpload::new(changed).fingerprint);
     }
 
     #[test]
@@ -269,8 +321,9 @@ mod tests {
         let MeshCommand::Upload(src, data) = commands.pop().unwrap() else {
             panic!();
         };
-        assert_eq!(data.positions[0][0], 2.0);
-        assert_eq!(data.indices, vec![0, 1, 2]);
+        assert_eq!(data.data.positions[0][0], 2.0);
+        assert_eq!(data.data.indices, vec![0, 1, 2]);
+        assert_eq!(data.fingerprint, MeshUpload::new(data.data).fingerprint);
         let mut other = MeshQueue::default();
         assert!(other
             .submit("update", &src, [&triangle(), &[], &[], &[], &[]])

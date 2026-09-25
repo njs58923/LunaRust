@@ -3271,6 +3271,8 @@ name = "js_runtime"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "blake3",
+ "bytemuck",
  "deno_core",
  "futures",
  "rodio",
@@ -3480,7 +3482,6 @@ dependencies = [
  "bevy_xr_utils",
  "bitflags 2.6.0",
  "blake3",
- "bytemuck",
  "fontdue",
  "futures-util",
  "image",
