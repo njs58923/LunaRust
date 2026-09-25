@@ -241,23 +241,23 @@ pub fn apply_commands(world: &mut World, owner: u32, commands: Vec<SharedPlaybac
     }
 }
 fn maintain_audio(world: &mut World) {
-    let live = world
-        .get_non_send_resource::<crate::js::ScriptRuntimeManager>()
-        .map(|m| {
-            m.contexts
-                .iter()
-                .map(|(id, w)| (*id, w.join.as_ref().map(|j| j.thread().id())))
-                .collect::<std::collections::HashMap<_, _>>()
-        })
-        .unwrap_or_default();
+    // Static mesh isolates normally have no audio. Work scales with voices,
+    // not every isolate in the scene, and needs no per-frame ownership map.
+    if world.resource::<AudioVoices>().0.is_empty() {
+        return;
+    }
     world.resource_scope(|world, mut voices: Mut<AudioVoices>| {
         voices.0.retain(|v| {
+            let alive = world
+                .get_non_send_resource::<crate::js::ScriptRuntimeManager>()
+                .and_then(|m| m.contexts.get(&v.owner))
+                .is_some_and(|w| w.join.as_ref().map(|j| j.thread().id()) == v.worker);
             let allowed = world
                 .get_resource::<crate::SpacePolicies>()
                 .and_then(|p| p.by_space.get(&v.owner))
                 .is_some_and(|p| p.effective_caps.contains(crate::CapabilityBits::AUDIO));
             let mut p = v.playback.lock().unwrap();
-            if live.get(&v.owner) != Some(&v.worker) {
+            if !alive {
                 p.disposed = true;
             }
             if !allowed {
@@ -382,11 +382,22 @@ mod tests {
             },
         );
         world.insert_resource(policies);
+        let (worker, _commands, _events) = crate::js::fake_worker(false);
+        let mut manager = crate::js::ScriptRuntimeManager::default();
+        manager.contexts.insert(7, worker);
+        world.insert_non_send_resource(manager);
         p.lock().unwrap().error = None;
         apply_commands(&mut world, 7, vec![p.clone()]);
         let entity = world.resource::<AudioVoices>().0[0].entity;
         assert_eq!(world.resource::<Assets<SpaceAudioSource>>().len(), 1);
+        maintain_audio(&mut world);
+        assert!(!p.lock().unwrap().disposed);
+        assert!(world.get_entity(entity).is_some());
         // Missing owning worker is equivalent to unloading the space.
+        world
+            .non_send_resource_mut::<crate::js::ScriptRuntimeManager>()
+            .contexts
+            .remove(&7);
         maintain_audio(&mut world);
         assert!(p.lock().unwrap().disposed);
         assert!(world.get_entity(entity).is_none());
