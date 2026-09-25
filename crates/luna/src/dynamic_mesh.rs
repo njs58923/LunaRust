@@ -60,49 +60,20 @@ impl DynamicMeshes {
 }
 
 /// Hash the validated upload before building normals or allocating a GPU asset.
-/// Length-prefix each attribute so different layouts cannot alias. Streaming a
-/// small scratch buffer avoids copying the upload or requiring unsafe casts.
+/// Length-prefix each attribute so different layouts cannot alias. These are
+/// in-memory keys, so native-endian POD slices avoid packing or copying uploads.
 fn mesh_fingerprint(data: &MeshData) -> blake3::Hash {
-    fn words(hasher: &mut blake3::Hasher, len: usize, words: impl Iterator<Item = u32>) {
-        hasher.update(&(len as u64).to_le_bytes());
-        let mut bytes = [0u8; 1024];
-        let mut used = 0;
-        for word in words {
-            bytes[used..used + 4].copy_from_slice(&word.to_le_bytes());
-            used += 4;
-            if used == bytes.len() {
-                hasher.update(&bytes);
-                used = 0;
-            }
-        }
-        hasher.update(&bytes[..used]);
-    }
     let mut hasher = blake3::Hasher::new();
-    words(
-        &mut hasher,
-        data.positions.len(),
-        data.positions.iter().flatten().map(|n| n.to_bits()),
-    );
-    words(
-        &mut hasher,
-        data.indices.len(),
-        data.indices.iter().copied(),
-    );
-    words(
-        &mut hasher,
-        data.normals.len(),
-        data.normals.iter().flatten().map(|n| n.to_bits()),
-    );
-    words(
-        &mut hasher,
-        data.uvs.len(),
-        data.uvs.iter().flatten().map(|n| n.to_bits()),
-    );
-    words(
-        &mut hasher,
-        data.colors.len(),
-        data.colors.iter().flatten().map(|n| n.to_bits()),
-    );
+    for bytes in [
+        bytemuck::cast_slice(&data.positions),
+        bytemuck::cast_slice(&data.indices),
+        bytemuck::cast_slice(&data.normals),
+        bytemuck::cast_slice(&data.uvs),
+        bytemuck::cast_slice(&data.colors),
+    ] {
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    }
     hasher.finalize()
 }
 
@@ -558,6 +529,99 @@ mod tests {
                     assert_eq!(count, 65_537);
                     assert_eq!(indices[2], 65_536);
                 }
+            }
+        }
+    }
+
+    /// CPU upload benchmark; excludes fixture construction, DOM/JS execution,
+    /// rendering and GPU submission. The reference builds/adds exactly the same
+    /// meshes and computes the bounds required for rendering, without sharing.
+    #[test]
+    #[ignore = "manual CPU benchmark: run with --ignored --nocapture"]
+    fn benchmark_static_mesh_uploads() {
+        use std::{hint::black_box, time::Instant};
+        const COPIES: u32 = 48;
+        fn fixture(index: u32, normals: bool) -> MeshData {
+            const CUBES: usize = 4096;
+            const FACES: [u32; 36] = [
+                0, 1, 3, 0, 3, 2, 4, 6, 7, 4, 7, 5, 0, 4, 5, 0, 5, 1, 2, 3, 7, 2, 7, 6, 0, 2, 6, 0,
+                6, 4, 1, 5, 7, 1, 7, 3,
+            ];
+            let mut data = MeshData {
+                positions: Vec::with_capacity(CUBES * 8),
+                indices: Vec::with_capacity(CUBES * 36),
+                normals: Vec::new(),
+                colors: Vec::with_capacity(CUBES * 8),
+                uvs: Vec::new(),
+            };
+            for cube in 0..CUBES {
+                for corner in 0..8 {
+                    data.positions.push([
+                        (cube % 64) as f32 + ((corner & 4) >> 2) as f32 * 0.9,
+                        (cube / 64) as f32 + ((corner & 2) >> 1) as f32 * 0.9,
+                        (corner & 1) as f32 * 0.2,
+                    ]);
+                    data.colors
+                        .push([0.35 + (cube % 9) as f32 * 0.01, 0.2, 0.15, 1.]);
+                }
+                data.indices.extend(FACES.map(|i| cube as u32 * 8 + i));
+            }
+            data.positions[0][0] += index as f32 * 0.0001;
+            if normals {
+                data.normals = vec![[0., 0., 1.]; data.positions.len()];
+            }
+            data
+        }
+        for normals in [false, true] {
+            for case in ["cold_unique", "hot_shared", "animated_exclusive"] {
+                let fixtures = || {
+                    (0..COPIES)
+                        .map(|i| fixture(if case == "hot_shared" { 0 } else { i }, normals))
+                        .collect::<Vec<_>>()
+                };
+                let mut reference = Assets::<Mesh>::default();
+                let mut reference_handle: Option<Handle<Mesh>> = None;
+                let data = fixtures();
+                let start = Instant::now();
+                for data in data {
+                    let mesh = build_mesh(data);
+                    black_box(mesh.compute_aabb());
+                    if case == "animated_exclusive" && reference_handle.is_some() {
+                        reference.insert(reference_handle.as_ref().unwrap().id(), mesh);
+                    } else {
+                        reference_handle = Some(reference.add(mesh));
+                    }
+                }
+                let reference_ms = start.elapsed().as_secs_f64() * 1000.;
+                black_box(reference.len());
+                drop(reference);
+                let mut world = world();
+                let data = fixtures();
+                let start = Instant::now();
+                for (i, data) in data.into_iter().enumerate() {
+                    let owner = if case == "animated_exclusive" {
+                        1
+                    } else {
+                        i as u32 + 1
+                    };
+                    apply_commands(
+                        &mut world,
+                        owner,
+                        u64::from(owner),
+                        vec![MeshCommand::Upload(format!("mesh://{owner}/1"), data)],
+                    );
+                }
+                let shared_ms = start.elapsed().as_secs_f64() * 1000.;
+                let assets = world.resource::<Assets<Mesh>>().len();
+                assert_eq!(
+                    assets,
+                    if case == "cold_unique" {
+                        COPIES as usize
+                    } else {
+                        1
+                    }
+                );
+                eprintln!("mesh_upload case={case} normals={normals} copies={COPIES} vertices=32768 indices=147456 reference_ms={reference_ms:.3} optimized_ms={shared_ms:.3} ratio={:.3} assets={assets}", shared_ms / reference_ms);
             }
         }
     }
