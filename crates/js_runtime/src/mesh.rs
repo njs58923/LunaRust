@@ -7,9 +7,7 @@ use std::{
 
 pub const MAX_VERTICES: usize = 262_144;
 pub const MAX_INDICES: usize = 786_432;
-/// Entre todas las mallas vivas. Era 64 MB; una calle con cada ladrillo
-/// fundido (server_expo, ?detalle=alto_mesh) ya pasa de 90.
-pub const MAX_BYTES: usize = 256 * 1024 * 1024;
+pub const MAX_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_RESOURCES: usize = 128;
 
 #[derive(Debug)]
