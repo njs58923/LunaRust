@@ -27,6 +27,8 @@ struct Facade {
     worker: SpaceScriptWorker,
     channel: Arc<Channel>,
     next_node: i32,
+    next_timer_deadline: Option<Instant>,
+    service_ticks: usize,
 }
 
 impl Drop for Facade {
@@ -106,6 +108,8 @@ impl Facade {
             worker,
             channel,
             next_node: 3,
+            next_timer_deadline: None,
+            service_ticks: 0,
         }
     }
 
@@ -125,7 +129,7 @@ impl Facade {
         }
     }
 
-    fn settle(&mut self, data: &JsTickData) {
+    fn resolve_creations(&mut self, data: &JsTickData) {
         // Resolve asynchronous createElement handles as the host does. No Bevy
         // entities are spawned: this benchmark stops at the renderer boundary.
         if !data.creation_queue.is_empty() {
@@ -142,12 +146,45 @@ impl Facade {
                 .try_send(JsWorkerCommand::PushElementCreationResults(results))
                 .unwrap();
         }
-        let settled = tick(&mut self.worker, 32.0);
-        assert!(settled.creation_queue.is_empty());
-        assert!(settled.mesh_commands.1.is_empty());
-        assert!(!settled.needs_continuous_ticks);
-        assert!(settled.next_timer_deadline.is_none());
-        self.worker.component_port.take_wake();
+    }
+
+    fn settle(&mut self, data: &JsTickData) {
+        self.resolve_creations(data);
+        for _ in 0..32 {
+            let settled = tick(&mut self.worker, 32.0);
+            self.resolve_creations(&settled);
+            assert!(settled.mesh_commands.1.is_empty());
+            assert!(!settled.needs_continuous_ticks);
+            self.next_timer_deadline = settled.next_timer_deadline;
+            if settled.creation_queue.is_empty()
+                && self
+                    .next_timer_deadline
+                    .is_none_or(|deadline| deadline > Instant::now())
+            {
+                self.worker.component_port.take_wake();
+                return;
+            }
+        }
+        panic!("Facade did not finish its immediate creation callbacks");
+    }
+
+    fn service_due_timer(&mut self, now: Instant) -> bool {
+        assert!(matches!(
+            self.worker.event_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        let Some(deadline) = self.next_timer_deadline.filter(|deadline| *deadline <= now) else {
+            return false;
+        };
+        let idle = tick(&mut self.worker, 1000.0);
+        assert!(!idle.needs_continuous_ticks);
+        assert!(idle.mesh_commands.1.is_empty());
+        assert!(idle.creation_queue.is_empty());
+        assert!(idle.attr_updates.is_empty());
+        assert!(idle.next_timer_deadline.is_none_or(|next| next > deadline));
+        self.next_timer_deadline = idle.next_timer_deadline;
+        self.service_ticks += 1;
+        true
     }
 }
 
@@ -255,24 +292,41 @@ fn benchmark_real_street_facades() {
         facades.push(facade);
     }
     let mount_ms = mount_start.elapsed().as_secs_f64() * 1000.0;
-    // All real isolates remain alive together, as they do after street loading.
-    // No host ticks are sent in this interval. Check for unsolicited output and
-    // then ask once to confirm their scripts did not schedule RAF or timers.
-    std::thread::sleep(Duration::from_millis(200));
-    let idle_check = Instant::now();
-    for facade in &mut facades {
-        assert!(matches!(
-            facade.worker.event_rx.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        ));
-        let idle = tick(&mut facade.worker, 1000.0);
-        assert!(!idle.needs_continuous_ticks);
-        assert!(idle.next_timer_deadline.is_none());
-        assert!(idle.mesh_commands.1.is_empty());
-        assert!(idle.creation_queue.is_empty());
-        assert!(idle.attr_updates.is_empty());
+    // _vr.js wraps Obj.boton and installs manos()'s 150 ms expiry interval,
+    // even for tocable:false facades. Preserve that real service timer. Keep
+    // all isolates alive, service only due deadlines, and verify that these
+    // maintenance callbacks do not redraw or request animation frames.
+    let timed_facades = facades
+        .iter()
+        .filter(|f| f.next_timer_deadline.is_some())
+        .count();
+    let idle_start = Instant::now();
+    let idle_end = idle_start + Duration::from_millis(350);
+    let mut timer_service_ms = 0.0;
+    while Instant::now() < idle_end {
+        for facade in &mut facades {
+            let started = Instant::now();
+            if facade.service_due_timer(started) {
+                timer_service_ms += started.elapsed().as_secs_f64() * 1000.0;
+            }
+        }
+        let wake_at = facades
+            .iter()
+            .filter_map(|f| f.next_timer_deadline)
+            .min()
+            .unwrap_or(idle_end)
+            .min(idle_end);
+        std::thread::sleep(wake_at.saturating_duration_since(Instant::now()));
     }
-    let idle_probe_ms = idle_check.elapsed().as_secs_f64() * 1000.0;
+    let idle_window_ms = idle_start.elapsed().as_secs_f64() * 1000.0;
+    let timer_service_ticks: usize = facades.iter().map(|f| f.service_ticks).sum();
+    assert!(facades
+        .iter()
+        .all(|f| f.next_timer_deadline.is_none() || f.service_ticks > 0));
+    assert!(
+        parent.drain().is_empty(),
+        "Service timers must not redraw or emit armada"
+    );
     let facade = &mut facades[0];
     // The real informar handler still responds after dormancy without a redraw.
     parent.send(1, "informar".into(), "null").unwrap();
@@ -284,7 +338,8 @@ fn benchmark_real_street_facades() {
         .iter()
         .any(|event| event.kind == "component:armada"));
     // A property update must awaken its original listeners and replace only its
-    // own geometry; the other 24 facade isolates stay dormant.
+    // own geometry; the other facade isolates still have no pending work
+    // other than their unchanged service deadlines.
     let mut changed = recipes[0].clone();
     changed["material"] = Value::String(
         if changed["material"] == "hormigon" {
@@ -315,7 +370,8 @@ fn benchmark_real_street_facades() {
         ));
     }
     eval_ms.sort_by(f64::total_cmp);
-    println!("facades={} source_bytes={} uploads={} vertices={} indices={} upload_bytes={} mount_ms={:.3} eval_median_ms={:.3} eval_max_ms={:.3} idle_probe_all_ms={:.3} props_redraw_ms={:.3}",
+    println!("facades={} source_bytes={} uploads={} vertices={} indices={} upload_bytes={} mount_ms={:.3} eval_median_ms={:.3} eval_max_ms={:.3} timed_facades={} idle_window_ms={:.3} timer_service_ticks={} timer_service_ms={:.3} props_redraw_ms={:.3}",
         facades.len(), source.len(), totals.uploads, totals.vertices, totals.indices, totals.bytes,
-        mount_ms, eval_ms[eval_ms.len()/2], eval_ms.last().unwrap(), idle_probe_ms, update_ms);
+        mount_ms, eval_ms[eval_ms.len()/2], eval_ms.last().unwrap(), timed_facades,
+        idle_window_ms, timer_service_ticks, timer_service_ms, update_ms);
 }
