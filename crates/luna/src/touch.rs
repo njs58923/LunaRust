@@ -245,6 +245,11 @@ pub struct HostPoseMoveHit {
     pub dz: f32,
     pub trigger: f32,
     pub grip: f32,
+    /// Los dos botones de la cara del mando: `primary` es A en la derecha y X
+    /// en la izquierda; `secondary`, B e Y. Neutros respecto de la letra para
+    /// que una página no tenga que saber qué mano es cuál.
+    pub primary: bool,
+    pub secondary: bool,
     // Orientación del controlador (cuaternión world-space).
     pub qx: f32,
     pub qy: f32,
@@ -496,6 +501,8 @@ fn push_pose_events_for_hand(
     controller_tf: &Transform,
     trigger: f32,
     grip: f32,
+    primary: bool,
+    secondary: bool,
     posezone_query: &Query<(Entity, &GlobalTransform, &PoseZone, Option<&HitShape>)>,
     parent_query: &Query<&Parent>,
     visibility_query: &Query<&Visibility>,
@@ -529,6 +536,8 @@ fn push_pose_events_for_hand(
                 dz: dir.z,
                 trigger,
                 grip,
+                primary,
+                secondary,
                 qx: controller_rot.x,
                 qy: controller_rot.y,
                 qz: controller_rot.z,
@@ -625,6 +634,11 @@ pub fn vr_posemove_system(
         .state(&session, openxr::Path::NULL)
         .map(|s| s.current_state)
         .unwrap_or(0.0);
+    let boton = |accion: &openxr::Action<bool>| {
+        accion.state(&session, openxr::Path::NULL).map(|s| s.current_state).unwrap_or(false)
+    };
+    let (left_primary, left_secondary) = (boton(&actions.btn_x), boton(&actions.btn_y));
+    let (right_primary, right_secondary) = (boton(&actions.btn_a), boton(&actions.btn_b));
 
     if let Ok(tf) = left_controller_query.get_single() {
         push_pose_events_for_hand(
@@ -633,6 +647,8 @@ pub fn vr_posemove_system(
             tf,
             left_trigger,
             left_grip,
+            left_primary,
+            left_secondary,
             &posezone_query,
             &parent_query,
             &visibility_query,
@@ -647,6 +663,8 @@ pub fn vr_posemove_system(
             tf,
             right_trigger,
             right_grip,
+            right_primary,
+            right_secondary,
             &posezone_query,
             &parent_query,
             &visibility_query,
@@ -776,6 +794,8 @@ pub fn dispatch_posemove_events_to_js(
                 dz: evt.dz,
                 trigger: evt.trigger,
                 grip: evt.grip,
+                primary: evt.primary,
+                secondary: evt.secondary,
                 qx: evt.qx,
                 qy: evt.qy,
                 qz: evt.qz,

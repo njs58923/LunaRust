@@ -2629,8 +2629,8 @@ mod tests {
     fn fire_demo_posemove_trigger_spawns_bullet() {
         let mut eng = fire_demo_engine();
 
-        // Args: node_id, hand, px, py, pz, dx, dy, dz, trigger, grip, qx, qy, qz, qw.
-        eng.push_posemove_event(6, "right", 1.0, 1.5, -0.5, 0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+        // Args: node_id, hand, px, py, pz, dx, dy, dz, trigger, grip, primary, secondary, qx, qy, qz, qw.
+        eng.push_posemove_event(6, "right", 1.0, 1.5, -0.5, 0.0, 0.0, -1.0, 1.0, 0.0, false, false, 0.0, 0.0, 0.0, 1.0);
         eng.fire_raf(16.0);
 
         let created = eng.drain_element_creation_queue();
@@ -2644,6 +2644,25 @@ mod tests {
         assert!(attr_updates.iter().any(|(node_id, key, value)| {
             *node_id == 5 && key == "value" && value.contains("right controller")
         }));
+    }
+
+    #[test]
+    fn posemove_carries_the_face_buttons() {
+        let mut eng = fire_demo_engine();
+        eng.eval(r#"
+            hiperspace.dimention.getElementById("gun_zone").addEventListener("posemove", (e) => {
+                hiperspace.dimention.getElementById("status_text").setAttribute("value", "botones " + e.primary + " " + e.secondary);
+            });
+        "#)
+        .unwrap();
+        eng.push_posemove_event(6, "left", 0.0, 1.4, -0.5, 0.0, 0.0, -1.0, 0.0, 0.0, true, false, 0.0, 0.0, 0.0, 1.0);
+        eng.fire_raf(16.0);
+        let attr_updates = eng.drain_attr_updates();
+        assert!(
+            attr_updates.iter().any(|(node_id, key, value)| *node_id == 5 && key == "value" && value == "botones true false"),
+            "posemove sin los botones: {:?}",
+            attr_updates
+        );
     }
 
     #[test]
@@ -2664,6 +2683,8 @@ mod tests {
             -1.0,
             1.0,
             0.0,
+            false,
+            false,
             0.0,
             0.0,
             0.0,

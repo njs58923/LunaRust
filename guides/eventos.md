@@ -18,7 +18,14 @@ Eventos que emite el host:
 | `toque` | click de mouse (escritorio) o trigger derecho (VR) sobre un nodo `touchable` | `x`, `y`, `z` = punto de impacto en world space |
 | `pointerenter`, `pointerleave` | entrada/salida del cursor o rayos VR; no burbujean | `target`, `currentTarget`, `relatedTarget`, `pointerId`, `pointerType`, `hand` |
 | `pointerover`, `pointerout` | cambio de objetivo; burbujean dentro del isolate | mismos campos |
-| `posemove` | mano/mando dentro de un `<posezone>` (requiere `read_pose_stream`) | `hand`, `px py pz`, `dx dy dz`, `trigger`, `grip`, `qx qy qz qw` |
+| `posemove` | mano/mando dentro de un `<posezone>` (requiere `read_pose_stream`) | `hand`, `px py pz`, `dx dy dz`, `trigger`, `grip`, `primary`, `secondary`, `qx qy qz qw` |
+
+`trigger` y `grip` van de 0 a 1. `primary` y `secondary` son los dos botones de la cara
+del mando, `true` mientras están apretados: `primary` es **A en la derecha y X en la
+izquierda**, `secondary` es B e Y. Van por nombre neutro para que una página no tenga que
+saber qué letra tiene cada mano: el botón de abajo, bajo el pulgar, es siempre `primary`.
+Ninguno de los cuatro los usa el shell, así que llegan a la página tal cual. Como el
+resto de `posemove`, sólo llegan con la mano dentro del posezone.
 
 `posemove` trae la pose dos veces. `px..qw` están en world space. `localX localY localZ` (posición),
 `ldx ldy ldz` (hacia dónde apunta; su largo es 1/escala del padre) y `lqx lqy lqz lqw`
