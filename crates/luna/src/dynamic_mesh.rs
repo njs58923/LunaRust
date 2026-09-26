@@ -178,32 +178,34 @@ pub fn apply_commands(world: &mut World, owner: u32, scope: u64, commands: Vec<M
                     if let Some(entry) = &previous {
                         registry.release_geometry(entry.fingerprint);
                     }
-                    let (handle, aabb) =
-                        if let Some(shared) = registry.geometry.get_mut(&fingerprint) {
-                            shared.owners += 1;
-                            (shared.mesh.clone(), shared.aabb)
+                    let (handle, aabb) = if let Some(shared) =
+                        registry.geometry.get_mut(&fingerprint)
+                    {
+                        shared.owners += 1;
+                        (shared.mesh.clone(), shared.aabb)
+                    } else {
+                        let aabb =
+                            Aabb::from_min_max(upload.bounds_min.into(), upload.bounds_max.into());
+                        let mesh = build_mesh(upload.data);
+                        let mut assets = world.resource_mut::<Assets<Mesh>>();
+                        let handle = if let Some(handle) = reusable {
+                            // Animated meshes keep their allocation when no other resource
+                            // shares it. A shared static mesh detaches on its first edit.
+                            assets.insert(handle.id(), mesh);
+                            handle
                         } else {
-                            let aabb = Aabb::from_min_max(upload.bounds_min.into(), upload.bounds_max.into());
-                            let mesh = build_mesh(upload.data);
-                            let mut assets = world.resource_mut::<Assets<Mesh>>();
-                            let handle = if let Some(handle) = reusable {
-                                // Animated meshes keep their allocation when no other resource
-                                // shares it. A shared static mesh detaches on its first edit.
-                                assets.insert(handle.id(), mesh);
-                                handle
-                            } else {
-                                assets.add(mesh)
-                            };
-                            registry.geometry.insert(
-                                fingerprint,
-                                SharedGeometry {
-                                    mesh: handle.clone(),
-                                    aabb,
-                                    owners: 1,
-                                },
-                            );
-                            (handle, aabb)
+                            assets.add(mesh)
                         };
+                        registry.geometry.insert(
+                            fingerprint,
+                            SharedGeometry {
+                                mesh: handle.clone(),
+                                aabb,
+                                owners: 1,
+                            },
+                        );
+                        (handle, aabb)
+                    };
                     if let Some(mut entry) = previous {
                         entry.mesh = handle.clone();
                         entry.fingerprint = fingerprint;
@@ -542,6 +544,9 @@ mod tests {
         assert_ne!(base, MeshUpload::new(changed).fingerprint);
         let mut changed = triangle(1.);
         changed.normals = vec![[0., 0., 1.]; 3];
+        assert_eq!(base, MeshUpload::new(changed).fingerprint);
+        let mut changed = triangle(1.);
+        changed.normals = vec![[0., 1., 0.]; 3];
         assert_ne!(base, MeshUpload::new(changed).fingerprint);
         let mut changed = triangle(1.);
         changed.uvs = vec![[0., 0.]; 3];
@@ -550,7 +555,7 @@ mod tests {
         changed.indices.reverse();
         assert_ne!(base, MeshUpload::new(changed).fingerprint);
         assert!(matches!(
-            build_mesh(triangle(1.)).indices(),
+            build_mesh(MeshUpload::new(triangle(1.)).data).indices(),
             Some(Indices::U16(_))
         ));
         for count in [65_536, 65_537] {
@@ -574,8 +579,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn worker_preparation_preserves_area_weighted_normals_and_bevy_bounds() {
+        let upload = MeshUpload::new(MeshData {
+            positions: vec![
+                [0., 0., 0.],
+                [2., 0., 0.],
+                [0., 3., 0.],
+                [0., 0., 4.],
+                [-2., -3., -4.],
+                [7., 8., 9.],
+            ],
+            indices: vec![0, 1, 2, 0, 3, 1, 4, 4, 4],
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            colors: Vec::new(),
+        });
+        assert_eq!(
+            upload.data.normals,
+            vec![
+                [0., 0.8, 0.6],
+                [0., 0.8, 0.6],
+                [0., 0., 1.],
+                [0., 1., 0.],
+                [0., 0., 0.],
+                [0., 0., 0.],
+            ]
+        );
+        let bounds = Aabb::from_min_max(upload.bounds_min.into(), upload.bounds_max.into());
+        assert_eq!(build_mesh(upload.data).compute_aabb(), Some(bounds));
+        assert_eq!(upload.bounds_min, [-2., -3., -4.]);
+        assert_eq!(upload.bounds_max, [7., 8., 9.]);
+        let mut supplied = triangle(1.);
+        supplied.normals = vec![[0.2, 0.3, 0.4]; 3];
+        let upload = MeshUpload::new(supplied);
+        assert_eq!(upload.data.normals, vec![[0.2, 0.3, 0.4]; 3]);
+    }
+
     /// CPU upload benchmark; excludes fixture construction, DOM/JS execution,
-    /// rendering and GPU submission. Worker hashing is timed separately from
+    /// rendering and GPU submission. Worker preparation is timed separately from
     /// the rendering thread; its total is reported without claiming a CPU saving.
     /// The reference builds/adds identical meshes and computes their bounds.
     #[test]
@@ -625,7 +667,8 @@ mod tests {
                 let mut reference_handle: Option<Handle<Mesh>> = None;
                 let data = fixtures();
                 let start = Instant::now();
-                for data in data {
+                for mut data in data {
+                    data.generate_missing_normals();
                     let mesh = build_mesh(data);
                     black_box(mesh.compute_aabb());
                     if case == "animated_exclusive" && reference_handle.is_some() {
@@ -641,7 +684,7 @@ mod tests {
                 let data = fixtures();
                 let start = Instant::now();
                 let uploads: Vec<_> = data.into_iter().map(MeshUpload::new).collect();
-                let worker_hash_ms = start.elapsed().as_secs_f64() * 1000.;
+                let worker_prepare_ms = start.elapsed().as_secs_f64() * 1000.;
                 let start = Instant::now();
                 for (i, upload) in uploads.into_iter().enumerate() {
                     let owner = if case == "animated_exclusive" {
@@ -666,7 +709,7 @@ mod tests {
                         1
                     }
                 );
-                eprintln!("mesh_upload case={case} normals={normals} copies={COPIES} vertices=32768 indices=147456 reference_ms={reference_ms:.3} worker_hash_ms={worker_hash_ms:.3} optimized_ms={shared_ms:.3} main_ratio={:.3} combined_ms={:.3} assets={assets}", shared_ms / reference_ms, worker_hash_ms + shared_ms);
+                eprintln!("mesh_upload case={case} normals={normals} copies={COPIES} vertices=32768 indices=147456 reference_ms={reference_ms:.3} worker_prepare_ms={worker_prepare_ms:.3} optimized_ms={shared_ms:.3} main_ratio={:.3} combined_ms={:.3} assets={assets}", shared_ms / reference_ms, worker_prepare_ms + shared_ms);
             }
         }
     }
