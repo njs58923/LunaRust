@@ -687,7 +687,11 @@ fn spawn_space_worker_configured(
                             ));
                             break;
                         }
-                        let eval_result = ctx.engine.eval(&wrapped_code);
+                        let eval_result = if is_ephemeral {
+                            ctx.engine.eval(&wrapped_code)
+                        } else {
+                            ctx.engine.eval_cached(&url, &wrapped_code)
+                        };
                         let timed_out = match watchdog.complete() {
                             Ok(timed_out) => timed_out,
                             Err(err) => {
@@ -5379,6 +5383,26 @@ mod tests {
             .unwrap();
         assert_eq!(worker_tick(&mut worker, 704.0).remove_queue.len(), 5000);
         stop_space_worker(&mut worker);
+    }
+
+    #[test]
+    fn cached_persistent_script_remains_interruptible_after_a_successful_run() {
+        let mut worker = spawn_space_worker_with_limits(90_017, WorkerExecutionLimits {
+            eval: Duration::from_millis(100),
+            tick: Duration::from_millis(100),
+        }).unwrap();
+        let command = || JsWorkerCommand::EvalScript {
+            url: "https://watchdog.test/cached-runaway.js".into(),
+            code: "if (globalThis.loopForever) { for (;;) {} }".into(),
+        };
+        worker.try_send(command()).unwrap();
+        assert!(matches!(worker.event_rx.recv_timeout(Duration::from_secs(5)),
+            Ok(JsWorkerEvent::EvalResult { error: None, .. })));
+        worker_eval(&mut worker, "globalThis.loopForever = true;".into());
+        worker.try_send(command()).unwrap();
+        let error = wait_for_worker_error(&worker, Duration::from_secs(5));
+        stop_space_worker(&mut worker);
+        assert!(error.unwrap().contains("eval exceeded its 100 ms execution limit"));
     }
 
     #[test]

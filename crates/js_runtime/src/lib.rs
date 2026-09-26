@@ -11,6 +11,7 @@ use deno_core::{op2, Extension, FastString, JsRuntime, OpState, RuntimeOptions};
 
 // Public modules
 pub mod cache;
+mod compiled_cache;
 pub mod csp;
 pub mod storage;
 mod location;
@@ -1808,6 +1809,12 @@ impl Engine {
         let script_fast = FastString::Owned(code.to_string().into_boxed_str());
         self.rt.execute_script("<eval>", script_fast)?;
         Ok(())
+    }
+
+    /// Reuse compilation for persistent script sources while executing every
+    /// evaluation against this isolate's independent globals and native state.
+    pub fn eval_cached(&mut self, name: &str, code: &str) -> AnyResult<()> {
+        compiled_cache::execute(&mut self.rt, name, code)
     }
 
     /// Returns a thread-safe handle that can interrupt a long-running script.
