@@ -420,25 +420,40 @@ mod tests {
     fn ready_requires_current_scene_instance_and_leaves_pending_query() {
         let mut app = app();
         let root = app.world_mut().spawn(SpatialBundle::default()).id();
-        assign(&mut app, root, "test.scene", Some("test.scene"), None);
         let scene = app
             .world_mut()
             .resource_mut::<Assets<Scene>>()
             .add(Scene::new(World::new()));
+        // Keep this a scene-readiness test. Starting a nonexistent disk load
+        // and immediately dropping its last handle races Bevy 0.14's async
+        // failure event against removal of the corresponding AssetInfo.
+        let server = app.world().resource::<AssetServer>().clone();
+        let mut queue = CommandQueue::default();
+        let mut updates = AttributeUpdates::default();
+        set_source_impl(
+            &mut Commands::new(&mut queue, app.world()),
+            &server,
+            root,
+            7,
+            "test.scene",
+            Some("test.scene"),
+            None,
+            None,
+            &mut updates,
+            Some(ModelResource {
+                asset_path: "test.scene".into(),
+                scene,
+                gltf: None,
+                generated: None,
+            }),
+        );
+        queue.apply(app.world_mut());
         let child = app
             .world()
             .get::<ModelInstance>(root)
             .unwrap()
             .content
             .unwrap();
-        app.world_mut().entity_mut(child).insert(scene.clone());
-        app.world_mut()
-            .get_mut::<ModelInstance>(root)
-            .unwrap()
-            .resource
-            .as_mut()
-            .unwrap()
-            .scene = scene;
         app.world_mut()
             .get_mut::<ModelContent>(child)
             .unwrap()
