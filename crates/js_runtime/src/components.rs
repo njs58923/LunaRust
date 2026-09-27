@@ -184,16 +184,22 @@ impl Channel {
         !self.state.lock().unwrap().closed
     }
     fn snapshot(&self) -> Snapshot {
+        self.snapshot_if_changed(None, 0).unwrap()
+    }
+    fn snapshot_if_changed(&self, generation: Option<&str>, revision: u64) -> Option<Snapshot> {
         let s = self.state.lock().unwrap();
         if s.closed {
-            return Snapshot::default();
+            return disconnected_if_changed(generation, revision);
         }
-        Snapshot {
+        if generation == Some(self.generation.as_str()) && revision == s.revision {
+            return None;
+        }
+        Some(Snapshot {
             connected: true,
             generation: self.generation.clone(),
             revision: s.revision,
             props: s.props.clone(),
-        }
+        })
     }
     fn emit(&self, name: String, text: &str) -> Result<(), String> {
         if !event_name(&name) {
@@ -313,12 +319,17 @@ impl ComponentPort {
         }
     }
     pub fn context(&self) -> Snapshot {
+        self.context_if_changed(None, 0).unwrap()
+    }
+    /// Avoid cloning and serializing unchanged props during timer/RAF pumps.
+    /// `None` always requests a snapshot, including the disconnected state.
+    pub fn context_if_changed(&self, generation: Option<&str>, revision: u64) -> Option<Snapshot> {
         self.incoming
             .lock()
             .unwrap()
             .as_ref()
-            .map(|c| c.snapshot())
-            .unwrap_or_default()
+            .map(|c| c.snapshot_if_changed(generation, revision))
+            .unwrap_or_else(|| disconnected_if_changed(generation, revision))
     }
     pub fn child_props(&self, id: i32) -> Option<Value> {
         self.children
@@ -371,6 +382,14 @@ impl ComponentPort {
     }
 }
 
+fn disconnected_if_changed(generation: Option<&str>, revision: u64) -> Option<Snapshot> {
+    if generation == Some("") && revision == 0 {
+        None
+    } else {
+        Some(Snapshot::default())
+    }
+}
+
 #[derive(Serialize)]
 pub struct MessageDelivery {
     #[serde(rename = "type")]
@@ -398,6 +417,18 @@ pub fn op_component_validate_message(state: &mut OpState, #[string] generation: 
 #[serde]
 pub fn op_component_context(state: &mut OpState) -> Snapshot {
     state.borrow::<Arc<ComponentPort>>().context()
+}
+#[op2]
+#[serde]
+pub fn op_component_context_if_changed(
+    state: &mut OpState,
+    #[string] generation: &str,
+    #[number] revision: u64,
+) -> Option<Snapshot> {
+    // Channel generations are decimal. This sentinel also distinguishes an
+    // initial read from a cached disconnected snapshot (generation "").
+    let generation = (generation != "?").then_some(generation);
+    state.borrow::<Arc<ComponentPort>>().context_if_changed(generation, revision)
 }
 #[op2]
 #[serde]

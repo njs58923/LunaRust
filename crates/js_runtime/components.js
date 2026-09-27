@@ -47,7 +47,7 @@
     }
   });
   const listeners=new Map();let observed=null, cached=null;
-  function read(){const s=ops.op_component_context();if(!cached||cached.generation!==s.generation||cached.revision!==s.revision||cached.connected!==s.connected)cached=freeze(s);if(!observed)observed=cached;return cached;}
+  function read(){const s=ops.op_component_context_if_changed(cached?.generation??'?',cached?.revision??0);if(s)cached=freeze(s);if(!observed)observed=cached;return cached;}
   function notify(type,detail){const event=Object.freeze({type,detail,target:api,isTrusted:false});for(const fn of [...(listeners.get(type)||[])]){try{fn(event);}catch(e){console.error(e);}}}
   const api=Object.freeze({
     get props(){return read().props;},get connected(){return read().connected;},get revision(){return read().revision;},

@@ -1582,6 +1582,7 @@ impl Engine {
                 ui_text::op_ui_text::decl(),
                 ui_text::op_ui_path::decl(),
                 components::op_component_context::decl(),
+                components::op_component_context_if_changed::decl(),
                 components::op_component_props::decl(),
                 components::op_component_emit::decl(),
                 components::op_component_send::decl(),

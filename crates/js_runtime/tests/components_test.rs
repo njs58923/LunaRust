@@ -225,3 +225,129 @@ fn component_instances_are_independent_and_closed_events_do_not_leak() {
     )
     .is_err());
 }
+
+#[test]
+fn unchanged_context_omits_props_until_update_disconnect_or_rebind() {
+    let parent = Arc::new(ComponentPort::default());
+    let child = Arc::new(ComponentPort::default());
+    let disconnected = child.context_if_changed(None, 0).unwrap();
+    assert!(!disconnected.connected);
+    assert!(child.context_if_changed(Some(""), 0).is_none());
+    let props = serde_json::json!({"nested": {"value": 1}});
+    let first = Channel::new(&parent, &child, 1, "https://props.test".into(),
+        props.clone(), parse_events("").unwrap()).unwrap();
+    let initial = child.context_if_changed(Some(""), 0).unwrap();
+    assert_eq!(initial.revision, 1);
+    assert!(child.context_if_changed(Some(&initial.generation), initial.revision).is_none());
+    first.update_props(props.clone());
+    assert!(child.context_if_changed(Some(&initial.generation), initial.revision).is_none());
+    first.update_props(serde_json::json!({"nested": {"value": 2}}));
+    let updated = child.context_if_changed(Some(&initial.generation), initial.revision).unwrap();
+    assert_eq!(updated.revision, 2);
+    assert_eq!(updated.props["nested"]["value"], 2);
+    assert_eq!(initial.props["nested"]["value"], 1);
+    parent.remove_child(1, &first.generation);
+    assert!(!child.context_if_changed(Some(&updated.generation), updated.revision).unwrap().connected);
+    assert!(child.context_if_changed(Some(""), 0).is_none());
+    let second = Channel::new(&parent, &child, 1, "https://props.test".into(),
+        props, parse_events("").unwrap()).unwrap();
+    // A generation change must invalidate a matching revision and props value.
+    let rebound = child.context_if_changed(Some(&initial.generation), initial.revision).unwrap();
+    assert_eq!(rebound.revision, initial.revision);
+    assert_ne!(rebound.generation, initial.generation);
+    assert_eq!(rebound.generation, second.generation);
+    child.close();
+    assert!(!child.context_if_changed(Some(&rebound.generation), rebound.revision).unwrap().connected);
+    assert!(child.context_if_changed(Some(""), 0).is_none());
+}
+
+#[test]
+fn cached_component_getters_preserve_frozen_props_and_observer_lifecycle() {
+    let parent = Arc::new(ComponentPort::default());
+    let child = Arc::new(ComponentPort::default());
+    let props = serde_json::json!({"nested": {"value": 1}, "items": [1, 2]});
+    let first = Channel::new(&parent, &child, 1, "https://props.test".into(),
+        props.clone(), parse_events("").unwrap()).unwrap();
+    let mut e = engine(child);
+    e.eval(r#"
+        globalThis.firstProps = component.props;
+        globalThis.events = [];
+        for (const type of ['connect', 'disconnect', 'propschange']) {
+            component.addEventListener(type, event => events.push(event));
+        }
+        if(component.props!==firstProps||!Object.isFrozen(firstProps.nested)||!Object.isFrozen(firstProps.items))throw Error('props identity/freeze');
+        firstProps.nested.value=99;
+        if(component.props.nested.value!==1)throw Error('mutation escaped freeze');
+    "#).unwrap();
+    first.update_props(props);
+    e.fire_raf(150.);
+    e.eval("if(events.length||component.props!==firstProps)throw Error('equal props changed');").unwrap();
+    first.update_props(serde_json::json!({"nested": {"value": 2}, "items": [1, 2]}));
+    // An eager getter refreshes the cache but must not consume the observer event.
+    e.eval("globalThis.updatedProps=component.props;if(updatedProps===firstProps||updatedProps.nested.value!==2||firstProps.nested.value!==1)throw Error('snapshot isolation');").unwrap();
+    e.fire_raf(300.);
+    e.eval(r#"
+        if(events.length!==1||events[0].type!=='propschange'||events[0].detail.previous!==firstProps||events[0].detail.props!==updatedProps||events[0].detail.changedKeys.join(',')!=='nested')throw Error('getter consumed propschange');
+        events.length=0;
+    "#).unwrap();
+    parent.remove_child(1, &first.generation);
+    e.eval("if(component.connected||Object.keys(component.props).length)throw Error('closed cached context');").unwrap();
+    e.fire_raf(450.);
+    e.eval("if(events.length!==1||events[0].type!=='disconnect')throw Error('getter consumed disconnect');events.length=0;").unwrap();
+    let child = Arc::new(ComponentPort::default());
+    let _second = Channel::new(&parent, &child, 1, "https://props.test".into(),
+        serde_json::json!({"nested": {"value": 1}, "items": [1, 2]}), parse_events("").unwrap()).unwrap();
+    e.configure_component_port(child);
+    e.eval("if(!component.connected||component.revision!==1||component.props.nested.value!==1)throw Error('rebound cache stale');").unwrap();
+    e.fire_raf(600.);
+    e.eval("if(events.length!==2||events[0].type!=='connect'||events[1].type!=='propschange')throw Error('rebind events missing');events.length=0;").unwrap();
+    e.fire_raf(750.);
+    e.eval("if(events.length)throw Error('duplicate observer events');").unwrap();
+}
+
+#[test]
+#[ignore = "manual unchanged street-sized component props benchmark"]
+fn benchmark_unchanged_component_context() {
+    use std::time::Instant;
+    let parent = Arc::new(ComponentPort::default());
+    let child = Arc::new(ComponentPort::default());
+    let props = serde_json::json!({"pieces": (0..128).map(|id| serde_json::json!({
+        "id": id, "position": [1.25, 2.0, -1.5], "scale": [0.5, 2.0, 0.25],
+        "rotation": [0, 90, 0], "material": "facade-stone"
+    })).collect::<Vec<_>>()});
+    let props_bytes = serde_json::to_vec(&props).unwrap().len();
+    let _channel = Channel::new(&parent, &child, 1, "https://props.test".into(),
+        props, parse_events("").unwrap()).unwrap();
+    let mut e = engine(child);
+    e.eval(r#"
+        globalThis.legacyRead = (() => {
+            let cached=null;
+            function freeze(v){if(v&&typeof v==='object'){for(const x of Object.values(v))freeze(x);Object.freeze(v);}return v;}
+            return () => {
+                const s=Deno.core.ops.op_component_context();
+                if(!cached||cached.generation!==s.generation||cached.revision!==s.revision||cached.connected!==s.connected)cached=freeze(s);
+                return cached.props;
+            };
+        })();
+        globalThis.conditionalRead=()=>component.props;
+        legacyRead();conditionalRead();
+        globalThis.readRepeatedly=(read,count)=>{for(let i=0;i<count;i++){if(read().pieces.length!==128)throw Error('props changed');}};
+    "#).unwrap();
+    let mut legacy = Vec::new();
+    let mut conditional = Vec::new();
+    const POLLS: usize = 2500;
+    for sample in 0..9 {
+        for optimized in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+            let source = format!("readRepeatedly({}, {POLLS});", if optimized { "conditionalRead" } else { "legacyRead" });
+            let started = Instant::now();
+            e.eval(&source).unwrap();
+            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+            if optimized { conditional.push(elapsed); } else { legacy.push(elapsed); }
+        }
+    }
+    legacy.sort_by(f64::total_cmp);
+    conditional.sort_by(f64::total_cmp);
+    // Normalize CPU time to one 25-facade service pass; no wall-clock sleeps or FPS claim.
+    eprintln!("component_context props_bytes={props_bytes} polls={POLLS} service_interval_ms=150 legacy_25_polls_ms={:.6} conditional_25_polls_ms={:.6}",
+        legacy[4] * 25.0 / POLLS as f64, conditional[4] * 25.0 / POLLS as f64);
+}
