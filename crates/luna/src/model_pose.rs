@@ -170,27 +170,40 @@ fn finish_binding(
     )
 }
 
+type BindingCandidates = QueryState<
+    (Entity, &'static ModelInstance),
+    (
+        With<ModelAnimationConfig>,
+        Or<(With<PendingJointBinding>, Changed<ModelAnimationConfig>)>,
+    ),
+>;
+
 /// Called in RenderSync after scene readiness and before snapshots.
-pub fn sync_bindings(world: &mut World) {
-    let ready: Vec<_> = world
-        .query_filtered::<(Entity, &ModelInstance, &ModelAnimationConfig), Or<(With<PendingJointBinding>, Changed<ModelAnimationConfig>)>>()
-        .iter(world)
-        .filter(|(_, m, _)| m.status != ModelStatus::Loading)
-        .map(|(e, m, c)| (e, m.clone(), c.pose_source.clone()))
-        .collect();
-    for (entity, model, mode) in ready {
+pub fn sync_bindings(
+    world: &mut World,
+    candidates: &mut BindingCandidates,
+    mut ready: Local<Vec<Entity>>,
+) {
+    // Exclusive system parameters retain the archetype cache between frames.
+    // Keep only IDs across mutations: cloning a model also clones its paths and
+    // strong asset handles, even when a static instance only needs "clip" status.
+    ready.extend(
+        candidates
+            .iter(world)
+            .filter(|(_, model)| model.status != ModelStatus::Loading)
+            .map(|(entity, _)| entity),
+    );
+    for entity in ready.drain(..) {
         world.entity_mut(entity).remove::<PendingJointBinding>();
+        let model = world.get::<ModelInstance>(entity).unwrap();
+        let node_id = model.node_id;
         if model.status != ModelStatus::Ready {
-            emit(
-                world,
-                model.node_id,
-                "pose-status",
-                if model.status == ModelStatus::Empty {
-                    "empty"
-                } else {
-                    "error"
-                },
-            );
+            let status = if model.status == ModelStatus::Empty {
+                "empty"
+            } else {
+                "error"
+            };
+            emit(world, node_id, "pose-status", status);
             continue;
         }
         if world
@@ -200,29 +213,34 @@ pub fn sync_bindings(world: &mut World) {
             continue;
         }
         // Ordinary clip-only instances never pay for a pose catalog or binding.
+        let mode = world
+            .get::<ModelAnimationConfig>(entity)
+            .unwrap()
+            .pose_source
+            .as_str();
         if mode == "clip" {
-            emit(world, model.node_id, "pose-status", "clip");
+            emit(world, node_id, "pose-status", "clip");
             continue;
         }
         if mode != "script" {
-            emit(world, model.node_id, "pose-status", "error");
+            emit(world, node_id, "pose-status", "error");
             emit(
                 world,
-                model.node_id,
+                node_id,
                 "pose-error",
                 "pose-source must be clip or script; native streams are not implemented",
             );
             continue;
         }
-        match build_binding(world, &model) {
+        match build_binding(world, model) {
             Ok((binding, catalog)) => {
                 world.entity_mut(entity).insert(binding);
-                emit(world, model.node_id, "animation-joints", catalog);
-                emit(world, model.node_id, "pose-error", "");
+                emit(world, node_id, "animation-joints", catalog);
+                emit(world, node_id, "pose-error", "");
             }
             Err(error) => {
-                emit(world, model.node_id, "pose-error", error);
-                emit(world, model.node_id, "pose-status", "error");
+                emit(world, node_id, "pose-error", error);
+                emit(world, node_id, "pose-status", "error");
             }
         }
     }
@@ -505,6 +523,146 @@ mod tests {
         assert_eq!(catalog["nodes"][2]["parent"], 1);
         assert_eq!(catalog["nodes"][1]["name"], catalog["nodes"][2]["name"]);
         assert_eq!(catalog["skins"][0]["joints"], serde_json::json!([2, 1]));
+    }
+
+    #[test]
+    fn cached_binding_query_stays_idle_and_observes_mode_changes_and_loading() {
+        let (mut app, root, _, original_token) = fixture();
+        app.world_mut()
+            .entity_mut(root)
+            .remove::<ModelPoseBinding>();
+        app.world_mut()
+            .get_mut::<ModelAnimationConfig>(root)
+            .unwrap()
+            .pose_source = "clip".into();
+        app.update();
+        assert!(app.world().get::<ModelPoseBinding>(root).is_none());
+        app.world_mut().resource_mut::<AttributeUpdates>().0.clear();
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(app.world().resource::<AttributeUpdates>().0.is_empty());
+
+        // A direct component mutation must remain observable, even without an
+        // insertion event or an explicit pending marker.
+        app.world_mut()
+            .get_mut::<ModelAnimationConfig>(root)
+            .unwrap()
+            .pose_source = "script".into();
+        app.update();
+        let token = app
+            .world()
+            .get::<ModelPoseBinding>(root)
+            .unwrap()
+            .token
+            .clone();
+        assert_ne!(token, original_token);
+        app.world_mut().resource_mut::<AttributeUpdates>().0.clear();
+        {
+            let mut model = app.world_mut().get_mut::<ModelInstance>(root).unwrap();
+            model.generation += 1;
+            model.status = ModelStatus::Loading;
+        }
+        app.world_mut().entity_mut(root).insert(PendingJointBinding);
+        app.update();
+        assert!(app.world().get::<PendingJointBinding>(root).is_some());
+        assert!(app.world().resource::<AttributeUpdates>().0.is_empty());
+        app.world_mut()
+            .get_mut::<ModelInstance>(root)
+            .unwrap()
+            .status = ModelStatus::Ready;
+        app.update();
+        assert!(app.world().get::<PendingJointBinding>(root).is_none());
+        assert_ne!(
+            app.world().get::<ModelPoseBinding>(root).unwrap().token,
+            token
+        );
+        assert!(app
+            .world()
+            .resource::<AttributeUpdates>()
+            .0
+            .iter()
+            .any(|(_, key, _)| key == "animation-joints"));
+        app.world_mut().resource_mut::<AttributeUpdates>().0.clear();
+        app.update();
+        assert!(app.world().resource::<AttributeUpdates>().0.is_empty());
+    }
+
+    #[test]
+    #[ignore = "manual CPU benchmark of pose binding candidate collection, not frame time"]
+    fn benchmark_static_pose_binding_candidates() {
+        for count in [100, 1_000, 10_000] {
+            let mut world = World::new();
+            for node_id in 0..count {
+                world.spawn((
+                    ModelAnimationConfig::from_attrs(None),
+                    ModelInstance {
+                        node_id,
+                        generation: 1,
+                        source: format!("mesh://street/{node_id}"),
+                        content: None,
+                        status: ModelStatus::Ready,
+                        resource: Some(ModelResource {
+                            asset_path: format!("mesh://street/{node_id}"),
+                            scene: Handle::default(),
+                            gltf: None,
+                            generated: None,
+                        }),
+                    },
+                ));
+            }
+            let mut candidates = BindingCandidates::new(&mut world);
+            let mut ready = Vec::new();
+            for phase in ["mount", "idle"] {
+                if phase == "idle" {
+                    world.clear_trackers();
+                }
+                let mut before = Vec::new();
+                let mut after = Vec::new();
+                for sample in 0..200 {
+                    for cached in if sample % 2 == 0 {
+                        [false, true]
+                    } else {
+                        [true, false]
+                    } {
+                        let start = std::time::Instant::now();
+                        if cached {
+                            ready.clear();
+                            ready.extend(
+                                candidates
+                                    .iter(&world)
+                                    .filter(|(_, model)| model.status != ModelStatus::Loading)
+                                    .map(|(entity, _)| entity),
+                            );
+                            std::hint::black_box(&ready);
+                            after.push(start.elapsed().as_secs_f64() * 1_000_000.0);
+                        } else {
+                            let ready: Vec<_> = world
+                                .query_filtered::<(Entity, &ModelInstance, &ModelAnimationConfig), Or<(With<PendingJointBinding>, Changed<ModelAnimationConfig>)>>()
+                                .iter(&world)
+                                .filter(|(_, model, _)| model.status != ModelStatus::Loading)
+                                .map(|(entity, model, config)| (entity, model.clone(), config.pose_source.clone()))
+                                .collect();
+                            std::hint::black_box(&ready);
+                            // Include destruction of the temporary strings and
+                            // handles that the original collection allocated.
+                            drop(ready);
+                            before.push(start.elapsed().as_secs_f64() * 1_000_000.0);
+                        }
+                    }
+                }
+                assert_eq!(
+                    ready.len(),
+                    if phase == "mount" { count as usize } else { 0 }
+                );
+                before.sort_by(f64::total_cmp);
+                after.sort_by(f64::total_cmp);
+                println!(
+                    "models={count} phase={phase} before_median_us={:.3} after_median_us={:.3}",
+                    before[100], after[100]
+                );
+            }
+        }
     }
 
     #[test]
