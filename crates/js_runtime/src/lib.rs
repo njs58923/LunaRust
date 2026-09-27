@@ -12,6 +12,7 @@ use deno_core::{op2, Extension, FastString, JsRuntime, OpState, RuntimeOptions};
 // Public modules
 pub mod cache;
 mod compiled_cache;
+pub mod idle_heap;
 #[cfg(test)]
 mod heap_benchmark;
 pub mod csp;

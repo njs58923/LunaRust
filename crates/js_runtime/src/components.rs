@@ -297,6 +297,10 @@ impl ComponentPort {
         // (and exclusive cache-line ownership) unless a producer requested work.
         self.wake.load(Ordering::Acquire) && self.wake.swap(false, Ordering::AcqRel)
     }
+    /// Read without consuming the host's wakeup when considering idle work.
+    pub fn has_wake(&self) -> bool {
+        self.wake.load(Ordering::Acquire)
+    }
     pub fn close(&self) {
         self.closed.store(true, Ordering::Release);
         if let Some(c) = self.incoming.lock().unwrap().take() {

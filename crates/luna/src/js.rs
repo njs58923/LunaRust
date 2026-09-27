@@ -253,6 +253,7 @@ pub enum JsWorkerEvent {
         space_id: u32,
         loaded_scripts: Vec<String>,
         capabilities_bits: u64,
+        idle_heap_collections: u64,
     },
     WorkerError(String),
 }
@@ -651,19 +652,59 @@ fn spawn_space_worker_configured(
                 }
             };
 
+            let mut idle_heap = js_runtime::idle_heap::IdleHeapReclaimer::default();
+            let mut idle_heap_collections = 0;
             'worker: loop {
                 if worker_termination.shutdown_requested.load(Ordering::Acquire) {
                     break;
                 }
-                // Shutdown either wakes this receive or finds a full queue,
-                // in which case the atomic flag is checked before its next item.
-                // Static isolates do not need periodic OS wakeups.
-                let cmd = match cmd_rx.recv() {
-                    Ok(cmd) => cmd,
-                    Err(_) => break,
+                // After a mesh burst, allow one delayed heap compaction. Once
+                // handled, static workers go back to an untimed blocking receive.
+                let cmd = loop {
+                    let received = match idle_heap.next_deadline() {
+                        Some(deadline) => cmd_rx.recv_timeout(
+                            deadline.saturating_duration_since(Instant::now())),
+                        None => cmd_rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                    };
+                    match received {
+                        Ok(cmd) => break cmd,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break 'worker,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            // Prefer queued commands, especially shutdown, over
+                            // maintenance. Do not consume a component wakeup here.
+                            match cmd_rx.try_recv() {
+                                Ok(cmd) => break cmd,
+                                Err(mpsc::TryRecvError::Disconnected) => break 'worker,
+                                Err(mpsc::TryRecvError::Empty) => {}
+                            }
+                            if worker_termination.shutdown_requested.load(Ordering::Acquire) {
+                                break 'worker;
+                            }
+                            let now = Instant::now();
+                            if ctx.engine.has_pending_animation_frames() {
+                                idle_heap.cancel();
+                            } else if thread_component_port.has_wake()
+                                || ctx.engine.next_timer_deadline().is_some_and(|deadline|
+                                    deadline <= now + Duration::from_millis(20))
+                            {
+                                idle_heap.defer(now);
+                            } else {
+                                // No guarded JS command is running. Full GC may
+                                // pause this worker, but never the rendering thread.
+                                if matches!(idle_heap.collect_if_due(&mut ctx.engine, now),
+                                    js_runtime::idle_heap::ReclaimOutcome::Collected { .. })
+                                {
+                                    idle_heap_collections += 1;
+                                }
+                            }
+                        }
+                    }
                 };
                 if worker_termination.shutdown_requested.load(Ordering::Acquire) {
                     break;
+                }
+                if !matches!(&cmd, JsWorkerCommand::Tick { .. } | JsWorkerCommand::RequestDebugState) {
+                    idle_heap.note_activity(Instant::now());
                 }
                 match cmd {
                     JsWorkerCommand::PushKeyboard(events) => ctx.engine.push_keyboard_events(events),
@@ -806,6 +847,18 @@ fn spawn_space_worker_configured(
                             ws_send_queue: ctx.engine.drain_ws_send_queue(),
                             ws_close_queue: ctx.engine.drain_ws_close_queue(),
                         };
+                        let now = Instant::now();
+                        if tick_data.mesh_commands.1.iter().any(|command|
+                            matches!(command, js_runtime::mesh::MeshCommand::Upload(..)))
+                        {
+                            idle_heap.on_mesh_upload(now);
+                        }
+                        if tick_data.needs_continuous_ticks {
+                            idle_heap.cancel();
+                        } else if tick_data.has_host_work() {
+                            idle_heap.note_activity(now);
+                        }
+                        // Publish geometry before any idle maintenance can run.
                         let _ = event_tx.send(JsWorkerEvent::TickData(tick_data));
                     }
                     JsWorkerCommand::PushElementCreationResults(results) => {
@@ -896,6 +949,7 @@ fn spawn_space_worker_configured(
                             space_id,
                             loaded_scripts: ctx.loaded_scripts.iter().cloned().collect(),
                             capabilities_bits: ctx.capabilities_bits,
+                            idle_heap_collections,
                         });
                     }
                     JsWorkerCommand::Shutdown => break 'worker,
@@ -2637,6 +2691,7 @@ pub fn js_tick_system(world: &mut World) {
                         space_id: _debug_space_id,
                         loaded_scripts: _loaded_scripts,
                         capabilities_bits: _capabilities_bits,
+                        idle_heap_collections: _idle_heap_collections,
                     }) => {
                         // TODO: guardar en resource de debug si se va a mostrar en UI
                     }
@@ -5336,6 +5391,52 @@ mod tests {
             worker.event_rx.recv_timeout(Duration::from_secs(2)),
             Err(mpsc::RecvTimeoutError::Disconnected)
         ), "a worker blocked waiting for commands must still stop promptly");
+    }
+
+    #[test]
+    fn idle_mesh_worker_collects_once_and_preserves_live_state_and_deadlines() {
+        fn collections(worker: &mut SpaceScriptWorker) -> u64 {
+            worker.try_send(JsWorkerCommand::RequestDebugState).unwrap();
+            match worker.event_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                JsWorkerEvent::DebugState { idle_heap_collections, .. } => idle_heap_collections,
+                JsWorkerEvent::WorkerError(error) => panic!("{error}"),
+                _ => panic!("expected worker diagnostics"),
+            }
+        }
+        let mut worker = spawn_space_worker(90_019).unwrap();
+        worker_eval(&mut worker, r#"
+            // Keep the heap above the threshold independently of automatic GC.
+            // This live data must never be discarded to reclaim mesh temporaries.
+            globalThis.retained = new Array(750000).fill(7);
+            globalThis.mesh = MeshResource.create({positions:[0,0,0, 1,0,0, 0,1,0]});
+            setTimeout(() => console.log('LATER'), 3600000);
+            hiperspace.dimention.addEventListener('toque', () => {
+                if(retained.length!==750000 || retained[749999]!==7)throw Error('live state lost');
+                mesh.update({positions:[0,0,0, 2,0,0, 0,1,0]});
+                console.log('AFTER_GC');
+            });
+        "#.into());
+        let first = worker_tick(&mut worker, 16.0);
+        assert_eq!(first.mesh_commands.1.len(), 1);
+        assert!(!first.needs_continuous_ticks);
+        let timer_deadline = first.next_timer_deadline.unwrap();
+        let limit = Instant::now() + Duration::from_secs(5);
+        while collections(&mut worker) == 0 {
+            assert!(Instant::now() < limit, "idle mesh worker never collected its heap");
+            thread::sleep(Duration::from_millis(20));
+        }
+        let empty = worker_tick(&mut worker, 32.0);
+        assert!(!empty.has_host_work());
+        assert_eq!(empty.next_timer_deadline, Some(timer_deadline));
+        worker.try_send(JsWorkerCommand::PushDomToqueEvents(vec![(0, 0., 0., 0.)])).unwrap();
+        let updated = worker_tick(&mut worker, 48.0);
+        assert_eq!(updated.mesh_commands.1.len(), 1);
+        assert!(updated.logs.iter().any(|(_, message)| message == "AFTER_GC"));
+        assert_eq!(updated.next_timer_deadline, Some(timer_deadline));
+        assert_eq!(collections(&mut worker), 1);
+        stop_space_worker(&mut worker);
+        assert!(matches!(worker.event_rx.recv_timeout(Duration::from_secs(2)),
+            Err(mpsc::RecvTimeoutError::Disconnected)));
     }
 
     #[test]
