@@ -120,6 +120,15 @@ presupuesto estricto. La pausa ocurre en el worker con el watchdog JS desarmado;
 puede retrasar un mensaje que llegue mientras se está colectando. Los objetos
 vivos permanecen alcanzables, y no se ejecuta un event loop adicional de V8.
 
+El segundo fixture ejecuta esa política completa, atendiendo los timers reales
+durante los 500 ms de espera. Colectó 21 fachadas y omitió cuatro por tamaño:
+el heap usado sumado pasó de 171.015.072 a 46.778.120 bytes (−72,6%), el físico
+de 362.156.032 a 104.738.816 y el externo de 15.470.597 a 3.066.586.
+La mediana de colección fue 3,322 ms y el máximo 7,867 ms. Las validaciones de
+listeners/redraw pasaron; hubo un redraw posterior de 95,274 ms. Estos datos
+corresponden a `benchmark_real_street_idle_heap_policy`, con la política de
+producción, y no suponen que se colecten todos los isolates pequeños.
+
 ## Ejecutar las comprobaciones
 
 Desde la raíz del repo, en PowerShell:
@@ -139,6 +148,7 @@ cargo test -p luna --lib benchmark_empty_timer_dispatch -- --ignored --nocapture
 cargo test -p luna --lib benchmark_static_pose_binding_candidates -- --ignored --nocapture
 cargo test -p js_runtime --test components_test benchmark_unchanged_component_context -- --ignored --nocapture
 cargo test -p js_runtime --lib benchmark_real_street_retained_heap -- --ignored --nocapture
+cargo test -p js_runtime --lib benchmark_real_street_idle_heap_policy -- --ignored --nocapture
 ```
 
 El fixture de fachadas requiere Bun y el checkout externo de `server_expo`.
