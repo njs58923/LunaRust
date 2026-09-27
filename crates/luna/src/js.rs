@@ -118,6 +118,7 @@ impl DomMirrorDirty {
     }
 }
 
+#[derive(Default)]
 pub struct JsTickData {
     pub keyboard_commands: Vec<serde_json::Value>,
     pub audio_commands: Vec<js_runtime::audio::SharedPlayback>,
@@ -142,6 +143,32 @@ pub struct JsTickData {
     pub ws_connect_queue: Vec<(i32, String)>,
     pub ws_send_queue: Vec<(i32, String)>,
     pub ws_close_queue: Vec<i32>,
+}
+
+impl JsTickData {
+    fn has_host_work(&self) -> bool {
+        // Exhaustive destructuring makes newly added queues a compile error
+        // until they are included here. Scheduling alone is not a DOM change.
+        let Self {
+            keyboard_commands, audio_commands, pose_batches, mesh_commands,
+            needs_continuous_ticks: _, next_timer_deadline: _, logs,
+            attr_updates, pos_updates, rot_updates, scale_updates,
+            creation_queue, hierarchy_queue, remove_queue, fetch_queue,
+            capture_queue, navigate_queue, world_navigation, tab_action_queue,
+            shell_outbox, ws_connect_queue, ws_send_queue, ws_close_queue,
+        } = self;
+        !keyboard_commands.is_empty() || !audio_commands.is_empty()
+            || !pose_batches.is_empty() || !mesh_commands.1.is_empty()
+            || !logs.is_empty() || !attr_updates.is_empty()
+            || !pos_updates.is_empty() || !rot_updates.is_empty()
+            || !scale_updates.is_empty() || !creation_queue.is_empty()
+            || !hierarchy_queue.is_empty() || !remove_queue.is_empty()
+            || !fetch_queue.is_empty() || !capture_queue.is_empty()
+            || !navigate_queue.is_empty() || !world_navigation.is_empty()
+            || !tab_action_queue.is_empty() || !shell_outbox.is_empty()
+            || !ws_connect_queue.is_empty() || !ws_send_queue.is_empty()
+            || !ws_close_queue.is_empty()
+    }
 }
 
 /// Evento que el bridge WS (`ws.rs`) inyecta de vuelta en un worker JS.
@@ -2697,6 +2724,18 @@ pub fn js_tick_system(world: &mut World) {
         }
     }
 
+    if !tick_batches.is_empty() {
+        // A timer may run without producing any effects. Still consume its
+        // mesh scope: a restarted isolate must release its predecessor's mesh.
+        // Resolve all mesh changes together instead of scanning model instances
+        // independently for every facade finishing in this frame.
+        let mesh_batches = tick_batches.iter_mut().map(|(space_id, data)| {
+            (*space_id, data.mesh_commands.0, std::mem::take(&mut data.mesh_commands.1))
+        }).collect();
+        crate::dynamic_mesh::apply_command_batches(world, mesh_batches);
+        tick_batches.retain(|(_, data)| data.has_host_work());
+    }
+
     if tick_batches.is_empty() {
         finish_js_snapshot_sync(world, contexts_removed || pending_snapshot_in_flight, snapshot_acks);
         return;
@@ -2739,7 +2778,6 @@ pub fn js_tick_system(world: &mut World) {
             }
         }
         crate::audio::apply_commands(world, space_id, data.audio_commands);
-        crate::dynamic_mesh::apply_commands(world, space_id, data.mesh_commands.0, data.mesh_commands.1);
         if !data.logs.is_empty() {
             logs_by_context.push((space_id, data.logs));
         }
@@ -4869,6 +4907,96 @@ mod tests {
         js_tick_system(app.world_mut());
         assert!(matches!(commands.try_recv(), Err(mpsc::TryRecvError::Empty)),
             "a due timer must not enqueue a second pump while its first tick is in flight");
+    }
+
+    #[test]
+    fn empty_timer_responses_preserve_deadlines_and_raf_without_host_mutations() {
+        let (mut app, space_id) = snapshot_test_app();
+        let (worker, commands, events) = fake_worker(false);
+        app.world_mut().non_send_resource_mut::<ScriptRuntimeManager>()
+            .contexts.insert(space_id, worker);
+        let deadline = Instant::now() + Duration::from_secs(3600);
+        events.send(JsWorkerEvent::TickData(JsTickData {
+            next_timer_deadline: Some(deadline),
+            ..Default::default()
+        })).unwrap();
+        app.world_mut().clear_trackers();
+        js_tick_system(app.world_mut());
+        let manager = app.world().non_send_resource::<ScriptRuntimeManager>();
+        assert_eq!(manager.contexts[&space_id].next_timer_deadline, Some(deadline));
+        assert!(!manager.contexts[&space_id].needs_tick);
+        assert!(!app.world().get_resource_ref::<AttributeUpdates>().unwrap().is_changed());
+        assert!(!app.world().get_resource_ref::<TransformUpdates>().unwrap().is_changed());
+        assert!(!app.world().get_resource_ref::<LogPanel>().unwrap().is_changed());
+        assert!(matches!(commands.try_recv(), Err(mpsc::TryRecvError::Empty)));
+
+        events.send(JsWorkerEvent::TickData(JsTickData {
+            needs_continuous_ticks: true,
+            ..Default::default()
+        })).unwrap();
+        js_tick_system(app.world_mut());
+        assert!(app.world().non_send_resource::<ScriptRuntimeManager>()
+            .contexts[&space_id].needs_tick);
+        js_tick_system(app.world_mut());
+        assert!(matches!(commands.try_recv(), Ok(JsWorkerCommand::Tick { .. })));
+    }
+
+    #[test]
+    fn empty_tick_from_restarted_isolate_releases_its_old_mesh_scope() {
+        use js_runtime::mesh::{MeshCommand, MeshData, MeshUpload};
+        let (mut app, space_id) = snapshot_test_app();
+        let (worker, _commands, events) = fake_worker(false);
+        app.world_mut().non_send_resource_mut::<ScriptRuntimeManager>()
+            .contexts.insert(space_id, worker);
+        app.init_resource::<Assets<Mesh>>();
+        app.init_resource::<Assets<StandardMaterial>>();
+        let src = "mesh://empty-tick-scope/1";
+        crate::dynamic_mesh::apply_commands(app.world_mut(), space_id, 1,
+            vec![MeshCommand::Upload(src.into(), MeshUpload::new(MeshData {
+                positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+                indices: vec![0, 1, 2],
+                normals: vec![], uvs: vec![], colors: vec![],
+            }))]);
+        assert!(app.world().resource::<crate::dynamic_mesh::DynamicMeshes>()
+            .get(src, Some(space_id)).is_some());
+        events.send(JsWorkerEvent::TickData(JsTickData {
+            mesh_commands: (2, Vec::new()),
+            ..Default::default()
+        })).unwrap();
+        app.world_mut().clear_trackers();
+        js_tick_system(app.world_mut());
+        assert!(app.world().resource::<crate::dynamic_mesh::DynamicMeshes>()
+            .get(src, Some(space_id)).is_none());
+        assert!(!app.world().get_resource_ref::<AttributeUpdates>().unwrap().is_changed());
+        assert!(!app.world().get_resource_ref::<TransformUpdates>().unwrap().is_changed());
+    }
+
+    #[test]
+    #[ignore = "manual host dispatch benchmark for timers without effects"]
+    fn benchmark_empty_timer_dispatch() {
+        for count in [100, 1000, 2000] {
+            let (mut app, spaces) = snapshot_test_app_with_spaces(count);
+            let mut channels = Vec::new();
+            for space in spaces {
+                let (worker, commands, events) = fake_worker(false);
+                app.world_mut().non_send_resource_mut::<ScriptRuntimeManager>()
+                    .contexts.insert(space, worker);
+                channels.push((commands, events));
+            }
+            let mut elapsed = Duration::ZERO;
+            for _ in 0..100 {
+                for (_, events) in &channels {
+                    events.send(JsWorkerEvent::TickData(JsTickData::default())).unwrap();
+                }
+                let started = Instant::now();
+                js_tick_system(app.world_mut());
+                elapsed += started.elapsed();
+            }
+            eprintln!("empty_timer_dispatch isolates={count} mean_us={:.3}",
+                elapsed.as_secs_f64() * 10_000.0);
+            assert!(channels.iter().all(|(commands, _)|
+                matches!(commands.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        }
     }
 
     #[test]

@@ -106,155 +106,192 @@ fn invalidate(world: &mut World, sources: &HashSet<String>) {
 }
 
 pub fn apply_commands(world: &mut World, owner: u32, scope: u64, commands: Vec<MeshCommand>) {
-    if commands.is_empty() {
-        // Most isolate ticks have no mesh work. Still process a changed scope:
-        // a restarted isolate must release the previous generation's resources.
-        match world.get_resource::<DynamicMeshes>() {
-            None => return,
-            Some(registry) if registry.scopes.get(&owner) == Some(&scope) => return,
-            _ => {}
-        }
+    if commands.is_empty()
+        && world
+            .get_resource::<DynamicMeshes>()
+            .is_none_or(|registry| registry.scopes.get(&owner) == Some(&scope))
+    {
+        return;
     }
+    apply_command_batches(world, vec![(owner, scope, commands)]);
+}
+
+/// Apply the frame's isolate responses in order, then visit mounted instances
+/// once. Streets can finish hundreds of independent uploads in the same frame;
+/// scanning all instances after each response makes that mount cost quadratic.
+pub fn apply_command_batches(world: &mut World, batches: Vec<(u32, u64, Vec<MeshCommand>)>) {
+    let registry = world.get_resource::<DynamicMeshes>();
+    let Some(first_work) = batches.iter().position(|(owner, scope, commands)| {
+        !commands.is_empty()
+            || registry.is_some_and(|registry| registry.scopes.get(owner) != Some(scope))
+    }) else {
+        // Empty ticks still need a changed scope processed, but must not dirty
+        // the registry or create it before the first generated resource exists.
+        return;
+    };
     world.init_resource::<DynamicMeshes>();
-    let worker = world
-        .get_non_send_resource::<crate::js::ScriptRuntimeManager>()
-        .and_then(|m| m.contexts.get(&owner))
-        .and_then(|w| w.join.as_ref())
-        .map(|j| j.thread().id());
     let mut changed = HashSet::new();
     let mut replacements = HashMap::new();
     world.resource_scope(|world, mut registry: Mut<DynamicMeshes>| {
-        // A restarted isolate cannot inherit resources from its predecessor.
-        // A first upload cannot own any previous entries. Avoid an O(n) scan
-        // per new isolate when a street loads thousands of independent pieces.
-        if registry
-            .scopes
-            .insert(owner, scope)
-            .is_some_and(|old| old != scope)
-        {
-            let stale: Vec<_> = registry
-                .entries
-                .iter()
-                .filter(|(_, entry)| entry.owner == owner && entry.scope != scope)
-                .map(|(src, _)| src.clone())
-                .collect();
-            for src in stale {
-                registry.remove(&src);
-                changed.insert(src);
+        for (owner, scope, commands) in batches.into_iter().skip(first_work) {
+            if commands.is_empty() && registry.scopes.get(&owner) == Some(&scope) {
+                continue;
             }
-        }
-        for command in commands {
-            match command {
-                MeshCommand::Dispose(src) => {
-                    if registry
-                        .entries
-                        .get(&src)
-                        .is_some_and(|e| e.owner == owner && e.scope == scope)
-                    {
-                        registry.remove(&src);
-                        changed.insert(src);
-                    }
+            let worker = world
+                .get_non_send_resource::<crate::js::ScriptRuntimeManager>()
+                .and_then(|m| m.contexts.get(&owner))
+                .and_then(|w| w.join.as_ref())
+                .map(|j| j.thread().id());
+            // A restarted isolate cannot inherit resources from its predecessor.
+            // A first upload cannot own any previous entries. Avoid an O(n) scan
+            // per new isolate when a street loads thousands of independent pieces.
+            if registry
+                .scopes
+                .insert(owner, scope)
+                .is_some_and(|old| old != scope)
+            {
+                let stale: Vec<_> = registry
+                    .entries
+                    .iter()
+                    .filter(|(_, entry)| entry.owner == owner && entry.scope != scope)
+                    .map(|(src, _)| src.clone())
+                    .collect();
+                for src in stale {
+                    registry.remove(&src);
+                    replacements.remove(&src);
+                    changed.insert(src);
                 }
-                MeshCommand::Upload(src, upload) => {
-                    if let Some(entry) = registry.entries.get(&src) {
-                        if entry.owner != owner || entry.scope != scope {
-                            continue;
+            }
+            for command in commands {
+                match command {
+                    MeshCommand::Dispose(src) => {
+                        if registry
+                            .entries
+                            .get(&src)
+                            .is_some_and(|e| e.owner == owner && e.scope == scope)
+                        {
+                            registry.remove(&src);
+                            replacements.remove(&src);
+                            changed.insert(src);
                         }
                     }
-                    let fingerprint = blake3::Hash::from_bytes(upload.fingerprint);
-                    if registry
-                        .entries
-                        .get(&src)
-                        .is_some_and(|e| e.fingerprint == fingerprint)
-                    {
-                        // Repeated uploads need no normals, asset events or bounds updates.
-                        continue;
-                    }
-                    let previous = registry.entries.remove(&src);
-                    let reusable = previous.as_ref().and_then(|entry| {
-                        (registry.geometry[&entry.fingerprint].owners == 1)
-                            .then(|| entry.mesh.clone())
-                    });
-                    if let Some(entry) = &previous {
-                        registry.release_geometry(entry.fingerprint);
-                    }
-                    let (handle, aabb) = if let Some(shared) =
-                        registry.geometry.get_mut(&fingerprint)
-                    {
-                        shared.owners += 1;
-                        (shared.mesh.clone(), shared.aabb)
-                    } else {
-                        let aabb =
-                            Aabb::from_min_max(upload.bounds_min.into(), upload.bounds_max.into());
-                        let mesh = build_mesh(upload.data);
-                        let mut assets = world.resource_mut::<Assets<Mesh>>();
-                        let handle = if let Some(handle) = reusable {
-                            // Animated meshes keep their allocation when no other resource
-                            // shares it. A shared static mesh detaches on its first edit.
-                            assets.insert(handle.id(), mesh);
-                            handle
-                        } else {
-                            assets.add(mesh)
-                        };
-                        registry.geometry.insert(
-                            fingerprint,
-                            SharedGeometry {
-                                mesh: handle.clone(),
-                                aabb,
-                                owners: 1,
-                            },
-                        );
-                        (handle, aabb)
-                    };
-                    if let Some(mut entry) = previous {
-                        entry.mesh = handle.clone();
-                        entry.fingerprint = fingerprint;
-                        entry.model.generated.as_mut().unwrap().mesh = handle.clone();
-                        entry.model.generated.as_mut().unwrap().aabb = aabb;
-                        registry.entries.insert(src.clone(), entry);
-                        replacements.insert(src, (handle, aabb));
-                    } else {
-                        let material = registry
-                            .material
-                            .get_or_insert_with(|| {
-                                world.resource_mut::<Assets<StandardMaterial>>().add(
-                                    StandardMaterial {
-                                        perceptual_roughness: 0.8,
-                                        ..default()
-                                    },
-                                )
-                            })
-                            .clone();
-                        registry.entries.insert(
-                            src.clone(),
-                            Entry {
-                                owner,
-                                scope,
-                                worker,
-                                mesh: handle.clone(),
-                                fingerprint,
-                                model: ModelResource {
-                                    asset_path: src.clone(),
-                                    scene: Handle::default(),
-                                    gltf: None,
-                                    generated: Some(GeneratedModel {
-                                        mesh: handle,
-                                        material,
+                    MeshCommand::Upload(src, upload) => {
+                        if let Some(entry) = registry.entries.get(&src) {
+                            if entry.owner != owner || entry.scope != scope {
+                                continue;
+                            }
+                        }
+                        let fingerprint = blake3::Hash::from_bytes(upload.fingerprint);
+                        if registry
+                            .entries
+                            .get(&src)
+                            .is_some_and(|e| e.fingerprint == fingerprint)
+                        {
+                            // Repeated uploads need no normals, asset events or bounds updates.
+                            continue;
+                        }
+                        let previous = registry.entries.remove(&src);
+                        let reusable = previous.as_ref().and_then(|entry| {
+                            (registry.geometry[&entry.fingerprint].owners == 1)
+                                .then(|| entry.mesh.clone())
+                        });
+                        if let Some(entry) = &previous {
+                            registry.release_geometry(entry.fingerprint);
+                        }
+                        let (handle, aabb) =
+                            if let Some(shared) = registry.geometry.get_mut(&fingerprint) {
+                                shared.owners += 1;
+                                (shared.mesh.clone(), shared.aabb)
+                            } else {
+                                let aabb = Aabb::from_min_max(
+                                    upload.bounds_min.into(),
+                                    upload.bounds_max.into(),
+                                );
+                                let mesh = build_mesh(upload.data);
+                                let mut assets = world.resource_mut::<Assets<Mesh>>();
+                                let handle = if let Some(handle) = reusable {
+                                    // Animated meshes keep their allocation when no other resource
+                                    // shares it. A shared static mesh detaches on its first edit.
+                                    assets.insert(handle.id(), mesh);
+                                    handle
+                                } else {
+                                    assets.add(mesh)
+                                };
+                                registry.geometry.insert(
+                                    fingerprint,
+                                    SharedGeometry {
+                                        mesh: handle.clone(),
                                         aabb,
-                                    }),
+                                        owners: 1,
+                                    },
+                                );
+                                (handle, aabb)
+                            };
+                        // Keep only the final live upload for each source.
+                        // Dispose/reupload can retain the same asset path, for
+                        // which model reconciliation preserves the instance;
+                        // it therefore also needs the final mesh and bounds.
+                        replacements.insert(src.clone(), (handle.clone(), aabb));
+                        if let Some(mut entry) = previous {
+                            entry.mesh = handle.clone();
+                            entry.fingerprint = fingerprint;
+                            entry.model.generated.as_mut().unwrap().mesh = handle.clone();
+                            entry.model.generated.as_mut().unwrap().aabb = aabb;
+                            registry.entries.insert(src.clone(), entry);
+                        } else {
+                            let material = registry
+                                .material
+                                .get_or_insert_with(|| {
+                                    world.resource_mut::<Assets<StandardMaterial>>().add(
+                                        StandardMaterial {
+                                            perceptual_roughness: 0.8,
+                                            ..default()
+                                        },
+                                    )
+                                })
+                                .clone();
+                            registry.entries.insert(
+                                src.clone(),
+                                Entry {
+                                    owner,
+                                    scope,
+                                    worker,
+                                    mesh: handle.clone(),
+                                    fingerprint,
+                                    model: ModelResource {
+                                        asset_path: src.clone(),
+                                        scene: Handle::default(),
+                                        gltf: None,
+                                        generated: Some(GeneratedModel {
+                                            mesh: handle,
+                                            material,
+                                            aabb,
+                                        }),
+                                    },
                                 },
-                            },
-                        );
-                        changed.insert(src);
+                            );
+                            changed.insert(src);
+                        }
                     }
                 }
             }
         }
     });
-    if !replacements.is_empty() {
+    if !changed.is_empty() || !replacements.is_empty() {
         let mut contents = Vec::new();
+        let mut dirty_ids = Vec::new();
         for mut instance in world.query::<&mut ModelInstance>().iter_mut(world) {
+            if changed.contains(&instance.source) {
+                dirty_ids.push(instance.node_id);
+            }
             if let Some((mesh, aabb)) = replacements.get(&instance.source) {
+                if !instance
+                    .resource
+                    .as_ref()
+                    .is_some_and(|r| r.generated.is_some())
+                {
+                    continue;
+                }
                 if let Some(generated) = instance
                     .resource
                     .as_mut()
@@ -273,8 +310,17 @@ pub fn apply_commands(world: &mut World, owner: u32, scope: u64, commands: Vec<M
                 entity.insert((mesh, aabb));
             }
         }
+        if !dirty_ids.is_empty() {
+            if let Some(mut dirty) = world.get_resource_mut::<DirtyNodes>() {
+                dirty.0.extend(dirty_ids.iter().copied());
+            }
+            if let Some(mut fast) = world.get_resource_mut::<TransformOnlyDirtyNodes>() {
+                for id in dirty_ids {
+                    fast.0.remove(&id);
+                }
+            }
+        }
     }
-    invalidate(world, &changed);
 }
 
 /// Only inspect resource ownership when the set of live workers changes.
@@ -458,6 +504,326 @@ mod tests {
             vec![MeshCommand::Dispose("mesh://2/1".into())],
         );
         assert!(world.resource::<DynamicMeshes>().geometry.is_empty());
+    }
+
+    #[test]
+    fn command_batches_keep_final_updates_and_invalidate_disposed_or_recreated_sources() {
+        let mut world = world();
+        world.init_resource::<DirtyNodes>();
+        world.init_resource::<TransformOnlyDirtyNodes>();
+        for owner in 1..=4 {
+            upload(&mut world, owner, &format!("mesh://{owner}/1"), 1.);
+        }
+        let mounted: Vec<_> = (1..=4)
+            .map(|owner| mount(&mut world, &format!("mesh://{owner}/1"), owner))
+            .collect();
+        let original = world.get::<Handle<Mesh>>(mounted[0].1).unwrap().clone();
+        world
+            .resource_mut::<TransformOnlyDirtyNodes>()
+            .0
+            .extend(1..=4);
+        world.clear_trackers();
+        let put = |owner, width| {
+            MeshCommand::Upload(
+                format!("mesh://{owner}/1"),
+                MeshUpload::new(triangle(width)),
+            )
+        };
+        apply_command_batches(
+            &mut world,
+            vec![
+                (1, 1, vec![put(1, 2.)]),
+                (2, 2, vec![put(2, 4.)]),
+                (3, 3, vec![put(3, 5.)]),
+                (1, 1, vec![put(1, 3.), put(1, 3.)]),
+                (2, 2, vec![MeshCommand::Dispose("mesh://2/1".into())]),
+                (3, 33, Vec::new()),
+                (3, 33, vec![put(3, 6.), put(3, 7.)]),
+                (
+                    4,
+                    4,
+                    vec![MeshCommand::Dispose("mesh://1/1".into()), put(1, 99.)],
+                ),
+            ],
+        );
+        let registry = world.resource::<DynamicMeshes>();
+        let final_a = registry.get("mesh://1/1", Some(1)).unwrap();
+        assert_eq!(final_a.generated.as_ref().unwrap().aabb.half_extents.x, 1.5);
+        assert!(registry.get("mesh://2/1", Some(2)).is_none());
+        assert_eq!(
+            registry
+                .get("mesh://3/1", Some(3))
+                .unwrap()
+                .generated
+                .as_ref()
+                .unwrap()
+                .aabb
+                .half_extents
+                .x,
+            3.5
+        );
+        assert_eq!(registry.geometry.len(), 3);
+        assert!(registry
+            .geometry
+            .values()
+            .all(|geometry| geometry.owners == 1));
+        assert_eq!(world.get::<Aabb>(mounted[0].1).unwrap().half_extents.x, 1.5);
+        assert_eq!(
+            world.get::<Handle<Mesh>>(mounted[0].1).unwrap(),
+            &final_a.generated.as_ref().unwrap().mesh
+        );
+        // Finally disposed and untouched models never receive an intermediate
+        // replacement; recreated sources receive the final live resource.
+        for index in [1, 3] {
+            let (root, content) = mounted[index];
+            assert_eq!(world.get::<Handle<Mesh>>(content).unwrap(), &original);
+            assert_eq!(world.get::<Aabb>(content).unwrap().half_extents.x, 0.5);
+            assert!(!world
+                .entity(root)
+                .get_ref::<ModelInstance>()
+                .unwrap()
+                .is_changed());
+        }
+        assert_eq!(world.get::<Aabb>(mounted[2].1).unwrap().half_extents.x, 3.5);
+        assert_eq!(
+            world.get::<Handle<Mesh>>(mounted[2].1).unwrap(),
+            &registry
+                .get("mesh://3/1", Some(3))
+                .unwrap()
+                .generated
+                .as_ref()
+                .unwrap()
+                .mesh
+        );
+        assert_eq!(world.resource::<DirtyNodes>().0.len(), 2);
+        assert_eq!(
+            world
+                .resource::<DirtyNodes>()
+                .0
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>(),
+            HashSet::from([2, 3])
+        );
+        assert_eq!(
+            world.resource::<TransformOnlyDirtyNodes>().0,
+            HashSet::from([1, 4])
+        );
+    }
+
+    #[test]
+    fn command_batches_preserve_scope_order_and_skip_all_idle_responses() {
+        let mut world = world();
+        apply_command_batches(&mut world, vec![(1, 1, Vec::new()), (2, 2, Vec::new())]);
+        assert!(!world.contains_resource::<DynamicMeshes>());
+        upload(&mut world, 1, "mesh://1/1", 1.);
+        let (root, content) = mount(&mut world, "mesh://1/1", 1);
+        world.init_resource::<DirtyNodes>();
+        world.clear_trackers();
+        apply_command_batches(&mut world, vec![(1, 1, Vec::new()), (1, 1, Vec::new())]);
+        assert!(!world
+            .get_resource_ref::<DynamicMeshes>()
+            .unwrap()
+            .is_changed());
+        assert!(!world
+            .entity(root)
+            .get_ref::<ModelInstance>()
+            .unwrap()
+            .is_changed());
+        assert!(!world
+            .entity(content)
+            .get_ref::<Aabb>()
+            .unwrap()
+            .is_changed());
+        assert!(!world.get_resource_ref::<DirtyNodes>().unwrap().is_changed());
+        // Returning to the initially active scope is still a transition after
+        // the preceding response removed its resources.
+        apply_command_batches(&mut world, vec![(1, 11, Vec::new()), (1, 1, Vec::new())]);
+        assert_eq!(world.resource::<DynamicMeshes>().scopes.get(&1), Some(&1));
+        assert!(world.resource::<DynamicMeshes>().entries.is_empty());
+        assert_eq!(world.resource::<DirtyNodes>().0, vec![1]);
+    }
+
+    #[test]
+    fn batched_dispose_and_reupload_updates_the_surviving_instance_to_final_geometry() {
+        let mut world = world();
+        upload(&mut world, 1, "mesh://1/1", 1.);
+        upload(&mut world, 2, "mesh://2/1", 1.);
+        let (root, content) = mount(&mut world, "mesh://1/1", 1);
+        let original = world.get::<Handle<Mesh>>(content).unwrap().clone();
+        world.init_resource::<DirtyNodes>();
+        world.clear_trackers();
+        apply_command_batches(
+            &mut world,
+            vec![
+                (
+                    1,
+                    1,
+                    vec![MeshCommand::Upload(
+                        "mesh://1/1".into(),
+                        MeshUpload::new(triangle(2.)),
+                    )],
+                ),
+                (1, 1, vec![MeshCommand::Dispose("mesh://1/1".into())]),
+                (
+                    1,
+                    1,
+                    vec![MeshCommand::Upload(
+                        "mesh://1/1".into(),
+                        MeshUpload::new(triangle(3.)),
+                    )],
+                ),
+            ],
+        );
+        let registry = world.resource::<DynamicMeshes>();
+        assert_eq!(
+            registry
+                .get("mesh://1/1", Some(1))
+                .unwrap()
+                .generated
+                .as_ref()
+                .unwrap()
+                .aabb
+                .half_extents
+                .x,
+            1.5
+        );
+        assert_eq!(registry.geometry.len(), 2);
+        assert_ne!(world.get::<Handle<Mesh>>(content).unwrap(), &original);
+        assert_eq!(
+            world.get::<Handle<Mesh>>(content).unwrap(),
+            &registry
+                .get("mesh://1/1", Some(1))
+                .unwrap()
+                .generated
+                .as_ref()
+                .unwrap()
+                .mesh
+        );
+        assert_eq!(world.get::<Aabb>(content).unwrap().half_extents.x, 1.5);
+        assert!(world
+            .entity(root)
+            .get_ref::<ModelInstance>()
+            .unwrap()
+            .is_changed());
+        assert_eq!(world.get::<ModelInstance>(root).unwrap().generation, 7);
+        assert_eq!(world.resource::<DirtyNodes>().0, vec![1]);
+    }
+
+    /// Isolates the host-side cost of scanning mounted models per response.
+    /// Both paths receive already prepared geometry and use the same registry;
+    /// only the grouping of responses changes. This does not measure rendering.
+    #[test]
+    #[ignore = "manual CPU benchmark: run with --ignored --nocapture"]
+    fn benchmark_mesh_command_batches() {
+        use std::{hint::black_box, time::Instant};
+        const INSTANCES: u32 = 5_000;
+        const SAMPLES: usize = 5;
+        fn fixture(owners: u32, update: bool) -> World {
+            let mut world = world();
+            world.init_resource::<DirtyNodes>();
+            if update {
+                apply_command_batches(
+                    &mut world,
+                    (1..=owners)
+                        .map(|owner| {
+                            (
+                                owner,
+                                u64::from(owner),
+                                vec![MeshCommand::Upload(
+                                    format!("mesh://{owner}/1"),
+                                    MeshUpload::new(triangle(1.)),
+                                )],
+                            )
+                        })
+                        .collect(),
+                );
+            }
+            for id in 0..INSTANCES {
+                let owner = id % owners + 1;
+                let source = format!("mesh://{owner}/1");
+                let resource = world
+                    .get_resource::<DynamicMeshes>()
+                    .and_then(|registry| registry.get(&source, Some(owner)))
+                    .cloned();
+                world.spawn(ModelInstance {
+                    node_id: id,
+                    source,
+                    generation: 1,
+                    resource,
+                    content: None,
+                    status: crate::models::ModelStatus::Loading,
+                });
+            }
+            world
+        }
+        for owners in [25, 250, 1_000] {
+            for update in [false, true] {
+                let mut individual_ms = Vec::new();
+                let mut batched_ms = Vec::new();
+                for sample in 0..SAMPLES {
+                    for batched in [sample % 2 == 0, sample % 2 != 0] {
+                        let mut world = fixture(owners, update);
+                        let batches: Vec<_> = (1..=owners)
+                            .map(|owner| {
+                                (
+                                    owner,
+                                    u64::from(owner),
+                                    vec![MeshCommand::Upload(
+                                        format!("mesh://{owner}/1"),
+                                        MeshUpload::new(triangle(2. + owner as f32 * 0.01)),
+                                    )],
+                                )
+                            })
+                            .collect();
+                        let start = Instant::now();
+                        if batched {
+                            apply_command_batches(&mut world, batches);
+                        } else {
+                            for (owner, scope, commands) in batches {
+                                apply_commands(&mut world, owner, scope, commands);
+                            }
+                        }
+                        let elapsed = start.elapsed().as_secs_f64() * 1_000.;
+                        if batched {
+                            batched_ms.push(elapsed);
+                        } else {
+                            individual_ms.push(elapsed);
+                        }
+                        assert_eq!(
+                            world.resource::<DynamicMeshes>().entries.len(),
+                            owners as usize
+                        );
+                        assert_eq!(
+                            world.resource::<DirtyNodes>().0.len(),
+                            if update { 0 } else { INSTANCES as usize }
+                        );
+                        if update {
+                            for instance in world.query::<&ModelInstance>().iter(&world) {
+                                let owner = instance.node_id % owners + 1;
+                                let actual = instance
+                                    .resource
+                                    .as_ref()
+                                    .unwrap()
+                                    .generated
+                                    .as_ref()
+                                    .unwrap()
+                                    .aabb
+                                    .half_extents
+                                    .x;
+                                assert_eq!(actual, (2. + owner as f32 * 0.01) * 0.5);
+                            }
+                        }
+                        black_box(world.resource::<DynamicMeshes>().geometry.len());
+                    }
+                }
+                individual_ms.sort_by(f64::total_cmp);
+                batched_ms.sort_by(f64::total_cmp);
+                let individual = individual_ms[SAMPLES / 2];
+                let batched = batched_ms[SAMPLES / 2];
+                eprintln!("mesh_command_batches instances={INSTANCES} owners={owners} update={update} samples={SAMPLES} individual_median_ms={individual:.4} batched_median_ms={batched:.4} ratio={:.4}", batched / individual);
+            }
+        }
     }
 
     #[test]
