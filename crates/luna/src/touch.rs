@@ -818,6 +818,189 @@ pub fn dispatch_posemove_events_to_js(
 
 #[cfg(test)]
 mod tests {
+    #[derive(Resource, Default)]
+    struct PoseZoneBenchmarkSamples([Vec<f64>; 4]);
+
+    #[derive(Resource)]
+    struct PoseZoneBenchmarkCase { distant: bool, expected_hits: usize }
+
+    #[derive(Clone, Copy)]
+    struct BenchmarkPoseShape {
+        transform: GlobalTransform,
+        position: Vec3,
+        rotation: Quat,
+        scale: Vec3,
+    }
+
+    fn sample_cached_posezone_dispatch(
+        hand: &str,
+        x: f32,
+        zones: &Query<(Entity, &GlobalTransform, &PoseZone, Option<&HitShape>)>,
+        parents: &Query<&Parent>,
+        visibility: &Query<&Visibility>,
+        globals: &Query<&GlobalTransform>,
+        cache: &mut HashMap<Entity, BenchmarkPoseShape>,
+        events: &mut HostPoseMoveEvents,
+        contains_first: bool,
+    ) {
+        let point = Vec3::new(x, 1.4, -8.0);
+        let rotation = Quat::IDENTITY;
+        let dir = controller_aim_direction(rotation);
+        for (entity, global, zone, shape) in zones {
+            if contains_first {
+                let (scale, rotation, position) = global.to_scale_rotation_translation();
+                if contains_point(point, position, rotation, scale, shape.copied().unwrap_or(HitShape::Box))
+                    && ancestors_are_visible(entity, parents, visibility)
+                {
+                    benchmark_push_pose_event(hand, point, dir, Quat::IDENTITY, entity, zone.0, parents, globals, events);
+                }
+                continue;
+            }
+            if !ancestors_are_visible(entity, parents, visibility) { continue; }
+            let cached = cache.entry(entity).or_insert_with(|| {
+                let (scale, rotation, position) = global.to_scale_rotation_translation();
+                BenchmarkPoseShape { transform: *global, scale, rotation, position }
+            });
+            if cached.transform != *global {
+                let (scale, rotation, position) = global.to_scale_rotation_translation();
+                *cached = BenchmarkPoseShape { transform: *global, scale, rotation, position };
+            }
+            if contains_point(point, cached.position, cached.rotation, cached.scale, shape.copied().unwrap_or(HitShape::Box)) {
+                benchmark_push_pose_event(hand, point, dir, rotation, entity, zone.0, parents, globals, events);
+            }
+        }
+    }
+
+    fn benchmark_push_pose_event(
+        hand: &str, point: Vec3, dir: Vec3, rotation: Quat, entity: Entity, node_id: u32,
+        parents: &Query<&Parent>, globals: &Query<&GlobalTransform>, events: &mut HostPoseMoveEvents,
+    ) {
+        let (local, local_dir, local_rot) = pose_in_parent_frame(entity, point, dir, rotation, parents, globals);
+        events.0.push(HostPoseMoveHit {
+            node_id, hand: hand.into(), px: point.x, py: point.y, pz: point.z,
+            dx: dir.x, dy: dir.y, dz: dir.z, trigger: 0.0, grip: 0.0,
+            primary: false, secondary: false,
+            qx: rotation.x, qy: rotation.y, qz: rotation.z, qw: rotation.w,
+            local, local_dir, local_rot,
+        });
+    }
+
+    fn sample_posezone_dispatch(
+        zones: Query<(Entity, &GlobalTransform, &PoseZone, Option<&HitShape>)>,
+        parents: Query<&Parent>,
+        visibility: Query<&Visibility>,
+        globals: Query<&GlobalTransform>,
+        mut events: ResMut<HostPoseMoveEvents>,
+        mut samples: ResMut<PoseZoneBenchmarkSamples>,
+        case: Res<PoseZoneBenchmarkCase>,
+        mut cache: Local<HashMap<Entity, BenchmarkPoseShape>>,
+        mut visible: Local<Vec<(Entity, u32, Vec3, Quat, Vec3, HitShape)>>,
+    ) {
+        let sample = samples.0[0].len();
+        let mut signatures = [String::new(), String::new(), String::new(), String::new()];
+        let hands = if case.distant { [("left", -0.15), ("right", 0.15)] }
+            else { [("left", -11.4), ("right", -11.1)] };
+        for variant in if sample % 2 == 0 { [0, 1, 2, 3] } else { [3, 2, 1, 0] } {
+            events.0.clear();
+            let start = std::time::Instant::now();
+            if variant == 2 {
+                // Prepare both hands together without a persistent hash lookup:
+                // visibility and decomposition are shared for just this call.
+                visible.clear();
+                for (entity, global, zone, shape) in &zones {
+                    if !ancestors_are_visible(entity, &parents, &visibility) { continue; }
+                    let (scale, rotation, position) = global.to_scale_rotation_translation();
+                    visible.push((entity, zone.0, position, rotation, scale, shape.copied().unwrap_or(HitShape::Box)));
+                }
+                for (hand, x) in hands {
+                    let point = Vec3::new(x, 1.4, -8.0);
+                    let rotation = Quat::IDENTITY;
+                    let dir = controller_aim_direction(rotation);
+                    for &(entity, node_id, position, rotation, scale, shape) in visible.iter() {
+                        if contains_point(point, position, rotation, scale, shape) {
+                            benchmark_push_pose_event(hand, point, dir, Quat::IDENTITY, entity, node_id, &parents, &globals, &mut events);
+                        }
+                    }
+                }
+            } else {
+                for (hand, x) in hands {
+                    if variant == 0 {
+                        push_pose_events_for_hand(
+                            hand, &Transform::IDENTITY, &Transform::from_xyz(x, 1.4, -8.0),
+                            0.0, 0.0, false, false, &zones, &parents, &visibility, &globals, &mut events,
+                        );
+                    } else {
+                        sample_cached_posezone_dispatch(hand, x, &zones, &parents, &visibility, &globals, &mut cache, &mut events, variant == 3);
+                    }
+                }
+            }
+            samples.0[variant].push(start.elapsed().as_secs_f64() * 1_000_000.0);
+            assert_eq!(events.0.len(), case.expected_hits);
+            signatures[variant] = format!("{:?}", events.0);
+            std::hint::black_box(&events.0);
+        }
+        assert_eq!(signatures[0], signatures[1]);
+        assert_eq!(signatures[0], signatures[2]);
+        assert_eq!(signatures[0], signatures[3]);
+    }
+
+    fn posezone_benchmark_app(count: u32, scenario: &str) -> App {
+        let mut app = App::new();
+        app.init_resource::<HostPoseMoveEvents>()
+            .init_resource::<PoseZoneBenchmarkSamples>()
+            .insert_resource(PoseZoneBenchmarkCase {
+                distant: scenario == "distant",
+                expected_hits: match scenario { "distant" => 0, "overlap" => count as usize * 2, _ => 2 },
+            })
+            .add_systems(Update, sample_posezone_dispatch);
+        // Shared document roots followed by include / hsml / component roots.
+        // Visibility follows the same ancestor walk as the real input system;
+        // the invisible pose volume itself must remain active.
+        let mut parent = None;
+        for _ in 0..4 {
+            let entity = app.world_mut().spawn((GlobalTransform::IDENTITY, Visibility::Inherited)).id();
+            if let Some(parent) = parent { app.world_mut().entity_mut(entity).set_parent(parent); }
+            parent = Some(entity);
+        }
+        let shared_parent = parent.unwrap();
+        for index in 0..count {
+            let x = if index % 2 == 0 || scenario == "overlap" { -11.25 } else { 11.25 };
+            let position = Vec3::new(x, 1.5, if scenario == "overlap" { -8.0 } else { -8.0 - 12.0 * (index / 2) as f32 });
+            let mut parent = shared_parent;
+            for _ in 0..3 {
+                let entity = app.world_mut().spawn((GlobalTransform::from_translation(position), Visibility::Inherited)).id();
+                app.world_mut().entity_mut(entity).set_parent(parent);
+                parent = entity;
+            }
+            let zone = app.world_mut().spawn((
+                PoseZone(index), HitShape::Box, Visibility::Hidden,
+                GlobalTransform::from(Transform {
+                    translation: position,
+                    rotation: Quat::from_rotation_y(0.2),
+                    scale: Vec3::new(5.0, 3.0, 0.6),
+                }),
+            )).id();
+            app.world_mut().entity_mut(zone).set_parent(parent);
+        }
+        app
+    }
+
+    #[test]
+    #[ignore = "manual CPU benchmark of two-hand posezone dispatch, not VR frame time"]
+    fn benchmark_static_posezone_dispatch() {
+        for count in [25, 150, 1_000] {
+            for scenario in ["nearby", "distant", "overlap"] {
+            let mut app = posezone_benchmark_app(count, scenario);
+            for _ in 0..220 { app.update(); }
+            for (variant, name) in ["baseline", "hash_cached", "shared_hands", "contains_first"].into_iter().enumerate() {
+                let mut samples: Vec<_> = app.world_mut().resource_mut::<PoseZoneBenchmarkSamples>().0[variant].drain(20..).collect();
+                samples.sort_by(f64::total_cmp);
+                eprintln!("posezone_dispatch zones={count} hands=2 ancestors=7 scenario={scenario} variant={name} samples={} median_us={:.3} p95_us={:.3}", samples.len(), samples[100], samples[190]);
+            }
+            }
+        }
+    }
+
     #[test]
     fn pointer_shapes_support_mirroring_parallel_rays_and_inside_origins() {
         use super::*;

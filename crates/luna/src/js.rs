@@ -5510,6 +5510,7 @@ mod tests {
             // This live data must never be discarded to reclaim mesh temporaries.
             globalThis.retained = new Array(750000).fill(7);
             globalThis.mesh = MeshResource.create({positions:[0,0,0, 1,0,0, 0,1,0]});
+            setTimeout(() => console.log('SERVICE'), 350);
             setTimeout(() => console.log('LATER'), 3600000);
             hiperspace.dimention.addEventListener('toque', () => {
                 if(retained.length!==750000 || retained[749999]!==7)throw Error('live state lost');
@@ -5520,17 +5521,24 @@ mod tests {
         let first = worker_tick(&mut worker, 16.0);
         assert_eq!(first.mesh_commands.1.len(), 1);
         assert!(!first.needs_continuous_ticks);
-        let timer_deadline = first.next_timer_deadline.unwrap();
+        // Simulate a host not yet servicing a due timer. Maintenance must not
+        // overtake it, even after the 500 ms quiet period has elapsed.
+        thread::sleep(first.next_timer_deadline.unwrap()
+            .saturating_duration_since(Instant::now()) + Duration::from_millis(250));
+        assert_eq!(collections(&mut worker), 0, "due timer must win over collection");
+        let serviced = worker_tick(&mut worker, 32.0);
+        assert!(serviced.logs.iter().any(|(_, message)| message == "SERVICE"));
+        let timer_deadline = serviced.next_timer_deadline.unwrap();
         let limit = Instant::now() + Duration::from_secs(5);
         while collections(&mut worker) == 0 {
             assert!(Instant::now() < limit, "idle mesh worker never collected its heap");
             thread::sleep(Duration::from_millis(20));
         }
-        let empty = worker_tick(&mut worker, 32.0);
+        let empty = worker_tick(&mut worker, 48.0);
         assert!(!empty.has_host_work());
         assert_eq!(empty.next_timer_deadline, Some(timer_deadline));
         worker.try_send(JsWorkerCommand::PushDomToqueEvents(vec![(0, 0., 0., 0.)])).unwrap();
-        let updated = worker_tick(&mut worker, 48.0);
+        let updated = worker_tick(&mut worker, 64.0);
         assert_eq!(updated.mesh_commands.1.len(), 1);
         assert!(updated.logs.iter().any(|(_, message)| message == "AFTER_GC"));
         assert_eq!(updated.next_timer_deadline, Some(timer_deadline));
