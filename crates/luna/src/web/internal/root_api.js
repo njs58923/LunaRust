@@ -302,6 +302,7 @@
 
   dimension.luna = {
     _uxSpaceId: null,
+    _inputSpaceId: null,
     _currentMode: null,
 
     mountSpace(url, options = {}) {
@@ -393,6 +394,7 @@
         // del shell, donde corre el script ux_vr / ux_desktop).
         space.setAttribute('system-shell', 'true');
       }
+      if (options.systemInput) space.setAttribute('system-input', 'true');
 
       if (Array.isArray(grants) && grants.length) {
         space.setAttribute('resources', grants.join(','));
@@ -469,6 +471,7 @@
       cleanupRegistry();
       const mounted = [];
       for (const [publicId, entry] of registry) {
+        if (publicId === this._inputSpaceId) continue;
         if (!isDirectRootChild(entry.space)) continue;
         mounted.push(describeSpace(publicId, entry));
       }
@@ -493,6 +496,7 @@
 
       for (const [publicId, entry] of registry) {
         if (publicId === this._uxSpaceId) continue;
+        if (publicId === this._inputSpaceId) continue;
         if (!isDirectRootChild(entry.space)) continue;
         const include = ensureInclude(entry);
         const propios = Array.isArray(entry.grants) ? entry.grants : (grantsPorDefecto(entry.kind) || []);
@@ -509,6 +513,16 @@
         return false;
       }
       if (style !== 'curved' && style !== 'flat') return false;
+      // Input is independent of menu layout. Its space owns native publications.
+      cleanupRegistry();
+      if (mode === 'vr' && !registry.has(this._inputSpaceId)) {
+        this._inputSpaceId = this.mountSpace('luna://vr_input', {
+          kind: 'app', systemInput: true, visible: true, grants: ['vr_input', 'create_anchor'],
+        });
+      } else if (mode === 'desktop' && registry.has(this._inputSpaceId)) {
+        this.unmountSpace(this._inputSpaceId);
+        this._inputSpaceId = null;
+      }
       const grants = mode === 'vr'
         ? ['navigate_self', 'vr_locomotion', 'read_system_input', 'manage_tabs', 'read_hmd_pose']
         : ['navigate_self', 'desktop_camera_control', 'read_system_input', 'manage_tabs', 'read_hmd_pose'];

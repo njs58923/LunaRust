@@ -922,6 +922,7 @@ pub fn apply_attribute_updates(
     mut space_policies: ResMut<crate::permissions::SpacePolicies>,
     mut transform_only_dirty: ResMut<crate::TransformOnlyDirtyNodes>,
     mut mirror_dirty: ResMut<crate::js::DomMirrorDirty>,
+    mut anchor_dirty: Option<ResMut<crate::anchors::AnchorDirty>>,
 ) {
     if attribute_updates.0.is_empty() {
         return;
@@ -960,6 +961,9 @@ pub fn apply_attribute_updates(
             }
         }
         js_snapshot_state.dirty = true;
+        if key == "anchor" {
+            if let Some(dirty) = anchor_dirty.as_mut() { dirty.0.insert(ent_id); }
+        }
         let is_attached = dom_data.nodes.contains_key(&ent_id);
         transform_only_dirty.0.remove(&ent_id);
 

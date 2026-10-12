@@ -1,0 +1,1068 @@
+//! Named pose sources. DOM ownership stays intact; only render placement follows.
+use crate::permissions::{CapabilityBits, NativeServiceBits, SpacePolicies};
+use crate::{ElemenetWorld, EntityMap, SpaceHandleTables};
+use bevy::{prelude::*, render::view::VisibilitySystems, transform::TransformSystem};
+use js_runtime::anchors::{Reply, Request, Source, MAX_ANCHORS};
+use specs::{Join, WorldExt};
+use std::collections::{HashMap, HashSet};
+use virtual_dom::dom::element::Attrs;
+
+#[derive(Resource, Default)]
+pub struct NativeReferences {
+    names: HashMap<(specs::Entity, String), u64>,
+    slots: HashMap<u64, Option<Entity>>,
+    requirements: HashMap<u64, (CapabilityBits, NativeServiceBits)>,
+    next: u64,
+}
+impl NativeReferences {
+    /// The native provider registers aliases in its owning space, not DOM IDs.
+    pub fn register(&mut self, owner: specs::Entity, name: &str, entity: Option<Entity>) -> u64 {
+        let id = *self.names.entry((owner, name.into())).or_insert_with(|| {
+            self.next += 1;
+            self.next
+        });
+        self.slots.insert(id, entity);
+        id
+    }
+    pub fn restrict(&mut self, id: u64, use_caps: CapabilityBits, provider: NativeServiceBits) {
+        self.requirements.insert(id, (use_caps, provider));
+    }
+    pub fn set_target(&mut self, id: u64, target: Option<Entity>) {
+        if let Some(slot) = self.slots.get_mut(&id) {
+            *slot = target;
+        }
+    }
+}
+
+enum PoseSource {
+    Native(u64),
+    Element(specs::Entity),
+}
+struct Publication {
+    owner: specs::Entity,
+    request_id: u32,
+    key: String,
+    source: PoseSource,
+}
+#[derive(Resource, Default)]
+pub struct Anchors {
+    entries: HashMap<u64, Publication>,
+    keys: HashMap<String, u64>,
+    next: u64,
+    generation: u64,
+}
+#[derive(Component)]
+struct Follower {
+    key: String,
+    owner: specs::Entity,
+    source: Option<u64>,
+}
+#[derive(Resource, Default)]
+struct BindingVersion(Option<u64>);
+#[derive(Resource, Default)]
+#[doc(hidden)]
+pub struct AnchorDirty(pub HashSet<u32>);
+
+pub struct AnchorPlugin;
+impl Plugin for AnchorPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<Anchors>()
+            .init_resource::<NativeReferences>()
+            .init_resource::<BindingVersion>()
+            .init_resource::<AnchorDirty>()
+            .add_systems(
+                PostUpdate,
+                sync_bindings.before(TransformSystem::TransformPropagate),
+            )
+            .add_systems(
+                PostUpdate,
+                follow
+                    .after(TransformSystem::TransformPropagate)
+                    .after(VisibilitySystems::VisibilityPropagate)
+                    .before(VisibilitySystems::UpdateFrusta)
+                    .before(VisibilitySystems::CheckVisibility),
+            );
+    }
+}
+
+pub fn apply_requests(world: &mut World, space_id: u32, requests: Vec<Request>) -> Vec<Reply> {
+    world.init_resource::<Anchors>();
+    world.init_resource::<NativeReferences>();
+    requests
+        .into_iter()
+        .map(|request| {
+            let error = register_request(world, space_id, &request).err();
+            Reply {
+                id: request.id,
+                error,
+            }
+        })
+        .collect()
+}
+fn register_request(world: &mut World, space_id: u32, request: &Request) -> Result<(), String> {
+    let policy = world
+        .get_resource::<SpacePolicies>()
+        .and_then(|p| p.by_space.get(&space_id))
+        .ok_or("Anchor publisher has no policy")?;
+    if !policy
+        .effective_caps
+        .contains(CapabilityBits::CREATE_ANCHOR)
+    {
+        return Err("Space lacks create_anchor permission".into());
+    }
+    if !js_runtime::anchors::valid_key(&request.key) {
+        return Err("Invalid anchor key".into());
+    }
+    let native_services = policy.effective_native;
+    let specs = world
+        .get_resource::<ElemenetWorld>()
+        .ok_or("Missing document")?;
+    let owner = specs.0.entities().entity(space_id);
+    if !specs.0.entities().is_alive(owner)
+        || !specs
+            .0
+            .read_storage::<virtual_dom::dom::element::Tag>()
+            .get(owner)
+            .is_some_and(|tag| tag.0 == "space")
+    {
+        return Err("Anchor publisher is no longer alive".into());
+    }
+    let source = match &request.source {
+        None => None,
+        Some(Source::Element(local)) => {
+            let global = world
+                .get_resource::<SpaceHandleTables>()
+                .and_then(|t| t.by_space.get(&space_id))
+                .and_then(|t| t.local_to_global.get(local))
+                .copied()
+                .ok_or("Invalid local anchor element")?;
+            let node = specs.0.entities().entity(global);
+            let owned = match crate::js::find_owner_space_id(&specs.0, node) {
+                Some(owner) => owner == space_id,
+                None => world
+                    .resource::<SpaceHandleTables>()
+                    .by_space
+                    .get(&space_id)
+                    .is_some_and(|table| table.detached_globals.contains(&global)),
+            };
+            if !specs.0.entities().is_alive(node) || !owned {
+                return Err("Anchor source must belong to its publisher".into());
+            }
+            Some(PoseSource::Element(node))
+        }
+        Some(Source::Native(name)) => {
+            let id = world
+                .resource::<NativeReferences>()
+                .names
+                .get(&(owner, name.clone()))
+                .copied()
+                .ok_or("Unknown native reference in this space")?;
+            let required = world
+                .resource::<NativeReferences>()
+                .requirements
+                .get(&id)
+                .map(|r| r.1)
+                .unwrap_or_default();
+            if !native_services.contains(required) {
+                return Err("Native provider service is no longer authorized".into());
+            }
+            Some(PoseSource::Native(id))
+        }
+    };
+    let mut anchors = world.resource_mut::<Anchors>();
+    let old = anchors.keys.get(&request.key).copied();
+    if old.is_some_and(|id| anchors.entries[&id].owner != owner) {
+        return Err("Anchor key is already published by another space".into());
+    }
+    if request.source.is_none()
+        && request
+            .guard
+            .is_some_and(|guard| old.is_some_and(|id| anchors.entries[&id].request_id != guard))
+    {
+        return Err("Anchor handle belongs to an older publication".into());
+    }
+    if let Some(source) = source {
+        if old.is_none()
+            && anchors
+                .entries
+                .values()
+                .filter(|p| p.owner == owner)
+                .count()
+                >= MAX_ANCHORS
+        {
+            return Err("Anchor publication limit reached".into());
+        }
+        let id = old.unwrap_or_else(|| {
+            anchors.next += 1;
+            anchors.next
+        });
+        anchors.keys.insert(request.key.clone(), id);
+        anchors.entries.insert(
+            id,
+            Publication {
+                owner,
+                request_id: request.id,
+                key: request.key.clone(),
+                source,
+            },
+        );
+    } else if let Some(id) = old {
+        anchors.keys.remove(&request.key);
+        anchors.entries.remove(&id);
+    }
+    anchors.generation = anchors.generation.wrapping_add(1);
+    Ok(())
+}
+
+fn sync_bindings(world: &mut World) {
+    let Some(specs) = world.get_resource::<ElemenetWorld>() else {
+        return;
+    };
+    let Some(policies) = world.get_resource::<SpacePolicies>() else {
+        return;
+    };
+    let stale_refs: Vec<_> = world
+        .resource::<NativeReferences>()
+        .names
+        .iter()
+        .filter(|((owner, _), _)| !specs.0.entities().is_alive(*owner))
+        .map(|(name, &id)| (name.clone(), id))
+        .collect();
+    let dead: Vec<_> = world
+        .resource::<Anchors>()
+        .entries
+        .iter()
+        .filter(|(_, p)| {
+            !specs.0.entities().is_alive(p.owner)
+                || !policies
+                    .by_space
+                    .get(&p.owner.id())
+                    .is_some_and(|s| s.effective_caps.contains(CapabilityBits::CREATE_ANCHOR))
+        })
+        .map(|(&id, _)| id)
+        .collect();
+    if !stale_refs.is_empty() {
+        let mut refs = world.resource_mut::<NativeReferences>();
+        for (name, id) in stale_refs {
+            refs.names.remove(&name);
+            refs.slots.remove(&id);
+            refs.requirements.remove(&id);
+        }
+    }
+    if !dead.is_empty() {
+        let mut anchors = world.resource_mut::<Anchors>();
+        for id in dead {
+            if let Some(p) = anchors.entries.remove(&id) {
+                anchors.keys.remove(&p.key);
+            }
+        }
+        anchors.generation = anchors.generation.wrapping_add(1);
+    }
+    // Discover only when the render entity map changes or an anchor attribute
+    // changes. Animated transforms and unrelated JSON/DOM changes do not scan
+    // all scene attributes every frame.
+    let full = world.resource::<BindingVersion>().0.is_none()
+        || world
+            .get_resource_ref::<EntityMap>()
+            .is_some_and(|m| m.is_changed());
+    let generation = world.resource::<Anchors>().generation;
+    let dirty = std::mem::take(&mut world.resource_mut::<AnchorDirty>().0);
+    if !full && dirty.is_empty() && world.resource::<BindingVersion>().0 == Some(generation) {
+        return;
+    }
+    let specs = world.resource::<ElemenetWorld>();
+    let attrs = specs.0.read_storage::<Attrs>();
+    let entities = specs.0.entities();
+    let candidates: Vec<_> = if full {
+        (&entities, &attrs)
+            .join()
+            .filter(|(_, attrs)| attrs.0.contains_key("anchor"))
+            .map(|(node, _)| node)
+            .collect()
+    } else {
+        dirty.iter().map(|id| entities.entity(*id)).collect()
+    };
+    let desired: Vec<_> = candidates
+        .into_iter()
+        .filter_map(|node| {
+            let attrs = attrs.get(node)?;
+            let key = attrs.0.get("anchor")?.trim();
+            if key.is_empty() {
+                return None;
+            }
+            let entity = *world.get_resource::<EntityMap>()?.0.get(&node.id())?;
+            let owner = crate::js::find_owner_space_id(&specs.0, node)?;
+            Some((entity, key.to_string(), entities.entity(owner)))
+        })
+        .collect();
+    drop(attrs);
+    drop(entities);
+    let wanted: HashSet<_> = desired.iter().map(|d| d.0).collect();
+    let affected: HashSet<_> = dirty
+        .iter()
+        .filter_map(|id| world.get_resource::<EntityMap>()?.0.get(id).copied())
+        .collect();
+    let removed: Vec<_> = world
+        .query_filtered::<Entity, With<Follower>>()
+        .iter(world)
+        .filter(|e| (full || affected.contains(e)) && !wanted.contains(e))
+        .collect();
+    for entity in removed {
+        world.entity_mut(entity).remove::<Follower>();
+        if let Some(mut t) = world.get_mut::<Transform>(entity) {
+            t.set_changed();
+        }
+        if let Some(mut v) = world.get_mut::<Visibility>(entity) {
+            v.set_changed();
+        }
+    }
+    for (entity, key, owner) in desired {
+        let source = world.resource::<Anchors>().keys.get(&key).copied();
+        world
+            .entity_mut(entity)
+            .insert(Follower { key, owner, source });
+    }
+    let updates: Vec<_> = world
+        .query::<(Entity, &Follower)>()
+        .iter(world)
+        .map(|(e, f)| (e, world.resource::<Anchors>().keys.get(&f.key).copied()))
+        .collect();
+    for (entity, id) in updates {
+        world.get_mut::<Follower>(entity).unwrap().source = id;
+    }
+    world.resource_mut::<BindingVersion>().0 = Some(generation);
+}
+
+fn is_descendant(world: &World, mut node: Entity, root: Entity) -> bool {
+    for _ in 0..256 {
+        if node == root {
+            return true;
+        }
+        let Some(parent) = world.get::<Parent>(node) else {
+            return false;
+        };
+        node = parent.get();
+    }
+    true // Do not accept malformed/deep source chains as safe dependencies.
+}
+
+pub(crate) fn follow(world: &mut World) {
+    if world.resource::<Anchors>().entries.is_empty()
+        && world
+            .query_filtered::<Entity, With<Follower>>()
+            .iter(world)
+            .next()
+            .is_none()
+    {
+        return;
+    }
+    let mut pending: Vec<_> = world
+        .query::<(Entity, &Follower)>()
+        .iter(world)
+        .map(|(e, f)| (e, f.source, f.owner))
+        .collect();
+    let bound: HashSet<_> = pending.iter().map(|p| p.0).collect();
+    let mut done = HashSet::new();
+    let mut unavailable = HashSet::new();
+    while !pending.is_empty() {
+        let previous = pending.len();
+        pending.retain(|(root, id, owner)| {
+            // An anchored logical parent must be placed before its child.
+            let mut ancestor = world.get::<Parent>(*root).map(|p| p.get());
+            while let Some(node) = ancestor {
+                if bound.contains(&node) && !done.contains(&node) {
+                    return true;
+                }
+                ancestor = world.get::<Parent>(node).map(|p| p.get());
+            }
+            let publication = id.and_then(|id| world.resource::<Anchors>().entries.get(&id));
+            let source = publication.and_then(|p| match p.source {
+                PoseSource::Native(id) => world
+                    .resource::<NativeReferences>()
+                    .slots
+                    .get(&id)
+                    .copied()
+                    .flatten(),
+                PoseSource::Element(node) => world
+                    .get_resource::<ElemenetWorld>()
+                    .filter(|s| s.0.entities().is_alive(node))
+                    .and_then(|_| world.get_resource::<EntityMap>())
+                    .and_then(|m| m.0.get(&node.id()).copied()),
+            });
+            let permitted = publication.is_none_or(|p| {
+                let required = match p.source {
+                    PoseSource::Native(id) => world
+                        .resource::<NativeReferences>()
+                        .requirements
+                        .get(&id)
+                        .map(|r| r.0)
+                        .unwrap_or_default(),
+                    PoseSource::Element(_) => CapabilityBits::empty(),
+                };
+                required.is_empty()
+                    || world
+                        .get_resource::<SpacePolicies>()
+                        .and_then(|p| p.by_space.get(&owner.id()))
+                        .is_some_and(|p| p.effective_caps.contains(required))
+            });
+            let mut dependency = source;
+            let mut dependency_available = true;
+            while let Some(node) = dependency {
+                if node == *root {
+                    break;
+                }
+                if bound.contains(&node) && !done.contains(&node) {
+                    return true;
+                }
+                if unavailable.contains(&node) {
+                    dependency_available = false;
+                }
+                dependency = world.get::<Parent>(node).map(|p| p.get());
+            }
+            let valid = permitted
+                && dependency_available
+                && source.is_some_and(|s| !is_descendant(world, s, *root));
+            let pose = source
+                .filter(|_| valid)
+                .and_then(|s| world.get::<GlobalTransform>(s).copied())
+                .zip(world.get::<Transform>(*root).copied())
+                .map(|(pose, offset)| pose.mul_transform(offset));
+            place_subtree(world, *root, pose);
+            if pose.is_none() {
+                unavailable.insert(*root);
+            }
+            done.insert(*root);
+            false
+        });
+        if pending.len() == previous {
+            for (root, _, _) in pending.drain(..) {
+                place_subtree(world, root, None);
+            }
+        }
+    }
+}
+
+fn place_subtree(world: &mut World, root: Entity, pose: Option<GlobalTransform>) {
+    let available = pose.is_some();
+    let parent_visible = world
+        .get::<Parent>(root)
+        .and_then(|p| world.get::<InheritedVisibility>(p.get()))
+        .map(|v| v.get())
+        .unwrap_or(true);
+    let mut queue = vec![(root, pose, parent_visible)];
+    while let Some((entity, pose, parent_visible)) = queue.pop() {
+        let visible = available
+            && match world
+                .get::<Visibility>(entity)
+                .copied()
+                .unwrap_or(Visibility::Inherited)
+            {
+                Visibility::Hidden => false,
+                Visibility::Visible => true,
+                Visibility::Inherited => parent_visible,
+            };
+        if let Some(mut v) = world.get_mut::<InheritedVisibility>(entity) {
+            let next = if visible {
+                InheritedVisibility::VISIBLE
+            } else {
+                InheritedVisibility::HIDDEN
+            };
+            if *v != next {
+                *v = next;
+            }
+        }
+        if let Some(pose) = pose {
+            if let Some(mut global) = world.get_mut::<GlobalTransform>(entity) {
+                if *global != pose {
+                    *global = pose;
+                }
+            }
+        }
+        let children: Vec<_> = world
+            .get::<Children>(entity)
+            .map(|c| c.iter().copied().collect())
+            .unwrap_or_default();
+        for child in children {
+            let child_pose = pose
+                .zip(world.get::<Transform>(child).copied())
+                .map(|(p, t)| p.mul_transform(t));
+            queue.push((child, child_pose, visible));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::permissions::SpacePolicy;
+    use bevy::render::view::VisibilityPlugin;
+    use bevy_xr_utils::tracking_utils::XrTrackedRightGrip;
+    use specs::Builder;
+    use virtual_dom::dom::element::{build_world, Hierarchy, Tag};
+
+    struct Fixture {
+        app: App,
+        publisher: specs::Entity,
+        viewer: specs::Entity,
+        node: specs::Entity,
+        object: Entity,
+        child: Entity,
+        parent: Entity,
+    }
+    fn fixture() -> Fixture {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            VisibilityPlugin,
+            AnchorPlugin,
+            crate::vr_input::VrInputPlugin,
+        ));
+        app.init_resource::<Assets<Mesh>>();
+        let mut specs = build_world();
+        let publisher = specs
+            .create_entity()
+            .with(Tag("space".into()))
+            .with(Hierarchy::default())
+            .build();
+        let viewer = specs
+            .create_entity()
+            .with(Tag("space".into()))
+            .with(Hierarchy::default())
+            .build();
+        let node = specs
+            .create_entity()
+            .with(Tag("group".into()))
+            .with(Attrs(HashMap::from([(
+                "anchor".into(),
+                "right-grip".into(),
+            )])))
+            .with(Hierarchy::default())
+            .build();
+        Hierarchy::add_child(&mut specs, viewer, node);
+        let parent = app
+            .world_mut()
+            .spawn(SpatialBundle::from_transform(Transform::from_xyz(
+                100., 0., 0.,
+            )))
+            .id();
+        let object = app
+            .world_mut()
+            .spawn(SpatialBundle::from_transform(Transform::from_xyz(
+                1., 0., 0.,
+            )))
+            .id();
+        let child = app
+            .world_mut()
+            .spawn(SpatialBundle::from_transform(Transform::from_xyz(
+                0., 2., 0.,
+            )))
+            .id();
+        app.world_mut().entity_mut(object).set_parent(parent);
+        app.world_mut().entity_mut(child).set_parent(object);
+        app.insert_resource(ElemenetWorld(specs));
+        app.insert_resource(EntityMap(HashMap::from([(node.id(), object)])));
+        app.insert_resource(SpaceHandleTables::default());
+        let mut policies = SpacePolicies::default();
+        policies.by_space.insert(
+            publisher.id(),
+            SpacePolicy {
+                effective_caps: CapabilityBits::CREATE_ANCHOR,
+                effective_native: NativeServiceBits::VR_INPUT,
+                ..default()
+            },
+        );
+        policies.by_space.insert(
+            viewer.id(),
+            SpacePolicy {
+                effective_caps: CapabilityBits::READ_POSE_STREAM,
+                ..default()
+            },
+        );
+        app.insert_resource(policies);
+        crate::vr_input::prepare_references(app.world_mut());
+        Fixture {
+            app,
+            publisher,
+            viewer,
+            node,
+            object,
+            child,
+            parent,
+        }
+    }
+    fn create(f: &mut Fixture, key: &str, source: Source) -> Option<String> {
+        apply_requests(
+            f.app.world_mut(),
+            f.publisher.id(),
+            vec![Request {
+                id: 1,
+                guard: None,
+                key: key.into(),
+                source: Some(source),
+            }],
+        )
+        .pop()
+        .unwrap()
+        .error
+    }
+    fn right(f: &mut Fixture, x: f32) -> Entity {
+        f.app
+            .world_mut()
+            .spawn((
+                SpatialBundle::from_transform(Transform::from_xyz(x, 0., 0.)),
+                XrTrackedRightGrip,
+            ))
+            .id()
+    }
+
+    #[test]
+    fn native_source_follows_in_the_same_frame_and_reconnects_without_js() {
+        let mut f = fixture();
+        assert!(create(
+            &mut f,
+            "right-grip",
+            Source::Native("__vr_right_grip_root".into())
+        )
+        .is_none());
+        f.app.update(); // Registration before the XR session is allowed.
+        assert!(!f
+            .app
+            .world()
+            .get::<InheritedVisibility>(f.object)
+            .unwrap()
+            .get());
+        let hand = right(&mut f, 3.);
+        f.app.update();
+        assert_eq!(
+            f.app
+                .world()
+                .get::<GlobalTransform>(f.object)
+                .unwrap()
+                .translation(),
+            Vec3::new(4., 0., 0.)
+        );
+        assert_eq!(
+            f.app
+                .world()
+                .get::<GlobalTransform>(f.child)
+                .unwrap()
+                .translation(),
+            Vec3::new(4., 2., 0.)
+        );
+        assert_eq!(
+            f.app.world().get::<Parent>(f.object).unwrap().get(),
+            f.parent
+        );
+        assert_eq!(
+            f.app
+                .world()
+                .get::<Transform>(f.object)
+                .unwrap()
+                .translation,
+            Vec3::X
+        );
+        f.app
+            .world_mut()
+            .get_mut::<Transform>(hand)
+            .unwrap()
+            .translation
+            .x = 7.;
+        f.app.update();
+        assert_eq!(
+            f.app
+                .world()
+                .get::<GlobalTransform>(f.object)
+                .unwrap()
+                .translation()
+                .x,
+            8.
+        );
+        f.app.world_mut().despawn(hand);
+        f.app.update();
+        assert!(!f
+            .app
+            .world()
+            .get::<InheritedVisibility>(f.child)
+            .unwrap()
+            .get());
+        assert!(f.app.world().get_entity(f.object).is_some());
+        right(&mut f, 10.);
+        f.app.update();
+        assert_eq!(
+            f.app
+                .world()
+                .get::<GlobalTransform>(f.object)
+                .unwrap()
+                .translation()
+                .x,
+            11.
+        );
+        assert!(f
+            .app
+            .world()
+            .get::<InheritedVisibility>(f.child)
+            .unwrap()
+            .get());
+    }
+
+    #[test]
+    fn permissions_alias_scope_and_publication_collisions_are_enforced() {
+        let mut f = fixture();
+        assert!(create(&mut f, "bad", Source::Native("__missing".into())).is_some());
+        f.app
+            .world_mut()
+            .resource_mut::<SpacePolicies>()
+            .by_space
+            .get_mut(&f.publisher.id())
+            .unwrap()
+            .effective_native = NativeServiceBits::empty();
+        assert!(create(&mut f, "bad", Source::Native("__vr_right_grip_root".into())).is_some());
+        f.app
+            .world_mut()
+            .resource_mut::<SpacePolicies>()
+            .by_space
+            .get_mut(&f.publisher.id())
+            .unwrap()
+            .effective_native = NativeServiceBits::VR_INPUT;
+        assert!(create(
+            &mut f,
+            "right-grip",
+            Source::Native("__vr_right_grip_root".into())
+        )
+        .is_none());
+        f.app
+            .world_mut()
+            .resource_mut::<SpacePolicies>()
+            .by_space
+            .get_mut(&f.viewer.id())
+            .unwrap()
+            .effective_caps |= CapabilityBits::CREATE_ANCHOR;
+        let collision = apply_requests(
+            f.app.world_mut(),
+            f.viewer.id(),
+            vec![Request {
+                id: 2,
+                guard: None,
+                key: "right-grip".into(),
+                source: None,
+            }],
+        );
+        assert!(collision[0].error.is_some());
+        right(&mut f, 3.);
+        f.app.update();
+        f.app
+            .world_mut()
+            .resource_mut::<SpacePolicies>()
+            .by_space
+            .get_mut(&f.viewer.id())
+            .unwrap()
+            .effective_caps
+            .remove(CapabilityBits::READ_POSE_STREAM);
+        f.app.update();
+        assert!(!f
+            .app
+            .world()
+            .get::<InheritedVisibility>(f.object)
+            .unwrap()
+            .get());
+        f.app
+            .world_mut()
+            .resource_mut::<SpacePolicies>()
+            .by_space
+            .get_mut(&f.publisher.id())
+            .unwrap()
+            .effective_caps = CapabilityBits::empty();
+        f.app
+            .world_mut()
+            .resource_mut::<ElemenetWorld>()
+            .0
+            .maintain();
+        f.app.update();
+        assert!(f.app.world().resource::<Anchors>().entries.is_empty());
+    }
+
+    #[test]
+    fn removing_anchor_restores_authored_parent_pose_and_closing_publisher_releases_slots() {
+        let mut f = fixture();
+        create(
+            &mut f,
+            "right-grip",
+            Source::Native("__vr_right_grip_root".into()),
+        );
+        right(&mut f, 4.);
+        f.app.update();
+        f.app
+            .world()
+            .resource::<ElemenetWorld>()
+            .0
+            .write_storage::<Attrs>()
+            .get_mut(f.node)
+            .unwrap()
+            .0
+            .remove("anchor");
+        f.app
+            .world_mut()
+            .resource_mut::<AnchorDirty>()
+            .0
+            .insert(f.node.id());
+        f.app.update();
+        assert_eq!(
+            f.app
+                .world()
+                .get::<GlobalTransform>(f.object)
+                .unwrap()
+                .translation()
+                .x,
+            101.
+        );
+        f.app
+            .world()
+            .resource::<ElemenetWorld>()
+            .0
+            .entities()
+            .delete(f.publisher)
+            .unwrap();
+        f.app
+            .world_mut()
+            .resource_mut::<ElemenetWorld>()
+            .0
+            .maintain();
+        f.app.update();
+        assert!(f.app.world().resource::<Anchors>().entries.is_empty());
+        assert!(f
+            .app
+            .world()
+            .resource::<NativeReferences>()
+            .slots
+            .is_empty());
+    }
+
+    #[test]
+    fn element_sources_follow_native_physics_and_cycles_are_unavailable() {
+        let mut f = fixture();
+        let source = {
+            let mut specs = &mut f.app.world_mut().resource_mut::<ElemenetWorld>().0;
+            let node = specs
+                .create_entity()
+                .with(Tag("group".into()))
+                .with(Hierarchy::default())
+                .build();
+            Hierarchy::add_child(&mut specs, f.publisher, node);
+            node
+        };
+        let source_entity = f
+            .app
+            .world_mut()
+            .spawn(SpatialBundle::from_transform(Transform::from_xyz(
+                6., 0., 0.,
+            )))
+            .id();
+        f.app
+            .world_mut()
+            .resource_mut::<EntityMap>()
+            .0
+            .insert(source.id(), source_entity);
+        let mut table = crate::SpaceHandleTable::default();
+        table.local_to_global.insert(4, source.id());
+        f.app
+            .world_mut()
+            .resource_mut::<SpaceHandleTables>()
+            .by_space
+            .insert(f.publisher.id(), table);
+        assert!(create(&mut f, "right-grip", Source::Element(4)).is_none());
+        f.app.update();
+        assert_eq!(
+            f.app
+                .world()
+                .get::<GlobalTransform>(f.object)
+                .unwrap()
+                .translation()
+                .x,
+            7.
+        );
+        // A publication source beneath its consumer would depend on itself.
+        f.app
+            .world_mut()
+            .entity_mut(source_entity)
+            .set_parent(f.child);
+        f.app.update();
+        assert!(!f
+            .app
+            .world()
+            .get::<InheritedVisibility>(f.object)
+            .unwrap()
+            .get());
+    }
+
+    #[test]
+    fn old_handles_cannot_dispose_replaced_publications_and_foreign_nodes_are_rejected() {
+        let mut f = fixture();
+        create(
+            &mut f,
+            "right-grip",
+            Source::Native("__vr_right_grip_root".into()),
+        );
+        let replies = apply_requests(
+            f.app.world_mut(),
+            f.publisher.id(),
+            vec![
+                Request {
+                    id: 2,
+                    key: "right-grip".into(),
+                    source: Some(Source::Native("__vr_left_grip_root".into())),
+                    guard: None,
+                },
+                Request {
+                    id: 3,
+                    key: "right-grip".into(),
+                    source: None,
+                    guard: Some(1),
+                },
+            ],
+        );
+        assert!(replies[0].error.is_none());
+        assert!(replies[1].error.is_some());
+        assert_eq!(f.app.world().resource::<Anchors>().entries.len(), 1);
+        let mut table = crate::SpaceHandleTable::default();
+        table.local_to_global.insert(4, f.node.id());
+        f.app
+            .world_mut()
+            .resource_mut::<SpaceHandleTables>()
+            .by_space
+            .insert(f.publisher.id(), table);
+        assert!(create(&mut f, "foreign", Source::Element(4)).is_some());
+    }
+
+    #[test]
+    fn freshly_created_owned_element_can_publish_before_append_child_is_committed() {
+        let mut f = fixture();
+        let node = f
+            .app
+            .world_mut()
+            .resource_mut::<ElemenetWorld>()
+            .0
+            .create_entity()
+            .with(Tag("group".into()))
+            .with(Hierarchy::default())
+            .build();
+        let mut table = crate::SpaceHandleTable::default();
+        table.local_to_global.insert(4, node.id());
+        table.detached_globals.insert(node.id());
+        f.app
+            .world_mut()
+            .resource_mut::<SpaceHandleTables>()
+            .by_space
+            .insert(f.publisher.id(), table);
+        assert!(create(&mut f, "right-grip", Source::Element(4)).is_none());
+        f.app.update();
+        assert!(!f
+            .app
+            .world()
+            .get::<InheritedVisibility>(f.object)
+            .unwrap()
+            .get());
+        let source = f
+            .app
+            .world_mut()
+            .spawn(SpatialBundle::from_transform(Transform::from_xyz(
+                3., 0., 0.,
+            )))
+            .id();
+        f.app
+            .world_mut()
+            .resource_mut::<EntityMap>()
+            .0
+            .insert(node.id(), source);
+        f.app.update();
+        assert_eq!(
+            f.app
+                .world()
+                .get::<GlobalTransform>(f.object)
+                .unwrap()
+                .translation()
+                .x,
+            4.
+        );
+    }
+
+    #[test]
+    fn raw_grip_pivot_wins_over_visual_proxy_and_tracking_loss_hides_consumers() {
+        use bevy_mod_xr::spaces::XrSpaceLocationFlags;
+        use bevy_xr_utils::tracking_utils::RightGrip;
+        let mut f = fixture();
+        create(
+            &mut f,
+            "right-grip",
+            Source::Native("__vr_right_grip_root".into()),
+        );
+        right(&mut f, 99.);
+        let raw = f
+            .app
+            .world_mut()
+            .spawn((
+                SpatialBundle::from_transform(Transform::from_xyz(2., 0., 0.)),
+                RightGrip,
+                XrSpaceLocationFlags {
+                    position_tracked: true,
+                    rotation_tracked: true,
+                    ..default()
+                },
+            ))
+            .id();
+        f.app.update();
+        assert_eq!(
+            f.app
+                .world()
+                .get::<GlobalTransform>(f.object)
+                .unwrap()
+                .translation()
+                .x,
+            3.
+        );
+        f.app
+            .world_mut()
+            .get_mut::<XrSpaceLocationFlags>(raw)
+            .unwrap()
+            .position_tracked = false;
+        f.app.update();
+        assert!(!f
+            .app
+            .world()
+            .get::<InheritedVisibility>(f.object)
+            .unwrap()
+            .get());
+        f.app
+            .world_mut()
+            .get_mut::<XrSpaceLocationFlags>(raw)
+            .unwrap()
+            .position_tracked = true;
+        f.app
+            .insert_resource(bevy_mod_openxr::resources::OxrFrameState(
+                openxr::FrameState {
+                    predicted_display_time: openxr::Time::from_nanos(1),
+                    predicted_display_period: openxr::Duration::from_nanos(1),
+                    should_render: false,
+                },
+            ));
+        f.app.update();
+        assert!(!f
+            .app
+            .world()
+            .get::<InheritedVisibility>(f.object)
+            .unwrap()
+            .get());
+        f.app
+            .world_mut()
+            .resource_mut::<bevy_mod_openxr::resources::OxrFrameState>()
+            .0
+            .should_render = true;
+        f.app.update();
+        assert!(f
+            .app
+            .world()
+            .get::<InheritedVisibility>(f.object)
+            .unwrap()
+            .get());
+    }
+}

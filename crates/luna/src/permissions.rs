@@ -42,6 +42,7 @@ bitflags! {
         const FETCH_HTTP           = 1 << 20;
         const AUDIO                = 1 << 21;
         const NAVIGATE_WORLD       = 1 << 22;
+        const CREATE_ANCHOR        = 1 << 23;
     }
 }
 
@@ -245,6 +246,7 @@ bitflags! {
     pub struct NativeServiceBits: u32 {
         const DESKTOP_CAMERA_CONTROL = 1 << 0;
         const VR_LOCOMOTION          = 1 << 1;
+        const VR_INPUT               = 1 << 2;
     }
 }
 
@@ -386,6 +388,14 @@ lazy_static! {
             auto_scripts: &[],
         });
         m.insert("audio", ResourceBundleDef { capabilities:CapabilityBits::AUDIO, native_services:NativeServiceBits::empty(), auto_scripts:&[] });
+        m.insert("create_anchor", ResourceBundleDef {
+            capabilities: CapabilityBits::CREATE_ANCHOR,
+            native_services: NativeServiceBits::empty(), auto_scripts: &[],
+        });
+        m.insert("vr_input", ResourceBundleDef {
+            capabilities: CapabilityBits::empty(),
+            native_services: NativeServiceBits::VR_INPUT, auto_scripts: &[],
+        });
         m.insert("fetch_http", ResourceBundleDef {
             capabilities: CapabilityBits::FETCH_HTTP,
             native_services: NativeServiceBits::empty(),
@@ -526,6 +536,7 @@ pub fn capability_labels(bits: CapabilityBits) -> Vec<&'static str> {
         ("READ_SYSTEM_INPUT", CapabilityBits::READ_SYSTEM_INPUT),
         ("UX_EMBED", CapabilityBits::UX_EMBED),
         ("CAPTURE_FRAME", CapabilityBits::CAPTURE_FRAME),
+        ("CREATE_ANCHOR", CapabilityBits::CREATE_ANCHOR),
     ]
     .iter()
     .filter(|(_, flag)| bits.contains(*flag))
@@ -537,6 +548,7 @@ pub fn native_service_labels(bits: NativeServiceBits) -> Vec<&'static str> {
     [
         ("DESKTOP_CAMERA_CONTROL", NativeServiceBits::DESKTOP_CAMERA_CONTROL),
         ("VR_LOCOMOTION", NativeServiceBits::VR_LOCOMOTION),
+        ("VR_INPUT", NativeServiceBits::VR_INPUT),
     ]
     .iter()
     .filter(|(_, flag)| bits.contains(*flag))

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head><name>Anclajes nativos</name></head>
+  <space resources="read_pose_stream">
+    <text x="0" y="2" z="-2" value="Entrá en VR: rojo en la mano izquierda, azul en la derecha" size="0.06" touchable="false"/>
+    <!-- No scripts: the renderer follows each published grip directly. -->
+    <group anchor="left-grip">
+      <box x="0" y="0.1" z="0" sx="0.06" sy="0.3" sz="0.06" color="#FF3040" touchable="false"/>
+    </group>
+    <group anchor="right-grip">
+      <box x="0" y="0.1" z="0" sx="0.06" sy="0.3" sz="0.06" color="#3080FF" touchable="false"/>
+    </group>
+  </space>
+</hsml>

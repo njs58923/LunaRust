@@ -3,6 +3,7 @@
 // El binario (main.rs) importa desde aquí con `use luna::*`.
 
 pub mod components;
+pub mod anchors;
 pub mod ui_text;
 pub mod audio;
 pub mod capture;
@@ -39,6 +40,7 @@ pub mod types;
 pub mod ui;
 pub mod utils;
 pub mod vr_locomotion;
+pub mod vr_input;
 pub mod avatar_vm;
 pub mod ws;
 

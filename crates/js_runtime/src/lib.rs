@@ -21,6 +21,7 @@ mod location;
 pub mod components;
 pub mod ui_text;
 pub mod audio;
+pub mod anchors;
 pub mod binary;
 pub mod settings;
 pub mod keyboard;
@@ -1558,6 +1559,8 @@ impl Engine {
                 location::op_query_parse::DECL,
                 location::op_query_encode::DECL,
                 mesh::op_mesh_resource::decl(),
+                anchors::op_anchor_request::DECL,
+                anchors::op_anchor_poll::DECL,
                 pose::op_set_joint_batch::decl(),
                 op_set_timeout::decl(),
                 op_clear_timeout::decl(),
@@ -1643,6 +1646,7 @@ impl Engine {
                     updates: attr_updates_for_state.updates.clone(),
                 });
                 state.put(mesh::MeshQueue::default());
+                state.put(anchors::AnchorQueue::default());
                 state.put(pose::PoseQueue::default());
                 state.put(world_navigation::WorldNavigationQueue::default());
                 state.put(audio::AudioQueue::default());
@@ -1847,7 +1851,7 @@ impl Engine {
 
         if let Err(e) = self
             .rt
-            .execute_script("<pump>", FastString::Static("__luna_component_pump(); __luna_keyboard_pump(); __luna_pump()"))
+            .execute_script("<pump>", FastString::Static("__luna_anchor_pump(); __luna_component_pump(); __luna_keyboard_pump(); __luna_pump()"))
         {
             eprintln!("[js_runtime] Error calling pump: {:?}", e);
         }
@@ -1895,6 +1899,14 @@ impl Engine {
 
     pub fn drain_mesh_commands(&mut self) -> (u64, Vec<mesh::MeshCommand>) {
         self.rt.op_state().borrow_mut().borrow_mut::<mesh::MeshQueue>().drain()
+    }
+
+    pub fn drain_anchor_requests(&mut self) -> Vec<anchors::Request> {
+        std::mem::take(&mut self.rt.op_state().borrow_mut().borrow_mut::<anchors::AnchorQueue>().requests)
+    }
+
+    pub fn push_anchor_replies(&mut self, replies: Vec<anchors::Reply>) {
+        self.rt.op_state().borrow_mut().borrow_mut::<anchors::AnchorQueue>().replies.extend(replies);
     }
 
     pub fn drain_element_creation_queue(&self) -> Vec<(i32, String)> {
@@ -2497,7 +2509,7 @@ fn bootstrap_exception(scope: &mut deno_core::v8::TryCatch<deno_core::v8::Handle
     }
 }
 
-static BOOTSTRAP_SCRIPTS: [CachedBootstrap; 12] = [
+static BOOTSTRAP_SCRIPTS: [CachedBootstrap; 13] = [
     CachedBootstrap::new("<bootstrap>", BOOTSTRAP_JS),
     CachedBootstrap::new("<storage>", include_str!("../storage.js")),
     CachedBootstrap::new("<location>", include_str!("../location.js")),
@@ -2510,6 +2522,7 @@ static BOOTSTRAP_SCRIPTS: [CachedBootstrap; 12] = [
     CachedBootstrap::new("<ui-path>", "globalThis.PathGeometry=Object.freeze({tessellate(commands,{tolerance=0.0001,strokeWidth=0,nonZero=false}={}){return Deno.core.ops.op_ui_path({commands,tolerance,strokeWidth,nonZero});}});"),
     CachedBootstrap::new("<ui-text>", "globalThis.TextLayout = Object.freeze({create(text,size,width=0){return Deno.core.ops.op_ui_text(String(text),Number(size),Number(width));}});"),
     CachedBootstrap::new("<components>", include_str!("../components.js")),
+    CachedBootstrap::new("<anchors>", include_str!("../anchors.js")),
 ];
 
 #[cfg(test)]

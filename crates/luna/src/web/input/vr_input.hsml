@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hsml>
+  <head><name>Input VR</name></head>
+  <space id="vr_input" resources="vr_input,create_anchor">
+    <script>
+      // Native references belong to this space, independently of DOM IDs.
+      dimension.anchors.create('left-grip', '__vr_left_grip_root').catch(console.error);
+      dimension.anchors.create('right-grip', '__vr_right_grip_root').catch(console.error);
+    </script>
+  </space>
+</hsml>

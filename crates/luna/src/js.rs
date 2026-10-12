@@ -124,6 +124,7 @@ pub struct JsTickData {
     pub audio_commands: Vec<js_runtime::audio::SharedPlayback>,
     pub pose_batches: Vec<js_runtime::pose::PoseBatch>,
     pub mesh_commands: (u64, Vec<js_runtime::mesh::MeshCommand>),
+    pub anchor_requests: Vec<js_runtime::anchors::Request>,
     pub needs_continuous_ticks: bool,
     pub next_timer_deadline: Option<Instant>,
     pub logs: Vec<(String, String)>,
@@ -150,7 +151,7 @@ impl JsTickData {
         // Exhaustive destructuring makes newly added queues a compile error
         // until they are included here. Scheduling alone is not a DOM change.
         let Self {
-            keyboard_commands, audio_commands, pose_batches, mesh_commands,
+            keyboard_commands, audio_commands, pose_batches, mesh_commands, anchor_requests,
             needs_continuous_ticks: _, next_timer_deadline: _, logs,
             attr_updates, pos_updates, rot_updates, scale_updates,
             creation_queue, hierarchy_queue, remove_queue, fetch_queue,
@@ -158,6 +159,7 @@ impl JsTickData {
             shell_outbox, ws_connect_queue, ws_send_queue, ws_close_queue,
         } = self;
         !keyboard_commands.is_empty() || !audio_commands.is_empty()
+            || !anchor_requests.is_empty()
             || !pose_batches.is_empty() || !mesh_commands.1.is_empty()
             || !logs.is_empty() || !attr_updates.is_empty()
             || !pos_updates.is_empty() || !rot_updates.is_empty()
@@ -214,6 +216,7 @@ pub enum JsWorkerCommand {
         elapsed_ms: f64,
     },
     PushElementCreationResults(Vec<(i32, i32)>),
+    PushAnchorReplies(Vec<js_runtime::anchors::Reply>),
     /// Lo que el host publica hacia el documento de ajustes: estado del MCP y
     /// configuración raíz, en un JSON. Reemplaza al `EvalScript` que le escribía
     /// atributos a nodos de ids fijos. Ver `js_runtime::settings`.
@@ -288,6 +291,7 @@ pub struct SpaceScriptWorker {
     pub cmd_tx: mpsc::SyncSender<JsWorkerCommand>,
     pub event_rx: mpsc::Receiver<JsWorkerEvent>,
     pending_commands: VecDeque<JsWorkerCommand>,
+    pending_anchor_replies: Vec<js_runtime::anchors::Reply>,
     pub snapshot_in_flight: bool,
     pub tick_in_flight: bool,
     pub needs_tick: bool,
@@ -334,6 +338,18 @@ impl SpaceScriptWorker {
                     self.pending_commands.clear();
                     return Err(JsWorkerQueueError::Disconnected);
                 }
+            }
+        }
+        if !self.pending_anchor_replies.is_empty() {
+            let replies = std::mem::take(&mut self.pending_anchor_replies);
+            match self.cmd_tx.try_send(JsWorkerCommand::PushAnchorReplies(replies)) {
+                Ok(()) => self.needs_tick = true,
+                Err(mpsc::TrySendError::Full(JsWorkerCommand::PushAnchorReplies(replies))) => {
+                    self.pending_anchor_replies = replies;
+                    return Err(JsWorkerQueueError::Full);
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => return Err(JsWorkerQueueError::Disconnected),
+                _ => unreachable!(),
             }
         }
         Ok(())
@@ -825,6 +841,7 @@ fn spawn_space_worker_configured(
                         let tick_data = JsTickData {
                             audio_commands: ctx.engine.drain_audio_commands(),
                             mesh_commands: ctx.engine.drain_mesh_commands(),
+                            anchor_requests: ctx.engine.drain_anchor_requests(),
                             pose_batches: ctx.engine.drain_pose_batches(),
                             keyboard_commands: ctx.engine.drain_keyboard_commands(),
                             needs_continuous_ticks: ctx.engine.has_pending_animation_frames(),
@@ -861,6 +878,7 @@ fn spawn_space_worker_configured(
                         // Publish geometry before any idle maintenance can run.
                         let _ = event_tx.send(JsWorkerEvent::TickData(tick_data));
                     }
+                    JsWorkerCommand::PushAnchorReplies(replies) => ctx.engine.push_anchor_replies(replies),
                     JsWorkerCommand::PushElementCreationResults(results) => {
                         for (request_id, node_id) in results {
                             ctx.engine.push_element_creation_result(request_id, node_id);
@@ -969,6 +987,7 @@ fn spawn_space_worker_configured(
         cmd_tx,
         event_rx,
         pending_commands: VecDeque::new(),
+        pending_anchor_replies: Vec::new(),
         snapshot_in_flight: false,
         tick_in_flight: false,
         needs_tick: true,
@@ -2820,6 +2839,15 @@ pub fn js_tick_system(world: &mut World) {
         world, tick_batches.iter().map(|(space_id, _)| *space_id));
 
     for (space_id, data) in tick_batches {
+        if !data.anchor_requests.is_empty() {
+            let replies = crate::anchors::apply_requests(world, space_id, data.anchor_requests);
+            if let Some(mut manager) = world.get_non_send_resource_mut::<ScriptRuntimeManager>() {
+                if let Some(worker) = manager.contexts.get_mut(&space_id) {
+                    worker.pending_anchor_replies.extend(replies);
+                    worker.needs_tick = true;
+                }
+            }
+        }
         crate::keyboard::apply_commands(world, space_id, data.keyboard_commands);
         if !data.world_navigation.is_empty() {
             world_navigation_batches.push((space_id, data.world_navigation));
@@ -4915,6 +4943,7 @@ mod tests {
                 cmd_tx,
                 event_rx,
                 pending_commands: VecDeque::new(),
+                pending_anchor_replies: Vec::new(),
                 snapshot_in_flight: false,
                 tick_in_flight: false,
                 needs_tick,
@@ -4942,6 +4971,25 @@ mod tests {
         assert!(matches!(commands.try_recv(), Err(mpsc::TryRecvError::Empty)));
         assert!(!app.world().get_resource_ref::<AttributeUpdates>().unwrap().is_changed());
         assert!(!app.world().get_resource_ref::<TransformUpdates>().unwrap().is_changed());
+    }
+
+    #[test]
+    fn anchor_ack_survives_a_full_command_queue_and_requests_a_pump() {
+        let (mut worker, commands, _events) = fake_worker(false);
+        for _ in 0..JS_WORKER_COMMAND_CAPACITY {
+            worker.cmd_tx.try_send(JsWorkerCommand::RequestDebugState).unwrap();
+        }
+        worker.pending_anchor_replies.push(js_runtime::anchors::Reply { id: 7, error: None });
+        assert!(matches!(worker.flush_pending(), Err(JsWorkerQueueError::Full)));
+        assert_eq!(worker.pending_anchor_replies.len(), 1);
+        for _ in 0..JS_WORKER_COMMAND_CAPACITY { commands.recv().unwrap(); }
+        worker.flush_pending().unwrap();
+        assert!(worker.pending_anchor_replies.is_empty());
+        assert!(worker.needs_tick);
+        match commands.recv().unwrap() {
+            JsWorkerCommand::PushAnchorReplies(replies) => assert_eq!(replies[0].id, 7),
+            _ => panic!("expected deferred anchor acknowledgement"),
+        }
     }
 
     #[test]
@@ -5255,7 +5303,7 @@ mod tests {
         event_tx
             .send(JsWorkerEvent::TickData(JsTickData {
                 audio_commands: Vec::new(),
-                mesh_commands: (0, Vec::new()),
+                mesh_commands: (0, Vec::new()), anchor_requests: Vec::new(),
                 keyboard_commands: Vec::new(), pose_batches: Vec::new(),
                 needs_continuous_ticks: false,
                 next_timer_deadline: None,
@@ -6074,7 +6122,7 @@ mod tests {
         let local = app.world().resource::<SpaceHandleTables>().by_space[&space_id].global_to_local[&child_id];
         events.send(JsWorkerEvent::TickData(JsTickData {
                 audio_commands: Vec::new(),
-                mesh_commands: (0, Vec::new()),
+                mesh_commands: (0, Vec::new()), anchor_requests: Vec::new(),
                 keyboard_commands: Vec::new(), pose_batches: Vec::new(),
                 needs_continuous_ticks: false,
                 next_timer_deadline: None,
@@ -6139,7 +6187,7 @@ mod tests {
             .unwrap().detached_globals.insert(child_id);
         events.send(JsWorkerEvent::TickData(JsTickData {
                 audio_commands: Vec::new(),
-                mesh_commands: (0, Vec::new()),
+                mesh_commands: (0, Vec::new()), anchor_requests: Vec::new(),
                 keyboard_commands: Vec::new(), pose_batches: Vec::new(),
                 needs_continuous_ticks: false,
                 next_timer_deadline: None,

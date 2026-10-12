@@ -60,6 +60,7 @@ fn dev_web_candidates(route_path: &str) -> Vec<PathBuf> {
         base.join(&file),
         base.join("ux").join(&file),
         base.join("apps").join(&file),
+        base.join("input").join(&file),
     ]
 }
 
@@ -93,6 +94,7 @@ impl VirtualRoutes {
 
         // Registrar rutas estáticas
         routes.insert("root".to_string(), RouteHandler::Static(LUNA_ROOT));
+        routes.insert("vr_input".to_string(), RouteHandler::Static(include_str!("web/input/vr_input.hsml")));
         routes.insert("home".to_string(), RouteHandler::Static(LUNA_HOME));
         routes.insert("environment".to_string(), RouteHandler::Static(include_str!("web/environment.hsml")));
         routes.insert("demos".to_string(), RouteHandler::Static(LUNA_DEMOS));
@@ -102,6 +104,7 @@ impl VirtualRoutes {
         routes.insert("components/counter.hsml".to_string(), RouteHandler::Static(include_str!("web/components/counter.hsml")));
         routes.insert("assets/birds_ambience.mp3".to_string(), RouteHandler::Bytes(include_bytes!("web/assets/birds_ambience.mp3")));
         routes.insert("mesh_demo".to_string(), RouteHandler::Static(include_str!("web/mesh_demo.hsml")));
+        routes.insert("anchor_demo".to_string(), RouteHandler::Static(include_str!("web/anchor_demo.hsml")));
         routes.insert("surface_demo".to_string(), RouteHandler::Static(include_str!("web/surface_demo.hsml")));
         routes.insert("fire_demo".to_string(), RouteHandler::Static(LUNA_FIRE_DEMO));
         routes.insert("target_demo".to_string(), RouteHandler::Static(LUNA_TARGET_DEMO));
