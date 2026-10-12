@@ -217,6 +217,7 @@ pub enum JsWorkerCommand {
     },
     PushElementCreationResults(Vec<(i32, i32)>),
     PushAnchorReplies(Vec<js_runtime::anchors::Reply>),
+    PumpAnchorInput,
     /// Lo que el host publica hacia el documento de ajustes: estado del MCP y
     /// configuración raíz, en un JSON. Reemplaza al `EvalScript` que le escribía
     /// atributos a nodos de ids fijos. Ver `js_runtime::settings`.
@@ -288,6 +289,7 @@ impl std::fmt::Display for JsWorkerQueueError {
 
 pub struct SpaceScriptWorker {
     pub component_port: Arc<js_runtime::components::ComponentPort>,
+    pub anchor_port: Arc<js_runtime::anchors::AnchorPort>,
     pub cmd_tx: mpsc::SyncSender<JsWorkerCommand>,
     pub event_rx: mpsc::Receiver<JsWorkerEvent>,
     pending_commands: VecDeque<JsWorkerCommand>,
@@ -630,6 +632,8 @@ fn spawn_space_worker_configured(
 ) -> std::result::Result<SpaceScriptWorker, String> {
     let component_port = Arc::new(js_runtime::components::ComponentPort::default());
     let thread_component_port = component_port.clone();
+    let anchor_port = Arc::new(js_runtime::anchors::AnchorPort::default());
+    let thread_anchor_port = anchor_port.clone();
     let (cmd_tx, cmd_rx) = mpsc::sync_channel::<JsWorkerCommand>(JS_WORKER_COMMAND_CAPACITY);
     let (event_tx, event_rx) = mpsc::sync_channel::<JsWorkerEvent>(JS_WORKER_EVENT_CAPACITY);
     let termination = WorkerTermination::default();
@@ -647,6 +651,7 @@ fn spawn_space_worker_configured(
             };
 
             ctx.engine.configure_component_port(thread_component_port.clone());
+            ctx.engine.configure_anchor_port(thread_anchor_port.clone());
             ctx.engine.configure_text_backend(js_runtime::ui_text::TextBackend(crate::ui_text::layout));
             if let Some((path, url)) = storage {
                 ctx.engine.configure_document_location(url.clone());
@@ -673,6 +678,20 @@ fn spawn_space_worker_configured(
             'worker: loop {
                 if worker_termination.shutdown_requested.load(Ordering::Acquire) {
                     break;
+                }
+                if thread_anchor_port.input_ready.load(Ordering::Acquire) {
+                    if !watchdog.arm(limits.tick) { break; }
+                    let result = ctx.engine.pump_anchor_input();
+                    match watchdog.complete() {
+                        Ok(false) if result.is_ok() => {}
+                        _ => {
+                            let _ = event_tx.send(JsWorkerEvent::WorkerError("Anchor input callback failed or exceeded its execution limit".into()));
+                            break;
+                        }
+                    }
+                    // Mutations still pass through the usual host commit. This
+                    // wake does not acknowledge or replace an in-flight RAF.
+                    thread_anchor_port.tick_ready.store(true, Ordering::Release);
                 }
                 // After a mesh burst, allow one delayed heap compaction. Once
                 // handled, static workers go back to an untimed blocking receive.
@@ -878,6 +897,7 @@ fn spawn_space_worker_configured(
                         // Publish geometry before any idle maintenance can run.
                         let _ = event_tx.send(JsWorkerEvent::TickData(tick_data));
                     }
+                    JsWorkerCommand::PumpAnchorInput => {},
                     JsWorkerCommand::PushAnchorReplies(replies) => ctx.engine.push_anchor_replies(replies),
                     JsWorkerCommand::PushElementCreationResults(results) => {
                         for (request_id, node_id) in results {
@@ -984,6 +1004,7 @@ fn spawn_space_worker_configured(
 
     Ok(SpaceScriptWorker {
         component_port,
+        anchor_port,
         cmd_tx,
         event_rx,
         pending_commands: VecDeque::new(),
@@ -2664,7 +2685,8 @@ pub fn js_tick_system(world: &mut World) {
                 broken_contexts.push(*space_id);
                 continue;
             }
-            worker.needs_tick |= worker.component_port.take_wake()
+            worker.needs_tick |= worker.anchor_port.tick_ready.swap(false, Ordering::AcqRel)
+                || worker.component_port.take_wake()
                 || worker.next_timer_deadline.is_some_and(|deadline| deadline <= tick_now);
             if worker.tick_in_flight || !worker.needs_tick {
                 continue;
@@ -4940,6 +4962,7 @@ mod tests {
         (
             SpaceScriptWorker {
                 component_port: Arc::new(js_runtime::components::ComponentPort::default()),
+                anchor_port: Arc::new(js_runtime::anchors::AnchorPort::default()),
                 cmd_tx,
                 event_rx,
                 pending_commands: VecDeque::new(),
@@ -5394,6 +5417,36 @@ mod tests {
             JsWorkerEvent::WorkerError(error) => panic!("{error}"),
             _ => panic!("tick failed"),
         }
+    }
+
+    #[test]
+    fn anchor_input_wakes_a_sleeping_worker_without_tick_or_raf() {
+        let mut worker = spawn_space_worker_with_limits(91_010, WorkerExecutionLimits::default()).unwrap();
+        worker_eval(&mut worker, "globalThis.called=0;globalThis.raf=false;dimension.anchors.listen('right-grip',()=>called++,{priority:'input'});requestAnimationFrame(()=>raf=true);".into());
+        let id = worker.anchor_port.subscriptions()[0].id;
+        assert!(worker.anchor_port.publish(id, js_runtime::anchors::CapturedFrame {
+            frame_id: 1, captured: Instant::now(), samples: vec![], discontinuous: false,
+        }));
+        worker.cmd_tx.try_send(JsWorkerCommand::PumpAnchorInput).unwrap();
+        worker_eval(&mut worker, "if(called!==1||raf)throw Error('input waited for RAF');".into());
+        assert!(worker.anchor_port.tick_ready.load(Ordering::Acquire));
+        stop_space_worker(&mut worker);
+    }
+
+    #[test]
+    fn anchor_input_callbacks_obey_the_worker_watchdog() {
+        let mut worker = spawn_space_worker_with_limits(91_011, WorkerExecutionLimits { tick: Duration::from_millis(80), ..WorkerExecutionLimits::default() }).unwrap();
+        worker_eval(&mut worker, "dimension.anchors.listen('right-grip',()=>{while(true){}},{priority:'input'});".into());
+        let id = worker.anchor_port.subscriptions()[0].id;
+        worker.anchor_port.publish(id, js_runtime::anchors::CapturedFrame {
+            frame_id: 1, captured: Instant::now(), samples: vec![], discontinuous: false,
+        });
+        worker.cmd_tx.try_send(JsWorkerCommand::PumpAnchorInput).unwrap();
+        match worker.event_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            JsWorkerEvent::WorkerError(error) => assert!(error.contains("execution limit")),
+            _ => panic!("input callback bypassed watchdog"),
+        }
+        stop_space_worker(&mut worker);
     }
 
     #[test]

@@ -57,6 +57,12 @@ struct Follower {
     owner: specs::Entity,
     source: Option<u64>,
 }
+#[derive(Component)]
+struct AnchorAvailability(bool);
+#[derive(Component)]
+pub(crate) struct NativeControllerInput(pub js_runtime::anchors::ControllerInput);
+#[derive(Resource, Default)]
+struct AnchorFrame(u64);
 #[derive(Resource, Default)]
 struct BindingVersion(Option<u64>);
 #[derive(Resource, Default)]
@@ -70,6 +76,7 @@ impl Plugin for AnchorPlugin {
             .init_resource::<NativeReferences>()
             .init_resource::<BindingVersion>()
             .init_resource::<AnchorDirty>()
+            .init_resource::<AnchorFrame>()
             .add_systems(
                 PostUpdate,
                 sync_bindings.before(TransformSystem::TransformPropagate),
@@ -81,7 +88,8 @@ impl Plugin for AnchorPlugin {
                     .after(VisibilitySystems::VisibilityPropagate)
                     .before(VisibilitySystems::UpdateFrusta)
                     .before(VisibilitySystems::CheckVisibility),
-            );
+            )
+            .add_systems(PostUpdate, capture_listeners.after(follow));
     }
 }
 
@@ -444,6 +452,7 @@ pub(crate) fn follow(world: &mut World) {
 
 fn place_subtree(world: &mut World, root: Entity, pose: Option<GlobalTransform>) {
     let available = pose.is_some();
+    world.entity_mut(root).insert(AnchorAvailability(available));
     let parent_visible = world
         .get::<Parent>(root)
         .and_then(|p| world.get::<InheritedVisibility>(p.get()))
@@ -489,6 +498,193 @@ fn place_subtree(world: &mut World, root: Entity, pose: Option<GlobalTransform>)
             queue.push((child, child_pose, visible));
         }
     }
+}
+
+/// Capture after native following, once per render frame, using the same clock
+/// for every subscriber and both hands. No snapshots or DOM pose writes.
+fn capture_listeners(world: &mut World) {
+    let workers: Vec<_> = world
+        .get_non_send_resource::<crate::js::ScriptRuntimeManager>()
+        .map(|manager| {
+            manager
+                .contexts
+                .iter()
+                .filter(|(_, w)| {
+                    w.anchor_port
+                        .active
+                        .load(std::sync::atomic::Ordering::Acquire)
+                })
+                .map(|(id, worker)| (*id, worker.anchor_port.clone(), worker.cmd_tx.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if workers.is_empty() {
+        return;
+    }
+    world.resource_mut::<AnchorFrame>().0 += 1;
+    let frame_id = world.resource::<AnchorFrame>().0;
+    let captured = std::time::Instant::now();
+    for (owner, port, wake) in workers {
+        if capture_port(world, owner, &port, frame_id, captured) {
+            // A full queue already guarantees the worker will wake. It checks
+            // input before reading that backlog, so the wake can be discarded.
+            let _ = wake.try_send(crate::js::JsWorkerCommand::PumpAnchorInput);
+        }
+    }
+}
+fn capture_port(
+    world: &World,
+    owner_id: u32,
+    port: &js_runtime::anchors::AnchorPort,
+    frame_id: u64,
+    captured: std::time::Instant,
+) -> bool {
+    let mut wake = false;
+    for subscription in port.subscriptions() {
+        let samples = subscription
+            .targets
+            .iter()
+            .enumerate()
+            .map(|(index, target)| {
+                let pose = listener_pose(world, owner_id, target);
+                let mut sample = js_runtime::anchors::Sample {
+                    index,
+                    available: false,
+                    position: [0.; 3],
+                    rotation: [0., 0., 0., 1.],
+                    scale: [1.; 3],
+                    error: None,
+                    input: None,
+                };
+                match pose {
+                    Ok(Some((pose, input))) => {
+                        sample.input = input;
+                        let (scale, rotation, position) = pose.to_scale_rotation_translation();
+                        sample.available = true;
+                        sample.position = position.to_array();
+                        sample.rotation = rotation.to_array();
+                        sample.scale = scale.to_array();
+                    }
+                    Ok(None) => {}
+                    Err(error) => sample.error = Some(error.into()),
+                }
+                sample
+            })
+            .collect();
+        wake |= port.publish(
+            subscription.id,
+            js_runtime::anchors::CapturedFrame {
+                frame_id,
+                captured,
+                samples,
+                discontinuous: false,
+            },
+        );
+    }
+    wake
+}
+fn listener_pose(
+    world: &World,
+    owner_id: u32,
+    target: &js_runtime::anchors::ListenTarget,
+) -> Result<
+    Option<(
+        GlobalTransform,
+        Option<js_runtime::anchors::ControllerInput>,
+    )>,
+    &'static str,
+> {
+    let specs = world
+        .get_resource::<ElemenetWorld>()
+        .ok_or("Missing document")?;
+    let owner = specs.0.entities().entity(owner_id);
+    if !specs.0.entities().is_alive(owner) {
+        return Err("Listener owner closed");
+    }
+    let resolve = |publication: &Publication| -> Result<Option<Entity>, &'static str> {
+        match publication.source {
+            PoseSource::Element(node) => Ok(specs
+                .0
+                .entities()
+                .is_alive(node)
+                .then(|| world.resource::<EntityMap>().0.get(&node.id()).copied())
+                .flatten()),
+            PoseSource::Native(id) => {
+                let refs = world.resource::<NativeReferences>();
+                let required = refs.requirements.get(&id).map(|r| r.0).unwrap_or_default();
+                if !required.is_empty()
+                    && !world
+                        .get_resource::<SpacePolicies>()
+                        .and_then(|p| p.by_space.get(&owner_id))
+                        .is_some_and(|p| p.effective_caps.contains(required))
+                {
+                    return Err("Listener lacks pose permission");
+                }
+                Ok(refs.slots.get(&id).copied().flatten())
+            }
+        }
+    };
+    let entity = if let Some(key) = &target.key {
+        let anchors = world.resource::<Anchors>();
+        let Some(publication) = anchors.keys.get(key).and_then(|id| anchors.entries.get(id)) else {
+            return Ok(None);
+        };
+        resolve(publication)?
+    } else {
+        let node = world
+            .get_resource::<SpaceHandleTables>()
+            .and_then(|t| t.by_space.get(&owner_id))
+            .and_then(|t| t.local_to_global.get(&target.node?))
+            .copied()
+            .ok_or("Invalid listener element")?;
+        let element = specs.0.entities().entity(node);
+        if !specs.0.entities().is_alive(element)
+            || crate::js::find_owner_space_id(&specs.0, element) != Some(owner_id)
+        {
+            return Err("Listener element belongs to another space");
+        }
+        world.resource::<EntityMap>().0.get(&node).copied()
+    };
+    let mut input = entity
+        .and_then(|e| world.get::<NativeControllerInput>(e))
+        .map(|i| i.0.clone());
+    let mut pending: Vec<_> = entity.into_iter().collect();
+    let mut visited = HashSet::new();
+    for _ in 0..256 {
+        let Some(node) = pending.pop() else {
+            break;
+        };
+        if !visited.insert(node) {
+            continue;
+        }
+        if let Some(follower) = world.get::<Follower>(node) {
+            let Some(publication) = follower
+                .source
+                .and_then(|id| world.resource::<Anchors>().entries.get(&id))
+            else {
+                return Ok(None);
+            };
+            let source = resolve(publication)?;
+            if source.is_none() || !world.get::<AnchorAvailability>(node).is_some_and(|a| a.0) {
+                return Ok(None);
+            }
+            if input.is_none() {
+                input = source
+                    .and_then(|e| world.get::<NativeControllerInput>(e))
+                    .map(|i| i.0.clone());
+            }
+            // Follow source dependencies too: a DOM publication can itself
+            // follow another anchor. That must not bypass native permissions.
+            pending.extend(source);
+        }
+        pending.extend(world.get::<Parent>(node).map(|p| p.get()));
+    }
+    if !pending.is_empty() {
+        return Ok(None);
+    }
+    Ok(entity
+        .and_then(|e| world.get::<GlobalTransform>(e).copied())
+        .map(|pose| (pose, input)))
 }
 
 #[cfg(test)]
@@ -614,6 +810,140 @@ mod tests {
                 XrTrackedRightGrip,
             ))
             .id()
+    }
+
+    #[test]
+    fn listeners_capture_effective_offsets_and_redact_revoked_or_lost_poses() {
+        let mut f = fixture();
+        assert!(create(
+            &mut f,
+            "right-grip",
+            Source::Native("__vr_right_grip_root".into())
+        )
+        .is_none());
+        let hand = right(&mut f, 3.);
+        f.app
+            .world_mut()
+            .resource_mut::<SpaceHandleTables>()
+            .by_space
+            .entry(f.viewer.id())
+            .or_default()
+            .local_to_global
+            .insert(5, f.node.id());
+        f.app.update();
+        let port = std::sync::Arc::new(js_runtime::anchors::AnchorPort::default());
+        let mut engine = js_runtime::Engine::new();
+        engine.configure_anchor_port(port.clone());
+        engine.eval("globalThis.frames=[];dimension.anchors.listen(['right-grip',new HSMLElement(5)],f=>frames.push(f),{priority:'input',delivery:'history'});").unwrap();
+        capture_port(
+            f.app.world(),
+            f.viewer.id(),
+            &port,
+            1,
+            std::time::Instant::now(),
+        );
+        engine.pump_anchor_input().unwrap();
+        engine.eval("if(frames[0].samples[0].position.x!==3||frames[0].samples[1].position.x!==4)throw Error('not rendered pose');").unwrap();
+        f.app
+            .world_mut()
+            .resource_mut::<SpacePolicies>()
+            .by_space
+            .get_mut(&f.viewer.id())
+            .unwrap()
+            .effective_caps = CapabilityBits::empty();
+        // Revocation is checked at capture, even before the next follower update.
+        capture_port(
+            f.app.world(),
+            f.viewer.id(),
+            &port,
+            2,
+            std::time::Instant::now(),
+        );
+        engine.pump_anchor_input().unwrap();
+        engine.eval("if(!frames[1].discontinuous||frames[1].samples.some(s=>s.available||s.position.x!==0))throw Error('pose leaked');").unwrap();
+        f.app
+            .world_mut()
+            .resource_mut::<SpacePolicies>()
+            .by_space
+            .get_mut(&f.viewer.id())
+            .unwrap()
+            .effective_caps = CapabilityBits::READ_POSE_STREAM;
+        f.app.world_mut().despawn(hand);
+        f.app.update();
+        capture_port(
+            f.app.world(),
+            f.viewer.id(),
+            &port,
+            3,
+            std::time::Instant::now(),
+        );
+        engine.pump_anchor_input().unwrap();
+        engine
+            .eval("if(frames[2].samples.some(s=>s.available))throw Error('stale pose');")
+            .unwrap();
+    }
+
+    #[test]
+    fn dom_publications_cannot_launder_native_listener_permissions() {
+        let mut f = fixture();
+        assert!(create(
+            &mut f,
+            "right-grip",
+            Source::Native("__vr_right_grip_root".into())
+        )
+        .is_none());
+        right(&mut f, 3.);
+        f.app.update();
+        // A rendered object following a DOM publication which follows VR.
+        let object = f.app.world_mut().spawn(SpatialBundle::default()).id();
+        f.app.world_mut().entity_mut(object).insert((
+            Follower {
+                key: "derived".into(),
+                owner: f.publisher,
+                source: Some(9),
+            },
+            AnchorAvailability(true),
+        ));
+        f.app.world_mut().resource_mut::<Anchors>().entries.insert(
+            9,
+            Publication {
+                owner: f.publisher,
+                request_id: 1,
+                key: "derived".into(),
+                source: PoseSource::Element(f.node),
+            },
+        );
+        f.app
+            .world_mut()
+            .resource_mut::<NativeReferences>()
+            .register(f.publisher, "__derived", Some(object));
+        let id =
+            f.app.world().resource::<NativeReferences>().names[&(f.publisher, "__derived".into())];
+        f.app.world_mut().resource_mut::<Anchors>().entries.insert(
+            10,
+            Publication {
+                owner: f.publisher,
+                request_id: 1,
+                key: "wrapped".into(),
+                source: PoseSource::Native(id),
+            },
+        );
+        f.app
+            .world_mut()
+            .resource_mut::<Anchors>()
+            .keys
+            .insert("wrapped".into(), 10);
+        let target = js_runtime::anchors::ListenTarget {
+            key: Some("wrapped".into()),
+            node: None,
+        };
+        assert_eq!(
+            listener_pose(f.app.world(), f.publisher.id(), &target).unwrap_err(),
+            "Listener lacks pose permission"
+        );
+        assert!(listener_pose(f.app.world(), f.viewer.id(), &target)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

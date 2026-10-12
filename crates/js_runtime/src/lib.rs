@@ -1561,6 +1561,9 @@ impl Engine {
                 mesh::op_mesh_resource::decl(),
                 anchors::op_anchor_request::DECL,
                 anchors::op_anchor_poll::DECL,
+                anchors::op_anchor_listen::DECL,
+                anchors::op_anchor_unlisten::DECL,
+                anchors::op_anchor_samples::DECL,
                 pose::op_set_joint_batch::decl(),
                 op_set_timeout::decl(),
                 op_clear_timeout::decl(),
@@ -1647,6 +1650,7 @@ impl Engine {
                 });
                 state.put(mesh::MeshQueue::default());
                 state.put(anchors::AnchorQueue::default());
+                state.put(std::sync::Arc::new(anchors::AnchorPort::default()));
                 state.put(pose::PoseQueue::default());
                 state.put(world_navigation::WorldNavigationQueue::default());
                 state.put(audio::AudioQueue::default());
@@ -1838,6 +1842,14 @@ impl Engine {
         self.rt.op_state().borrow_mut().put(port);
     }
 
+    pub fn configure_anchor_port(&mut self, port: std::sync::Arc<anchors::AnchorPort>) {
+        self.rt.op_state().borrow_mut().put(port);
+    }
+
+    pub fn pump_anchor_input(&mut self) -> anyhow::Result<()> {
+        self.rt.execute_script("<anchor-input>", FastString::Static("__luna_anchor_input_pump(true)")).map(|_| ()).map_err(Into::into)
+    }
+
     pub fn fire_raf(&mut self, timestamp_ms: f64) {
         let ids = take_vec(&self.raf_pending);
 
@@ -1851,7 +1863,7 @@ impl Engine {
 
         if let Err(e) = self
             .rt
-            .execute_script("<pump>", FastString::Static("__luna_anchor_pump(); __luna_component_pump(); __luna_keyboard_pump(); __luna_pump()"))
+            .execute_script("<pump>", FastString::Static("__luna_anchor_input_pump(false); __luna_anchor_pump(); __luna_component_pump(); __luna_keyboard_pump(); __luna_pump()"))
         {
             eprintln!("[js_runtime] Error calling pump: {:?}", e);
         }

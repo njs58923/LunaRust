@@ -120,5 +120,55 @@ cargo check -p luna --bins
 Los tests verifican el transform en el mismo frame, offsets e hijos, tracking
 perdido/recreado, flags inválidos, permisos, referencias privadas, colisiones,
 fuentes DOM ajenas, ciclos, desanclaje, cierre y confirmaciones bajo saturación.
-La lógica del juego y sus colisiones en JS siguen usando su propio stream;
-esta función elimina el recorrido JS de la colocación visual.
+## Escuchar la pose efectiva
+
+```js
+const listener = dimension.anchors.listen(
+  ['left-grip', 'right-grip', root.getElementById('sable')],
+  frame => {
+    // timestamp comparte el origen y unidades de performance.now().
+    // Todos los samples corresponden al mismo frame de render.
+    for (const sample of frame.samples) {
+      if (!sample.available || frame.discontinuous) reiniciarBarrido(sample.index);
+      if (sample.available) actualizarLogica(sample, frame.timestamp);
+    }
+  },
+  { priority: 'input', delivery: 'history' }
+);
+listener.dispose();
+```
+
+Una key entrega la pose mundial de la fuente publicada. Un elemento resuelto
+entrega su pose efectiva de render, incluidos sus offsets y anchors heredados.
+Solo se pueden escuchar elementos del propio espacio. Las referencias `__...`
+son privadas del proveedor: para escuchar desde una aplicación se usa la key.
+Se exige `read_pose_stream` para acceder a fuentes nativas de los mandos,
+incluso cuando se las escucha mediante un elemento o un anchor DOM intermedio.
+
+El callback recibe `{ frameId, timestamp, discontinuous, samples }`. Cada muestra
+contiene `{ index, target, available, position, rotation, scale, error, input }`.
+Position y scale son `{x,y,z}`; rotation es un cuaternión `{x,y,z,w}`.
+Las poses indisponibles no incluyen información anterior del mando. El proveedor
+VR adjunta opcionalmente `input: {trigger, grip, primary, secondary}`, obtenido
+de la misma sincronización OpenXR. Las fuentes genéricas pueden omitirlo.
+
+`priority: 'input'` despierta al worker por un buzón independiente y procesa sus
+callbacks antes del siguiente comando pendiente, con el watchdog habitual.
+No necesita un nuevo Tick ni dispara RAF; no interrumpe JavaScript ya ejecutándose.
+Las escrituras al DOM producidas por el callback siguen pasando por el commit
+normal del host. La colocación visual de los anchors permanece nativa.
+`priority: 'normal'` (predeterminado) entrega antes del RAF en el siguiente Tick.
+
+`delivery: 'latest'` (predeterminado) conserva la última muestra por suscripción.
+`history` conserva hasta 64 frames y los entrega en orden, con un callback por
+frame. El primer frame, cambios de disponibilidad y pérdidas por saturación se
+marcan `discontinuous`; al coalescer se conserva esta señal. La revocación de
+permisos descarta también las poses pendientes. Hay hasta 16 suscripciones de
+16 destinos por worker. Dispose detiene la captura; cerrar el espacio destruye
+el buzón. Los espacios sin listeners no generan muestras.
+
+Sables escucha grips y hojas con historial para recorrer todos los tramos del
+corte; la demo desancla las hojas. Tiro escucha ambas manos juntas y conserva
+historial para no perder flancos de los gatillos ni las muestras de su filtro de
+puntería. Armas y cargadores libres en la mano siguen al grip nativo; el giro a
+dos manos, retroceso y mecanismos siguen siendo offsets calculados en JS.

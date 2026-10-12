@@ -61,3 +61,87 @@ fn native_strings_are_reserved_and_request_growth_is_bounded() {
         .eval("if(errors.length!==18)throw Error('unbounded or invalid API:'+errors.length);")
         .unwrap();
 }
+
+#[test]
+fn input_history_is_ordered_bounded_and_independent_of_raf() {
+    use js_runtime::anchors::{AnchorPort, CapturedFrame, Sample, HISTORY_FRAMES};
+    use std::{sync::Arc, time::Instant};
+    let mut engine = Engine::new();
+    let port = Arc::new(AnchorPort::default());
+    engine.configure_anchor_port(port.clone());
+    engine.eval(r#"
+      globalThis.frames=[]; globalThis.raf=false;
+      globalThis.listener=dimension.anchors.listen(['left-grip','right-grip'], frame=>frames.push(frame), {priority:'input',delivery:'history'});
+      requestAnimationFrame(()=>raf=true);
+    "#).unwrap();
+    let id = port.subscriptions()[0].id;
+    for frame_id in 0..70 {
+        port.publish(
+            id,
+            CapturedFrame {
+                frame_id,
+                captured: Instant::now(),
+                discontinuous: false,
+                samples: (0..2)
+                    .map(|index| Sample {
+                        index,
+                        available: true,
+                        position: [frame_id as f32, index as f32, 0.],
+                        rotation: [0., 0., 0., 1.],
+                        scale: [1.; 3],
+                        error: None,
+                        input: None,
+                    })
+                    .collect(),
+            },
+        );
+    }
+    engine.pump_anchor_input().unwrap();
+    engine.eval(&format!(r#"
+      if(raf || frames.length!=={HISTORY_FRAMES} || frames[0].frameId!==6 || !frames[0].discontinuous)throw Error('history or priority');
+      for(let i=0;i<frames.length;i++){{
+        const f=frames[i];
+        if(f.samples.length!==2 || f.samples[1].position.x!==f.frameId || f.samples[0].target!=='left-grip')throw Error('incoherent frame');
+        if(f.timestamp>performance.now()+1 || (i&&f.timestamp<frames[i-1].timestamp))throw Error('clock');
+      }}
+      listener.dispose();
+    "#)).unwrap();
+    assert!(port.subscriptions().is_empty());
+    engine.fire_raf(100.);
+    engine.eval("if(!raf)throw Error('RAF lost');").unwrap();
+}
+
+#[test]
+fn latest_and_normal_priority_coalesce_until_raf_and_listener_growth_is_bounded() {
+    use js_runtime::anchors::{AnchorPort, CapturedFrame};
+    use std::{sync::Arc, time::Instant};
+    let mut engine = Engine::new();
+    let port = Arc::new(AnchorPort::default());
+    engine.configure_anchor_port(port.clone());
+    engine.eval(r#"
+      globalThis.frames=[];
+      dimension.anchors.listen('right-grip', f=>frames.push(f));
+      for(let i=1;i<16;i++)dimension.anchors.listen('right-grip',()=>{});
+      try { dimension.anchors.listen('right-grip',()=>{}); throw 'unbounded'; } catch(e) { if(e==='unbounded')throw e; }
+    "#).unwrap();
+    let id = port.subscriptions().iter().map(|s| s.id).min().unwrap();
+    for frame_id in 0..4 {
+        port.publish(
+            id,
+            CapturedFrame {
+                frame_id,
+                captured: Instant::now(),
+                discontinuous: false,
+                samples: vec![],
+            },
+        );
+    }
+    engine.pump_anchor_input().unwrap();
+    engine
+        .eval("if(frames.length)throw Error('normal fired early');")
+        .unwrap();
+    engine.fire_raf(16.);
+    engine
+        .eval("if(frames.length!==1||frames[0].frameId!==3)throw Error('latest');")
+        .unwrap();
+}
