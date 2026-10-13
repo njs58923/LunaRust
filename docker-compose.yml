@@ -201,8 +201,8 @@ services:
       PORT: "2061"
       WS_PORT: "8083"
     command: ["sh", "dev.sh"]
-  # El taller de las manos: un atrio y dos escenas para los mandos de VR (el
-  # manipulador y el arco). Las páginas las genera src/; lo que corre en el
+  # El taller de las manos: un atrio y tres escenas para los mandos de VR (el
+  # manipulador, el arco y el tiro). Las páginas las genera src/; lo que corre en el
   # visor es estático en public/. Ver server_manipulador/README.md.
   manipulador-dev:
     image: oven/bun:1
@@ -247,6 +247,67 @@ services:
     environment:
       NODE_ENV: development
       PORT: "2064"
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+  # La planta: cinco areas de una fabrica con drones y robots.
+  planta-dev:
+    image: oven/bun:1
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_planta:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "2065:2065"
+    environment:
+      NODE_ENV: development
+      PORT: "2065"
+    depends_on:
+      - noche-dev
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+  # La galeria de Sketchfab necesita Node tambien para convertir modelos con
+  # tools/convertir.ts y sharp; una imagen de Bun sola no ofrece ese runtime.
+  galeria-dev:
+    image: node:22
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_galeria:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "2066:2066"
+    environment:
+      NODE_ENV: development
+      PORT: "2066"
+    depends_on:
+      - visor-dev
+    command: ["sh", "-c", "npm install --no-audit --no-fund --package-lock=false && npx -y nodemon --legacy-watch --polling-interval 5000 --watch src --watch tools --ext ts,js,json --exec 'node --experimental-strip-types --no-warnings src/index.ts'"]
+  # El taller de modelos y el componente de previsualizacion de GLB.
+  visor-dev:
+    image: oven/bun:1
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_visor:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "2067:2067"
+    environment:
+      NODE_ENV: development
+      PORT: "2067"
+    depends_on:
+      - noche-dev
+    command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
+  # Sables de Luna: juego de ritmo en VR, tipo Beat Saber.
+  sables-dev:
+    image: oven/bun:1
+    working_dir: /usr/src/app
+    volumes:
+      - ../server_sables:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "2068:2068"
+    environment:
+      NODE_ENV: development
+      PORT: "2068"
+    depends_on:
+      - noche-dev
     command: ["sh", "-c", "bun install && bun add -g nodemon && nodemon --legacy-watch --polling-interval 5000 --watch src --ext ts,js,json --exec 'bun src/index.ts'"]
 volumes:
   caddy_data:
