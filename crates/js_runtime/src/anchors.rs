@@ -29,6 +29,8 @@ pub struct Subscription {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sample {
+    #[serde(skip)]
+    pub revision: u64,
     pub index: usize,
     pub available: bool,
     pub position: [f32; 3],
@@ -55,7 +57,7 @@ struct Inbox {
     subscription: Subscription,
     frames: VecDeque<CapturedFrame>,
     lost: bool,
-    availability: Option<Vec<bool>>,
+    availability: Option<Vec<(bool, u64)>>,
 }
 #[derive(Default)]
 struct ListenerState {
@@ -85,7 +87,11 @@ impl AnchorPort {
         let Some(inbox) = state.inboxes.get_mut(&id) else {
             return false;
         };
-        let availability: Vec<_> = frame.samples.iter().map(|s| s.available).collect();
+        let availability: Vec<_> = frame
+            .samples
+            .iter()
+            .map(|s| (s.available, s.revision))
+            .collect();
         frame.discontinuous |= inbox.availability.as_ref() != Some(&availability);
         inbox.availability = Some(availability);
         // Revoked access discards already queued poses as well as this pose.

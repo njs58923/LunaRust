@@ -1,0 +1,16 @@
+{
+  "type": "program",
+  "version": 1,
+  "inputs": {
+    "principal": "right-grip"
+  },
+  "constants": {
+    "agarre": [
+      0,
+      0,
+      -0.19866933079506124,
+      0.9800665778412417
+    ]
+  },
+  "code": "\n      input pose principal\n      \n      const quat agarre\n      \n      temp quat rigid\n      output pose result = principal\n      multiplyQuat rigid, principal.rotation, agarre\n      copy result.rotation, rigid\n    "
+}

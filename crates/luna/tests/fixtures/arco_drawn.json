@@ -1,0 +1,31 @@
+{
+  "type": "program",
+  "version": 1,
+  "inputs": {
+    "principal": "right-grip",
+    "tensora": {
+      "anchor": "left-grip",
+      "holdLast": true
+    }
+  },
+  "constants": {
+    "agarre": [
+      0,
+      0,
+      -0.19866933079506124,
+      0.9800665778412417
+    ],
+    "up": [
+      0,
+      1,
+      0
+    ],
+    "forward": [
+      0,
+      0,
+      -1
+    ],
+    "epsilon": 0.001
+  },
+  "code": "\n      input pose principal\n      input pose tensora\n      const quat agarre\n      const vec3 up\nconst vec3 forward\nconst float epsilon\ntemp vec3 direction\ntemp vec3 worldUp\ntemp float separation\ntemp bool aiming\ntemp quat aimed\n      temp quat rigid\n      output pose result = principal\n      multiplyQuat rigid, principal.rotation, agarre\n      subtract direction, principal.position, tensora.position\n        rotate worldUp, rigid, up\n        aimRotation aimed, direction, worldUp, forward, up\n        length separation, direction\n        greater aiming, separation, epsilon\n        select result.rotation, aiming, aimed, rigid\n    "
+}

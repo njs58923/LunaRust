@@ -77,6 +77,7 @@ enum Op {
     InverseQuat,
     Normalize,
     Select,
+    Clamp,
 }
 #[derive(Debug)]
 struct Instruction {
@@ -308,6 +309,7 @@ impl Program {
                     "inverseQuat" => (Op::InverseQuat, 1),
                     "normalize" => (Op::Normalize, 1),
                     "select" => (Op::Select, 3),
+                    "clamp" => (Op::Clamp, 3),
                     _ => return Err(format!("Unknown instruction {}", tokens[0])),
                 };
                 let body = text[tokens[0].len()..].trim();
@@ -326,7 +328,10 @@ impl Program {
                 let valid = match op {
                     Op::Copy => types == [dt],
                     Op::Point => dt == Ty::Vec && types == [Ty::Pose, Ty::Vec],
-                    Op::Add | Op::Sub => dt == Ty::Vec && types == [Ty::Vec, Ty::Vec],
+                    Op::Add | Op::Sub => {
+                        (dt == Ty::Vec && types == [Ty::Vec, Ty::Vec])
+                            || (dt == Ty::Float && types == [Ty::Float; 2])
+                    }
                     Op::Rotate => dt == Ty::Vec && types == [Ty::Quat, Ty::Vec],
                     Op::Aim => dt == Ty::Quat && types == [Ty::Vec; 4],
                     Op::Length => dt == Ty::Float && types == [Ty::Vec],
@@ -339,6 +344,7 @@ impl Program {
                     Op::InverseQuat => dt == Ty::Quat && types == [Ty::Quat],
                     Op::Normalize => dt == Ty::Vec && types == [Ty::Vec],
                     Op::Select => types == [Ty::Bool, dt, dt],
+                    Op::Clamp => dt == Ty::Float && types == [Ty::Float; 3],
                 };
                 if !valid {
                     return Err("Operand type mismatch".into());
@@ -374,8 +380,14 @@ impl Program {
             let v = match i.op {
                 Op::Copy => get(0),
                 Op::Point => Value::Vec(pose(get(0)).transform_point(vec(get(1)))),
-                Op::Add => Value::Vec(vec(get(0)) + vec(get(1))),
-                Op::Sub => Value::Vec(vec(get(0)) - vec(get(1))),
+                Op::Add => match get(0) {
+                    Value::Vec(v) => Value::Vec(v + vec(get(1))),
+                    v => Value::Float(float(v) + float(get(1))),
+                },
+                Op::Sub => match get(0) {
+                    Value::Vec(v) => Value::Vec(v - vec(get(1))),
+                    v => Value::Float(float(v) - float(get(1))),
+                },
                 Op::Rotate => Value::Vec(quat(get(0)) * vec(get(1))),
                 Op::Aim => Value::Quat(
                     look(vec(get(0)), vec(get(1))) * look(vec(get(2)), vec(get(3))).inverse(),
@@ -389,6 +401,14 @@ impl Program {
                 Op::MultiplyQuat => Value::Quat(quat(get(0)) * quat(get(1))),
                 Op::InverseQuat => Value::Quat(quat(get(0)).inverse()),
                 Op::Normalize => Value::Vec(vec(get(0)).normalize_or_zero()),
+                Op::Clamp => {
+                    let min = float(get(1));
+                    let max = float(get(2));
+                    if min > max {
+                        return None;
+                    }
+                    Value::Float(float(get(0)).clamp(min, max))
+                }
                 Op::Select => {
                     if matches!(get(0), Value::Bool(true)) {
                         get(1)
@@ -550,6 +570,99 @@ mod tests {
             .code
             .replace("const vec3 offset", "const quat q\nconst vec3 offset");
         assert!(Program::compile(&d).is_err());
+    }
+
+    #[test]
+    fn actual_bow_programs_preserve_grab_roll_aim_and_arrow_draw_limits() {
+        let single: Definition =
+            serde_json::from_str(include_str!("../tests/fixtures/arco_single.json")).unwrap();
+        let drawn: Definition =
+            serde_json::from_str(include_str!("../tests/fixtures/arco_drawn.json")).unwrap();
+        let arrow: Definition =
+            serde_json::from_str(include_str!("../tests/fixtures/arco_arrow.json")).unwrap();
+        let single_p = Program::compile(&single).unwrap();
+        let drawn_p = Program::compile(&drawn).unwrap();
+        let arrow_p = Program::compile(&arrow).unwrap();
+        let grab = quat(constant(Ty::Quat, &single.constants["agarre"]).unwrap());
+        let a = Transform {
+            translation: Vec3::new(0.2, 1.4, -0.3),
+            rotation: Quat::from_euler(EulerRot::XYZ, 0.3, -0.2, 0.7),
+            ..default()
+        };
+        let rigido = a.rotation * grab;
+        let one = single_p
+            .run(&[GlobalTransform::from(a)])
+            .unwrap()
+            .compute_transform();
+        assert!(one.rotation.dot(rigido).abs() > 0.99999);
+        for distance in [0., 0.0001, 0.1, 0.16, 0.6, 0.78, 1.4] {
+            let delta = Vec3::new(0.1, 0.2, 1.).normalize() * distance;
+            let b = GlobalTransform::from_translation(a.translation + delta);
+            let bow = drawn_p.run(&[GlobalTransform::from(a), b]).unwrap();
+            let expected_q = if distance > 0.001 {
+                look(-delta, rigido * Vec3::Y)
+            } else {
+                rigido
+            };
+            assert!(bow.compute_transform().rotation.dot(expected_q).abs() > 0.99999);
+            let output = arrow_p
+                .run(&[bow, GlobalTransform::from(a), b])
+                .unwrap()
+                .compute_transform();
+            let tension = (distance - 0.16f32).clamp(0., 0.62);
+            let expected = a.translation + expected_q * Vec3::new(0., 0., 0.16 + tension);
+            assert!((output.translation - expected).length() < 1e-5);
+            assert!(output.rotation.dot(expected_q).abs() > 0.99999);
+        }
+    }
+
+    #[test]
+    fn actual_saber_programs_match_both_calibrated_inclinations() {
+        for (text, sign) in [
+            (include_str!("../tests/fixtures/sable_negative.json"), -1.),
+            (include_str!("../tests/fixtures/sable_positive.json"), 1.),
+        ] {
+            let d: Definition = serde_json::from_str(text).unwrap();
+            let p = Program::compile(&d).unwrap();
+            for angle in [0., 0.3, 1.5, 3.] {
+                let input = Transform {
+                    translation: Vec3::new(0.4, 1.3, -0.2),
+                    rotation: Quat::from_euler(EulerRot::XYZ, angle, angle * 0.5, -angle * 0.7),
+                    ..default()
+                };
+                let pose = p
+                    .run(&[GlobalTransform::from(input)])
+                    .unwrap()
+                    .compute_transform();
+                let incline = 75f32.to_radians();
+                let expected = input.rotation * Vec3::new(0., -incline.cos(), sign * incline.sin());
+                assert!((pose.rotation * Vec3::Y - expected).length() < 1e-5);
+                assert!((pose.translation - input.translation).length() < 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn actual_single_hand_weapon_program_preserves_mount_and_grip_basis() {
+        let d: Definition =
+            serde_json::from_str(include_str!("../tests/fixtures/tiro_single.json")).unwrap();
+        let p = Program::compile(&d).unwrap();
+        let mount = quat(constant(Ty::Quat, &d.constants["mountRotation"]).unwrap());
+        let position = vec(constant(Ty::Vec, &d.constants["mountPosition"]).unwrap());
+        for angle in [0., 0.3, 1.5, 3.] {
+            let a = Transform {
+                translation: Vec3::new(0.4, 1.3, -0.2),
+                rotation: Quat::from_euler(EulerRot::XYZ, angle, angle * 0.5, -angle * 0.7),
+                ..default()
+            };
+            let base = a.rotation * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+            let output = p
+                .run(&[GlobalTransform::from(a)])
+                .unwrap()
+                .compute_transform();
+            assert!((output.translation - (a.translation + base * position)).length() < 1e-5);
+            assert!(output.rotation.dot(base * mount).abs() > 0.99999);
+        }
     }
     #[test]
     fn bounded_program_has_small_execution_cost() {

@@ -67,7 +67,7 @@ El primer operando es el destino. Los operandos se separan con comas.
 |---|---|---|
 | `copy` | valor del mismo tipo | copia |
 | `transformPoint` | pose, vec3 local | vec3 mundial, incluye escala |
-| `add`, `subtract` | vec3, vec3 | vec3 |
+| `add`, `subtract` | vec3, vec3 o float, float | vec3 o float |
 | `rotate` | quat, vec3 | vec3 |
 | `aimRotation` | dirección mundial, up mundial, dirección local, up local | quat |
 | `multiplyQuat` | quat, quat | quat compuesto, orden conservado |
@@ -75,6 +75,7 @@ El primer operando es el destino. Los operandos se separan con comas.
 | `normalize` | vec3 | vec3; cero permanece cero |
 | `length` | vec3 | float |
 | `greater` | float, float | bool |
+| `clamp` | float, mínimo float, máximo float | float; límites invertidos invalidan el frame |
 | `multiply` | float, float o vec3, float | float o vec3 |
 | `select` | bool, valor si true, valor si false | mismo tipo de ambos valores |
 
@@ -98,11 +99,12 @@ observó. Este modo preserva el comportamiento de tiro al perder tracking.
 
 ## Integración en tiro
 
-Los cuatro modelos con agarre secundario generan el mismo programa de 11
+Los modelos de una mano generan un programa de seguimiento con su montaje;
+los cuatro modelos con agarre secundario generan el mismo programa de 11
 instrucciones con sus ajustes como constantes. Las manos actuales orientan una
 raíz nativa; el modelo hijo sólo recibe retroceso local. El cargador y mecanismos
 heredan esa jerarquía. Mover mandos o variar retroceso no recompila el programa.
-Soltar el segundo agarre vuelve al anchor directo de una mano. La detección de
+Soltar el segundo agarre vuelve al programa de una mano. La detección de
 agarres y los disparos filtrados permanecen en JS. La pose base/visual nativa
 puede observarse con `anchors.listen` y actualiza los caches de la escena.
 
@@ -116,3 +118,28 @@ El microbenchmark de este equipo obtuvo aproximadamente 0,4 microsegundos por
 evaluación del programa de tiro, en el perfil dev optimizado. Esa cifra mide
 sólo las 11 instrucciones; no incluye resolución de fuentes, scheduler,
 propagación de hijos ni render, y no constituye una medición en el visor.
+
+## Arco y Sables
+
+Arco genera un programa de agarre rigido con el quaternion relativo capturado
+al tomarlo. Con flecha cargada, un segundo programa calcula la direccion desde
+la mano tensora hacia la del arco, preservando el arriba de la muñeca y el
+fallback de separacion <= 1 mm. La flecha cargada usa el anchor del arco y la
+distancia actual entre grips para calcular su culatin con tension acotada.
+Disparar retira el anchor de la flecha antes de iniciar su vuelo JS. La cuerda,
+los sonidos, impactos y el timeout de manos siguen en JS; las dos poses y
+botones se reciben juntos mediante listen. Soltar el arco retira los programas.
+
+Sables publica dos programas de seguimiento con el quaternion de inclinacion
+calibrado. Solo recompila al cambiar de lado/calibracion. Las hojas conservan
+su historial de poses efectivas para cortes; la demo retira los programas y
+restaura el seguimiento al terminar. Su proyecto solicita create_anchor.
+
+Listen marca tambien cambios de fuente/publicacion como discontinuidades,
+aunque tracking siga disponible: cambiar un programa de calibracion no debe
+crear un barrido falso entre las dos orientaciones. La revision usada para
+esta deteccion es interna y no expone IDs de entidades al script.
+
+Las fixtures de arco (agarre, apuntado y flecha), Sables (ambos lados) y arma
+a una mano se extraen de los builders reales de cada escena y se compilan y
+comparan en los tests Rust. Las pruebas de Sables no se modificaron.

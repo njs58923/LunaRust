@@ -102,6 +102,7 @@ fn input_history_is_ordered_bounded_and_independent_of_raf() {
                 discontinuous: false,
                 samples: (0..2)
                     .map(|index| Sample {
+                        revision: 0,
                         index,
                         available: true,
                         position: [frame_id as f32, index as f32, 0.],
@@ -162,4 +163,37 @@ fn latest_and_normal_priority_coalesce_until_raf_and_listener_growth_is_bounded(
     engine
         .eval("if(frames.length!==1||frames[0].frameId!==3)throw Error('latest');")
         .unwrap();
+}
+
+#[test]
+fn changing_pose_source_revision_marks_discontinuity_without_losing_tracking() {
+    use js_runtime::anchors::{AnchorPort, CapturedFrame, Sample};
+    use std::{sync::Arc, time::Instant};
+    let mut engine = Engine::new();
+    let port = Arc::new(AnchorPort::default());
+    engine.configure_anchor_port(port.clone());
+    engine.eval("globalThis.frames=[];dimension.anchors.listen('blade',f=>frames.push(f),{priority:'input',delivery:'history'});").unwrap();
+    let id = port.subscriptions()[0].id;
+    for (frame_id, revision) in [(1, 1), (2, 1), (3, 2)] {
+        port.publish(
+            id,
+            CapturedFrame {
+                frame_id,
+                captured: Instant::now(),
+                discontinuous: false,
+                samples: vec![Sample {
+                    revision,
+                    index: 0,
+                    available: true,
+                    position: [0.; 3],
+                    rotation: [0., 0., 0., 1.],
+                    scale: [1.; 3],
+                    error: None,
+                    input: None,
+                }],
+            },
+        );
+    }
+    engine.pump_anchor_input().unwrap();
+    engine.eval("if(frames[1].discontinuous||!frames[2].discontinuous||!frames[2].samples[0].available||'revision' in frames[2].samples[0])throw Error('source switch continuity');").unwrap();
 }

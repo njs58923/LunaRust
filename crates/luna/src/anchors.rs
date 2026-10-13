@@ -792,6 +792,7 @@ fn capture_port(
             .map(|(index, target)| {
                 let pose = listener_pose(world, owner_id, target);
                 let mut sample = js_runtime::anchors::Sample {
+                    revision: 0,
                     index,
                     available: false,
                     position: [0.; 3],
@@ -801,7 +802,8 @@ fn capture_port(
                     input: None,
                 };
                 match pose {
-                    Ok(Some((pose, input))) => {
+                    Ok(Some((pose, input, revision))) => {
+                        sample.revision = revision;
                         sample.input = input;
                         let (scale, rotation, position) = pose.to_scale_rotation_translation();
                         sample.available = true;
@@ -835,6 +837,7 @@ fn listener_pose(
     Option<(
         GlobalTransform,
         Option<js_runtime::anchors::ControllerInput>,
+        u64,
     )>,
     &'static str,
 > {
@@ -907,6 +910,7 @@ fn listener_pose(
     let mut input = entity
         .and_then(|e| world.get::<NativeControllerInput>(e))
         .map(|i| i.0.clone());
+    let mut revision = entity.map(|e| e.to_bits()).unwrap_or(0);
     let mut pending: Vec<_> = entity.into_iter().collect();
     let mut visited = HashSet::new();
     for _ in 0..256 {
@@ -924,6 +928,9 @@ fn listener_pose(
                 return Ok(None);
             };
             let source = resolve(publication)?;
+            revision = revision.rotate_left(7)
+                ^ source.map(|e| e.to_bits()).unwrap_or(0)
+                ^ publication.request_id as u64;
             if source.is_none() || !world.get::<AnchorAvailability>(node).is_some_and(|a| a.0) {
                 return Ok(None);
             }
@@ -943,7 +950,7 @@ fn listener_pose(
     }
     Ok(entity
         .and_then(|e| world.get::<GlobalTransform>(e).copied())
-        .map(|pose| (pose, input)))
+        .map(|pose| (pose, input, revision)))
 }
 
 #[cfg(test)]

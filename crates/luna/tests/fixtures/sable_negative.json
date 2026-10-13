@@ -1,0 +1,16 @@
+{
+  "type": "program",
+  "version": 1,
+  "inputs": {
+    "mano": "left-grip"
+  },
+  "constants": {
+    "offset": [
+      -0.7933533402912352,
+      0,
+      0,
+      0.6087614290087207
+    ]
+  },
+  "code": "\n        input pose mano\n        const quat offset\n        output pose result = mano\n        multiplyQuat result.rotation, mano.rotation, offset\n      "
+}

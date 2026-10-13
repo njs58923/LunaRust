@@ -1,0 +1,23 @@
+{
+  "type": "program",
+  "version": 1,
+  "inputs": {
+    "bow": "bow",
+    "principal": "right-grip",
+    "tensora": {
+      "anchor": "left-grip",
+      "holdLast": true
+    }
+  },
+  "constants": {
+    "rest": 0.16,
+    "minimum": 0,
+    "maximum": 0.62,
+    "z": [
+      0,
+      0,
+      1
+    ]
+  },
+  "code": "\n      input pose bow\n      input pose principal\n      input pose tensora\n      const float rest\n      const float minimum\n      const float maximum\n      const vec3 z\n      temp vec3 delta\n      temp vec3 offset\n      temp float draw\n      output pose result = bow\n      subtract delta, principal.position, tensora.position\n      length draw, delta\n      subtract draw, draw, rest\n      clamp draw, draw, minimum, maximum\n      add draw, draw, rest\n      multiply offset, z, draw\n      transformPoint result.position, bow, offset\n    "
+}

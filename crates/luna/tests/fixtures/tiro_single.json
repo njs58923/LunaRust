@@ -1,0 +1,27 @@
+{
+  "type": "program",
+  "version": 1,
+  "inputs": {
+    "principal": "right-grip"
+  },
+  "constants": {
+    "mountPosition": [
+      0,
+      0.025,
+      -0.018
+    ],
+    "mountRotation": [
+      0.043619387365336,
+      0,
+      0,
+      0.9990482215818578
+    ],
+    "gripBasis": [
+      -0.7071067811865476,
+      0,
+      0,
+      0.7071067811865476
+    ]
+  },
+  "code": "\n        input pose principal\n        \n        const vec3 mountPosition\n        const quat mountRotation\n        const quat gripBasis\n        \n        temp vec3 offset\n        temp quat base\n        output pose result = principal\n        multiplyQuat base, principal.rotation, gripBasis\n        rotate offset, base, mountPosition\n        add result.position, principal.position, offset\n        multiplyQuat result.rotation, base, mountRotation\n      "
+}
