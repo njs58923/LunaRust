@@ -1998,6 +1998,9 @@ mod tests {
             check(api.updateSpace(first, {url:'luna://about'}), 'pending mount cannot be navigated');
             flush();
             const page = __asyncRoot.children[0];
+            check(page.getAttribute('resources').split(',').includes('create_anchor') &&
+                page.children[0].getAttribute('resources').split(',').includes('create_anchor'),
+                'spatial default grants deny native motion program creation');
             check(page.children.length === 1 && page.children[0].getAttribute('src') === 'luna://about',
                 'pending navigation created duplicate includes or lost latest URL');
             check(api.mountSpace('luna://demos', {tabId:7}) === first, 'same tab changed window');

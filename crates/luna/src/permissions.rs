@@ -1253,6 +1253,25 @@ mod tests {
     }
 
     #[test]
+    fn native_motion_program_permission_crosses_managed_window_and_include() {
+        for (grants, expected) in [("read_pose_stream,create_anchor", true), ("read_pose_stream", false)] {
+            let mut app = build_app_with_xml(&format!(r#"<hsml>
+                <space id="luna_root" system-space="root" resources="root">
+                  <space managed-by="dimension.luna" resources="{grants}">
+                    <include resources="{grants}">
+                      <space id="weapon" resources="read_pose_stream,create_anchor"/>
+                    </include>
+                  </space>
+                </space></hsml>"#));
+            app.update();
+            let id = find_space_id_by_attr_id(app.world().resource::<ElemenetWorld>(), "weapon");
+            let caps = app.world().resource::<SpacePolicies>().by_space[&id].effective_caps;
+            assert_eq!(caps.contains(CapabilityBits::CREATE_ANCHOR), expected);
+            assert!(caps.contains(CapabilityBits::READ_POSE_STREAM));
+        }
+    }
+
+    #[test]
     fn fetch_needs_both_delegation_and_explicit_request() {
         for (bundle, capability) in [("fetch_text", CapabilityBits::FETCH_TEXT), ("fetch_http", CapabilityBits::FETCH_HTTP), ("audio", CapabilityBits::AUDIO)] {
         let mut app = build_app_with_xml(&format!("<hsml><space system-space='root' resources='{bundle}'><include resources='{bundle}'><space id='asked' resources='{bundle}'/><space id='silent'/></include><include><space id='blocked' resources='{bundle}'/></include></space></hsml>"));

@@ -193,7 +193,9 @@
       // por defecto porque read_pose_stream ya la entrega igual vía la
       // pose de los mandos: negarla sólo rompía escritorio, donde no hay
       // mandos, sin proteger nada.
-      return ['navigate_self', 'navigate_world', 'read_pose_stream', 'read_camera_pose', 'skybox', 'fetch_text', 'fetch_http', 'spawn', 'audio'];
+      // Native motion programs are publications too: their create_anchor
+      // permission must cross both the wrapper and its include.
+      return ['navigate_self', 'navigate_world', 'read_pose_stream', 'read_camera_pose', 'skybox', 'fetch_text', 'fetch_http', 'spawn', 'audio', 'create_anchor'];
     }
     if (kind === 'app') return ['navigate_self', 'fetch_text', 'audio'];
     if (kind === 'app-embedded') return ['navigate_self', 'ux_embed', 'fetch_text', 'audio'];
