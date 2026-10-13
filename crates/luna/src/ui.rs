@@ -633,8 +633,8 @@ pub fn ui_system(
 fn navigate_tab_to_url(
     mounted_spaces: &mut Vec<MountedSpaceEntry>,
     mount_queue: &mut Vec<SpaceMountRequest>,
-    unmount_queue: &mut Vec<SpaceUnmountRequest>,
-    deferred_mounts: &mut Vec<DeferredSpaceMount>,
+    _unmount_queue: &mut Vec<SpaceUnmountRequest>,
+    _deferred_mounts: &mut Vec<DeferredSpaceMount>,
     idx: usize,
     new_url: String,
 ) {
@@ -644,15 +644,9 @@ fn navigate_tab_to_url(
 
     let old = mounted_spaces[idx].clone();
 
-    if !old.url.is_empty() {
-        if old.url != new_url {
-            enqueue_tab_unmount(unmount_queue, &old);
-            deferred_mounts.push(DeferredSpaceMount {
-                wait_gone_tab_id: old.tab_id,
-                mount: SpaceMountRequest::new(old.tab_id, new_url.clone()),
-            });
-        }
-    } else {
+    // Navigation belongs to the root API: it updates the include in the same
+    // managed window. Do not tear down the window and wait for DOM snapshots.
+    if old.url != new_url {
         mount_queue.push(SpaceMountRequest::new(old.tab_id, new_url.clone()));
     }
 
@@ -1224,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn navigate_loaded_tab_to_new_url_unmounts_and_defers_same_tab_id() {
+    fn navigate_loaded_tab_updates_same_tab_without_teardown() {
         let mut mounted = vec![mounted_entry(7, "luna://home")];
         let mut mount_queue = Vec::new();
         let mut unmount_queue = Vec::new();
@@ -1239,20 +1233,9 @@ mod tests {
             "luna://about".to_string(),
         );
 
-        assert!(mount_queue.is_empty());
-        assert_eq!(
-            unmount_queue,
-            vec![SpaceUnmountRequest {
-                tab_id: 7,
-                url: "luna://home".to_string(),
-            }]
-        );
-        assert_eq!(deferred_mounts.len(), 1);
-        assert_eq!(deferred_mounts[0].wait_gone_tab_id, 7);
-        assert_eq!(
-            deferred_mounts[0].mount,
-            SpaceMountRequest::new(7, "luna://about".to_string())
-        );
+        assert_eq!(mount_queue, vec![SpaceMountRequest::new(7, "luna://about".to_string())]);
+        assert!(unmount_queue.is_empty());
+        assert!(deferred_mounts.is_empty());
         assert_eq!(mounted[0].url, "luna://about");
     }
 

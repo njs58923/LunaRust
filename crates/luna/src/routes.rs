@@ -1962,6 +1962,76 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn root_registry_survives_delayed_mount_and_unmount_snapshots() {
+        let mut eng = Engine::new();
+        eng.eval(r#"
+            let nextNode = 1;
+            const writes = [];
+            globalThis.requestAnimationFrame = () => {};
+            class AsyncNode {
+                constructor(tag) {
+                    this.nodeId = nextNode++; this.tagName = tag;
+                    this.children = []; this.parent = null; this.attrs = {};
+                }
+                setAttribute(k,v) { writes.push(() => this.attrs[k] = String(v)); }
+                getAttribute(k) { return this.attrs[k] || ''; }
+                appendChild(n) { writes.push(() => { this.children.push(n); n.parent = this; }); }
+                remove() { writes.push(() => {
+                    if (this.parent) this.parent.children = this.parent.children.filter(n => n !== this);
+                    this.parent = null;
+                }); }
+                createElement(tag) { return new AsyncNode(tag); }
+                addEventListener() {}
+            }
+            globalThis.__asyncRoot = new AsyncNode('space');
+            function flush() { writes.splice(0).forEach(fn => fn()); }
+            function check(ok,msg) { if (!ok) throw new Error(msg); }
+        "#).unwrap();
+        eng.eval(&SCRIPT_ROOT_API.replace(
+            "global.hiperspace && global.hiperspace.dimention", "global.__asyncRoot",
+        )).unwrap();
+        eng.eval(r#"
+            const api = dimension.luna;
+            const first = api.mountSpace('luna://home', {tabId:7});
+            check(api.listMountedSpaces().some(s => s.id === first && s.tabId === '7'),
+                'mount disappeared between creation acknowledgement and attachment snapshot');
+            check(api.updateSpace(first, {url:'luna://about'}), 'pending mount cannot be navigated');
+            flush();
+            const page = __asyncRoot.children[0];
+            check(page.children.length === 1 && page.children[0].getAttribute('src') === 'luna://about',
+                'pending navigation created duplicate includes or lost latest URL');
+            check(api.mountSpace('luna://demos', {tabId:7}) === first, 'same tab changed window');
+            flush();
+            const input = api.mountSpace('luna://vr_input', {systemInput:true});
+            api._inputSpaceId = input;
+            flush();
+            check(api.listMountedSpaces().some(s => s.id === first), 'input replaced page');
+            check(api.unmountSpace(first), 'unmount failed');
+            check(!api.listMountedSpaces().some(s => s.nodeId === page.nodeId),
+                'removed window resurrected from stale hierarchy snapshot');
+            const replacement = api.mountSpace('https://example.test/', {tabId:9});
+            flush();
+            const mounted = api.listMountedSpaces();
+            check(mounted.length === 1 && mounted[0].id === replacement && mounted[0].tabId === '9',
+                'navigation selected stale window or lost host tab identity');
+            check(__asyncRoot.children.some(n => n.children.some(c => c.getAttribute('src') === 'luna://vr_input')),
+                'navigation replaced native input controller');
+            api.mountSpace('https://example.test/next', {tabId:10}); flush();
+            check(api.listMountedSpaces()[0].tabId === '10', 'explicit tab identity ignored during spatial reuse');
+            const stable = api.listMountedSpaces()[0].nodeId;
+            for (let i = 0; i < 100; i++) {
+                api.mountSpace('https://example.test/page-' + i, {tabId:10});
+                api.listMountedSpaces();
+            }
+            flush();
+            check(api.listMountedSpaces()[0].nodeId === stable &&
+                api.listMountedSpaces()[0].url === 'https://example.test/page-99',
+                'rapid navigation remounted window or lost final URL');
+            check(__asyncRoot.children.length === 2, 'navigation accumulated orphan windows');
+        "#).unwrap();
+    }
+
+    #[test]
     fn native_environment_survives_navigation_and_shell_changes() {
         let mut eng = Engine::new();
         eng.eval(r#"
@@ -2576,7 +2646,7 @@ mod tests {
             .unwrap();
         assert!(content.contains("opts.tabId"));
         assert!(content.contains("data-luna-tab-id"));
-        assert!(content.contains("tabId: entry.space.getAttribute('data-luna-tab-id')"));
+        assert!(content.contains("tabId: entry.tabId"));
     }
 
     #[test]

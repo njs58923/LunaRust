@@ -14,6 +14,10 @@
 
   const dimension = global.dimension || (global.dimension = {});
   const registry = new Map();
+  // Host hierarchy snapshots lag mutations. A removed wrapper must never be
+  // rediscovered while its deletion is still in flight. Element identity is
+  // stable across temporary -> native node IDs; weak references need no sweep.
+  const removedSpaces = new WeakSet();
   let nextPublicId = 1;
   // El catálogo pertenece al root, no al origen ni al diseño de cada controller.
   const SHELL_ITEMS_KEY = 'luna.shell.items.v1';
@@ -146,10 +150,18 @@
   }
 
   function isDirectRootChild(space) {
+    if (removedSpaces.has(space)) return false;
     if (isPending(space)) {
       return true;
     }
     const parent = space.parent;
+    for (const entry of registry.values()) {
+      if (entry.space !== space) continue;
+      if (parent && parent.nodeId === root.nodeId) entry.attaching = false;
+      // Creation acknowledgement precedes the attachment snapshot.
+      if (!parent && entry.attaching) return true;
+      break;
+    }
     return !!parent && parent.nodeId === root.nodeId;
   }
 
@@ -205,18 +217,20 @@
     const publicId = nextPublicId++;
     registry.set(publicId, {
       space,
+      attaching: !!kind,
+      tabId: space.getAttribute('data-luna-tab-id') || '',
       include: findPrimaryInclude(space),
       // kind opaco. Convenciones: "spatial" | "app". Default spatial.
       // Spaces descubiertos via discoverDirectSpaces() (sin pasar por mountSpace)
       // se asumen spatial hasta que algo declare lo contrario.
-      kind: kind || 'spatial',
+      kind: kind || space.getAttribute('data-luna-kind') || 'spatial',
     });
     return publicId;
   }
 
   function discoverDirectSpaces() {
     for (const child of root.children) {
-      if (normalizeTag(child.tagName) === 'space') {
+      if (normalizeTag(child.tagName) === 'space' && !removedSpaces.has(child)) {
         registerSpace(child);
       }
     }
@@ -249,7 +263,8 @@
     const space = entry.space;
 
     if (opts.tabId != null) {
-      space.setAttribute('data-luna-tab-id', String(opts.tabId));
+      entry.tabId = String(opts.tabId);
+      space.setAttribute('data-luna-tab-id', entry.tabId);
     }
 
     if (opts.visible != null) {
@@ -288,7 +303,7 @@
     return {
       id: publicId,
       nodeId: entry.space.nodeId,
-      tabId: entry.space.getAttribute('data-luna-tab-id') || '',
+      tabId: entry.tabId,
       url: include ? include.getAttribute('src') : '',
       visible: entry.space.getAttribute('visible') !== 'false',
       loaded: include ? include.children.length > 0 : entry.space.children.length > 0,
@@ -322,9 +337,11 @@
       // Qué spatial hay ya montadas. Sólo se junta la lista: qué hacer con
       // ellas se decide más abajo, cuando ya se calcularon los grants.
       const spatialesPrevias = [];
-      if (kind === 'spatial' && !options.systemShell) {
+      if (kind === 'spatial' && !options.systemShell && !options.systemInput) {
         for (const [id, entry] of registry) {
-          if (id === this._uxSpaceId) continue;
+          if (id === this._uxSpaceId || id === this._inputSpaceId || entry.systemShell || entry.systemInput ||
+              entry.space.getAttribute('system-shell') === 'true' ||
+              entry.space.getAttribute('system-input') === 'true') continue;
           // Las managed-by=dimension.luna que no son el shell son tabs
           // spatiales o apps que abrimos nosotros — las distingue entry.kind.
           if ((entry.kind || 'spatial') === 'spatial') spatialesPrevias.push(id);
@@ -337,20 +354,12 @@
 
       const initialVisible = options.visible !== false && kind !== 'app-embedded';
 
-      // **Una spatial reusa la que ya está, no la reemplaza.**
-      //
-      // Antes se desmontaba la anterior y se creaba un espacio nuevo: el mundo
-      // cambiaba igual, pero cada vez con otra pestaña. Cruzar una puerta del
-      // atrio no hace eso — desde la página, `location.href` se resuelve como
-      // `SelfNav` y el motor le cambia el `src` al include de esa misma
-      // pestaña, así que la escena se reemplaza **en el lugar**. Acá se hace lo
-      // mismo a mano, que es todo lo que `SelfNav` hace: cambiarle la URL al
-      // include.
-      //
-      // Se conserva el `tabId` viejo a propósito. El host ya reservó uno nuevo
-      // para este pedido y queda sin usar —un hueco en la numeración—, pero eso
-      // es más barato que romper la identidad de la pestaña, que es justamente
-      // lo que se venía a arreglar.
+      // Reuse the requested tab first. Anonymous spatial navigation preserves
+      // the current tab; explicit host requests must preserve the host's ID.
+      if (options.tabId != null) {
+        const requested = spatialesPrevias.findIndex(id => registry.get(id).tabId === String(options.tabId));
+        if (requested > 0) spatialesPrevias.unshift(spatialesPrevias.splice(requested, 1)[0]);
+      }
       if (spatialesPrevias.length) {
         const reusarId = spatialesPrevias[0];
         const previa = registry.get(reusarId);
@@ -369,7 +378,7 @@
           applySpaceOptions(previa, {
             ...options,
             url,
-            tabId: null,   // la pestaña es la misma: no se le pisa el id
+            tabId: options.tabId,
             visible: initialVisible,
           });
           return reusarId;
@@ -388,6 +397,8 @@
       space.setAttribute('visible', initialVisible ? 'inherit' : 'false');
       space.setAttribute('managed-by', 'dimension.luna');
       space.setAttribute('data-luna-kind', kind);
+      entry.systemShell = !!options.systemShell;
+      entry.systemInput = !!options.systemInput;
       if (options.systemShell) {
         // El outer wrapper es el "anchor" del shell — find_system_shell_space
         // lo encuentra y baja al primer space descendiente (el inner del HSML
@@ -431,7 +442,7 @@
       cleanupRegistry();
       const tidStr = String(tabId);
       for (const [pid, entry] of registry) {
-        if (entry.space.getAttribute('data-luna-tab-id') === tidStr) {
+        if (entry.tabId === tidStr) {
           entry.space.setAttribute('visible', visible ? 'inherit' : 'false');
           return true;
         }
@@ -447,7 +458,7 @@
       cleanupRegistry();
       const tidStr = String(tabId);
       for (const [pid, entry] of registry) {
-        if (entry.space.getAttribute('data-luna-tab-id') === tidStr) {
+        if (entry.tabId === tidStr) {
           if (position) entry.space.position = cloneVec3(position, { x: 0, y: 0, z: 0 });
           if (rotation) entry.space.rotation = cloneVec3(rotation, { x: 0, y: 0, z: 0 });
           return true;
@@ -461,6 +472,7 @@
       const entry = getMountedEntry(id);
       if (!entry) return false;
       console.log('[root] unmountSpace id=', id);
+      removedSpaces.add(entry.space);
       registry.delete(id);
       entry.space.remove();
       return true;

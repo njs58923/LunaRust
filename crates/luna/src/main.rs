@@ -697,16 +697,13 @@ fn process_space_mount_queue(
     let requests: Vec<SpaceMountRequest> = mount_queue.0.drain(..).collect();
     let mut deferred = Vec::new();
     for request in requests {
-        let escaped_url = request.url.replace('\\', "\\\\").replace('\'', "\\'");
-        let kind_raw = if request.kind.is_empty() { "spatial" } else { request.kind.as_str() };
-        let escaped_kind = kind_raw.replace('\\', "\\\\").replace('\'', "\\'");
-        // Grants los decide `dimension.luna.mountSpace` en JS según `kind`:
-        //   spatial → navigate_self, read_pose_stream, skybox
-        //   app     → navigate_self
-        //   app-embedded → navigate_self, ux_embed
+        let kind = if request.kind.is_empty() { "spatial" } else { request.kind.as_str() };
+        // Serialize input instead of interpolating it into executable JS.
+        // The root owns grants and managed-window reuse for this tab.
         let code = format!(
-            "dimension.luna.mountSpace('{}', {{ tabId: {}, kind: '{}' }});",
-            escaped_url, request.tab_id, escaped_kind
+            "dimension.luna.mountSpace({}, {});",
+            serde_json::to_string(&request.url).unwrap(),
+            serde_json::json!({ "tabId": request.tab_id, "kind": kind }),
         );
         let send_result = worker.try_send(js::JsWorkerCommand::EvalScript {
             url: format!("eval://mount/{}", request.url),
@@ -736,6 +733,9 @@ fn process_space_unmount_queue(
     let Some(worker) = manager.contexts.get_mut(&root_id) else {
         return;
     };
+    if !worker.root_api_sent {
+        return;
+    }
     let requests: Vec<SpaceUnmountRequest> = unmount_queue.0.drain(..).collect();
     let mut deferred = Vec::new();
     for request in requests {
