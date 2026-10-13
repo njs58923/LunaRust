@@ -63,6 +63,24 @@ fn native_strings_are_reserved_and_request_growth_is_bounded() {
 }
 
 #[test]
+fn program_definitions_use_the_same_registration_and_error_contract() {
+    let mut engine = Engine::new();
+    engine.eval("if(!dimension.anchors.supportsPrograms)throw Error('feature flag');globalThis.error=null;dimension.anchors.create('computed',{type:'program',version:1,inputs:{a:'right-grip'},code:'input pose a\\noutput pose result = a'}).catch(e=>error=e.message);").unwrap();
+    let requests = engine.drain_anchor_requests();
+    assert!(matches!(&requests[0].source,Some(Source::Program(v)) if v["version"]==1));
+    engine.push_anchor_replies(vec![Reply {
+        id: requests[0].id,
+        error: Some("line 3: Unknown instruction".into()),
+    }]);
+    engine.fire_raf(16.);
+    engine
+        .eval(
+            "if(error!=='line 3: Unknown instruction')throw Error('missing compiler diagnostic');",
+        )
+        .unwrap();
+}
+
+#[test]
 fn input_history_is_ordered_bounded_and_independent_of_raf() {
     use js_runtime::anchors::{AnchorPort, CapturedFrame, Sample, HISTORY_FRAMES};
     use std::{sync::Arc, time::Instant};

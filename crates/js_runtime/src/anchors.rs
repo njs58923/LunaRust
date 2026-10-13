@@ -212,6 +212,7 @@ pub const MAX_ANCHORS: usize = 64;
 pub enum Source {
     Native(String),
     Element(i32),
+    Program(serde_json::Value),
 }
 #[derive(Debug)]
 pub struct Request {
@@ -284,4 +285,34 @@ pub fn op_anchor_request(
 #[serde]
 pub fn op_anchor_poll(state: &mut OpState) -> Vec<Reply> {
     std::mem::take(&mut state.borrow_mut::<AnchorQueue>().replies)
+}
+
+#[op2]
+pub fn op_anchor_program(
+    state: &mut OpState,
+    #[string] key: &str,
+    #[serde] definition: serde_json::Value,
+) -> Result<u32, anyhow::Error> {
+    anyhow::ensure!(valid_key(key), "Invalid anchor key");
+    anyhow::ensure!(
+        definition.to_string().len() <= 32768,
+        "Program definition exceeds limit"
+    );
+    let queue = state.borrow_mut::<AnchorQueue>();
+    anyhow::ensure!(
+        queue.requests.len() < MAX_ANCHORS,
+        "Anchor request queue full"
+    );
+    queue.next = queue
+        .next
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("Anchor request ID exhausted"))?;
+    let id = queue.next;
+    queue.requests.push(Request {
+        id,
+        key: key.into(),
+        source: Some(Source::Program(definition)),
+        guard: None,
+    });
+    Ok(id)
 }

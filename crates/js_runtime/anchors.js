@@ -8,11 +8,18 @@
     });
   }
   const anchors = Object.freeze({
+    supportsPrograms: true,
     async create(key, source) {
       let registration;
       if (typeof source === 'string') {
         if (!source.startsWith('__')) throw new TypeError('Native references start with __');
         registration = await request(key, source, -1, false);
+      } else if (source && source.type === 'program') {
+        if (waiting.size >= 64) throw new Error('Too many pending anchor requests');
+        registration = await new Promise((resolve, reject) => {
+          const id = ops.op_anchor_program(String(key), source);
+          waiting.set(id, { resolve, reject });
+        });
       } else {
         if (!(source instanceof HSMLElement)) throw new TypeError('Expected an element or native reference');
         if (!source._isResolved()) await new Promise(resolve => source._onResolved(resolve));

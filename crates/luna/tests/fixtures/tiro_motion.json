@@ -1,0 +1,47 @@
+{
+  "type": "program",
+  "version": 1,
+  "inputs": {
+    "principal": "right-grip",
+    "secundario": {
+      "anchor": "left-grip",
+      "holdLast": true
+    }
+  },
+  "constants": {
+    "controllerUp": [
+      0,
+      0,
+      -1
+    ],
+    "localUp": [
+      0,
+      1,
+      0
+    ],
+    "forward": [
+      0,
+      0.08252730754760224,
+      -0.27396017050768584
+    ],
+    "mountPosition": [
+      0,
+      0.025,
+      -0.018
+    ],
+    "mountRotation": [
+      0.043619387365336,
+      0,
+      0,
+      0.9990482215818578
+    ],
+    "gripBasis": [
+      -0.7071067811865476,
+      0,
+      0,
+      0.7071067811865476
+    ],
+    "minimumDistance": 0.05
+  },
+  "code": "\n        input pose principal\n        input pose secundario\n        const vec3 controllerUp\n        const vec3 localUp\n        const vec3 forward\n        const vec3 mountPosition\n        const quat mountRotation\n        const quat gripBasis\n        const float minimumDistance\n        temp vec3 direction\n        temp vec3 worldUp\n        temp vec3 offset\n        temp quat base\n        temp quat singleHand\n        temp float separation\n        temp bool twoHands\n        output pose result = principal\n        subtract direction, secundario.position, principal.position\n        rotate worldUp, principal.rotation, controllerUp\n        aimRotation base, direction, worldUp, forward, localUp\n        multiplyQuat singleHand, principal.rotation, gripBasis\n        length separation, direction\n        greater twoHands, separation, minimumDistance\n        select base, twoHands, base, singleHand\n        rotate offset, base, mountPosition\n        add result.position, principal.position, offset\n        multiplyQuat result.rotation, base, mountRotation\n      "
+}

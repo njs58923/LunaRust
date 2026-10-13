@@ -4,6 +4,7 @@
 
 pub mod components;
 pub mod anchors;
+pub mod motion_program;
 pub mod ui_text;
 pub mod audio;
 pub mod capture;

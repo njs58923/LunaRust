@@ -37,6 +37,14 @@ impl NativeReferences {
 enum PoseSource {
     Native(u64),
     Element(specs::Entity),
+    Program(Box<ProgramSource>),
+}
+struct ProgramSource {
+    program: std::sync::Arc<crate::motion_program::Program>,
+    entity: Entity,
+    last: [Option<(u64, u32, GlobalTransform)>; 16],
+    bindings: [Option<u64>; 16],
+    generation: u64,
 }
 struct Publication {
     owner: specs::Entity,
@@ -135,7 +143,7 @@ fn register_request(world: &mut World, space_id: u32, request: &Request) -> Resu
     {
         return Err("Anchor publisher is no longer alive".into());
     }
-    let source = match &request.source {
+    let mut source = match &request.source {
         None => None,
         Some(Source::Element(local)) => {
             let global = world
@@ -176,8 +184,24 @@ fn register_request(world: &mut World, space_id: u32, request: &Request) -> Resu
             }
             Some(PoseSource::Native(id))
         }
+        Some(Source::Program(value)) => {
+            let definition: crate::motion_program::Definition =
+                serde_json::from_value(value.clone())
+                    .map_err(|e| format!("Program definition: {e}"))?;
+            let program = crate::motion_program::Program::compile(&definition)?;
+            if program.inputs.iter().any(|i| i.key() == request.key) {
+                return Err("Program cannot read its own output".into());
+            }
+            Some(PoseSource::Program(Box::new(ProgramSource {
+                program: std::sync::Arc::new(program),
+                entity: Entity::PLACEHOLDER,
+                last: [None; 16],
+                bindings: [None; 16],
+                generation: u64::MAX,
+            })))
+        }
     };
-    let mut anchors = world.resource_mut::<Anchors>();
+    let anchors = world.resource::<Anchors>();
     let old = anchors.keys.get(&request.key).copied();
     if old.is_some_and(|id| anchors.entries[&id].owner != owner) {
         return Err("Anchor key is already published by another space".into());
@@ -189,17 +213,45 @@ fn register_request(world: &mut World, space_id: u32, request: &Request) -> Resu
     {
         return Err("Anchor handle belongs to an older publication".into());
     }
-    if let Some(source) = source {
-        if old.is_none()
-            && anchors
-                .entries
-                .values()
-                .filter(|p| p.owner == owner)
-                .count()
-                >= MAX_ANCHORS
-        {
-            return Err("Anchor publication limit reached".into());
+    if source.is_some()
+        && old.is_none()
+        && anchors
+            .entries
+            .values()
+            .filter(|p| p.owner == owner)
+            .count()
+            >= MAX_ANCHORS
+    {
+        return Err("Anchor publication limit reached".into());
+    }
+    let previous_program = old.and_then(|id| match &anchors.entries[&id].source {
+        PoseSource::Program(p) => Some(p.entity),
+        _ => None,
+    });
+    if let Some(PoseSource::Program(p)) = &mut source {
+        if let Some(previous) = old.and_then(|id| world.resource::<Anchors>().entries.get(&id)) {
+            if let PoseSource::Program(previous) = &previous.source {
+                if previous.program.inputs.len() == p.program.inputs.len()
+                    && previous
+                        .program
+                        .inputs
+                        .iter()
+                        .zip(&p.program.inputs)
+                        .all(|(a, b)| a.key() == b.key() && a.hold() == b.hold())
+                {
+                    p.last = previous.last;
+                }
+            }
         }
+        p.entity = world
+            .spawn((GlobalTransform::IDENTITY, AnchorAvailability(false)))
+            .id();
+    }
+    if let Some(entity) = previous_program {
+        world.despawn(entity);
+    }
+    let mut anchors = world.resource_mut::<Anchors>();
+    if let Some(source) = source {
         let id = old.unwrap_or_else(|| {
             anchors.next += 1;
             anchors.next
@@ -258,13 +310,21 @@ fn sync_bindings(world: &mut World) {
         }
     }
     if !dead.is_empty() {
+        let mut program_entities = Vec::new();
         let mut anchors = world.resource_mut::<Anchors>();
         for id in dead {
             if let Some(p) = anchors.entries.remove(&id) {
                 anchors.keys.remove(&p.key);
+                if let PoseSource::Program(p) = p.source {
+                    program_entities.push(p.entity);
+                }
             }
         }
         anchors.generation = anchors.generation.wrapping_add(1);
+        drop(anchors);
+        for entity in program_entities {
+            world.despawn(entity);
+        }
     }
     // Discover only when the render entity map changes or an anchor attribute
     // changes. Animated transforms and unrelated JSON/DOM changes do not scan
@@ -354,6 +414,194 @@ fn is_descendant(world: &World, mut node: Entity, root: Entity) -> bool {
     true // Do not accept malformed/deep source chains as safe dependencies.
 }
 
+fn source_entity(world: &World, p: &Publication) -> Option<Entity> {
+    match &p.source {
+        PoseSource::Native(id) => world
+            .resource::<NativeReferences>()
+            .slots
+            .get(id)
+            .copied()
+            .flatten(),
+        PoseSource::Element(node) => world
+            .resource::<ElemenetWorld>()
+            .0
+            .entities()
+            .is_alive(*node)
+            .then(|| world.resource::<EntityMap>().0.get(&node.id()).copied())
+            .flatten(),
+        PoseSource::Program(p) => Some(p.entity),
+    }
+}
+fn source_allowed(world: &World, id: u64, consumer: u32, stack: &mut Vec<u64>) -> bool {
+    if stack.len() >= 32 || stack.contains(&id) {
+        return false;
+    }
+    let Some(publication) = world.resource::<Anchors>().entries.get(&id) else {
+        return false;
+    };
+    stack.push(id);
+    let allowed = match &publication.source {
+        PoseSource::Native(id) => {
+            let (required, provider) = world
+                .resource::<NativeReferences>()
+                .requirements
+                .get(id)
+                .copied()
+                .unwrap_or_default();
+            let provider_allowed = provider.is_empty()
+                || world
+                    .resource::<SpacePolicies>()
+                    .by_space
+                    .get(&publication.owner.id())
+                    .is_some_and(|p| p.effective_native.contains(provider));
+            provider_allowed
+                && (required.is_empty()
+                    || world
+                        .resource::<SpacePolicies>()
+                        .by_space
+                        .get(&consumer)
+                        .is_some_and(|p| p.effective_caps.contains(required)))
+        }
+        PoseSource::Program(p) => p.program.inputs.iter().enumerate().all(|(index, _)| {
+            p.bindings[index].is_none_or(|id| source_allowed(world, id, consumer, stack))
+        }),
+        PoseSource::Element(_) => {
+            let mut node = source_entity(world, publication);
+            let mut ok = true;
+            for _ in 0..256 {
+                let Some(e) = node else {
+                    break;
+                };
+                if let Some(f) = world.get::<Follower>(e) {
+                    if f.source
+                        .is_none_or(|id| !source_allowed(world, id, consumer, stack))
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+                node = world.get::<Parent>(e).map(|p| p.get());
+            }
+            ok && node.is_none()
+        }
+    };
+    stack.pop();
+    allowed
+}
+fn execute_program(
+    world: &mut World,
+    id: u64,
+    bound: &HashSet<Entity>,
+    done: &HashSet<Entity>,
+    unavailable: &HashSet<Entity>,
+) -> Option<bool> {
+    let (program, owner, entity, mut last, mut bindings, generation) =
+        match &world.resource::<Anchors>().entries[&id].source {
+            PoseSource::Program(p) => (
+                p.program.clone(),
+                world.resource::<Anchors>().entries[&id].owner,
+                p.entity,
+                p.last,
+                p.bindings,
+                p.generation,
+            ),
+            _ => unreachable!(),
+        };
+    let current_generation = world.resource::<Anchors>().generation;
+    if generation != current_generation {
+        for (index, input) in program.inputs.iter().enumerate() {
+            bindings[index] = world.resource::<Anchors>().keys.get(input.key()).copied();
+        }
+        if let PoseSource::Program(p) = &mut world
+            .resource_mut::<Anchors>()
+            .entries
+            .get_mut(&id)
+            .unwrap()
+            .source
+        {
+            p.bindings = bindings;
+            p.generation = current_generation;
+        }
+    }
+    let mut inputs = [GlobalTransform::IDENTITY; 16];
+    let mut valid = true;
+    for (index, input) in program.inputs.iter().enumerate() {
+        let publication = bindings[index].and_then(|id| {
+            world
+                .resource::<Anchors>()
+                .entries
+                .get(&id)
+                .map(|p| (id, p))
+        });
+        let Some((source_id, p)) = publication else {
+            last[index] = None;
+            valid = false;
+            continue;
+        };
+        let revision = p.request_id;
+        if !source_allowed(world, source_id, owner.id(), &mut Vec::new()) {
+            last[index] = None;
+            valid = false;
+            continue;
+        }
+        let source = source_entity(world, p);
+        let mut ancestor = source;
+        let mut available = true;
+        while let Some(e) = ancestor {
+            if bound.contains(&e) && !done.contains(&e) {
+                return None;
+            }
+            if unavailable.contains(&e) {
+                available = false;
+            }
+            ancestor = world.get::<Parent>(e).map(|p| p.get());
+        }
+        let pose = source
+            .filter(|_| available)
+            .and_then(|e| world.get::<GlobalTransform>(e).copied());
+        if let Some(pose) = pose {
+            last[index] = Some((source_id, revision, pose));
+            inputs[index] = pose;
+        } else if input.hold() {
+            if let Some((old_id, old_revision, pose)) =
+                last[index].filter(|(old_id, old_revision, _)| {
+                    *old_id == source_id && *old_revision == revision
+                })
+            {
+                let _ = (old_id, old_revision);
+                inputs[index] = pose;
+            } else {
+                valid = false;
+            }
+        } else {
+            last[index] = None;
+            valid = false;
+        }
+    }
+    let pose = valid
+        .then(|| program.run(&inputs[..program.inputs.len()]))
+        .flatten();
+    if let Some(pose) = pose {
+        if let Some(mut current) = world.get_mut::<GlobalTransform>(entity) {
+            if *current != pose {
+                *current = pose;
+            }
+        }
+    }
+    world
+        .entity_mut(entity)
+        .insert(AnchorAvailability(pose.is_some()));
+    if let PoseSource::Program(p) = &mut world
+        .resource_mut::<Anchors>()
+        .entries
+        .get_mut(&id)
+        .unwrap()
+        .source
+    {
+        p.last = last;
+    }
+    Some(pose.is_some())
+}
 pub(crate) fn follow(world: &mut World) {
     if world.resource::<Anchors>().entries.is_empty()
         && world
@@ -367,14 +615,32 @@ pub(crate) fn follow(world: &mut World) {
     let mut pending: Vec<_> = world
         .query::<(Entity, &Follower)>()
         .iter(world)
-        .map(|(e, f)| (e, f.source, f.owner))
+        .map(|(e, f)| (e, f.source, f.owner, false))
         .collect();
+    pending.extend(world.resource::<Anchors>().entries.iter().filter_map(
+        |(&id, p)| match &p.source {
+            PoseSource::Program(program) => Some((program.entity, Some(id), p.owner, true)),
+            _ => None,
+        },
+    ));
     let bound: HashSet<_> = pending.iter().map(|p| p.0).collect();
     let mut done = HashSet::new();
     let mut unavailable = HashSet::new();
     while !pending.is_empty() {
         let previous = pending.len();
-        pending.retain(|(root, id, owner)| {
+        pending.retain(|(root, id, owner, is_program)| {
+            if *is_program {
+                let Some(available) =
+                    execute_program(world, id.unwrap(), &bound, &done, &unavailable)
+                else {
+                    return true;
+                };
+                if !available {
+                    unavailable.insert(*root);
+                }
+                done.insert(*root);
+                return false;
+            }
             // An anchored logical parent must be placed before its child.
             let mut ancestor = world.get::<Parent>(*root).map(|p| p.get());
             while let Some(node) = ancestor {
@@ -384,35 +650,9 @@ pub(crate) fn follow(world: &mut World) {
                 ancestor = world.get::<Parent>(node).map(|p| p.get());
             }
             let publication = id.and_then(|id| world.resource::<Anchors>().entries.get(&id));
-            let source = publication.and_then(|p| match p.source {
-                PoseSource::Native(id) => world
-                    .resource::<NativeReferences>()
-                    .slots
-                    .get(&id)
-                    .copied()
-                    .flatten(),
-                PoseSource::Element(node) => world
-                    .get_resource::<ElemenetWorld>()
-                    .filter(|s| s.0.entities().is_alive(node))
-                    .and_then(|_| world.get_resource::<EntityMap>())
-                    .and_then(|m| m.0.get(&node.id()).copied()),
-            });
-            let permitted = publication.is_none_or(|p| {
-                let required = match p.source {
-                    PoseSource::Native(id) => world
-                        .resource::<NativeReferences>()
-                        .requirements
-                        .get(&id)
-                        .map(|r| r.0)
-                        .unwrap_or_default(),
-                    PoseSource::Element(_) => CapabilityBits::empty(),
-                };
-                required.is_empty()
-                    || world
-                        .get_resource::<SpacePolicies>()
-                        .and_then(|p| p.by_space.get(&owner.id()))
-                        .is_some_and(|p| p.effective_caps.contains(required))
-            });
+            let source = publication.and_then(|p| source_entity(world, p));
+            let permitted =
+                id.is_none_or(|id| source_allowed(world, id, owner.id(), &mut Vec::new()));
             let mut dependency = source;
             let mut dependency_available = true;
             while let Some(node) = dependency {
@@ -443,8 +683,12 @@ pub(crate) fn follow(world: &mut World) {
             false
         });
         if pending.len() == previous {
-            for (root, _, _) in pending.drain(..) {
-                place_subtree(world, root, None);
+            for (root, _, _, is_program) in pending.drain(..) {
+                if is_program {
+                    world.entity_mut(root).insert(AnchorAvailability(false));
+                } else {
+                    place_subtree(world, root, None);
+                }
             }
         }
     }
@@ -621,6 +865,21 @@ fn listener_pose(
                     return Err("Listener lacks pose permission");
                 }
                 Ok(refs.slots.get(&id).copied().flatten())
+            }
+            PoseSource::Program(ref p) => {
+                let id = world
+                    .resource::<Anchors>()
+                    .keys
+                    .get(&publication.key)
+                    .copied()
+                    .ok_or("Missing program")?;
+                if !source_allowed(world, id, owner_id, &mut Vec::new()) {
+                    return Err("Listener lacks pose permission");
+                }
+                Ok(world
+                    .get::<AnchorAvailability>(p.entity)
+                    .filter(|a| a.0)
+                    .map(|_| p.entity))
             }
         }
     };
@@ -810,6 +1069,133 @@ mod tests {
                 XrTrackedRightGrip,
             ))
             .id()
+    }
+
+    #[test]
+    fn programs_follow_current_inputs_hold_tracking_and_replace_atomically() {
+        let mut f = fixture();
+        assert!(create(
+            &mut f,
+            "right-grip",
+            Source::Native("__vr_right_grip_root".into())
+        )
+        .is_none());
+        assert!(create(
+            &mut f,
+            "left-grip",
+            Source::Native("__vr_left_grip_root".into())
+        )
+        .is_none());
+        right(&mut f, 0.);
+        let left = f
+            .app
+            .world_mut()
+            .spawn((
+                SpatialBundle::from_transform(Transform::from_xyz(0., 0., -1.)),
+                bevy_xr_utils::tracking_utils::XrTrackedLeftGrip,
+            ))
+            .id();
+        f.app
+            .world_mut()
+            .resource_mut::<SpacePolicies>()
+            .by_space
+            .get_mut(&f.viewer.id())
+            .unwrap()
+            .effective_caps |= CapabilityBits::CREATE_ANCHOR;
+        let definition = serde_json::json!({"type":"program","version":1,"inputs":{"a":"right-grip","b":{"anchor":"left-grip","holdLast":true}},"constants":{"up":[0,1,0],"forward":[0,0,-1]},"code":"input pose a\ninput pose b\nconst vec3 up\nconst vec3 forward\ntemp vec3 direction\noutput pose result = a\nsubtract direction, b.position, a.position\naimRotation result.rotation, direction, up, forward, up"});
+        let register = |world: &mut World, value| {
+            apply_requests(
+                world,
+                f.viewer.id(),
+                vec![Request {
+                    id: 40,
+                    key: "computed".into(),
+                    source: Some(Source::Program(value)),
+                    guard: None,
+                }],
+            )
+        };
+        assert!(register(f.app.world_mut(), definition.clone())[0]
+            .error
+            .is_none());
+        f.app
+            .world_mut()
+            .resource_mut::<ElemenetWorld>()
+            .0
+            .write_storage::<Attrs>()
+            .get_mut(f.node)
+            .unwrap()
+            .0
+            .insert("anchor".into(), "computed".into());
+        f.app
+            .world_mut()
+            .resource_mut::<AnchorDirty>()
+            .0
+            .insert(f.node.id());
+        f.app.update();
+        f.app
+            .world_mut()
+            .get_mut::<Transform>(left)
+            .unwrap()
+            .translation = Vec3::new(1., 0., -1.);
+        f.app.update();
+        let rotation = f
+            .app
+            .world()
+            .get::<GlobalTransform>(f.object)
+            .unwrap()
+            .compute_transform()
+            .rotation;
+        assert!((rotation * Vec3::NEG_Z - Vec3::new(1., 0., -1.).normalize()).length() < 1e-5);
+        f.app.world_mut().despawn(left);
+        f.app.update();
+        assert!(f
+            .app
+            .world()
+            .get::<InheritedVisibility>(f.object)
+            .unwrap()
+            .get());
+        assert!(
+            (f.app
+                .world()
+                .get::<GlobalTransform>(f.object)
+                .unwrap()
+                .compute_transform()
+                .rotation
+                .dot(rotation))
+            .abs()
+                > 0.9999
+        );
+        let mut invalid = definition;
+        invalid["code"] = serde_json::Value::String("bad instruction".into());
+        assert!(register(f.app.world_mut(), invalid)[0].error.is_some());
+        f.app.update();
+        assert!(f
+            .app
+            .world()
+            .get::<InheritedVisibility>(f.object)
+            .unwrap()
+            .get());
+        let key = js_runtime::anchors::ListenTarget {
+            key: Some("computed".into()),
+            node: None,
+        };
+        assert!(listener_pose(f.app.world(), f.publisher.id(), &key).is_err());
+        f.app
+            .world_mut()
+            .resource_mut::<SpacePolicies>()
+            .by_space
+            .get_mut(&f.viewer.id())
+            .unwrap()
+            .effective_caps
+            .remove(CapabilityBits::READ_POSE_STREAM);
+        f.app.update();
+        assert!(!f
+            .app
+            .world()
+            .get::<InheritedVisibility>(f.object)
+            .unwrap()
+            .get());
     }
 
     #[test]

@@ -1561,6 +1561,7 @@ impl Engine {
                 mesh::op_mesh_resource::decl(),
                 anchors::op_anchor_request::DECL,
                 anchors::op_anchor_poll::DECL,
+                anchors::op_anchor_program::DECL,
                 anchors::op_anchor_listen::DECL,
                 anchors::op_anchor_unlisten::DECL,
                 anchors::op_anchor_samples::DECL,
