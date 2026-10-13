@@ -1093,7 +1093,7 @@ mod tests {
             Source::Native("__vr_left_grip_root".into())
         )
         .is_none());
-        right(&mut f, 0.);
+        let right = right(&mut f, 0.);
         let left = f
             .app
             .world_mut()
@@ -1154,6 +1154,31 @@ mod tests {
             .compute_transform()
             .rotation;
         assert!((rotation * Vec3::NEG_Z - Vec3::new(1., 0., -1.).normalize()).length() < 1e-5);
+        // Move the primary grip perpendicular to the aiming line, then the
+        // secondary grip. Both the weapon and its children must use this
+        // frame's two inputs, including the offset around the primary pivot.
+        for frame in 0..128 {
+            let phase = frame as f32 * 0.31;
+            let a = if frame < 64 { Vec3::new(phase.sin() * 0.3, phase.cos() * 0.2, 0.) }
+                else { Vec3::ZERO };
+            let b = if frame < 64 { Vec3::new(1., 0., -1.) }
+                else { Vec3::new(1. + phase.sin() * 0.3, phase.cos() * 0.2, -1.) };
+            f.app.world_mut().get_mut::<Transform>(right).unwrap().translation = a;
+            f.app.world_mut().get_mut::<Transform>(left).unwrap().translation = b;
+            f.app.update();
+            let actual = f.app.world().get::<GlobalTransform>(f.object).unwrap().compute_transform();
+            let direction = (b - a).normalize();
+            assert!((actual.rotation * Vec3::NEG_Z - direction).length() < 1e-5,
+                "aim used an old primary/secondary input at frame {frame}");
+            assert!((actual.translation - (a + actual.rotation * Vec3::X)).length() < 1e-5,
+                "primary pivot used an old input at frame {frame}");
+            let child = f.app.world().get::<GlobalTransform>(f.child).unwrap().translation();
+            assert!((child - (actual.translation + actual.rotation * Vec3::Y * 2.)).length() < 1e-5,
+                "weapon child lagged behind the program at frame {frame}");
+        }
+        f.app.world_mut().get_mut::<Transform>(right).unwrap().translation = Vec3::ZERO;
+        f.app.world_mut().get_mut::<Transform>(left).unwrap().translation = Vec3::new(1., 0., -1.);
+        f.app.update();
         f.app.world_mut().despawn(left);
         f.app.update();
         assert!(f
