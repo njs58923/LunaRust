@@ -254,15 +254,21 @@ ningún servidor: abrí en Luna
 
 **https://njs58923.github.io/luna-demos/index.hsml**
 
-| Demo | Entrada |
-|---|---|
-| El atrio de noche | [`noche/index.hsml`](https://njs58923.github.io/luna-demos/noche/index.hsml) |
-| La nave | [`nave/index.hsml`](https://njs58923.github.io/luna-demos/nave/index.hsml) |
-| La calle de los objetos | [`expo/calle.hsml`](https://njs58923.github.io/luna-demos/expo/calle.hsml) |
-| La sala de los ecos | [`eco/index.hsml`](https://njs58923.github.io/luna-demos/eco/index.hsml) |
-| El framework de UI | [`ui/index.hsml`](https://njs58923.github.io/luna-demos/ui/index.hsml) |
-| El taller de las manos (VR) | [`manos/index.hsml`](https://njs58923.github.io/luna-demos/manos/index.hsml) |
-| Luna Stress | [`stress/index.hsml`](https://njs58923.github.io/luna-demos/stress/index.hsml) |
+| Demo | Qué es | Entrada |
+|---|---|---|
+| El atrio de noche | veintiocho escenas: cielos, cuevas, un tren, un bosque | [`noche/index.hsml`](https://njs58923.github.io/luna-demos/noche/index.hsml) |
+| La nave | la Skeld con sus tareas, quince minijuegos y los conductos | [`nave/index.hsml`](https://njs58923.github.io/luna-demos/nave/index.hsml) |
+| La calle de los objetos | más de cien objetos que andan, para llevar a tu mundo | [`expo/calle.hsml`](https://njs58923.github.io/luna-demos/expo/calle.hsml) |
+| La sala de los ecos | un juego de memoria sonora, sin archivos de audio | [`eco/index.hsml`](https://njs58923.github.io/luna-demos/eco/index.hsml) |
+| El framework de UI | ventanas, listas, combos y paneles al estilo WPF | [`ui/index.hsml`](https://njs58923.github.io/luna-demos/ui/index.hsml) |
+| El taller de las manos *(VR)* | manipular objetos, un arco y una galería de tiro | [`manos/index.hsml`](https://njs58923.github.io/luna-demos/manos/index.hsml) |
+| La planta *(VR)* | un juego corto con pistolas en una fábrica tomada por robots | [`planta/index.hsml`](https://njs58923.github.io/luna-demos/planta/index.hsml) |
+| Sables de Luna *(VR)* | juego de ritmo tipo Beat Saber, con modo demo para escritorio | [`sables/index.hsml`](https://njs58923.github.io/luna-demos/sables/index.hsml) |
+| Luna Stress | un test de carga por eje, hasta que el motor se cae | [`stress/index.hsml`](https://njs58923.github.io/luna-demos/stress/index.hsml) |
+
+El taller de las manos y Sables usan [anclajes](guides/anclajes.md): necesitan
+Luna v0.3.0 o posterior. Sables se puede mirar sin mandos en
+[modo demo](https://njs58923.github.io/luna-demos/sables/index.hsml?jugar=tormenta&dif=dificil&demo=1).
 
 Son también la mejor referencia para escribir documentos: cada demo es HSML y
 JavaScript que se puede leer directamente en el
