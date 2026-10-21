@@ -15,9 +15,15 @@ scripting con el motor de render.
 > Luna añade encima la capa de navegador espacial (HSML, runtime JS, espacios,
 > permisos, locomoción, devtools).
 
+> **¿Querés verlo andando?** Bajá `luna.exe` de
+> [Releases](https://github.com/njs58923/LunaRust/releases/latest) y abrí
+> **`https://njs58923.github.io/luna-demos/index.hsml`** en la barra de
+> direcciones: es una plaza con una puerta a cada demo. Los demos viven en
+> **[njs58923/luna-demos](https://github.com/njs58923/luna-demos)** (ver
+> [Demos](#demos)).
+
 > **¿Vas a escribir documentos para Luna?** Empezá por
-> **[guides/index.md](guides/index.md)**, y sobre todo por
-> [guides/trampas.md](guides/trampas.md), que es lo que falla en silencio.
+> **[guides/index.md](guides/index.md)**.
 
 ---
 
@@ -220,6 +226,33 @@ Luego, dentro de Luna, escribe la URL en la barra de direcciones (p. ej.
 
 ---
 
+## Demos
+
+**[njs58923/luna-demos](https://github.com/njs58923/luna-demos)** publica los
+demos del taller como sitio estático en GitHub Pages. No hace falta levantar
+ningún servidor: abrí en Luna
+
+**https://njs58923.github.io/luna-demos/index.hsml**
+
+| Demo | Entrada |
+|---|---|
+| El atrio de noche | [`noche/index.hsml`](https://njs58923.github.io/luna-demos/noche/index.hsml) |
+| La nave | [`nave/index.hsml`](https://njs58923.github.io/luna-demos/nave/index.hsml) |
+| La calle de los objetos | [`expo/calle.hsml`](https://njs58923.github.io/luna-demos/expo/calle.hsml) |
+| La sala de los ecos | [`eco/index.hsml`](https://njs58923.github.io/luna-demos/eco/index.hsml) |
+| El framework de UI | [`ui/index.hsml`](https://njs58923.github.io/luna-demos/ui/index.hsml) |
+| El taller de las manos (VR) | [`manos/index.hsml`](https://njs58923.github.io/luna-demos/manos/index.hsml) |
+| Luna Stress | [`stress/index.hsml`](https://njs58923.github.io/luna-demos/stress/index.hsml) |
+
+Son también la mejor referencia para escribir documentos: cada demo es HSML y
+JavaScript que se puede leer directamente en el
+[repo](https://github.com/njs58923/luna-demos).
+Los demos que dependen de un servidor vivo (física en red, WebSocket, mundos
+infinitos) no entran en el volcado estático; el README de luna-demos explica
+cuáles y por qué.
+
+---
+
 ## Scripting: API de JavaScript
 
 Cada `<script>` corre en el contexto de su espacio. Resumen de la API:
@@ -252,7 +285,7 @@ El runtime aplica una **Content Security Policy** y una **caché HTTP** (ETag,
 Last-Modified, `max-age`) a los recursos cargados, y un sistema de **permisos** por
 espacio gobierna capacidades sensibles (leer la pose del visor, navegar, skybox, etc.).
 
-Hay más detalle de diseño en [`docs/`](docs/).
+La referencia completa de la API está en [`guides/`](guides/index.md).
 
 ---
 
@@ -269,15 +302,17 @@ siguen evolucionando. Las APIs pueden cambiar.
 
 | Dónde | Qué |
 |---|---|
+| **[luna-demos](https://github.com/njs58923/luna-demos)** | demos publicados en GitHub Pages: escenas completas para probar y leer |
 | **[guides/](guides/index.md)** | cómo **usar** la plataforma: escribir documentos, permisos, API JS, eventos, texturas, mallas, audio, componentes, texto y curvas |
-| [guides/trampas.md](guides/trampas.md) | lo que falla en silencio — la página más útil de todas |
+| [guides/trampas.md](guides/trampas.md) | errores comunes que no muestran aviso |
 | [guides/interfaz.md](guides/interfaz.md) | medir texto, el atlas de glifos, curvas y color con alfa |
 | [guides/framework-ui.md](guides/framework-ui.md) | el framework de interfaces que sirve `luna://internal/ui.js` |
 | [guides/componentes.md](guides/componentes.md) | `props` y `events`: hablar con un `<include>` |
 | [guides/disenos/](guides/disenos/) | propuestas y notas de diseño, no referencia de lo que existe |
-| [docs/](docs/) | análisis, mediciones y estado de implementación |
-| [docs/deuda_tecnica/](docs/deuda_tecnica/) | lo que se sabe que está mal y todavía no se arregló |
-| `CORE_PERFORMANCE.md`, `ENGINE_DENSITY_OPTIMIZATION.md`, `PLATFORM_DIAGNOSTICS_FETCH.md` | trabajo sobre el motor, no sobre su uso |
+
+Las notas internas de desarrollo (análisis, mediciones, deuda técnica y trabajo
+sobre el motor) están en `docs/` y en los `.md` de la raíz; no son referencia
+para usar la plataforma.
 
 
 ## Licencia
