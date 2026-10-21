@@ -300,20 +300,43 @@ siguen evolucionando. Las APIs pueden cambiar.
 
 ## Documentación
 
-| Dónde | Qué |
+Las guías de [`guides/`](guides/index.md) explican cómo escribir documentos que
+corran en Luna. Están verificadas contra el código.
+
+### Por dónde empezar
+
+1. Probá los **[demos](#demos)** para ver qué se puede hacer.
+2. Leé **[el documento mínimo](guides/index.md#lo-mínimo)** y el
+   [modelo mental](guides/index.md#modelo-mental) en el índice de guías.
+3. Seguí con [un ejemplo completo](guides/ejemplo.md): un documento y su
+   script, enteros.
+4. Cuando algo no ande y no haya error a la vista, revisá
+   [trampas.md](guides/trampas.md).
+
+### Según lo que quieras hacer
+
+| Quiero… | Leé |
 |---|---|
-| **[luna-demos](https://github.com/njs58923/luna-demos)** | demos publicados en GitHub Pages: escenas completas para probar y leer |
-| **[guides/](guides/index.md)** | cómo **usar** la plataforma: escribir documentos, permisos, API JS, eventos, texturas, mallas, audio, componentes, texto y curvas |
-| [guides/trampas.md](guides/trampas.md) | errores comunes que no muestran aviso |
-| [guides/interfaz.md](guides/interfaz.md) | medir texto, el atlas de glifos, curvas y color con alfa |
-| [guides/framework-ui.md](guides/framework-ui.md) | el framework de interfaces que sirve `luna://internal/ui.js` |
-| [guides/componentes.md](guides/componentes.md) | `props` y `events`: hablar con un `<include>` |
-| [guides/disenos/](guides/disenos/) | propuestas y notas de diseño, no referencia de lo que existe |
+| Armar la escena: tags, atributos, jerarquía | [documento.md](guides/documento.md) |
+| Pedir capacidades (navegar, leer la pose, audio…) | [permisos.md](guides/permisos.md) |
+| Programar la escena: crear, mover y consultar nodos | [javascript.md](guides/javascript.md) |
+| Responder a toques y hover | [eventos.md](guides/eventos.md) |
+| Dividir en piezas reutilizables con `<include>` | [componentes.md](guides/componentes.md) |
+| Hacer paneles, botones y controles | [framework-ui.md](guides/framework-ui.md), [interfaz.md](guides/interfaz.md) |
+| Escribir con teclado físico o virtual | [teclado.md](guides/teclado.md) |
+| Poner texturas e imágenes | [superficies.md](guides/superficies.md) |
+| Cargar modelos glTF | [modelos.md](guides/modelos.md) |
+| Animar modelos: clips o poses desde el script | [animaciones.md](guides/animaciones.md), [poses.md](guides/poses.md) |
+| Elegir dónde aparece el visitante | [llegada.md](guides/llegada.md) |
+| Enlazar documentos y navegar entre mundos | [ubicacion.md](guides/ubicacion.md), [navegacion-mundo.md](guides/navegacion-mundo.md) |
+| Pedir datos a un servidor | [red.md](guides/red.md) |
+| Reproducir o generar sonido | [audio.md](guides/audio.md) |
+| Trabajar con datos binarios | [binario.md](guides/binario.md) |
+| Guardar datos en el visitante | [almacenamiento.md](guides/almacenamiento.md) |
+| Usar Luna por escritorio remoto | [escritorio-remoto.md](guides/escritorio-remoto.md) |
 
-Las notas internas de desarrollo (análisis, mediciones, deuda técnica y trabajo
-sobre el motor) están en `docs/` y en los `.md` de la raíz; no son referencia
-para usar la plataforma.
-
+El [índice de guías](guides/index.md) tiene la lista completa y, para cada tema,
+el archivo del motor que manda cuando una guía y el código no coinciden.
 
 ## Licencia
 
