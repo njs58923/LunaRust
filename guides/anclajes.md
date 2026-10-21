@@ -1,4 +1,10 @@
-# Anclajes nativos
+# Anclajes
+
+Un anclaje hace que un elemento siga la pose de otro (un mando, otro elemento
+o el resultado de un programa) desde el renderer, en el mismo frame, sin
+escribir poses desde JavaScript. Para combinar varias poses (un arma a dos
+manos, un arco) ver [programas-de-movimiento.md](programas-de-movimiento.md).
+
 
 El framework permite publicar la transformación de un elemento HSML o una
 referencia nativa de Bevy y asociarle elementos con `anchor="key"`. Después
@@ -51,9 +57,8 @@ Rust las registra en `NativeReferences`, separado de `SpaceHandleTables` y de
 espacio creador y conserva un ID de slot. El proveedor puede renovar el destino
 Bevy del slot cuando su entidad se recrea.
 
-Para otros proveedores nativos, Rust puede usar `NativeReferences::register`,
-`set_target` y `restrict`. Un slot sin destino es conocido pero indisponible;
-un nombre no registrado rechaza la creación.
+Un nombre no registrado rechaza la creación; una referencia conocida sin
+destino queda indisponible hasta que lo tenga.
 
 ## Input de VR
 
@@ -64,9 +69,7 @@ y publica `left-grip` y `right-grip` desde sus referencias privadas:
 - `__vr_left_grip_root`
 - `__vr_right_grip_root`
 
-La parte Rust vive en `vr_input.rs`; la declaración JS está en
-`web/input/vr_input.hsml`. El servicio genérico de anchors no conoce esos nombres
-ni consulta OpenXR. El input prefiere el pivote de tracking real a la entidad
+El input prefiere el pivote de tracking real a la entidad
 visual del mando y atiende pérdida/recreación de la sesión. Un pivote con flags
 de tracking inválidos queda indisponible, sin recurrir a una pose visual vieja.
 
@@ -105,21 +108,12 @@ El registro se libera al cerrar el espacio o revocar `create_anchor`. Las
 referencias nativas también se liberan con el espacio. La desaparición de una
 fuente deja sus consumidores ocultos hasta que vuelva o se cambie el vínculo.
 
-## Verificar
+## Probar
 
 `luna://anchor_demo` muestra dos objetos asociados a las manos y no tiene
-scripts. El input de VR se encarga de publicar las fuentes.
+scripts: el input de VR se encarga de publicar las fuentes.
 
-```powershell
-cargo test -p js_runtime --test anchors_test
-cargo test -p luna --lib anchors::tests
-cargo test -p luna --lib anchor_ack
-cargo check -p luna --bins
-```
 
-Los tests verifican el transform en el mismo frame, offsets e hijos, tracking
-perdido/recreado, flags inválidos, permisos, referencias privadas, colisiones,
-fuentes DOM ajenas, ciclos, desanclaje, cierre y confirmaciones bajo saturación.
 ## Escuchar la pose efectiva
 
 ```js
@@ -167,8 +161,11 @@ permisos descarta también las poses pendientes. Hay hasta 16 suscripciones de
 16 destinos por worker. Dispose detiene la captura; cerrar el espacio destruye
 el buzón. Los espacios sin listeners no generan muestras.
 
+## Ejemplos en los demos
+
 Sables escucha grips y hojas con historial para recorrer todos los tramos del
 corte; la demo desancla las hojas. Tiro escucha ambas manos juntas y conserva
 historial para no perder flancos de los gatillos ni las muestras de su filtro de
-puntería. Armas y cargadores libres en la mano siguen al grip nativo; el giro a
-dos manos, retroceso y mecanismos siguen siendo offsets calculados en JS.
+puntería. Armas y cargadores libres en la mano siguen al grip nativo; el agarre a
+dos manos es un [programa](programas-de-movimiento.md), y el retroceso y los
+mecanismos son offsets locales calculados en JS.

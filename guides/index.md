@@ -91,6 +91,8 @@ un motor de juego. Se parece más al DOM que a Unity:
 | [superficies.md](superficies.md) | texturas sobre primitivas, atlas, y el tag `<image>` |
 | [modelos.md](modelos.md) | `<model>`: cómo se cargan y comparten los glTF |
 | [animaciones.md](animaciones.md) | los clips que trae un `.glb` |
+| [anclajes.md](anclajes.md) | objetos que siguen a los mandos u otros elementos desde el renderer |
+| [programas-de-movimiento.md](programas-de-movimiento.md) | anclajes calculados: armas a dos manos, arcos, sables |
 | [llegada.md](llegada.md) | `<spawn>`: dónde aparece el visitante |
 | [ubicacion.md](ubicacion.md) | `location`, `URL`, navegar entre documentos |
 | [red.md](red.md) | `fetch`, y qué permisos pide |
@@ -129,6 +131,7 @@ Cuando una guía y el motor no coincidan, gana el motor. Y avisá.
 | Permisos / bundles | `crates/luna/src/permissions.rs` |
 | Eventos (raycast) | `crates/luna/src/touch.rs` |
 | Mallas dinámicas | `crates/js_runtime/src/mesh.rs` |
+| Anclajes y programas | `crates/luna/src/anchors.rs`, `crates/luna/src/motion_program.rs` |
 | Texto, glifos y curvas | `crates/ui_graphics/src/`, `crates/js_runtime/src/ui_text.rs` |
 | El framework de interfaz | `server_ui/` (se genera desde ahí; ver framework-ui.md) |
 | Canal de componentes | `crates/luna/src/components.rs`, `crates/js_runtime/components.js` |

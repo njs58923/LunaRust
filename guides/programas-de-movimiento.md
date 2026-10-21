@@ -1,4 +1,9 @@
-# Programas de movimiento nativos, versión 1
+# Programas de movimiento
+
+Un programa es un anclaje calculado: combina las poses de otros anclajes con
+una secuencia corta de instrucciones que corre en el motor cada frame. Antes,
+leé [anclajes.md](anclajes.md). Esta página describe la versión 1.
+
 
 `dimension.anchors.create(key, {type: "program", version: 1, inputs, constants, code})`
 compila un programa de poses y publica su salida como un anchor. La promesa
@@ -97,49 +102,29 @@ acceso. Actualizar constantes del mismo programa conserva poses retenidas si
 los inputs y sus políticas coinciden. Nunca retiene una fuente que aún no se
 observó. Este modo preserva el comportamiento de tiro al perder tracking.
 
-## Integración en tiro
+## Costo
 
-Los modelos de una mano generan un programa de seguimiento con su montaje;
-los cuatro modelos con agarre secundario generan el mismo programa de 11
-instrucciones con sus ajustes como constantes. Las manos actuales orientan una
-raíz nativa; el modelo hijo sólo recibe retroceso local. El cargador y mecanismos
-heredan esa jerarquía. Mover mandos o variar retroceso no recompila el programa.
-Soltar el segundo agarre vuelve al programa de una mano. La detección de
-agarres y los disparos filtrados permanecen en JS. La pose base/visual nativa
-puede observarse con `anchors.listen` y actualiza los caches de la escena.
+La VM usa registros de tamaño fijo y no reserva memoria al ejecutar. El
+programa de tiro (11 instrucciones) cuesta unos 0,4 µs por evaluación, sin
+contar la resolución de fuentes ni el render.
 
-La fixture de integración se extrae de `programaDosManos` del ejemplo y se
-compara en Rust con el solver calibrado en 4.000 poses, incluidas distancias cero
-y próximas. También se comprueban permisos, tracking retenido, actualización
-atómica y el movimiento en el mismo frame sin JS.
+## Ejemplos en los demos
 
-La VM usa almacenamiento fijo de registros y no reserva memoria al ejecutar.
-El microbenchmark de este equipo obtuvo aproximadamente 0,4 microsegundos por
-evaluación del programa de tiro, en el perfil dev optimizado. Esa cifra mide
-sólo las 11 instrucciones; no incluye resolución de fuentes, scheduler,
-propagación de hijos ni render, y no constituye una medición en el visor.
+**Tiro.** Las armas de una mano usan un programa de seguimiento con su montaje.
+Las de agarre secundario usan un programa de 11 instrucciones que orienta el
+arma de la mano principal hacia la secundaria, con los ajustes de cada modelo
+como constantes; soltar el segundo agarre vuelve al programa de una mano. El
+retroceso es un offset local del modelo hijo, así que variarlo no recompila
+nada. La detección de agarres y los disparos siguen en JS.
 
-## Arco y Sables
+**Arco.** Al tomarlo se publica un programa de agarre rígido con la rotación
+relativa capturada en ese momento. Con flecha cargada, un segundo programa
+apunta desde la mano que tensa hacia la del arco, conservando el arriba de la
+muñeca. Disparar retira el anclaje de la flecha antes de que empiece su vuelo
+en JS. Soltar el arco retira los programas.
 
-Arco genera un programa de agarre rigido con el quaternion relativo capturado
-al tomarlo. Con flecha cargada, un segundo programa calcula la direccion desde
-la mano tensora hacia la del arco, preservando el arriba de la muñeca y el
-fallback de separacion <= 1 mm. La flecha cargada usa el anchor del arco y la
-distancia actual entre grips para calcular su culatin con tension acotada.
-Disparar retira el anchor de la flecha antes de iniciar su vuelo JS. La cuerda,
-los sonidos, impactos y el timeout de manos siguen en JS; las dos poses y
-botones se reciben juntos mediante listen. Soltar el arco retira los programas.
-
-Sables publica dos programas de seguimiento con el quaternion de inclinacion
-calibrado. Solo recompila al cambiar de lado/calibracion. Las hojas conservan
-su historial de poses efectivas para cortes; la demo retira los programas y
-restaura el seguimiento al terminar. Su proyecto solicita create_anchor.
-
-Listen marca tambien cambios de fuente/publicacion como discontinuidades,
-aunque tracking siga disponible: cambiar un programa de calibracion no debe
-crear un barrido falso entre las dos orientaciones. La revision usada para
-esta deteccion es interna y no expone IDs de entidades al script.
-
-Las fixtures de arco (agarre, apuntado y flecha), Sables (ambos lados) y arma
-a una mano se extraen de los builders reales de cada escena y se compilan y
-comparan en los tests Rust. Las pruebas de Sables no se modificaron.
+**Sables.** Cada sable es un programa de seguimiento con la inclinación de la
+hoja calibrada; sólo se recompila al cambiar la calibración. Las hojas se
+escuchan con `listen` y `delivery: 'history'` para recorrer cada tramo del
+corte. Cambiar de programa se marca como discontinuidad, así que no aparece un
+barrido falso entre las dos orientaciones.

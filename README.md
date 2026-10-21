@@ -122,24 +122,42 @@ en escritorio y con los rayos de los mandos en VR. Ver [eventos](guides/eventos.
 
 ## Arquitectura
 
-Luna es un workspace de Rust dividido en crates. La capa XR proviene del fork
-upstream; la capa de navegador es propia de Luna.
+Luna es un workspace de Rust. La capa XR viene del fork upstream; el navegador
+es propio.
 
 | Crate | Rol |
 |-------|-----|
-| **`luna`** | El navegador en sí: shell, pestañas/espacios, render, UI, devtools, locomoción, permisos. Binario principal. |
-| **`virtual_dom`** | DOM virtual y parser HSML; mapea nodos del documento a entidades del motor. |
-| **`js_runtime`** | Runtime JavaScript embebido, con caché HTTP y Content Security Policy (CSP). |
-| **`dom`** | Tipos compartidos del modelo de documento. |
-| `bevy_openxr` | Backend de OpenXR para Bevy *(upstream)*. |
+| **`luna`** | El navegador (binario principal): shell y pestañas, render, UI, entrada (raycast, teclado, mandos), locomoción, permisos, audio, modelos y animación, mallas dinámicas, anclajes y el host del MCP local. |
+| **`virtual_dom`** | Parser HSML y DOM virtual. |
+| **`js_runtime`** | Runtime JavaScript sobre V8 (`deno_core`): APIs web (`fetch`, `location`, `localStorage`, `Audio`, `Blob`), componentes, mallas, anclajes, caché HTTP, CSP y caché de bytecode. |
+| **`ui_graphics`** | Texto, glifos y curvas para las interfaces. |
+| `bevy_openxr`, `bevy_xr`, `bevy_xr_utils` | OpenXR, API XR genérica y utilidades de tracking *(upstream)*. |
 | `bevy_webxr` | Backend WebXR *(upstream, en desarrollo)*. |
-| `bevy_xr` | API XR semi-genérica para Bevy *(upstream)*. |
-| `bevy_xr_utils` | Utilidades de tracking, manos, locomoción *(upstream)*. |
+| `lua_exps`, `rust_exps` | Experimentos; no forman parte del navegador. |
 
-El binario corre como una app de Bevy: en cada frame sincroniza el DOM (creaciones,
-borrados, cambios de atributos y transformaciones que el JS encoló), luego ejecuta el
-tick de JS, y finalmente renderiza. El orden de estos sistemas es estricto para
-mantener la coherencia entre lo que el script ve y lo que el motor dibuja.
+Fuera de `crates/`, [`tools/luna_mcp`](tools/luna_mcp/README.md) es el adaptador
+MCP (stdio) que deja a un agente abrir páginas, capturar y leer logs de Luna.
+
+### Cómo corre un documento
+
+- **Un isolate por espacio.** Cada `<space>`, incluido cada `<include>`, tiene
+  su propio isolate de V8 en su propio hilo (`js-space-N`), con sus permisos.
+  Habla con el motor por colas acotadas: el render nunca espera al script, ni
+  el script al render. Un único hilo vigila los tiempos de todos los isolates,
+  y los documentos estáticos duermen hasta que algo los despierta.
+- **DOM y motor.** El script muta su DOM; el host aplica esos cambios al DOM
+  virtual y los refleja en entidades de Bevy. Los eventos (`toque`, hover,
+  `posemove`, teclado) recorren el camino inverso, sólo hacia los espacios con
+  permiso.
+- **Trabajo fuera del hilo de render.** Normales, límites y huella de las
+  mallas generadas se calculan en el hilo del isolate; la geometría se comparte
+  entre instancias.
+- **Poses en el mismo frame.** Después de propagar transforms y antes del
+  culling, el motor coloca los elementos anclados y evalúa los programas de
+  movimiento. Un objeto en la mano sigue al mando sin pasar por JavaScript.
+- **Permisos por espacio.** Cada documento declara `resources`; el host concede
+  la intersección con lo que permite su contexto, y un `<include>` sólo recibe
+  lo que su padre le delega.
 
 ---
 
@@ -149,12 +167,14 @@ mantener la coherencia entre lo que el script ve y lo que el motor dibuja.
 .
 ├── crates/
 │   ├── luna/            # navegador (binario principal)
-│   ├── virtual_dom/     # DOM virtual + HSML
-│   ├── js_runtime/      # runtime JS + caché + CSP
-│   ├── dom/             # tipos del documento
+│   │   └── src/web/     # páginas luna:// (home, ajustes, demos, shell)
+│   ├── virtual_dom/     # parser HSML + DOM virtual
+│   ├── js_runtime/      # V8, APIs web, caché, CSP
+│   ├── ui_graphics/     # texto, glifos y curvas
 │   └── bevy_*/          # capa XR (fork upstream)
-├── docs/                # notas de diseño e implementación
-├── docker-compose.yml   # Caddy + Bun para servir contenido HSML
+├── guides/              # cómo escribir documentos para Luna
+├── tools/luna_mcp/      # adaptador MCP para agentes
+├── docker-compose.yml   # Caddy + servidores de demo para desarrollo
 ├── Caddyfile
 └── package.json         # atajos de scripts (npm run …)
 ```
@@ -327,6 +347,7 @@ corran en Luna. Están verificadas contra el código.
 | Poner texturas e imágenes | [superficies.md](guides/superficies.md) |
 | Cargar modelos glTF | [modelos.md](guides/modelos.md) |
 | Animar modelos: clips o poses desde el script | [animaciones.md](guides/animaciones.md), [poses.md](guides/poses.md) |
+| Que un objeto siga a los mandos sin latencia, o combinar dos manos | [anclajes.md](guides/anclajes.md), [programas-de-movimiento.md](guides/programas-de-movimiento.md) |
 | Elegir dónde aparece el visitante | [llegada.md](guides/llegada.md) |
 | Enlazar documentos y navegar entre mundos | [ubicacion.md](guides/ubicacion.md), [navegacion-mundo.md](guides/navegacion-mundo.md) |
 | Pedir datos a un servidor | [red.md](guides/red.md) |
